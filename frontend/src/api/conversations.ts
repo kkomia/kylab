@@ -6,7 +6,11 @@
  * （脚本、MCP 都走那条），只有界面上的对话才带上 `conversation_id`。
  */
 
-import { request } from './client'
+// 会话 / 消息 / 事件 / 产物 / 文件区**都在本机**（M2 §4.2 的本机白名单）：这一份的接口
+// 全部走 `requestLocal`（会话数据的权威面是边车那台的本机库，不是 NAS）；
+// 后端回的**相对**签名链接（预览/下载）要过 `localizeUrl` 才打得通，见 `getFileUrl`。
+import { requestLocal } from './client'
+import { localizeUrl } from './sidecar'
 import type { ChatAttachment } from './chat'
 import type { ChatSource } from './chat'
 import type { ThinkingEffort } from './chat'
@@ -86,7 +90,7 @@ export function listConversations(
   if (filter.archived) params.set('archived', 'true')
   // 预览要多一次查询，所以是**可选**的：侧栏不需要，历史面板需要
   if (filter.withPreview) params.set('with_preview', 'true')
-  return request(`/conversations?${params.toString()}`)
+  return requestLocal(`/conversations?${params.toString()}`)
 }
 
 export function createConversation(
@@ -95,7 +99,7 @@ export function createConversation(
   thinking?: ConversationThinking,
   workspaceId?: string | null,
 ): Promise<ConversationSummary> {
-  return request('/conversations', {
+  return requestLocal('/conversations', {
     method: 'POST',
     body: JSON.stringify({
       kb_ids: kbIds,
@@ -112,7 +116,7 @@ export function createConversation(
 }
 
 export function getConversation(id: string): Promise<ConversationDetail> {
-  return request(`/conversations/${id}`)
+  return requestLocal(`/conversations/${id}`)
 }
 
 /**
@@ -127,7 +131,7 @@ export function updateConversation(
     workspace_id?: string | null
   },
 ): Promise<ConversationSummary> {
-  return request(`/conversations/${id}`, {
+  return requestLocal(`/conversations/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   })
@@ -143,14 +147,14 @@ export function rewindConversation(
   id: string,
   turns = 1,
 ): Promise<{ query: string; removed: number }> {
-  return request(`/conversations/${id}/rewind`, {
+  return requestLocal(`/conversations/${id}/rewind`, {
     method: 'POST',
     body: JSON.stringify({ turns }),
   })
 }
 
 export function deleteConversation(id: string): Promise<void> {
-  return request(`/conversations/${id}`, { method: 'DELETE' })
+  return requestLocal(`/conversations/${id}`, { method: 'DELETE' })
 }
 
 // ------------------------------------------------------------------ 会话产物（v0.26）
@@ -176,7 +180,7 @@ export type ConversationArtifact = Omit<ArtifactOut, 'storage'> & {
  * 回看历史会话时以这份为准，否则刷新一下，卡片上的"已存进知识库"就退回去了。
  */
 export function listArtifacts(conversationId: string): Promise<{ items: ConversationArtifact[] }> {
-  return request(`/conversations/${conversationId}/artifacts`)
+  return requestLocal(`/conversations/${conversationId}/artifacts`)
 }
 
 // ------------------------------------------------------------------ 文件区（v0.26）
@@ -236,7 +240,7 @@ export function listFiles(
   const params = new URLSearchParams({ scope })
   if (path) params.set('path', path)
   const query = params.toString()
-  return request<FileListing>(
+  return requestLocal<FileListing>(
     `/conversations/${conversationId}/files${query ? `?${query}` : ''}`,
   ).then((raw) => ({
     mode: raw.mode,
@@ -259,7 +263,7 @@ export function listFiles(
 export function uploadFile(conversationId: string, file: File): Promise<ConversationFile> {
   const body = new FormData()
   body.append('file', file)
-  return request<ConversationFile>(`/conversations/${conversationId}/files`, {
+  return requestLocal<ConversationFile>(`/conversations/${conversationId}/files`, {
     method: 'POST',
     body,
   })
@@ -275,14 +279,21 @@ export function uploadFile(conversationId: string, file: File): Promise<Conversa
  * `disposition: 'inline'` 只是**请求**内联（PDF / 图片要它才能在页面里渲染），
  * 真正批不批由服务端按后缀复核——一份能带 `<script>` 的 SVG 内联在本站 origin 下
  * 就是存储型 XSS。所以这里传了也不算越权。
+ *
+ * 回来的 `url` 要过一遍 `localizeUrl`（M2 §4.3）：本机后端签的是**相对**地址
+ * （`/api/v1/...`），它在桌面壳里会落到 `app://localhost` 上、被壳转发去 NAS ✗，
+ * 而这份文件在本机对象存储里 —— 表现就是"预览打不开 / 下载 404"。
  */
-export function getFileUrl(
+export async function getFileUrl(
   conversationId: string,
   key: string,
   disposition: 'attachment' | 'inline' = 'attachment',
 ): Promise<{ url: string; expires_at: number; name: string }> {
   const params = new URLSearchParams({ key, disposition })
-  return request(`/conversations/${conversationId}/files/download-url?${params.toString()}`)
+  const signed = await requestLocal<{ url: string; expires_at: number; name: string }>(
+    `/conversations/${conversationId}/files/download-url?${params.toString()}`,
+  )
+  return { ...signed, url: await localizeUrl(signed.url) }
 }
 
 /** 下载：换一条链接，再用一个临时 `<a download>` 点它。 */
@@ -311,7 +322,7 @@ export function importWorkspaceFile(
   conversationId: string,
   path: string,
 ): Promise<ConversationFile> {
-  return request<ConversationFile>(`/conversations/${conversationId}/files/import`, {
+  return requestLocal<ConversationFile>(`/conversations/${conversationId}/files/import`, {
     method: 'POST',
     body: JSON.stringify({ path }),
   })
@@ -328,7 +339,7 @@ export function ingestArtifact(
   artifactId: string,
   knowledgeBaseId: string,
 ): Promise<ConversationArtifact> {
-  return request(`/conversations/${conversationId}/artifacts/${artifactId}/ingest`, {
+  return requestLocal(`/conversations/${conversationId}/artifacts/${artifactId}/ingest`, {
     method: 'POST',
     body: JSON.stringify({ knowledge_base_id: knowledgeBaseId }),
   })

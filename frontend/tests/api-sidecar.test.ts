@@ -59,21 +59,23 @@ describe('边车分派：判定只有一处', () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe(`${DEFAULT_SIDECAR_BASE}/health`)
   })
 
-  it('② 其余接口照旧走服务器（多一个都不行）', () => {
-    // 归边车的**只有**对话轮次这一个
+  it('② 对话轮次那条链之外的，一律不归它（多一个都不行）', () => {
+    // 归这条链的**只有**对话轮次这一个
     expect(isSidecarPath('/chat/stream')).toBe(true)
     expect(isSidecarPath('/chat/stream?x=1')).toBe(true)
 
-    // 下面这些**一条都不许**归边车 —— 账号与权威数据都在服务器
+    // 下面这些**一条都不许**归"对话轮次那条链"：要么是别的接口，
+    // 要么归**本机权威面**（M2 阶段 4 的 `LOCAL_PATHS` —— 那是另一套判定，
+    // 判据在 `tests/unit/api/sidecar.test.ts`：这几条如今直连**边车那台**的本机库）
     for (const path of [
       '/chat', // 非流式那条：响应形状不同，这一片不做
       '/chat/turns/conv_1/live', // 重连补发：边车没有会话事件日志
       '/chat/approvals/appr_1',
-      '/conversations',
+      '/conversations', // 本机权威面（会话在本机库里）
       '/auth/me',
       '/knowledge-bases',
-      '/memory',
-      '/settings',
+      '/memory', // 本机权威面（记忆本体本来就在 data_dir/memory）
+      '/settings', // 本机权威面（运行期配置表在本机库）
     ]) {
       expect(isSidecarPath(path), path).toBe(false)
       expect(baseForPath(path), path).toBe(API_BASE)

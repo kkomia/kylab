@@ -6,7 +6,9 @@
  */
 
 import type { AuthBootstrapStatus } from './auth'
-import { request } from './client'
+// 运行期配置表（`app_settings`）**在本机库**（M2 §4.2）→ 走 `requestLocal`；
+// 同一份里的 `/auth/status` 是**账号面**，仍然走服务器（`request`）。
+import { request, requestLocal } from './client'
 
 export interface SettingFieldOption {
   value: string
@@ -51,18 +53,18 @@ export interface TestConnectionResult {
 }
 
 export function getSettings(): Promise<SettingsView> {
-  return request('/settings')
+  return requestLocal('/settings')
 }
 
 export function updateSettings(
   values: { key: string; value: string }[],
 ): Promise<SettingsPatchResult> {
-  return request('/settings', { method: 'PATCH', body: JSON.stringify({ values }) })
+  return requestLocal('/settings', { method: 'PATCH', body: JSON.stringify({ values }) })
 }
 
 /** 连通性测试：embedding / mineru / paddleocr。刻意做得很轻，不消耗解析额度。 */
 export function testConnection(target: string): Promise<TestConnectionResult> {
-  return request(`/settings/test/${target}`, { method: 'POST' })
+  return requestLocal(`/settings/test/${target}`, { method: 'POST' })
 }
 
 /** `/auth/status` 的返回形状与登录引导状态同一个（定义在 `api/auth.ts`）。 */

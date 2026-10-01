@@ -16,6 +16,7 @@ import {
   authHeaders,
   handleUnauthorized,
   request,
+  requestLocal,
   requestUrl,
   type ApiErrorBody,
 } from './client'
@@ -1144,7 +1145,9 @@ export interface ContextUsage {
  */
 export async function getContextUsage(conversationId: string): Promise<ContextUsage> {
   const params = new URLSearchParams({ conversation_id: conversationId })
-  const raw = await request<components['schemas']['ContextUsageOut']>(
+  // `requestLocal`（M2 §4.2）：这条只读**本机**数据（按本机会话历史与提示词现算），
+  // 本机档在边车上薄重声明了它；服务器档那份实现一个字没改。
+  const raw = await requestLocal<components['schemas']['ContextUsageOut']>(
     `/chat/context-usage?${params.toString()}`,
   )
   return {

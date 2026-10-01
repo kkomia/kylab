@@ -9,7 +9,8 @@
  * 而 `next_run_at` 是带时区的时刻——前端直接 `new Date(...)` 显示即可。
  */
 
-import { request } from './client'
+// 定时任务的产物是**会话**（会话在本机，M2 §4.2）→ 全部走 `requestLocal`。
+import { requestLocal } from './client'
 
 export interface ScheduledTask {
   id: string
@@ -53,11 +54,11 @@ export interface ScheduledTaskPayload {
 }
 
 export function listScheduledTasks(): Promise<ScheduledTaskList> {
-  return request<ScheduledTaskList>('/scheduled-tasks')
+  return requestLocal<ScheduledTaskList>('/scheduled-tasks')
 }
 
 export function createScheduledTask(payload: ScheduledTaskPayload): Promise<ScheduledTask> {
-  return request<ScheduledTask>('/scheduled-tasks', {
+  return requestLocal<ScheduledTask>('/scheduled-tasks', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -67,7 +68,7 @@ export function updateScheduledTask(
   id: string,
   payload: Partial<ScheduledTaskPayload> & { enabled?: boolean },
 ): Promise<ScheduledTask> {
-  return request<ScheduledTask>(`/scheduled-tasks/${id}`, {
+  return requestLocal<ScheduledTask>(`/scheduled-tasks/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
@@ -75,12 +76,12 @@ export function updateScheduledTask(
 
 /** 删一条。**已经跑出来的会话不删**（那是用户问过的内容）。 */
 export function deleteScheduledTask(id: string): Promise<void> {
-  return request<void>(`/scheduled-tasks/${id}`, { method: 'DELETE' })
+  return requestLocal<void>(`/scheduled-tasks/${id}`, { method: 'DELETE' })
 }
 
 /** 立即跑一次：入队一次运行，**不动下次时间**。 */
 export function runScheduledTaskNow(id: string): Promise<{ task_id: string; detail: string }> {
-  return request<{ task_id: string; detail: string }>(`/scheduled-tasks/${id}/run`, {
+  return requestLocal<{ task_id: string; detail: string }>(`/scheduled-tasks/${id}/run`, {
     method: 'POST',
   })
 }

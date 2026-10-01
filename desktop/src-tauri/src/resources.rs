@@ -656,13 +656,24 @@ fn proxy(
         .timeout(std::time::Duration::from_secs(PROXY_TIMEOUT_SECONDS))
         .build();
 
-    // GET/POST 之外的动词不支持（前端的 API 只用这两种）
-    if method != "GET" && method != "POST" {
+    // **方法白名单**（M2 阶段 4 补的一处既有缺口）。
+    //
+    // 这一路转发的是**服务器面**（`/api/**` 打到 NAS）；M2 之后本机档那几个域
+    // （会话 / 笔记 / 设置 / 模型注册 / 工作区 / 定时任务 / MCP / 记忆）**直连
+    // `http://127.0.0.1:<port>`**，根本不经过这里（见 `frontend/src/api/sidecar.ts`
+    // 的 `LOCAL_PATHS` 与 `main.rs` 的 `sidecar_info`）。
+    //
+    // 原先只放 GET/POST（当时的判据是"前端的 API 只用这两种"），于是**服务器面**上
+    // 会话改名/删除、笔记增删改、设置保存、工作区改名、模型注册这些
+    // **PATCH / PUT / DELETE** 在壳里一路 405（`shell: 只转发 GET/POST`）。
+    // 放行 REST 那五个动词：OPTIONS/HEAD 由 WebView 与静态资源那几条路各管各的，
+    // TRACE/CONNECT 这类**永远不该出现**（页面不会发它们，转发它们只是多一条攻击面）。
+    if !matches!(method, "GET" | "POST" | "PATCH" | "PUT" | "DELETE") {
         return respond(
             StatusCode::METHOD_NOT_ALLOWED,
             "text/plain; charset=utf-8",
             "no-store",
-            format!("shell: 只转发 GET/POST，收到 {method}").into_bytes(),
+            format!("shell: 只转发 GET/POST/PATCH/PUT/DELETE，收到 {method}").into_bytes(),
         );
     }
     let mut request = agent.request(method, &url);
@@ -1785,6 +1796,48 @@ mod tests {
         let head = server.join().unwrap().to_lowercase();
         assert!(head.contains("x-kylab-device: dev-abc\r\n"), "{head}");
         assert!(head.contains("x-kylab-device-name: nas-pc\r\n"), "{head}");
+    }
+
+    /// **方法白名单**（M2 阶段 4 补的那处缺口）：REST 那五个动词放行，"别的"拦在壳里。
+    ///
+    /// 原先只放 GET/POST，于是"会话改名 / 删会话 / 改设置 / 增删笔记 / 绑模型"
+    /// 这些 **PATCH/PUT/DELETE** 在壳里一路 405（M2 §4.3 登记的既有缺口）。
+    /// 判据只有一个 `matches!`，所以这一条用例钉两件事：**放行的真的出了网**
+    /// （方法名原样过去）、**没放行的根本没出网**（405 的文案要说清是壳拦的）。
+    #[test]
+    fn the_proxy_forwards_the_five_rest_methods_and_refuses_the_rest() {
+        let root = temp_root("methods");
+        let (addr, server) = recording_server();
+        let origin = format!("http://{addr}");
+
+        // 真转一次（PATCH 带体）：抓到的请求行必须还是 PATCH，别被改写成 GET/POST
+        let response = handle(
+            &root,
+            &[],
+            Some(&origin),
+            None,
+            "PATCH",
+            "/api/v1/settings",
+            Some(br#"{"values":[]}"#),
+            &[],
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let head = server.join().unwrap();
+        assert!(head.starts_with("PATCH /api/v1/settings HTTP/1.1"), "{head}");
+
+        // 其余四个走同一条白名单。用一个**连不上**的地址判"有没有出门"：
+        // 放行的那几个会去连（502 = 转发失败），没放行的在壳里就被拦下（405）
+        let dead = "http://127.0.0.1:1";
+        for method in ["GET", "POST", "PUT", "DELETE"] {
+            let response = handle(&root, &[], Some(dead), None, method, "/api/v1/settings", None, &[]);
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{method} 该被放行");
+        }
+        for method in ["OPTIONS", "HEAD", "TRACE"] {
+            let response = handle(&root, &[], Some(dead), None, method, "/api/v1/settings", None, &[]);
+            assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{method} 不该被转发");
+            let body = String::from_utf8_lossy(response.body()).to_string();
+            assert!(body.contains("只转发"), "{body}");
+        }
     }
 
     /// 页面自己带了同名头（伪造"我是哪台电脑"）时**壳里那份说了算**：

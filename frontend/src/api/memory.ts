@@ -9,7 +9,8 @@
  * 因此这一层进出的都是完整 Markdown 字符串，不解析、不结构化。
  */
 
-import { request } from './client'
+// 记忆本体本来就在本机（`<data_dir>/memory`，M2 §4.2）→ 全部走 `requestLocal`。
+import { requestLocal } from './client'
 
 /** 文件分类，按它在工作区里的位置分（位置就是它的分层）。 */
 export type MemoryKind = 'core' | 'daily' | 'digest' | 'other'
@@ -126,7 +127,7 @@ export interface MemoryRemember {
 }
 
 export function getMemory(): Promise<MemoryOverview> {
-  return request<MemoryOverview>('/memory')
+  return requestLocal<MemoryOverview>('/memory')
 }
 
 /**
@@ -137,34 +138,34 @@ export function getMemory(): Promise<MemoryOverview> {
  * `#`、`?`、空格这类会截断 URL 的字符，那些要编码。
  */
 export function getMemoryFile(path: string): Promise<MemoryFileDetail> {
-  return request<MemoryFileDetail>(`/memory/files/${encodePath(path)}`)
+  return requestLocal<MemoryFileDetail>(`/memory/files/${encodePath(path)}`)
 }
 
 export function writeMemoryFile(path: string, content: string): Promise<MemoryFileDetail> {
-  return request<MemoryFileDetail>(`/memory/files/${encodePath(path)}`, {
+  return requestLocal<MemoryFileDetail>(`/memory/files/${encodePath(path)}`, {
     method: 'PUT',
     body: JSON.stringify({ content }),
   })
 }
 
 export function deleteMemoryFile(path: string): Promise<void> {
-  return request<void>(`/memory/files/${encodePath(path)}`, { method: 'DELETE' })
+  return requestLocal<void>(`/memory/files/${encodePath(path)}`, { method: 'DELETE' })
 }
 
 export function getMemoryGraph(): Promise<MemoryGraph> {
-  return request<MemoryGraph>('/memory/graph')
+  return requestLocal<MemoryGraph>('/memory/graph')
 }
 
 /** 在记忆里召回。**与知识库检索是两条路**，结果不合并。 */
 export function recallMemory(query: string, limit?: number): Promise<MemoryRecall> {
-  return request<MemoryRecall>('/memory/recall', {
+  return requestLocal<MemoryRecall>('/memory/recall', {
     method: 'POST',
     body: JSON.stringify({ query, limit: limit ?? null }),
   })
 }
 
 export function rememberMemory(content: string, tags: string[] = []): Promise<MemoryRemember> {
-  return request<MemoryRemember>('/memory/remember', {
+  return requestLocal<MemoryRemember>('/memory/remember', {
     method: 'POST',
     body: JSON.stringify({ content, tags }),
   })

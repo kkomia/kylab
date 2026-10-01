@@ -10,9 +10,16 @@
  *    **界面要显示它**（连着原因），否则用户会以为技能没装上。
  * 2. MCP 的凭据**只在写入时上行**，读出来只有 `secret_keys`（键名）。
  *    所以"改配置"时不要把读到的值回填进表单——那会把 key 写成一个掩码串。
+ *
+ * ## 两半的**数据主人不是同一台**（M2 阶段 4 起）
+ *
+ * **MCP 服务配置属于这台机器**（v0.3 §1："模型凭据走本机"同一档）→ `requestLocal`；
+ * **技能是磁盘上的 SKILL.md、由服务器那侧管**（本机档的白名单里没有 `/skills` ✗）
+ * → 仍然是 `request`。所以这份文件里两个 import 都在，别看着奇怪就统一成一个。
  */
 
-import { request } from './client'
+// MCP → 本机（`requestLocal`）；技能 → 服务器（`request`）
+import { request, requestLocal } from './client'
 
 // ------------------------------------------------------------------ 技能
 
@@ -107,11 +114,11 @@ export interface MCPServerPayload {
 }
 
 export function listMCPServers(): Promise<{ items: MCPServer[] }> {
-  return request<{ items: MCPServer[] }>('/mcp-servers')
+  return requestLocal<{ items: MCPServer[] }>('/mcp-servers')
 }
 
 export function createMCPServer(payload: MCPServerPayload): Promise<MCPServer> {
-  return request<MCPServer>('/mcp-servers', {
+  return requestLocal<MCPServer>('/mcp-servers', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -121,14 +128,14 @@ export function updateMCPServer(
   serverId: string,
   payload: Partial<MCPServerPayload> & { enabled?: boolean },
 ): Promise<MCPServer> {
-  return request<MCPServer>(`/mcp-servers/${serverId}`, {
+  return requestLocal<MCPServer>(`/mcp-servers/${serverId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
 }
 
 export function deleteMCPServer(serverId: string): Promise<void> {
-  return request<void>(`/mcp-servers/${serverId}`, { method: 'DELETE' })
+  return requestLocal<void>(`/mcp-servers/${serverId}`, { method: 'DELETE' })
 }
 
 /**
@@ -138,7 +145,7 @@ export function deleteMCPServer(serverId: string): Promise<void> {
  * 与 `detail` 里——这样界面能分清"连不上"与"没工具"，而不是只有一句"请求失败"。
  */
 export function probeMCPServer(serverId: string): Promise<MCPServer> {
-  return request<MCPServer>(`/mcp-servers/${serverId}/probe`, { method: 'POST' })
+  return requestLocal<MCPServer>(`/mcp-servers/${serverId}/probe`, { method: 'POST' })
 }
 
 /**
@@ -153,7 +160,7 @@ export function callMCPTool(
   args: Record<string, unknown>,
   approved = false,
 ): Promise<{ server_id: string; tool: string; text: string }> {
-  return request<{ server_id: string; tool: string; text: string }>(
+  return requestLocal<{ server_id: string; tool: string; text: string }>(
     `/mcp-servers/${serverId}/call`,
     { method: 'POST', body: JSON.stringify({ tool, arguments: args, approved }) },
   )
@@ -161,7 +168,7 @@ export function callMCPTool(
 
 /** 所有启用中服务的工具汇总（带限定名）。某个服务连不上会被后端口跳过。 */
 export function listAllMCPTools(): Promise<MCPTool[]> {
-  return request<MCPTool[]>('/mcp-servers/tools')
+  return requestLocal<MCPTool[]>('/mcp-servers/tools')
 }
 
 // ------------------------------------------------------------------ 技能源（v0.27）

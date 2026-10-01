@@ -6,7 +6,9 @@
  * 所以 `kb_ids` 不是可选装饰，新会话默认继承它（见后端 conversations.py）。
  */
 
-import { request } from './client'
+// 工作区是**这台机器**上的路径（M2 §4.2）→ 全部走 `requestLocal`：
+// 它列的是本机目录，打服务器那台问出来的路径在这台机器上没有意义。
+import { requestLocal } from './client'
 
 export interface Workspace {
   id: string
@@ -40,7 +42,7 @@ export interface WorkspacePayload {
  */
 export function listWorkspaces(archived = false): Promise<{ items: Workspace[] }> {
   const query = archived ? '?archived=true' : ''
-  return request<{ items: Workspace[] }>(`/workspaces${query}`)
+  return requestLocal<{ items: Workspace[] }>(`/workspaces${query}`)
 }
 
 /** 目录浏览里的一行：一个子目录，或一个"起点"。 */
@@ -99,7 +101,7 @@ export interface WorkspaceBrowse {
  */
 export function browseDirectories(path?: string): Promise<WorkspaceBrowse> {
   const query = path ? `?path=${encodeURIComponent(path)}` : ''
-  return request<WorkspaceBrowse>(`/workspaces/browse${query}`)
+  return requestLocal<WorkspaceBrowse>(`/workspaces/browse${query}`)
 }
 
 /**
@@ -112,7 +114,7 @@ export function browseDirectories(path?: string): Promise<WorkspaceBrowse> {
  * 两边同一份判定，所以不会"按钮亮着、其实这地方根本不归你建"。
  */
 export function createDirectory(parent: string, name: string): Promise<DirectoryEntry> {
-  return request<DirectoryEntry>('/workspaces/dirs', {
+  return requestLocal<DirectoryEntry>('/workspaces/dirs', {
     method: 'POST',
     body: JSON.stringify({ parent, name }),
   })
@@ -120,14 +122,14 @@ export function createDirectory(parent: string, name: string): Promise<Directory
 
 /** 给服务器上的目录改名（**只改名，不搬位置**；仍只在专用区域里——改的是别人的既有目录）。 */
 export function renameDirectory(path: string, name: string): Promise<DirectoryEntry> {
-  return request<DirectoryEntry>('/workspaces/dirs', {
+  return requestLocal<DirectoryEntry>('/workspaces/dirs', {
     method: 'PATCH',
     body: JSON.stringify({ path, name }),
   })
 }
 
 export function createWorkspace(payload: WorkspacePayload): Promise<Workspace> {
-  return request<Workspace>('/workspaces', {
+  return requestLocal<Workspace>('/workspaces', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -137,7 +139,7 @@ export function updateWorkspace(
   workspaceId: string,
   payload: Partial<WorkspacePayload>,
 ): Promise<Workspace> {
-  return request<Workspace>(`/workspaces/${workspaceId}`, {
+  return requestLocal<Workspace>(`/workspaces/${workspaceId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
@@ -145,5 +147,5 @@ export function updateWorkspace(
 
 /** 删工作区。**里面的会话不会被删**，它们退回"未归档"那一栏。 */
 export function deleteWorkspace(workspaceId: string): Promise<void> {
-  return request<void>(`/workspaces/${workspaceId}`, { method: 'DELETE' })
+  return requestLocal<void>(`/workspaces/${workspaceId}`, { method: 'DELETE' })
 }

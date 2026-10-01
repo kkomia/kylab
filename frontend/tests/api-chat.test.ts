@@ -11,7 +11,7 @@
  *
  * 协议用例不看显示节流：`smooth: false` 关掉它（节流本身由 pacer 的用例覆盖）。
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   chatOnce,
@@ -27,7 +27,12 @@ import {
   type ChatSource,
 } from '@/api/chat'
 import { clearSessionToken, setSessionToken } from '@/lib/session'
-import { DEFAULT_SIDECAR_BASE, resetSidecarProbe, setSidecarTurnsForTest } from '@/api/sidecar'
+import {
+  DEFAULT_SIDECAR_BASE,
+  resetSidecarProbe,
+  setLocalDataForTest,
+  setSidecarTurnsForTest,
+} from '@/api/sidecar'
 
 /**
  * 协议用例不看显示节流：关掉它，事件立即派发，断言才好写。
@@ -72,6 +77,8 @@ const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve,
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  // 本机数据面的开关是模块级的：不还原的话，"上下文用量"那一组设的值会漏给后面的用例
+  setLocalDataForTest(undefined)
 })
 
 describe('chatStream', () => {
@@ -831,6 +838,12 @@ describe('斜杠命令（P1-2）', () => {
 })
 
 describe('上下文用量（P1-3 的仪表）', () => {
+  // 这一组钉的是 wire 形状（URL / 响应解析），与"这份数据在哪台"无关：
+  // 本机数据面**显式关掉**（`VITE_LOCAL_DATA=0` 那条逃生门）→ `requestLocal` 退回服务器，
+  // 路径就还是 `/api/v1/chat/context-usage?...`。本机档那条（真实基址、先探 `/health`、
+  // 拿不到就**不回退**）由 `tests/unit/api/sidecar.test.ts` 钉
+  beforeEach(() => setLocalDataForTest(false))
+
   it('按来源分解：分解项与总数都取接口给的，一个都不自己算', async () => {
     let url = ''
     vi.stubGlobal(

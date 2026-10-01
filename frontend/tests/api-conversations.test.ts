@@ -4,9 +4,10 @@
  *
  * 新前端的其它用例都把这层 mock 掉了，这一份是**真发请求、真解析响应**的那条链路。
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createConversation, importWorkspaceFile, listFiles } from '@/api/conversations'
+import { setLocalDataForTest } from '@/api/sidecar'
 
 function ok(): Response {
   return new Response(JSON.stringify({ id: 'conv_1' }), {
@@ -25,8 +26,19 @@ function lastUrl(): string {
   return String(vi.mocked(fetch).mock.calls.at(-1)?.[0] ?? '')
 }
 
+/**
+ * 这一份钉的是 **wire 形状**（URL / 方法 / 请求体 / 响应解析），与"这份数据在哪台"无关：
+ * 把本机数据面**显式关掉**（`VITE_LOCAL_DATA=0` 那条逃生门），`requestLocal` 就退回
+ * 服务器那条链，路径仍然是 `/api/v1/...` —— 形状一字不变，下面这些断言才继续说问题。
+ *
+ * 本机档那条（真实基址、`/health` 先探一次、拿不到就**不回退**）由
+ * `tests/unit/api/sidecar.test.ts` 钉 —— 判据在那边。
+ */
+beforeEach(() => setLocalDataForTest(false))
+
 afterEach(() => {
   vi.unstubAllGlobals()
+  setLocalDataForTest(undefined)
 })
 
 describe('createConversation', () => {

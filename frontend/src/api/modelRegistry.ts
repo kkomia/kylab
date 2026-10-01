@@ -8,7 +8,8 @@
  * 改名字就只传名字，改密钥才传 `api_key`。
  */
 
-import { request } from './client'
+// 模型凭据与注册表落**本机**（v0.3 §1："模型凭据走本机"）→ 全部走 `requestLocal`。
+import { requestLocal } from './client'
 
 export interface Provider {
   id: string
@@ -80,7 +81,7 @@ export interface Registry {
 }
 
 export function getRegistry(): Promise<Registry> {
-  return request('/model-registry')
+  return requestLocal('/model-registry')
 }
 
 export interface ProviderInput {
@@ -92,7 +93,7 @@ export interface ProviderInput {
 }
 
 export function createProvider(payload: ProviderInput): Promise<Provider> {
-  return request('/model-registry/providers', {
+  return requestLocal('/model-registry/providers', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -109,14 +110,14 @@ export function updateProvider(
   providerId: string,
   payload: Partial<ProviderInput>,
 ): Promise<Provider> {
-  return request(`/model-registry/providers/${providerId}`, {
+  return requestLocal(`/model-registry/providers/${providerId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
 }
 
 export function deleteProvider(providerId: string): Promise<void> {
-  return request(`/model-registry/providers/${providerId}`, { method: 'DELETE' })
+  return requestLocal(`/model-registry/providers/${providerId}`, { method: 'DELETE' })
 }
 
 export interface ModelInput {
@@ -129,7 +130,7 @@ export interface ModelInput {
 }
 
 export function registerModel(payload: ModelInput): Promise<RegisteredModel> {
-  return request('/model-registry/models', {
+  return requestLocal('/model-registry/models', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -139,26 +140,26 @@ export function updateModel(
   modelPk: string,
   payload: Partial<Omit<ModelInput, 'provider_id'>>,
 ): Promise<RegisteredModel> {
-  return request(`/model-registry/models/${modelPk}`, {
+  return requestLocal(`/model-registry/models/${modelPk}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
 }
 
 export function deleteModel(modelPk: string): Promise<void> {
-  return request(`/model-registry/models/${modelPk}`, { method: 'DELETE' })
+  return requestLocal(`/model-registry/models/${modelPk}`, { method: 'DELETE' })
 }
 
 /** 绑定用途到模型；`modelPk` 传 `null` 解绑（回退到设置页那套字段）。 */
 export function bindSlot(slot: string, modelPk: string | null): Promise<Slot> {
-  return request(`/model-registry/slots/${slot}`, {
+  return requestLocal(`/model-registry/slots/${slot}`, {
     method: 'PUT',
     body: JSON.stringify({ model_pk: modelPk }),
   })
 }
 
 export function testSlot(slot: string): Promise<{ ok: boolean; detail: string }> {
-  return request(`/model-registry/slots/${slot}/test`, { method: 'POST' })
+  return requestLocal(`/model-registry/slots/${slot}/test`, { method: 'POST' })
 }
 
 /**
@@ -166,7 +167,7 @@ export function testSlot(slot: string): Promise<{ ok: boolean; detail: string }>
  * 只验"地址对不对、凭据有没有效"——注册环节最会填错的两件事。
  */
 export function testProvider(providerId: string): Promise<{ ok: boolean; detail: string }> {
-  return request(`/model-registry/providers/${providerId}/test`, { method: 'POST' })
+  return requestLocal(`/model-registry/providers/${providerId}/test`, { method: 'POST' })
 }
 
 export interface AvailableModel {
@@ -186,5 +187,5 @@ export interface AvailableModels {
  * "选哪一个"才是用户的决定。探测不到时返回空列表而非报错——手写输入这条出路一直在。
  */
 export function listAvailableModels(providerId: string): Promise<AvailableModels> {
-  return request(`/model-registry/providers/${providerId}/available-models`)
+  return requestLocal(`/model-registry/providers/${providerId}/available-models`)
 }

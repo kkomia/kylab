@@ -6,6 +6,8 @@
 import { operatorHeaders } from '@/lib/operator'
 import { clearSessionToken, requestRelogin, sessionToken } from '@/lib/session'
 
+import { LocalUnavailableError, resolveLocalBase } from './sidecar'
+
 export const API_BASE = '/api/v1'
 
 export interface ApiErrorBody {
@@ -123,21 +125,81 @@ export async function requestUrl<T>(
 }
 
 /**
+ * **本机权威面**的请求（M2 阶段 4）：会话 / 笔记 / 设置 / 模型注册 / 工作区 / 定时任务 /
+ * MCP / 记忆 这几块数据的**主人在本机**（库在 `%APPDATA%\com.kylab.desktop\kylab.db`），
+ * 所以它们直连本机边车，不再绕道 NAS。
+ *
+ * 与 `request()` 的分工只有一条：`request()` 恒打服务器（`API_BASE`），
+ * 本函数打哪台由 `sidecar.ts::resolveLocalBase` 判（前缀表在那边，判定只有那一处）。
+ *
+ * **不做"全局把 `request()` 的基址换掉"** ✗：那会让几十个服务器调用点一起变，
+ * 而其中一半（账号 / 知识库 / 技能 / 文档……）的数据本来就在服务器上 ✓。
+ */
+export async function requestLocal<T>(
+  path: string,
+  init?: RequestInit,
+  options: RequestOptions = {},
+): Promise<T> {
+  const base = await resolveLocalBase(path)
+  try {
+    return await requestUrl<T>(`${base}${path}`, init, options)
+  } catch (error) {
+    asLocalFailure(error)
+  }
+}
+
+/**
+ * 连接层的失败也要如实报 ✓ ——边车在那一次请求之前倒了的话，`fetch` 抛的是 `TypeError`
+ * （不是 HTTP 状态码），照原样抛出去用户看到的是浏览器黑话（"Failed to fetch"），
+ * 而这正是"本机后端未启动"那条纪律要盖住的情形 ✓。
+ *
+ * 后端**回了状态码**的错照旧原样抛 ✗（含 401）：那是这条请求自己的问题，
+ * 说成"后端没起来"会把排障方向带跑偏。
+ */
+function asLocalFailure(error: unknown): never {
+  if (error instanceof TypeError) throw new LocalUnavailableError(error.message)
+  throw error
+}
+
+/**
  * 上传文件。
  *
  * 单独一个函数而不是复用 ``request``：上传必须让浏览器自己带
  * ``multipart/form-data; boundary=...``，手写 Content-Type 会把 boundary 弄丢，
  * 后端直接解析失败。
+ *
+ * `base` 由调用方给（`upload` = 服务器、`uploadLocal` = 本机权威面）：
+ * **一处实现两条出路**，免得本机那份再抄一遍 multipart 的规矩。
  */
-export async function upload<T>(path: string, file: File): Promise<T> {
+async function uploadTo<T>(base: string, path: string, file: File): Promise<T> {
   const form = new FormData()
   form.append('file', file)
   return unwrap<T>(
-    await fetch(`${API_BASE}${path}`, {
+    await fetch(`${base}${path}`, {
       method: 'POST',
       body: form,
       headers: authHeaders(),
     }),
     {},
   )
+}
+
+/** 上传到**服务器**（文档 / 技能 / 头像这些本来就归服务器的）。 */
+export async function upload<T>(path: string, file: File): Promise<T> {
+  return uploadTo<T>(API_BASE, path, file)
+}
+
+/**
+ * 上传到**本机权威面**（笔记配图：笔记本身在本机库里，图也得落在本机的对象存储上）。
+ *
+ * 与 `requestLocal` 同一套选址（含两条回退纪律），只是不能复用 `requestUrl`
+ * ——multipart 的 Content-Type 必须让浏览器自己写（见 `uploadTo`）。
+ */
+export async function uploadLocal<T>(path: string, file: File): Promise<T> {
+  const base = await resolveLocalBase(path)
+  try {
+    return await uploadTo<T>(base, path, file)
+  } catch (error) {
+    asLocalFailure(error)
+  }
 }

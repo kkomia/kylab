@@ -10,7 +10,10 @@
  * `NotesService.move_note`。
  */
 
-import { request, upload } from './client'
+// 笔记落**本机库**（M2 §4.2）：正文、文件夹、标签、配图都在这台机器上，
+// 所以这一份全部走 `requestLocal` / `uploadLocal`；配图地址再过一遍 `localizeUrl`。
+import { requestLocal, uploadLocal } from './client'
+import { localizeUrl } from './sidecar'
 
 export type NoteSourceKind = 'manual' | 'chat' | 'clip'
 
@@ -94,52 +97,55 @@ export function listNotes(
   if (options.limit) params.set('limit', String(options.limit))
   if (options.offset) params.set('offset', String(options.offset))
   const suffix = params.toString()
-  return request<NoteList>(`/notes${suffix ? `?${suffix}` : ''}`)
+  return requestLocal<NoteList>(`/notes${suffix ? `?${suffix}` : ''}`)
 }
 
 export function getNote(noteId: string): Promise<Note> {
-  return request<Note>(`/notes/${noteId}`)
+  return requestLocal<Note>(`/notes/${noteId}`)
 }
 
 export function createNote(payload: NotePayload): Promise<Note> {
-  return request<Note>('/notes', { method: 'POST', body: JSON.stringify(payload) })
+  return requestLocal<Note>('/notes', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function updateNote(noteId: string, payload: NoteUpdate): Promise<Note> {
-  return request<Note>(`/notes/${noteId}`, { method: 'PATCH', body: JSON.stringify(payload) })
+  return requestLocal<Note>(`/notes/${noteId}`, { method: 'PATCH', body: JSON.stringify(payload) })
 }
 
 /** 把笔记移进某个文件夹；`folderId` 传 null = 移回未归档。 */
 export function moveNote(noteId: string, folderId: string | null): Promise<Note> {
-  return request<Note>(`/notes/${noteId}/folder`, {
+  return requestLocal<Note>(`/notes/${noteId}/folder`, {
     method: 'PATCH',
     body: JSON.stringify({ folder_id: folderId }),
   })
 }
 
 export function deleteNote(noteId: string): Promise<void> {
-  return request<void>(`/notes/${noteId}`, { method: 'DELETE' })
+  return requestLocal<void>(`/notes/${noteId}`, { method: 'DELETE' })
 }
 
 export function listNoteTags(): Promise<{ items: NoteTag[] }> {
-  return request<{ items: NoteTag[] }>('/notes/tags')
+  return requestLocal<{ items: NoteTag[] }>('/notes/tags')
 }
 
 /* ------------------------------------------------------------------ 文件夹（v14） */
 
 export function listNoteFolders(): Promise<NoteFolderList> {
-  return request<NoteFolderList>('/notes/folders')
+  return requestLocal<NoteFolderList>('/notes/folders')
 }
 
 export function createNoteFolder(payload: {
   name: string
   parent_id?: string | null
 }): Promise<NoteFolder> {
-  return request<NoteFolder>('/notes/folders', { method: 'POST', body: JSON.stringify(payload) })
+  return requestLocal<NoteFolder>('/notes/folders', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function renameNoteFolder(folderId: string, name: string): Promise<NoteFolder> {
-  return request<NoteFolder>(`/notes/folders/${folderId}`, {
+  return requestLocal<NoteFolder>(`/notes/folders/${folderId}`, {
     method: 'PATCH',
     body: JSON.stringify({ name }),
   })
@@ -147,7 +153,7 @@ export function renameNoteFolder(folderId: string, name: string): Promise<NoteFo
 
 /** 换父级：`parentId` 传 null = 挪回根级。 */
 export function moveNoteFolder(folderId: string, parentId: string | null): Promise<NoteFolder> {
-  return request<NoteFolder>(`/notes/folders/${folderId}/parent`, {
+  return requestLocal<NoteFolder>(`/notes/folders/${folderId}/parent`, {
     method: 'PATCH',
     body: JSON.stringify({ parent_id: parentId }),
   })
@@ -155,12 +161,12 @@ export function moveNoteFolder(folderId: string, parentId: string | null): Promi
 
 /** 删文件夹：里面的子文件夹一起删，笔记回到未归档（后端保证不删笔记）。 */
 export function deleteNoteFolder(folderId: string): Promise<void> {
-  return request<void>(`/notes/folders/${folderId}`, { method: 'DELETE' })
+  return requestLocal<void>(`/notes/folders/${folderId}`, { method: 'DELETE' })
 }
 
 /** 把笔记作为 Markdown 文档加入知识库，返回回填了 `doc_id`/`kb_id` 的笔记。 */
 export function attachNote(noteId: string, kbId: string): Promise<Note> {
-  return request<Note>(`/notes/${noteId}/attach`, {
+  return requestLocal<Note>(`/notes/${noteId}/attach`, {
     method: 'POST',
     body: JSON.stringify({ kb_id: kbId }),
   })
@@ -178,20 +184,32 @@ export function aiTransform(
   action: NoteAiAction,
   modelPk?: string | null,
 ): Promise<{ content_md: string }> {
-  return request<{ content_md: string }>(`/notes/${noteId}/ai`, {
+  return requestLocal<{ content_md: string }>(`/notes/${noteId}/ai`, {
     method: 'POST',
     body: JSON.stringify({ action, model_pk: modelPk ?? null }),
   })
 }
 
 export interface NoteImage {
-  /** 带签名的相对地址，可直接放进 `<img src>`（图片标签带不了鉴权头）。 */
+  /**
+   * 可直接放进 `<img src>` 的地址（图片标签带不了鉴权头，所以授权编码在链接里）。
+   *
+   * **本机档下它是绝对地址**（贴着本机边车那个基址）：正文里这张图是要长期显示的
+   * （签名有效期 10 年，见后端 `IMAGE_URL_TTL_SECONDS`），而相对地址在桌面壳里
+   * 会落到 `app://localhost`、被壳转发去 NAS ✗ —— 那份图在本机库里。
+   */
   url: string
   name: string
   alt: string
 }
 
-/** 上传一张笔记配图，返回可内联显示的地址。 */
-export function uploadNoteImage(noteId: string, file: File): Promise<NoteImage> {
-  return upload<NoteImage>(`/notes/${noteId}/images`, file)
+/**
+ * 上传一张笔记配图，返回可内联显示的地址。
+ *
+ * 回来的 `url` 要过一遍 `localizeUrl`（理由见 `NoteImage.url`）——它是**贴进正文**的
+ * 地址，写错了就是"图裂了"，而且正文里留下的还是那个错地址。
+ */
+export async function uploadNoteImage(noteId: string, file: File): Promise<NoteImage> {
+  const image = await uploadLocal<NoteImage>(`/notes/${noteId}/images`, file)
+  return { ...image, url: await localizeUrl(image.url) }
 }

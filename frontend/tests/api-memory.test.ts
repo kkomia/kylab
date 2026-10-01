@@ -4,9 +4,10 @@
  *
  * 新前端的其它用例都把这层 mock 掉了，这一份是**真发请求、真解析响应**的那条链路。
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getMemoryFile, getMemoryGraph, writeMemoryFile } from '@/api/memory'
+import { setLocalDataForTest } from '@/api/sidecar'
 
 /** 造一个返回固定 JSON 的响应。 */
 function jsonResponse(body: unknown, status = 200): Response {
@@ -16,8 +17,19 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+/**
+ * 这一份钉的是 **wire 形状**（URL / 路径编码 / 响应解析），与"这份数据在哪台"无关：
+ * 把本机数据面**显式关掉**（`VITE_LOCAL_DATA=0` 那条逃生门），`requestLocal` 就退回
+ * 服务器那条链，路径仍然是 `/api/v1/...` —— 形状一字不变，下面这些断言才继续说问题。
+ *
+ * 本机档那条（真实基址、`/health` 先探一次、拿不到就**不回退**）由
+ * `tests/unit/api/sidecar.test.ts` 钉 —— 判据在那边。
+ */
+beforeEach(() => setLocalDataForTest(false))
+
 afterEach(() => {
   vi.unstubAllGlobals()
+  setLocalDataForTest(undefined)
 })
 
 /**
