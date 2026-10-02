@@ -5,9 +5,13 @@
 
 - ``postgres_impl/`` —— 元数据 + 向量(pgvector) + 全文(tsvector)，**服务器档**的主实现；
 - ``sqlite_impl/``   —— 元数据（会话/笔记/设置/工作区/…），**本机档**实现，
-  落 ``<data_dir>/kylab.db``（M2「会话落本机」阶段 1）。另含**本机独有**的
-  旧会话导入台账（``imports`` / ``import_items``，阶段 5）：那两个方法族不在
-  ``MetaStore`` 上（服务器档没有这两张表），登记在 ``LOCAL_LEDGER_METHODS``；
+  落 ``<data_dir>/kylab.db``（M2「会话落本机」阶段 1）。另含**四块本机独有**的
+  方法族（都不在 ``MetaStore`` 上——服务器档要么没有那两张表、要么没有那条动作，
+  各自登记在 ``sqlite_impl`` 的同名常量里）：旧会话导入台账
+  （``imports`` / ``import_items``，M2，``LOCAL_LEDGER_METHODS``）、知识库元数据快照
+  （``kb_meta_cache``，M4，``LOCAL_CACHE_METHODS``）、快照打包与读回
+  （M5 阶段 2，``LOCAL_SNAPSHOT_METHODS``）、备份待传队列
+  （``backup_snapshots``，M5 阶段 3，``LOCAL_BACKUP_METHODS``）；
 - ``split_impl/``    —— 按域分流的 ``RouterMetaStore``：本机域走 sqlite_impl，
   知识库域转给 KB 侧实现（M2 阶段 2）；
 - ``local_impl/``    —— 本地文件系统对象存储；

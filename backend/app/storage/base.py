@@ -65,11 +65,16 @@ from app.models.enums import (
 __all__ = [
     "ARTIFACT_IN_OBJECTS",
     "ARTIFACT_IN_WORKSPACE",
+    "BACKUP_SNAPSHOT_KINDS",
+    "BACKUP_SNAPSHOT_STATES",
+    "BACKUP_UNFINISHED_STATES",
     "IMPORT_OUTCOMES",
     "IMPORT_STATES",
     "IMPORT_UNFINISHED_STATES",
     "SNAPSHOT_EXCLUDED_SETTING_PREFIXES",
     "ApiKeyRecord",
+    "BackupSnapshotRecord",
+    "BackupSnapshots",
     "ChunkRecord",
     "ConversationArtifactRecord",
     "ConversationTransfer",
@@ -179,6 +184,25 @@ class StoreBundle:
     设置）。分开的理由不是"两个对象"，而是**两个调用方要的东西不同**：打包那一层只该
     看见"给我一份擦洗干净的副本"，而阶段 5 的按点恢复只该看见"这份快照里有什么"。
     两份面都由 ``SqliteMetaStore`` 满足（SQLite 方言只许住在 ``sqlite_impl/``）。
+    """
+
+    backup_queue: BackupSnapshots | None = None
+    """备份的**待传队列**（M5 阶段 3）：本机档才有，服务器档恒为 ``None``。
+
+    **与前两块（``ledger`` / ``kb_cache``）和上一块（``snapshot``）同一条纪律、同一套
+    理由**：``backup_snapshots`` 是**本机独有的一张表**——服务器档自己就是备份的目的地，
+    它没有"把一份快照排队传出去"这条动作（NAS 侧那一半是**收包**：``api/v1/backup.py``
+    的七条端点，与这张表是两回事）。所以它既不进 ``repositories.py`` 的 24 个域
+    （那里的每个方法都必须在 ``MetaStore`` 上存在），也不进 ``LOCAL_METHODS``（那是
+    "本机域 / KB 域"的划分：队列既不是本机域的读写，也不是 KB 域的东西）。它在
+    ``sqlite_impl.LOCAL_BACKUP_METHODS`` 单独登记，装配点见
+    ``core/storage.py::_build_local_stores``（与 ``meta`` / ``ledger`` / ``kb_cache`` /
+    ``snapshot`` 是**同一个**实例：写锁是进程内一把，那条纪律是对着 ``Database`` 说的）。
+
+    **它与 ``snapshot`` 是两个字段、两件事**（名字上刻意分开）：``snapshot`` 对着
+    "打一份快照"，``backup_queue`` 对着"把那一份传出去"。服务层那两层的分工也因此是
+    一条直线：``BackupSnapshotService``（打包）把结果交给 ``BackupQueueService``（排队）,
+    后者只在拿到 ``BackupSnapshots`` 时才存在——本机档配上它、服务器档是 ``None``。
     """
 
     # ---- 按域切开的窄视图（v0.2，见 storage/repositories.py）----
@@ -3185,6 +3209,187 @@ class SnapshotSource(Protocol):
         版本不认识就抛 ``SnapshotFormatError``（``schema_version`` 高于本机识别的上限
         → 拒绝，照 ``schema.py`` 那条"不降级"的纪律）：更省事的做法是"只读我认识的那几列"，
         那正是"猜着读"。
+        """
+        ...
+
+
+# ---------------------------------------------------- 备份快照待传队列（本机档独有）
+#
+# 第四块**只属于本机档**的存储契约（M5 阶段 3，方案 §3.1 / §3.2 / §3.3）。它住在这里的
+# 理由与前一块（快照打包、导入台账、知识库快照）一模一样：``services/`` 只许见
+# ``app.storage.base``（工程规范 §3.3 的 L2），而"断网时先把要传的东西排队、联网再补传"
+# 这件事**只有本机档有**（服务器档自己就是那份备份的目的地，没有"往别处传"这条动作）。
+# 登记点见 ``sqlite_impl.LOCAL_BACKUP_METHODS`` 与 ``StoreBundle.backup_queue``。
+#
+# **它为什么是库里一张表、不是目录**（方案 §3.1 的四条，逐条都是这一块的形状理由）：
+#
+# 1. 队列项要有状态机 / 尝试次数 / 下次可试时间 / 失败原因——目录名表达不了这些；
+# 2. "断网入队、联网补传"要能**跨重启继续**（进程被杀、机器重启都在"断网"这一档里），
+#    而这份持久性只有库有；
+# 3. 幂等判据是**内容哈希**（``sha256``），它得与那一行一起落库，重试才认得出"还是这一份"；
+# 4. 与 M2 的 ``imports`` / ``import_items`` 同一套形态、同一个库、同一把写锁——
+#    两台机器上的两条"后台补做"的链，不该有两种持久化形状。
+#
+# 它与 ``LocalSnapshotArchiver`` 是**两件事、两个字段**（阶段 2 落地后特意分开命名）：
+# 归档器对着"打一份快照"，这张表对着"把那一份传出去"。名字撞在一起的话，
+# 下一个读代码的人要在两处猜哪个是哪个。
+
+BACKUP_SNAPSHOT_STATES: frozenset[str] = frozenset(
+    {"pending", "uploading", "uploaded", "failed", "discarded"}
+)
+"""``backup_snapshots.state`` 的词表（与 DDL 的 ``CHECK`` 同一个集合）。
+
+五档的含义就是状态机本身：``pending`` 等着传；``uploading`` 正在传（**进程被杀会留下
+这一档**，启动时复位回 ``pending``，照 M2"未跑完的批次可续"同一句口径）；``uploaded``
+传完了（本地那份包已经删掉）；``failed`` 传过但失败（退避之后再试，**永不放弃**）；
+``discarded`` 本地队列上限到了被丢掉（"如实报，不静默"，见 ``BACKUP_UNFINISHED_STATES``）。
+"""
+
+BACKUP_UNFINISHED_STATES: tuple[str, ...] = ("pending", "uploading", "failed")
+"""**还没备上去**的那三档（界面那句"有 N 份没备上去"就是数它）。
+
+``uploaded`` 与 ``discarded`` 都不在里面：前者已经备上去了、后者已经如实报过它没备成。
+按"三档"而不是"非终态"写出来，是因为将来加状态时**这一处必须重新想一遍**
+（例如加 ``paused`` 时，它算不算"没备上去"是一个产品判断，不该由 ``not in (…终态…)``
+悄悄替你答）。
+"""
+
+BACKUP_SNAPSHOT_KINDS: frozenset[str] = frozenset({"manual", "auto", "pre_restore"})
+"""``backup_snapshots.kind`` 的词表（与 DDL 的 ``CHECK`` 同一个集合）。
+
+与 ``services/backup_snapshot.py`` 的 ``SNAPSHOT_KINDS`` 是**同一份词表的两处写法**
+（存储层的 CHECK 与打包器写的那个值），用例机械核对两边一致——两处各漂各的，
+会在"一种快照类型悄悄进不了队"这种地方露出来。
+
+``pre_restore`` 那一档**只落本机、不入这张表**（方案 §3.2：恢复前那一份是"误覆盖"的
+第一道兜底，不是要传上去的备份）——它在词表里是因为 manifest 的 ``kind`` 有它。
+"""
+
+
+@dataclass(slots=True)
+class BackupSnapshotRecord:
+    """``backup_snapshots`` 的一行：**一份已经打好、正等着传出去的快照**。
+
+    它是"打包器"与"补传队列"之间那份交接单，也是跨重启继续的唯一依据——所以它的字段
+    必须让补传那一步**不依赖任何内存里的对象**：包在哪（``blob_path``）、多大
+    （``blob_bytes``）、声明的摘要是什么（``sha256``）、清单原文是什么
+    （``manifest_json``）全在行上。
+
+    ``id`` 是内容寻址的（``<device_id>-<时刻>-<快照体摘要前 8 位>``，方案 §1.2），
+    所以同一份内容重放不会造出第二行——``put_backup_snapshot`` 是**覆盖写**
+    （点两次「立即备份」不该让第二次抛异常，与 NAS 侧"同内容 200 no-op"同一条口径）。
+
+    ``blob_path`` 在 ``discarded`` 之后仍然指着那份（已经被删掉的）包：它是"这一份当时
+    是什么、后来没备成"的记录，而不是"现在还能读到它"的承诺——判断能不能读，看 ``state``。
+    """
+
+    id: str
+    created_at: datetime
+    kind: str
+    state: str
+    sha256: str
+    blob_path: str = ""
+    blob_bytes: int = 0
+    manifest_json: str = "{}"
+    attempts: int = 0
+    next_attempt_at: datetime | None = None
+    """下一次可以试的时刻（UTC）。**``None`` = 立即到期**（刚入队、或从 ``uploading``
+    复位回来的那一行）——而不是"永远不再试"：终态由 ``state`` 表达，不由这一列表达。
+    """
+    last_error: str = ""
+    """最近一次失败的原因（成功一次就清空）。``discarded`` 那一档写的是上限那条理由。"""
+    uploaded_at: datetime | None = None
+    remote_device_id: str | None = None
+    """远端确认下来的坐标（服务端那一对）。**上传者没报就是 ``None``**——本机不编一个。"""
+    remote_snapshot_id: str | None = None
+
+
+@runtime_checkable
+class BackupSnapshots(Protocol):
+    """本机档独有的**备份待传队列**（``backup_snapshots`` 一张表）。
+
+    ``runtime_checkable`` 与 ``ImportLedger`` / ``KbMetaCache`` / 那两份快照协议同一个
+    理由：结构化类型下不继承也必须满足，否则这份协议只是文档——用例要能一句话核对
+    "装上去的那个实现真的满足它"。
+
+    **五个方法就是全部**（名字定案）：写一行 / 读一行 / 列一批 / 推一步状态 / 复位半截。
+    没有"删除行"方法：队列是**如实的历史**（传成的、丢弃的、失败的都留着），
+    删它们没有任何产品动作要对它——要给用户看的正是"哪几份没备上去、为什么"。
+    """
+
+    def put_backup_snapshot(self, record: BackupSnapshotRecord) -> None:
+        """整行写入；**同 id 覆盖**（不是"撞了报错"）。
+
+        同 id = 同一份内容（内容寻址）。所以覆盖写要表达的是"这份又要传一次"，
+        而不是"两件事撞车了"：手动点两次「立即备份」、或打包器与队列对同一份包各登记
+        一次，都不该让用户看到一个 ``IntegrityError``。``created_at`` 以 id 里那个时刻
+        为准（覆盖时不改它——id 与它必须是同一件事）。
+        """
+        ...
+
+    def get_backup_snapshot(self, snapshot_id: str) -> BackupSnapshotRecord | None:
+        """取一行（没有就 ``None``）。队列那一层用它回"我刚入的那一份现在什么状态"。"""
+        ...
+
+    def list_backup_snapshots(
+        self,
+        *,
+        states: Sequence[str] | None = None,
+        due_before: datetime | None = None,
+        newest_first: bool = False,
+        limit: int | None = 50,
+    ) -> list[BackupSnapshotRecord]:
+        """列一批。两种读形状（各有一条索引对着它）：
+
+        - **队列**（补传那一层）：``states`` 给"还等着传的那几档" + ``due_before=now``，
+          默认**最旧的在前**（先来先传：队列就该按到达顺序排空），只取 ``limit`` 条；
+        - **最近几份**（界面上的队列视图）：``newest_first=True``，新的在前。
+
+        ``due_before`` 的判据是 ``next_attempt_at IS NULL OR next_attempt_at <= due_before``
+        ——``None`` 那一档按"立即到期"算（见 ``BackupSnapshotRecord.next_attempt_at``）。
+        ``limit=None`` = 不设上限（报数那一读要用它，不给它就只能"取前 N 条再假装是全部"）。
+        """
+        ...
+
+    def mark_backup_snapshot(
+        self,
+        snapshot_id: str,
+        state: str,
+        *,
+        last_error: str | None = None,
+        bump_attempts: bool = False,
+        next_attempt_at: datetime | None = None,
+        clear_next_attempt: bool = False,
+        uploaded_at: datetime | None = None,
+        remote_device_id: str | None = None,
+        remote_snapshot_id: str | None = None,
+    ) -> None:
+        """推进一步状态（一次 UPDATE，**不做读-改-写**）。
+
+        参数分三类，各自的缺省含义不一样（这是这一份签名唯一的难点，写在明处）：
+
+        - ``last_error``：``None`` = 不碰；给字符串就写（成功时给 ``""`` = 清掉失败原因）；
+        - ``bump_attempts``：``True`` 时在 SQL 里自增（``attempts = attempts + 1``）——
+          自增必须在库里做：补传是"读 → 试 → 写"三步，而中间那一步是**网络**，
+          在 Python 里算好再写回去会把并发踩成少记一次；
+        - ``next_attempt_at`` / ``clear_next_attempt``：前者给值就写，后者为真就置 ``None``
+          （终态"没有下一次了"），两个都给是调用方的错 → ``ValueError``；
+        - ``uploaded_at`` / ``remote_*``：同 ``last_error``（``None`` = 不碰）。
+
+        ``state`` 不在词表里 → ``ValueError``（照 ``set_import_state`` 那条）。
+        """
+        ...
+
+    def reset_uploading_snapshots(self, *, next_attempt_at: datetime | None = None) -> int:
+        """把 ``uploading`` 复位成 ``pending``，返回复位了几行（启动时那一次）。
+
+        ``uploading`` 是"进程被杀留下的半截"（照 M2"未跑完的批次可续"同一句口径）：
+        那一次到底传到哪儿了说不清，但**重试是安全的**（blob 与 manifest 都幂等，
+        见方案 §3.3），所以复位就是正确答案，而不是一个需要人判断的岔路。
+
+        ``attempts`` 与 ``last_error`` **一个都不动**：它们是历史（"试过几次、上次为什么
+        失败"），复位改的是"能不能再试"，不是"试过没有"。``next_attempt_at`` 缺省为
+        ``None`` = 立即到期——启动时没有理由再等一轮退避。
         """
         ...
 

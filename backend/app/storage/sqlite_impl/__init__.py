@@ -8,12 +8,14 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
 - ``connection.py``   连接管理 + PRAGMA 口径 + ``read()/session()``
 - ``schema.sql``      基线 v1 DDL（本机 17 张表，逐表出处见文件头；**冻结不动**）
 - ``schema.py``       ``ensure_schema`` / 增量迁移 / 迁移前自动备份
-                      （v2 = 知识库元数据缓存那张表，见 ``MIGRATION_V2_KB_META_CACHE``）
-- ``meta_store.py``   ``SqliteMetaStore``（本机域 + 导入台账 + 知识库快照三块）
+                      （v2 = 知识库元数据缓存，见 ``MIGRATION_V2_KB_META_CACHE``；
+                       v3 = 备份待传队列，见 ``MIGRATION_V3_BACKUP_SNAPSHOTS``）
+- ``meta_store.py``   ``SqliteMetaStore``（本机域 + 导入台账 + 知识库快照 + 快照打包
+                      + 备份待传队列）
 - ``validate.py``     运维自检入口：``python -m app.storage.sqlite_impl.validate``
                       （表/索引计数之外还报出快照表的行数与字节数）
 
-**本机域的清单都在这一个模块里**（都不许手抄，见下面四个常量）：
+**本机域的清单都在这一个模块里**（都不许手抄，见下面五个常量）：
 
 - ``LOCAL_METHODS`` —— ``MetaStore`` 的哪些方法归本机（阶段 2 的路由表按它算补集）；
 - ``LOCAL_LEDGER_METHODS`` —— ``imports`` / ``import_items`` 那族方法。它们**不在**
@@ -24,7 +26,9 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
   KB 域"；
 - ``LOCAL_SNAPSHOT_METHODS`` —— 快照打包与读回那两个方法（M5 阶段 2）。第三块
   "本机独有"（服务器档的库就是它自己，没有"把自己打成一份包"这条动作），
-  理由同样写在常量上。
+  理由同样写在常量上；
+- ``LOCAL_BACKUP_METHODS`` —— 备份待传队列那五个方法（M5 阶段 3）。第四块"本机独有"
+  （服务器档自己就是备份的目的地，没有"把一份快照排队传出去"这条动作）。
 
 **只实现本机域，不实现 ``MetaStore`` 全量 ABC**：本机档里知识库那半没有数据源
 （NAS 才是），所以 ``SqliteMetaStore`` 不继承 ``MetaStore``，也不该被当成一个完整的
@@ -50,6 +54,7 @@ from app.storage.repositories import (
 )
 
 __all__ = [
+    "LOCAL_BACKUP_METHODS",
     "LOCAL_CACHE_METHODS",
     "LOCAL_EXTRA",
     "LOCAL_LEDGER_METHODS",
@@ -161,6 +166,36 @@ LOCAL_SNAPSHOT_METHODS: frozenset[str] = frozenset(
         "dump_scrubbed_db",
         # 读面：从一份快照库里读会话 / 产物 Key / 设置键 / 计数
         "read_snapshot_db",
+    }
+)
+
+#: **备份待传队列**（M5 阶段 3）：``backup_snapshots`` 一张表上的五个方法。
+#:
+#: **为什么它是第四块"本机独有"**（前三块是导入台账、知识库快照、快照打包）：
+#:
+#: - **不进 ``LOCAL_METHODS``**：那是"``MetaStore`` 的哪些方法归本机"的划分，而这五个
+#:   方法**不在 ``MetaStore`` 上**——服务器档自己就是备份的目的地，它没有"把一份快照排队
+#:   传出去"这条动作（NAS 侧那一半是**收包**：``api/v1/backup.py`` 的七条端点）。
+#:   硬塞进去还会让三条既有守卫当场红（那是"不许悄悄超域"的守卫，不该改松）；
+#: - **也不是 KB 域**：这张表与知识库没有关系。
+#:
+#: 所以它与前三块同一套登记手法：单独一块清单 + 单独一个 ``StoreBundle`` 字段
+#: ``backup_queue`` + 用**同一个** ``SqliteMetaStore`` 实例。接口契约见
+#: ``app/storage/base.py`` 的 ``BackupSnapshots``（含"为什么是库不是目录"的四条）。
+#:
+#: 谁用它们：``services/backup_queue.py``（补传队列，唯一的调用方）；它经
+#: ``StoreBundle.backup_queue`` 拿到（服务器档那个字段恒为 ``None``）。
+LOCAL_BACKUP_METHODS: frozenset[str] = frozenset(
+    {
+        # 整行写入（同 id 覆盖）/ 取一行
+        "put_backup_snapshot",
+        "get_backup_snapshot",
+        # 两种读形状：队列（最旧在前 + 到期过滤）/ 最近几份（新的在前）
+        "list_backup_snapshots",
+        # 推进一步状态（自增在 SQL 里，终态清掉"下一次"）
+        "mark_backup_snapshot",
+        # 崩溃恢复：uploading → pending
+        "reset_uploading_snapshots",
     }
 )
 

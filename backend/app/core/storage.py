@@ -173,6 +173,9 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
     **第八个字段 ``snapshot``**（M5 阶段 2）还是同一条口径：快照打包与读回只有本机有
     （服务器档的库就是它自己，没有"把自己打成一份便携的包"这条动作），服务器档恒为
     ``None``（理由写在 ``base.StoreBundle.snapshot``）。
+    **第九个字段 ``backup_queue``**（M5 阶段 3）：待传队列（``backup_snapshots``）同样只有
+    本机有（服务器档自己就是备份的目的地，没有"把一份快照排队传出去"这条动作），
+    服务器档恒为 ``None``（理由写在 ``base.StoreBundle.backup_queue``）。
     """
     from app.storage.local_impl.object_store import LocalObjectStore
     from app.storage.split_impl import (
@@ -198,11 +201,11 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
     for subdir in STORAGE_SUBDIRS:
         (data_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    # **同一个实例四处用**（阶段 5 起两处，M4 再添一处，M5 再添一处）：``meta`` 走它做本机域
+    # **同一个实例五处用**（阶段 5 起两处，M4 再添一处，M5 再添两处）：``meta`` 走它做本机域
     # 读写，``ledger`` 走它做导入台账与"一条会话整体写入"，``kb_cache`` 走它做知识库元数据
-    # 快照，``snapshot`` 走它做快照打包与读回。四个 SqliteMetaStore 指向同一个库文件也能跑，
-    # 但那会造出四条连接集合与四个对象——而"写锁是进程内一把"这条纪律是对着 `Database` 说的，
-    # 不是对着仓储对象说的。同一个实例没有这个问题。
+    # 快照，``snapshot`` 走它做快照打包与读回，``backup_queue`` 走它做待传队列。五个
+    # SqliteMetaStore 指向同一个库文件也能跑，但那会造出五条连接集合与五个对象——而"写锁是
+    # 进程内一把"这条纪律是对着 `Database` 说的，不是对着仓储对象说的。同一个实例没有这个问题。
     local_store = SqliteMetaStore(database)
 
     return StoreBundle(
@@ -224,6 +227,9 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
         # 快照打包与读回同理（M5 §2.3 / §2.4）：本机库里的明文凭据要靠它擦掉，
         # 服务器档没有这条动作（NAS 侧那一半是收包，见 api/v1/backup.py）。
         snapshot=local_store,
+        # 待传队列同理（M5 §3.1）：断网入队、联网补传的那张表；服务器档自己就是备份的
+        # 目的地，没有"排队往别处传"这条动作。
+        backup_queue=local_store,
     )
 
 

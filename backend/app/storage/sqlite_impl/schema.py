@@ -36,12 +36,14 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号。"""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """应用期望的 schema 版本：基线 + ``MIGRATIONS`` 里已追加的增量。
 
 比它低 → 按序补上缺的迁移；比它高 → 报错（库被更新版应用升过级，**不降级**）。
 本机库与 PG 库是两份独立的 schema，所以这个数字与 ``postgres_impl`` 的 17 **无关**，
 不要拿两边对齐——它们记的是各自家当的演进。
+
+**v3 = 备份待传队列**（M5 §3.1）。两条增量都只加表、不动任何旧表，理由同下。
 
 **v2 = 知识库元数据缓存**（M4 §3.1）。基线 ``schema.sql`` 与 ``BASELINE_VERSION``
 一个字不改：本机库**已经发过版**（用户机器上那份就是 v1），新表只能走增量迁移——
@@ -123,7 +125,71 @@ CREATE TABLE kb_meta_cache (
 （`_apply_migrations` 在动手之前先整库备份，见那个函数）。
 """
 
-MIGRATIONS: tuple[Migration, ...] = (MIGRATION_V2_KB_META_CACHE,)
+MIGRATION_V3_BACKUP_SNAPSHOTS = Migration(
+    version=3,
+    description="备份待传队列（M5 §3.1）：断网入队、联网补传的那张表",
+    statements=(
+        # 逐列对回方案 §3.1 的 DDL（**一个字不改**：那是审定过的契约）。三处刻意的写法：
+        #
+        # ① **时间列带 `_ms`、不带 DEFAULT**（照 `schema.sql:16-34` 的类型映射纪律）：
+        #    毫秒值的唯一属主是应用侧的 helper，SQLite 没有"当前毫秒"的表达式默认值
+        #    （`unixepoch()` 要 3.38，本机下限 3.37）。三处可空的 `_ms` 列
+        #    （`next_attempt_at_ms` / `uploaded_at_ms`）的 NULL 各有一个明确含义：
+        #    前者 = "立即到期"（还没排过下一次），后者 = "还没传上去"。
+        # ② `state` / `kind` 的 CHECK 就是那两个词表的落库形状（应用侧常量见
+        #    `app/storage/base.py` 的 `BACKUP_SNAPSHOT_STATES` / `BACKUP_SNAPSHOT_KINDS`，
+        #    两处必须一致，用例机械核对）。
+        # ③ `manifest_json` 是**整份清单原文**（`CHECK (json_valid(...))` 兜底），
+        #    不是解析过的对象：补传要把它原样发给 NAS 那份"完成标记"，
+        #    而"读出来再序列化一遍"会让字节与包里第一成员不一致（两个真相）。
+        """\
+CREATE TABLE backup_snapshots (
+    -- <device_id>-<created_at 的紧凑形式>-<快照体摘要前 8 位>（内容寻址，方案 §1.2）
+    id                 TEXT PRIMARY KEY,
+    created_at_ms      INTEGER NOT NULL,
+    -- manual / auto / pre_restore（pre_restore 只落本机、不入这张表，见 base.py 的注释）
+    kind               TEXT NOT NULL CHECK (kind IN ('manual', 'auto', 'pre_restore')),
+    -- pending / uploading / uploaded / failed / discarded（状态机见 base.py 的常量）
+    state              TEXT NOT NULL CHECK (
+        state IN ('pending', 'uploading', 'uploaded', 'failed', 'discarded')
+    ),
+    -- <data_dir>/backup/pending/<id>.tar.gz（丢弃时那份包已经删了，这列留作记录）
+    blob_path          TEXT NOT NULL DEFAULT '',
+    blob_bytes         INTEGER NOT NULL DEFAULT 0,
+    -- 快照体摘要（manifest 里那一个；上传时声明给服务端、由它边收边算核对）
+    sha256             TEXT NOT NULL,
+    manifest_json      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(manifest_json)),
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    -- NULL = 立即到期（还没排过下一次）；失败时写"当前时刻 + 退避秒数"
+    next_attempt_at_ms INTEGER,
+    last_error         TEXT NOT NULL DEFAULT '',
+    uploaded_at_ms     INTEGER,
+    -- 远端那一对坐标（服务端确认下来的；上传者没报就是 NULL，本机不编）
+    remote_device_id   TEXT,
+    remote_snapshot_id TEXT
+) STRICT
+""",
+        # 队列形状只有一种：**还等着传的那些、按到期时间**。部分列复合索引正好对上它
+        # （`state` 在前：分流靠它；`next_attempt_at_ms` 在后：到期判断与排序靠它）。
+        "CREATE INDEX idx_backup_snapshots_queue ON backup_snapshots (state, next_attempt_at_ms)",
+        # 另一个读形状：**最近几份**（界面上的队列与恢复点列表都是新的在前），
+        # 与 `idx_conversations_recent` 同一条"照服务层真正的 ORDER BY 建"的纪律。
+        "CREATE INDEX idx_backup_snapshots_recent ON backup_snapshots (created_at_ms DESC)",
+    ),
+)
+"""**第二条增量迁移**：断网入队、联网补传的队列（M5 §3.1）。
+
+为什么是库不是目录（那四条理由写在方案 §3.1，也抄在 ``services/backup_queue.py`` 的
+模块头）：队列项要有状态机 / 尝试次数 / 下次可试时间 / 原因；要能**跨重启继续**；
+幂等判据（内容哈希）要落库；与 M2 的导入台账同一套形态、同一个库、同一把写锁。
+
+它同样只加表、不动任何旧表。
+"""
+
+MIGRATIONS: tuple[Migration, ...] = (
+    MIGRATION_V2_KB_META_CACHE,
+    MIGRATION_V3_BACKUP_SNAPSHOTS,
+)
 """增量迁移。基线（``schema.sql``）就是第 1 版，之后的演进往这里追加。
 
 **为什么本机库可以有迁移而 PG 侧是"不迁移数据"**：PG 那次是老库里没有值得搬的东西
@@ -132,6 +198,10 @@ MIGRATIONS: tuple[Migration, ...] = (MIGRATION_V2_KB_META_CACHE,)
 
 已经发布的条目**一律不许改字面量**（``Migration`` 的纪律）：用户机器上跑过的 v2 就是
 这一份，改一个字都会让"升过级的库"与"新装的库"结构不同。
+
+**逐级连号**（``version`` 从 ``BASELINE_VERSION + 1`` 起一条不缺）：缺一级就有一批
+用户机器上的库升不上来——它们的版本停在那条缺失的迁移之前，而应用只补"版本大于它的
+那些"，于是中间那张表永远建不出来（用例机械核对这条连号）。
 """
 
 
@@ -234,10 +304,18 @@ def _apply_migrations(db: Database, version: int) -> int:
     每条迁移的顺序是：**先备份、再开事务**（表改动 + 版本号 + 迁移日志同一事务）。
     备份在事务外——它是另一条连接上的整库副本，放进事务里只会把写锁拉长到
     整份拷贝的时长。
+
+    **同一次升级里每条迁移各留一份备份**（不是只在开头留一份）：升到一半失败时
+    "退回到上一步之前"与"退回到升级前"两个落点都拿得到，而多出来的代价只是
+    一次整库拷贝（本机库是会话库，量级很小）。备份目录名里的第二个版本是**这次升级
+    的目标版本**（``pending`` 的最后一条）而不是这一条迁移自己的版本——目录名的读法
+    是"从库当时的版本 → 这次要升到哪一版之前"，这样一次升级里的第一份备份仍然是
+    ``v<起点>→v<目标>`` 那个名字（M4 起就有人按这个读法找它）。
     """
     pending = [item for item in MIGRATIONS if item.version > version]
+    target_version = pending[-1].version if pending else version
     for item in pending:
-        backup = _backup_before_migration(db, from_version=version, to_version=item.version)
+        backup = _backup_before_migration(db, from_version=version, to_version=target_version)
         try:
             with db.session() as conn:
                 for statement in item.statements:
@@ -261,8 +339,9 @@ def _backup_before_migration(db: Database, *, from_version: int, to_version: int
     只是数据的一个**部分**（最近的提交在 ``-wal`` 里），照文件拷贝会得到一份
     "少了最后一截"的库。在线备份 API 走的是同一套页协议，拷出来的是**一致快照**。
 
-    目录名带版本区间（``…-v1→v2``）：一次升级可能有几条迁移，落好几份时
-    一眼看得出来"这份是升到哪一步之前"的。
+    目录名带版本区间（``…-v1→v3``）：读法是"**从库当时的版本** → **这次升级的目标版本**
+    之前的那一份"。一次升级可能有几条迁移，落好几份时一眼看得出来每一份是哪个起点
+    （``-v1→v3`` 与 ``-v2→v3`` 并排，就是"升级前"与"v2 那一步之前"两个落点）。
     """
     target_dir = db.path.parent / BACKUP_DIRNAME / f"{_stamp()}-v{from_version}→v{to_version}"
     target_dir.mkdir(parents=True, exist_ok=True)

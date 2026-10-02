@@ -23,10 +23,12 @@ r"""``MetaStore`` 本机域的 SQLite 实现（M2 §2.1 / §7 阶段 1）。
 与各 ``update_*``）落值是 ``max(now_ms, 旧值 + 1)``，见下面那段"毫秒推进纪律"。
 同一毫秒里的两次推进会因此排得出先后，而"最近活动"这类排序正是靠它。
 
-**只实现本机域**：本模块的公开方法集合**恰好**是三块清单的并集（机械导出，见
-``app.storage.sqlite_impl``）——``LOCAL_METHODS``（本机域那八个协议）、
+**只实现本机域**：本模块的公开方法集合**恰好**是**本机域那一块 + 四块"本机独有"**的并集
+（机械导出，见 ``app.storage.sqlite_impl``）——``LOCAL_METHODS``（本机域那八个协议）、
 ``LOCAL_LEDGER_METHODS``（旧会话导入的台账，只有本机有那两张表）、
-``LOCAL_CACHE_METHODS``（知识库元数据快照，服务 KB 域的读路径但人不在 KB 域）。
+``LOCAL_CACHE_METHODS``（知识库元数据快照，服务 KB 域的读路径但人不在 KB 域）、
+``LOCAL_SNAPSHOT_METHODS``（快照打包与读回，M5 阶段 2）、``LOCAL_BACKUP_METHODS``
+（备份待传队列，M5 阶段 3）。
 知识库 / 文档 / 切块 / 向量 / 全文 / Wiki / 任务队列 / 回收站 / 账号会话
 一个都不在这里——它们是 NAS 的家当。分档路由（``RouterMetaStore``）是阶段 2 的事。
 """
@@ -43,11 +45,14 @@ from typing import Any
 
 from app.core.exceptions import ConflictError
 from app.storage.base import (
+    BACKUP_SNAPSHOT_KINDS,
+    BACKUP_SNAPSHOT_STATES,
     IMPORT_STATES,
     MAX_PAYLOAD_BYTES,
     MAX_ROWS_PER_PROVIDER,
     MAX_TOTAL_BYTES,
     SNAPSHOT_MAX_AGE_SECONDS,
+    BackupSnapshotRecord,
     ChatMessageRecord,
     ConversationArtifactRecord,
     ConversationRecord,
@@ -2255,3 +2260,207 @@ class SqliteMetaStore:
         所以这个方法只借这条转发路径，不碰 ``self._db``。
         """
         return backup_archive.read_snapshot_db(db_path)
+
+    # ------------------------------------------------------------------ 备份待传队列（M5）
+    #
+    # 第四块**本机独有**的表（前几块是导入台账、知识库快照、快照打包）：接口契约见
+    # ``app/storage/base.py`` 的 ``BackupSnapshots``（本模块不继承它），登记点见
+    # ``sqlite_impl.LOCAL_BACKUP_METHODS``。一句话理由：服务器档自己就是备份的目的地，
+    # 它没有"把一份快照排队传出去"这条动作。
+    #
+    # 这一族的三个写法要点（下面各自的说明里有完整版）：
+    #
+    # ① **自增在 SQL 里做**（``attempts = attempts + 1``）：补传是"读 → 试 → 写"三步，
+    #    中间那一步是网络，在 Python 里算好次数再写回去会把并发踩成少记一次；
+    # ② **"不碰"与"置 NULL"是两件事**：参数缺省 = 不碰，``clear_next_attempt`` = 清掉
+    #    ——合成一个 ``None`` 就再也分不出这两种意思（终态要的正是"清掉"）；
+    # ③ **两种读形状各有一条索引对着**（队列：``state`` + ``next_attempt_at_ms``；
+    #    最近几份：``created_at_ms DESC``），所以 ORDER BY 只有这两个写法。
+
+    @staticmethod
+    def _backup_snapshot_from_row(row: sqlite3.Row) -> BackupSnapshotRecord:
+        return BackupSnapshotRecord(
+            id=row["id"],
+            created_at=_load(row["created_at_ms"]),
+            kind=row["kind"],
+            state=row["state"],
+            sha256=row["sha256"],
+            blob_path=row["blob_path"] or "",
+            blob_bytes=int(row["blob_bytes"]),
+            manifest_json=row["manifest_json"] or "{}",
+            attempts=int(row["attempts"]),
+            # `next_attempt_at_ms` 为 NULL = **立即到期**（不是"不再试"）：见 base.py 那一段
+            next_attempt_at=(
+                None if row["next_attempt_at_ms"] is None else _load(row["next_attempt_at_ms"])
+            ),
+            last_error=row["last_error"] or "",
+            uploaded_at=None if row["uploaded_at_ms"] is None else _load(row["uploaded_at_ms"]),
+            remote_device_id=row["remote_device_id"],
+            remote_snapshot_id=row["remote_snapshot_id"],
+        )
+
+    @staticmethod
+    def _require_backup_state(state: str) -> None:
+        """状态词表核对。**在存储层也挡一道**：DDL 的 CHECK 只给 ``IntegrityError``，
+        而调用方（服务层）要的是一句能读的话与一个明确的异常类型（照 ``set_import_state``）。"""
+        if state not in BACKUP_SNAPSHOT_STATES:
+            allowed = "、".join(sorted(BACKUP_SNAPSHOT_STATES))
+            raise ValueError(f"不认识的备份快照状态：{state}；可用的是：{allowed}")
+
+    def put_backup_snapshot(self, record: BackupSnapshotRecord) -> None:
+        """整行写入；**同 id 覆盖**（不是"撞了报错"）。
+
+        覆盖的语义是"这份又要传一次"：同 id = 同一份内容（内容寻址），手动点两次
+        「立即备份」、或打包器与队列对同一份包各登记一次，都不该让用户看到
+        ``IntegrityError``（与 NAS 侧"同内容 200 no-op"同一条口径）。
+
+        ``created_at_ms`` **不在覆盖的列里**：那个时刻就在 id 里，覆盖它等于让 id 与
+        这一列说两件事。其余列逐个用 ``excluded``（并发的两次登记谁后写谁算数）。
+        """
+        if record.kind not in BACKUP_SNAPSHOT_KINDS:
+            allowed = "、".join(sorted(BACKUP_SNAPSHOT_KINDS))
+            raise ValueError(f"不认识的备份快照类型：{record.kind}；可用的是：{allowed}")
+        self._require_backup_state(record.state)
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO backup_snapshots"
+                " (id, created_at_ms, kind, state, blob_path, blob_bytes, sha256, manifest_json,"
+                "  attempts, next_attempt_at_ms, last_error, uploaded_at_ms, remote_device_id,"
+                "  remote_snapshot_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT (id) DO UPDATE SET"
+                "  kind = excluded.kind, state = excluded.state,"
+                "  blob_path = excluded.blob_path, blob_bytes = excluded.blob_bytes,"
+                "  sha256 = excluded.sha256, manifest_json = excluded.manifest_json,"
+                "  attempts = excluded.attempts,"
+                "  next_attempt_at_ms = excluded.next_attempt_at_ms,"
+                "  last_error = excluded.last_error,"
+                "  uploaded_at_ms = excluded.uploaded_at_ms,"
+                "  remote_device_id = excluded.remote_device_id,"
+                "  remote_snapshot_id = excluded.remote_snapshot_id",
+                (
+                    record.id,
+                    _dump(record.created_at),
+                    record.kind,
+                    record.state,
+                    record.blob_path,
+                    int(record.blob_bytes),
+                    record.sha256,
+                    record.manifest_json,
+                    int(record.attempts),
+                    None if record.next_attempt_at is None else _dump(record.next_attempt_at),
+                    record.last_error,
+                    None if record.uploaded_at is None else _dump(record.uploaded_at),
+                    record.remote_device_id,
+                    record.remote_snapshot_id,
+                ),
+            )
+
+    def get_backup_snapshot(self, snapshot_id: str) -> BackupSnapshotRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM backup_snapshots WHERE id = ?", (snapshot_id,)
+            ).fetchone()
+        return None if row is None else self._backup_snapshot_from_row(row)
+
+    def list_backup_snapshots(
+        self,
+        *,
+        states: Sequence[str] | None = None,
+        due_before: datetime | None = None,
+        newest_first: bool = False,
+        limit: int | None = 50,
+    ) -> list[BackupSnapshotRecord]:
+        """列一批：``states`` / ``due_before`` 是 AND，排序只有两种（见类内那一段说明）。
+
+        ``due_before`` 的判据写成 ``next_attempt_at_ms IS NULL OR <= ?``：NULL 那一档按
+        **立即到期**算（刚入队的行与从 ``uploading`` 复位回来的行都是这样），
+        所以"到点可传"这一问不必让调用方自己拼两个条件。
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if states:
+            placeholders = ",".join("?" * len(states))
+            where.append(f"state IN ({placeholders})")
+            params.extend(states)
+        if due_before is not None:
+            where.append("(next_attempt_at_ms IS NULL OR next_attempt_at_ms <= ?)")
+            params.append(_dump(due_before))
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        order = "created_at_ms DESC, id DESC" if newest_first else "created_at_ms ASC, id ASC"
+        sql = f"SELECT * FROM backup_snapshots{clause} ORDER BY {order}"  # noqa: S608 — 见上
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        with self._db.read() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._backup_snapshot_from_row(row) for row in rows]
+
+    def mark_backup_snapshot(
+        self,
+        snapshot_id: str,
+        state: str,
+        *,
+        last_error: str | None = None,
+        bump_attempts: bool = False,
+        next_attempt_at: datetime | None = None,
+        clear_next_attempt: bool = False,
+        uploaded_at: datetime | None = None,
+        remote_device_id: str | None = None,
+        remote_snapshot_id: str | None = None,
+    ) -> None:
+        """推进一步状态：一次 UPDATE，SET 子句按给到的参数拼（**不做读-改-写**）。
+
+        ``attempts`` 的自增在 SQL 里（``attempts = attempts + 1``）：那一格记的是"试过
+        几次"，而"试"是网络那一步——在 Python 里读一次、加一、写回去，正好把"两个线程
+        各试了一次"记成一次（补传是串行的，但崩溃复位之后新旧两次尝试会叠在一起）。
+        """
+        self._require_backup_state(state)
+        if next_attempt_at is not None and clear_next_attempt:
+            raise ValueError(
+                "next_attempt_at 与 clear_next_attempt 只能给一个：一个要写时刻，一个要清成 NULL"
+            )
+        sets = ["state = ?"]
+        params: list[Any] = [state]
+        if last_error is not None:
+            sets.append("last_error = ?")
+            params.append(last_error)
+        if bump_attempts:
+            sets.append("attempts = attempts + 1")
+        if clear_next_attempt:
+            sets.append("next_attempt_at_ms = NULL")
+        elif next_attempt_at is not None:
+            sets.append("next_attempt_at_ms = ?")
+            params.append(_dump(next_attempt_at))
+        if uploaded_at is not None:
+            sets.append("uploaded_at_ms = ?")
+            params.append(_dump(uploaded_at))
+        if remote_device_id is not None:
+            sets.append("remote_device_id = ?")
+            params.append(remote_device_id)
+        if remote_snapshot_id is not None:
+            sets.append("remote_snapshot_id = ?")
+            params.append(remote_snapshot_id)
+        params.append(snapshot_id)
+        sql = f"UPDATE backup_snapshots SET {', '.join(sets)} WHERE id = ?"  # noqa: S608 — 同上
+        with self._db.session() as conn:
+            cursor = conn.execute(sql, params)
+            if not cursor.rowcount:
+                raise KeyError(f"备份快照不在队列里：{snapshot_id}")
+
+    def reset_uploading_snapshots(self, *, next_attempt_at: datetime | None = None) -> int:
+        """把 ``uploading`` 复位成 ``pending``，返回复位了几行（启动时那一次）。
+
+        ``attempts`` 与 ``last_error`` 一个都不动（它们是历史）；``next_attempt_at``
+        缺省 ``None`` = 立即到期（启动时没有理由再等一轮退避）。
+        """
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "UPDATE backup_snapshots SET state = 'pending', next_attempt_at_ms = ?"
+                " WHERE state = 'uploading'",
+                (None if next_attempt_at is None else _dump(next_attempt_at),),
+            )
+            count = int(cursor.rowcount)
+        if count:
+            logger.info("启动复位：%d 份快照从 uploading 回到 pending", count)
+        return count

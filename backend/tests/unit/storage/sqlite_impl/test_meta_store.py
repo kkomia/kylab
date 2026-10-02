@@ -6,9 +6,10 @@
 三块内容：
 
 1. **接口核对**（§6.4 第一条 + §2.1）：``SqliteMetaStore`` 的方法集合**恰好**是
-   四块清单的并集——``LOCAL_METHODS``（本机域）、``LOCAL_LEDGER_METHODS``（导入台账，
-   M2 阶段 5）、``LOCAL_CACHE_METHODS``（知识库快照，M4）、``LOCAL_SNAPSHOT_METHODS``
-   （快照打包与读回，M5 阶段 2）——既不少（少一个就是某条边角路径上的 AttributeError），
+   本机域那一块加**四块"本机独有"**的并集——``LOCAL_METHODS``（本机域）、
+   ``LOCAL_LEDGER_METHODS``（导入台账，M2 阶段 5）、``LOCAL_CACHE_METHODS``（知识库快照，
+   M4）、``LOCAL_SNAPSHOT_METHODS``（快照打包与读回，M5 阶段 2）、``LOCAL_BACKUP_METHODS``
+   （备份待传队列，M5 阶段 3）——既不少（少一个就是某条边角路径上的 AttributeError），
    也不多（多一个就是偷偷实现了别的域的活），并且结构上满足那 8 个窄协议。
 2. **字段一致性**（§6.4 的 R10）：记录 dataclass 的字段 ↔ 表的列名逐表比对。
    两份 schema 漂移的典型形态就是"某个字段忘了落库"，这条机械查得出来。
@@ -31,6 +32,8 @@ import pytest
 from app.core.exceptions import ConflictError
 from app.storage import repositories
 from app.storage.base import (
+    BackupSnapshotRecord,
+    BackupSnapshots,
     ChatMessageRecord,
     ConversationArtifactRecord,
     ConversationRecord,
@@ -52,6 +55,7 @@ from app.storage.base import (
 )
 from app.storage.repositories import MaintenanceRepo
 from app.storage.sqlite_impl import (
+    LOCAL_BACKUP_METHODS,
     LOCAL_CACHE_METHODS,
     LOCAL_EXTRA,
     LOCAL_LEDGER_METHODS,
@@ -77,6 +81,8 @@ pytestmark = pytest.mark.local
 #:
 #: ``fetched_at`` / ``checked_at`` 是 M4 那对**不许混**的时间戳（快照：这份内容什么时候
 #: 看到的 / 最近一次确认），列名照类型映射纪律带 ``_ms``。
+#: ``next_attempt_at`` / ``uploaded_at`` 是 M5 待传队列上的两个可空时间（下次可试时刻 /
+#: 传成时刻），同样带 ``_ms``。
 DATETIME_FIELDS = frozenset(
     {
         "created_at",
@@ -87,6 +93,8 @@ DATETIME_FIELDS = frozenset(
         "last_run_at",
         "fetched_at",
         "checked_at",
+        "next_attempt_at",
+        "uploaded_at",
     }
 )
 
@@ -108,14 +116,15 @@ def store(database: Database) -> SqliteMetaStore:
 
 
 def test_store_covers_exactly_the_local_method_set() -> None:
-    """本机域方法集**恰好**是四块清单的并集：一个不多、一个不少。
+    """本机域方法集**恰好**是本机域那一块 + 四块"本机独有"的并集：一个不多、一个不少。
 
-    另外三块**都不在** ``LOCAL_METHODS`` 里，它们单独登记：阶段 5 的八个导入台账方法
+    那四块**都不在** ``LOCAL_METHODS`` 里，它们单独登记：阶段 5 的八个导入台账方法
     （``LOCAL_LEDGER_METHODS``：那两张表只有本机档有）、M4 的六个快照方法
-    （``LOCAL_CACHE_METHODS``：``kb_meta_cache`` 同样是本机独有的一张表）与 M5 阶段 2 的
+    （``LOCAL_CACHE_METHODS``：``kb_meta_cache`` 同样是本机独有的一张表）、M5 阶段 2 的
     两个打包 / 读回方法（``LOCAL_SNAPSHOT_METHODS``：服务器档的库就是它自己，没有"把自己
-    打成一份便携的包"这条动作，理由写在那两个常量上）。所以这条断言的右边是**四块清单**
-    ——多一个方法就必须进其中之一，而"哪些算本机域"这条纪律一个字没松。
+    打成一份便携的包"这条动作）与 M5 阶段 3 的五个队列方法（``LOCAL_BACKUP_METHODS``：
+    服务器档自己就是备份的目的地，没有"排队往别处传"这条动作）。所以这条断言的右边是
+    **五块清单**——多一个方法就必须进其中之一，而"哪些算本机域"这条纪律一个字没松。
     """
     public = {
         name
@@ -127,11 +136,13 @@ def test_store_covers_exactly_the_local_method_set() -> None:
         | set(LOCAL_LEDGER_METHODS)
         | set(LOCAL_CACHE_METHODS)
         | set(LOCAL_SNAPSHOT_METHODS)
+        | set(LOCAL_BACKUP_METHODS)
     )
     assert len(LOCAL_METHODS) == 81
     assert len(LOCAL_LEDGER_METHODS) == 8
     assert len(LOCAL_CACHE_METHODS) == 6
     assert len(LOCAL_SNAPSHOT_METHODS) == 2
+    assert len(LOCAL_BACKUP_METHODS) == 5
 
 
 def test_the_ledger_methods_are_not_on_the_meta_store_abc() -> None:
@@ -158,6 +169,7 @@ def test_the_cache_methods_are_outside_both_domains() -> None:
     assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_METHODS))
     assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_LEDGER_METHODS))
     assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_SNAPSHOT_METHODS))
+    assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_BACKUP_METHODS))
 
 
 def test_the_snapshot_methods_are_outside_both_domains() -> None:
@@ -165,11 +177,29 @@ def test_the_snapshot_methods_are_outside_both_domains() -> None:
 
     它**不是本机域**（那两个方法不在 ``MetaStore`` 上）；**也不是 KB 域**（它读写的全是
     本机库那几张表：会话 / 产物 / 设置，与知识库没有关系）。所以它单独登记在
-    ``LOCAL_SNAPSHOT_METHODS``；四块清单两两不相交这条纪律由上面两条一起钉住。
+    ``LOCAL_SNAPSHOT_METHODS``；五块清单两两不相交这条纪律由这几条一起钉住。
     """
     assert not (set(LOCAL_SNAPSHOT_METHODS) & set(MetaStore.__abstractmethods__))
     assert not (set(LOCAL_SNAPSHOT_METHODS) & set(LOCAL_METHODS))
     assert not (set(LOCAL_SNAPSHOT_METHODS) & set(LOCAL_LEDGER_METHODS))
+    assert not (set(LOCAL_SNAPSHOT_METHODS) & set(LOCAL_BACKUP_METHODS))
+
+
+def test_the_backup_methods_are_outside_both_domains() -> None:
+    """备份待传队列那五个方法（M5 阶段 3）与前三块同一条纪律：**两边都不属于**。
+
+    它**不是本机域**（五个方法都不在 ``MetaStore`` 上）；**也不是 KB 域**（``backup_snapshots``
+    与知识库没有关系）。单独登记在 ``LOCAL_BACKUP_METHODS``，理由写在那张表的协议上
+    （``app/storage/base.py`` 的 ``BackupSnapshots``）。
+    """
+    assert not (set(LOCAL_BACKUP_METHODS) & set(MetaStore.__abstractmethods__))
+    assert not (set(LOCAL_BACKUP_METHODS) & set(LOCAL_METHODS))
+    assert not (set(LOCAL_BACKUP_METHODS) & set(LOCAL_LEDGER_METHODS))
+
+
+def test_the_store_satisfies_the_backup_queue_protocol(store: SqliteMetaStore) -> None:
+    """队列那份协议也由**同一个** ``SqliteMetaStore`` 满足（M5 §3.1）。"""
+    assert isinstance(store, BackupSnapshots)
 
 
 def test_the_store_satisfies_the_snapshot_protocols(store: SqliteMetaStore) -> None:
@@ -262,6 +292,8 @@ RECORD_TABLES: tuple[tuple[type, str, frozenset[str], frozenset[str]], ...] = (
     # M4：快照那一行**没有例外**——13 列与 13 个字段逐名对得上
     # （时间那两列按 `DATETIME_FIELDS` 映射成 `_ms`）。
     (KbMetaCacheRecord, "kb_meta_cache", frozenset(), frozenset()),
+    # M5 阶段 3：待传队列那一行同样**没有例外**——14 列与 14 个字段逐名对得上。
+    (BackupSnapshotRecord, "backup_snapshots", frozenset(), frozenset()),
 )
 
 
@@ -1023,3 +1055,250 @@ def test_import_tables_exist_and_are_wired_up(store: SqliteMetaStore, database: 
     # 台账的两块清单在**本机域之外**（见上面那条用例），所以"本机域名单里没有 import*"
     # 这句话现在仍然是纪律：超域的东西要登记在 LOCAL_LEDGER_METHODS 里，不许混进去。
     assert not [name for name in LOCAL_METHODS if "import" in name]
+
+
+# ------------------------------------------------------------------ 备份待传队列（M5 阶段 3）
+#
+# 这一族的**行为**主要在服务层那条链上（``tests/unit/services/test_backup_queue.py``：
+# 退避、上限、复位、节拍）。这里守的是存储层自己的三件事：字段与列逐名对得上（上面那条
+# 参数化用例）、五个方法各自的语义（覆盖写 / 两种读形状 / 原子自增 / 只复位 uploading），
+# 以及"词表在库里也挡一道"（DDL 的 CHECK 只给 IntegrityError，调用方要的是一句能读的话）。
+
+
+BACKUP_NOW = datetime(2026, 10, 5, 8, 3, 0, tzinfo=UTC)
+BACKUP_ID = "dev-1-2026-10-05T08-03-00Z-ab12cd34"
+
+
+def backup_record(**overrides: object) -> BackupSnapshotRecord:
+    """一行待传队列的样本（字段按 M5 §3.1 那张表给全；要改的用参数覆盖）。"""
+    values: dict[str, object] = {
+        "id": BACKUP_ID,
+        "created_at": BACKUP_NOW,
+        "kind": "manual",
+        "state": "pending",
+        "sha256": "ab12cd34" + "0" * 56,
+        "blob_path": f"data/backup/pending/{BACKUP_ID}.tar.gz",
+        "blob_bytes": 1234,
+        "manifest_json": '{"format": "kylab-backup", "format_version": 1}',
+    }
+    values.update(overrides)
+    return BackupSnapshotRecord(**values)  # type: ignore[arg-type]
+
+
+def test_backup_snapshot_round_trips_every_field(store: SqliteMetaStore) -> None:
+    """十四个字段写进去、读出来逐一对得上（含两个可空时间与远端坐标）。"""
+    record = backup_record(
+        state="failed",
+        attempts=2,
+        next_attempt_at=BACKUP_NOW,
+        last_error="连不上 NAS",
+        uploaded_at=BACKUP_NOW,
+        remote_device_id="dev-1",
+        remote_snapshot_id="2026-10-05T08-03-00Z-ab12cd34",
+    )
+
+    store.put_backup_snapshot(record)
+
+    assert store.get_backup_snapshot(record.id) == record
+    assert store.get_backup_snapshot("没有这一份") is None
+
+
+def test_put_backup_snapshot_overwrites_the_same_id(store: SqliteMetaStore) -> None:
+    """同 id **覆盖写**（内容寻址：同 id 就是同一份内容，重放不该抛异常）。
+
+    ``created_at`` 不在覆盖的列里：那个时刻就在 id 里，覆盖它等于让两处说两件事。
+    """
+    store.put_backup_snapshot(backup_record(state="failed", attempts=3, last_error="上次失败了"))
+
+    store.put_backup_snapshot(backup_record(state="pending", attempts=0, last_error=""))
+
+    row = store.get_backup_snapshot(BACKUP_ID)
+    assert row is not None
+    assert (row.state, row.attempts, row.last_error) == ("pending", 0, "")
+    assert row.created_at == BACKUP_NOW
+    assert len(store.list_backup_snapshots(limit=None)) == 1
+
+
+def test_put_backup_snapshot_rejects_unknown_vocabulary(store: SqliteMetaStore) -> None:
+    """``kind`` / ``state`` 的词表在存储层也挡一道（DDL 的 CHECK 只给 IntegrityError）。"""
+    with pytest.raises(ValueError, match="不认识的备份快照状态"):
+        store.put_backup_snapshot(backup_record(state="half-done"))
+    with pytest.raises(ValueError, match="不认识的备份快照类型"):
+        store.put_backup_snapshot(backup_record(kind="whenever"))
+
+
+def test_list_backup_snapshots_has_two_read_shapes(store: SqliteMetaStore) -> None:
+    """两种读形状：队列**最旧的在前**（先来先传）、最近几份**新的在前**（界面用）。"""
+    for index in range(3):
+        store.put_backup_snapshot(
+            backup_record(id=f"snap-{index}", created_at=BACKUP_NOW + timedelta(minutes=index))
+        )
+
+    assert [row.id for row in store.list_backup_snapshots(limit=None)] == [
+        "snap-0",
+        "snap-1",
+        "snap-2",
+    ]
+    assert [row.id for row in store.list_backup_snapshots(newest_first=True, limit=2)] == [
+        "snap-2",
+        "snap-1",
+    ]
+
+
+def test_list_backup_snapshots_filters_by_state_and_due_time(store: SqliteMetaStore) -> None:
+    """``states`` 与 ``due_before`` 是 AND，而且 **NULL 那一档按"立即到期"算**。"""
+    store.put_backup_snapshot(backup_record(id="due-null", next_attempt_at=None))
+    store.put_backup_snapshot(
+        backup_record(
+            id="due-later",
+            created_at=BACKUP_NOW + timedelta(seconds=1),  # 队列顺序按它（最旧在前）
+            next_attempt_at=BACKUP_NOW,
+        )
+    )
+    store.put_backup_snapshot(
+        backup_record(id="not-yet", next_attempt_at=BACKUP_NOW + timedelta(minutes=5))
+    )
+    store.put_backup_snapshot(backup_record(id="done", state="uploaded", next_attempt_at=None))
+
+    due = store.list_backup_snapshots(
+        states=("pending", "failed"), due_before=BACKUP_NOW, limit=None
+    )
+
+    assert [row.id for row in due] == ["due-null", "due-later"]
+
+
+def test_mark_backup_snapshot_bumps_attempts_in_sql(store: SqliteMetaStore) -> None:
+    """``attempts`` 在 SQL 里自增：读-改-写中间隔着一次网络，会把两次尝试记成一次。"""
+    store.put_backup_snapshot(backup_record(attempts=1))
+
+    store.mark_backup_snapshot(BACKUP_ID, "failed", bump_attempts=True)
+    store.mark_backup_snapshot(BACKUP_ID, "failed", bump_attempts=True)
+
+    row = store.get_backup_snapshot(BACKUP_ID)
+    assert row is not None and row.attempts == 3
+
+
+def test_mark_backup_snapshot_writes_the_failure_and_the_next_attempt(
+    store: SqliteMetaStore,
+) -> None:
+    """失败那一步落三样：状态、原因、下一次可试时刻（退避由服务层算好给它）。"""
+    store.put_backup_snapshot(backup_record())
+    later = BACKUP_NOW + timedelta(seconds=60)
+
+    store.mark_backup_snapshot(
+        BACKUP_ID, "failed", last_error="连不上 NAS", bump_attempts=True, next_attempt_at=later
+    )
+
+    row = store.get_backup_snapshot(BACKUP_ID)
+    assert row is not None
+    assert (row.state, row.last_error, row.attempts) == ("failed", "连不上 NAS", 1)
+    assert row.next_attempt_at == later
+
+
+def test_mark_backup_snapshot_can_clear_the_next_attempt(store: SqliteMetaStore) -> None:
+    """终态"没有下一次了"：``clear_next_attempt`` 把它清成 NULL（与"不碰"分开）。"""
+    store.put_backup_snapshot(backup_record(next_attempt_at=BACKUP_NOW))
+
+    store.mark_backup_snapshot(
+        BACKUP_ID,
+        "uploaded",
+        clear_next_attempt=True,
+        uploaded_at=BACKUP_NOW,
+        remote_device_id="dev-1",
+        remote_snapshot_id="2026-10-05T08-03-00Z-ab12cd34",
+    )
+
+    row = store.get_backup_snapshot(BACKUP_ID)
+    assert row is not None
+    assert row.next_attempt_at is None and row.uploaded_at == BACKUP_NOW
+    assert row.remote_device_id == "dev-1"
+    assert row.remote_snapshot_id == "2026-10-05T08-03-00Z-ab12cd34"
+
+
+def test_mark_backup_snapshot_keeps_what_was_not_given(store: SqliteMetaStore) -> None:
+    """没给的参数**一个都不碰**（``None`` = 不碰，不是"清空"）。"""
+    store.put_backup_snapshot(
+        backup_record(attempts=2, last_error="老原因", next_attempt_at=BACKUP_NOW)
+    )
+
+    store.mark_backup_snapshot(BACKUP_ID, "uploading")
+
+    row = store.get_backup_snapshot(BACKUP_ID)
+    assert row is not None
+    assert row.state == "uploading"
+    assert row.attempts == 2 and row.last_error == "老原因"
+    assert row.next_attempt_at == BACKUP_NOW
+
+
+def test_mark_backup_snapshot_rejects_a_confusing_pair(store: SqliteMetaStore) -> None:
+    """ "写一个时刻"与"清成 NULL"同时给 = 调用方的错，当场说（而不是让后一个悄悄赢）。"""
+    store.put_backup_snapshot(backup_record())
+
+    with pytest.raises(ValueError, match="只能给一个"):
+        store.mark_backup_snapshot(
+            BACKUP_ID, "uploaded", next_attempt_at=BACKUP_NOW, clear_next_attempt=True
+        )
+
+
+def test_mark_backup_snapshot_rejects_an_unknown_state_or_row(store: SqliteMetaStore) -> None:
+    """状态不在词表里、或那一行根本不在 → 都不静默（``KeyError`` 照 ``set_import_state``）。"""
+    store.put_backup_snapshot(backup_record())
+
+    with pytest.raises(ValueError, match="不认识的备份快照状态"):
+        store.mark_backup_snapshot(BACKUP_ID, "half-done")
+    with pytest.raises(KeyError):
+        store.mark_backup_snapshot("snap-does-not-exist", "uploaded")
+
+
+def test_reset_uploading_snapshots_only_touches_uploading(store: SqliteMetaStore) -> None:
+    """崩溃恢复只动 ``uploading``：别的档一行不碰，``attempts`` 与原因一个不改。"""
+    store.put_backup_snapshot(
+        backup_record(id="half", state="uploading", attempts=2, last_error="上一轮传到一半")
+    )
+    store.put_backup_snapshot(backup_record(id="waiting", next_attempt_at=BACKUP_NOW))
+    store.put_backup_snapshot(backup_record(id="done", state="uploaded"))
+
+    assert store.reset_uploading_snapshots() == 1
+
+    half = store.get_backup_snapshot("half")
+    assert half is not None
+    assert half.state == "pending" and half.next_attempt_at is None
+    assert half.attempts == 2 and half.last_error == "上一轮传到一半"
+    waiting = store.get_backup_snapshot("waiting")
+    done = store.get_backup_snapshot("done")
+    assert waiting is not None and waiting.next_attempt_at == BACKUP_NOW
+    assert done is not None and done.state == "uploaded"
+    assert store.reset_uploading_snapshots() == 0, "第二次复位是 0（幂等）"
+
+
+def test_reset_uploading_snapshots_can_park_the_row_for_later(store: SqliteMetaStore) -> None:
+    """复位给的是一个**可空**的下次时刻：给了就排在那儿（"别马上试"也有表达法）。"""
+    store.put_backup_snapshot(backup_record(state="uploading"))
+    later = BACKUP_NOW + timedelta(minutes=5)
+
+    assert store.reset_uploading_snapshots(next_attempt_at=later) == 1
+
+    row = store.get_backup_snapshot(BACKUP_ID)
+    assert row is not None and row.next_attempt_at == later
+
+
+def test_the_queue_table_has_exactly_the_documented_columns(database: Database) -> None:
+    """列名与 M5 §3.1 那张 DDL 逐字一致（多一列少一列都是改契约）。"""
+    with database.read() as conn:
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(backup_snapshots)")]
+    assert columns == [
+        "id",
+        "created_at_ms",
+        "kind",
+        "state",
+        "blob_path",
+        "blob_bytes",
+        "sha256",
+        "manifest_json",
+        "attempts",
+        "next_attempt_at_ms",
+        "last_error",
+        "uploaded_at_ms",
+        "remote_device_id",
+        "remote_snapshot_id",
+    ]

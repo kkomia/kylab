@@ -24,7 +24,10 @@ from app.storage.sqlite_impl.schema import (
     KEY_CREATED_AT,
     KEY_LAST_BACKUP,
     KEY_MIGRATION_LOG,
+    MIGRATION_V2_KB_META_CACHE,
+    MIGRATION_V3_BACKUP_SNAPSHOTS,
     MIGRATIONS,
+    SCHEMA_PATH,
     SCHEMA_VERSION,
     Migration,
     SchemaError,
@@ -35,12 +38,13 @@ from app.storage.sqlite_impl.schema import (
 
 pytestmark = pytest.mark.local
 
-#: 本机库里应该有哪 18 张表（§1.3 逐行列出的那份清单 + M4 的快照表）。
+#: 本机库里应该有哪 19 张表（§1.3 逐行列出的那份清单 + M4 的快照表 + M5 的队列表）。
 #: **注意**：实施方案的标题写"18 张"，但那份清单逐行数是 17 张；这里按**清单**守，
 #: 于是"哪天真的少了一张或多了一张"会立刻红，而不是被一个错误的数字掩盖。
-#: M4 起第 18 张是 ``kb_meta_cache``——它**不来自基线**（``schema.sql`` 一个字没改），
-#: 而是增量迁移 v2 建的，所以它与下面 ``test_baseline_version_literal_matches_the_constant``
-#: 那条"基线还是 v1"的断言并不矛盾。
+#: 第 18 张 ``kb_meta_cache``（M4）与第 19 张 ``backup_snapshots``（M5 阶段 3）都
+#: **不来自基线**（``schema.sql`` 一个字没改），而是增量迁移 v2 / v3 建的，所以它们与
+#: 下面 ``test_baseline_version_literal_matches_the_constant`` 那条"基线还是 v1"的断言
+#: 并不矛盾。
 EXPECTED_TABLES = frozenset(
     {
         "schema_metadata",
@@ -61,6 +65,7 @@ EXPECTED_TABLES = frozenset(
         "imports",
         "import_items",
         "kb_meta_cache",
+        "backup_snapshots",
     }
 )
 
@@ -75,6 +80,9 @@ EXPECTED_INDEXES = frozenset(
         "idx_note_folders_owner",
         "idx_notes_owner",
         "idx_scheduled_tasks_due",
+        # M5 阶段 3：待传队列的两种读形状各一条（队列：state + 到期；最近：created_at DESC）
+        "idx_backup_snapshots_queue",
+        "idx_backup_snapshots_recent",
     }
 )
 
@@ -106,6 +114,8 @@ EXPECTED_MS_COLUMNS: dict[str, frozenset[str]] = {
     "import_items": frozenset({"source_updated_at_ms", "local_updated_at_ms", "created_at_ms"}),
     # 快照那对**不许混**的时间戳（M4 §3.1）：内容什么时候看到的 / 最近一次确认
     "kb_meta_cache": frozenset({"fetched_at_ms", "checked_at_ms"}),
+    # 待传队列（M5 §3.1）：入队时刻 + 两个可空时间（下次可试 / 传成）
+    "backup_snapshots": frozenset({"created_at_ms", "next_attempt_at_ms", "uploaded_at_ms"}),
     # schema_metadata 只有 key/value：版本是文本，建库时间在它的行值里（不是列）
     "schema_metadata": frozenset(),
 }
@@ -167,7 +177,7 @@ def test_baseline_creates_exactly_the_local_tables(database: Database) -> None:
     with database.read() as conn:
         tables = set(_objects(conn, "table"))
     assert tables == EXPECTED_TABLES
-    assert len(tables) == 18
+    assert len(tables) == 19
 
 
 def test_every_table_is_strict(database: Database) -> None:
@@ -184,9 +194,10 @@ def test_strict_rejects_a_wrong_type(database: Database) -> None:
     用 "把 TEXT 塞进 INTEGER 列"：反过来（整数塞进 TEXT 列）是**无损转换**，
     SQLite 会照收——这一点值得记住，别拿它当反例。
     """
-    with pytest.raises(
-        sqlite3.IntegrityError, match="cannot store TEXT value"
-    ), database.session() as conn:
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="cannot store TEXT value"),
+        database.session() as conn,
+    ):
         conn.execute(
             "INSERT INTO conversations"
             " (id, title, kb_ids, pinned, context_summary, created_at_ms, updated_at_ms)"
@@ -277,9 +288,7 @@ def test_version_lives_only_in_schema_metadata(database: Database) -> None:
     """规范 2：版本号**只有一处**——不另写 ``PRAGMA user_version``。"""
     with database.read() as conn:
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 0
-        row = conn.execute(
-            "SELECT value FROM schema_metadata WHERE key = 'version'"
-        ).fetchone()
+        row = conn.execute("SELECT value FROM schema_metadata WHERE key = 'version'").fetchone()
         created = conn.execute(
             "SELECT value FROM schema_metadata WHERE key = ?", (KEY_CREATED_AT,)
         ).fetchone()
@@ -374,9 +383,7 @@ def test_migration_backs_up_the_whole_database_first(upgradeable: Database) -> N
     assert version == str(SCHEMA_VERSION)
 
 
-def test_failed_migration_rolls_back_and_keeps_the_version(
-    database: Database, monkeypatch
-) -> None:
+def test_failed_migration_rolls_back_and_keeps_the_version(database: Database, monkeypatch) -> None:
     """失败时**表与版本一起回滚**，并指出备份在哪——不给半截状态。"""
     monkeypatch.setattr(schema_module, "MIGRATIONS", (BROKEN,))
     monkeypatch.setattr(schema_module, "SCHEMA_VERSION", BROKEN.version)
@@ -419,3 +426,151 @@ def _explain(database: Database, sql: str) -> str:
     with database.read() as conn:
         rows = conn.execute(f"EXPLAIN QUERY PLAN {sql}").fetchall()
     return " | ".join(str(row["detail"]) for row in rows)
+
+
+# ------------------------------------------------------------------ v3：备份待传队列（M5）
+
+
+def _stop_at_v2(tmp_path: Path) -> Database:
+    """造一份**停在 v2** 的库：基线 + 第一条增量 + 一条升级前的会话。
+
+    这就是用户机器上那份库在拿到 v3 之前的样子。本机库**已经发过版**（M4 起就有增量迁移），
+    所以"旧库升上来"这条纪律必须一条条迁移地验——不能靠"拿基线建库再补全部"那一条糊过去。
+    """
+    db = Database(tmp_path / "kylab.db")
+    db.open()
+    db.script(SCHEMA_PATH.read_text(encoding="utf-8"))
+    with db.session() as conn:
+        for statement in MIGRATION_V2_KB_META_CACHE.statements:
+            conn.execute(statement)
+        conn.execute("UPDATE schema_metadata SET value = ? WHERE key = 'version'", ("2",))
+        conn.execute(
+            "INSERT INTO schema_metadata (key, value) VALUES (?, ?)",
+            (
+                KEY_MIGRATION_LOG,
+                json.dumps([{"version": 2, "description": "v2", "at_ms": 1}], ensure_ascii=False),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO conversations (id, title, kb_ids, pinned, context_summary,"
+            " created_at_ms, updated_at_ms)"
+            " VALUES ('c_old', '升级前的会话', '[]', 0, '', 1, 1)"
+        )
+    return db
+
+
+def test_a_v2_database_upgrades_to_v3_once(tmp_path: Path) -> None:
+    """v2 → v3：队列表与两条索引建出来、版本记到 3、迁移日志追加一条、旧行一条不丢。"""
+    db = _stop_at_v2(tmp_path)
+    try:
+        assert current_version(db) == 2
+
+        assert ensure_schema(db) == SCHEMA_VERSION == 3
+
+        with db.read() as conn:
+            tables = set(_objects(conn, "table"))
+            indexes = set(_objects(conn, "index"))
+            log = json.loads(
+                conn.execute(
+                    "SELECT value FROM schema_metadata WHERE key = ?", (KEY_MIGRATION_LOG,)
+                ).fetchone()["value"]
+            )
+            recorded = conn.execute(
+                "SELECT value FROM schema_metadata WHERE key = 'version'"
+            ).fetchone()["value"]
+            kept = conn.execute("SELECT title FROM conversations WHERE id = 'c_old'").fetchone()[
+                "title"
+            ]
+        assert "backup_snapshots" in tables
+        assert {"idx_backup_snapshots_queue", "idx_backup_snapshots_recent"} <= indexes
+        assert recorded == str(SCHEMA_VERSION)
+        assert [entry["version"] for entry in log] == [2, MIGRATION_V3_BACKUP_SNAPSHOTS.version]
+        assert kept == "升级前的会话"
+    finally:
+        db.close()
+
+
+def test_a_migration_backup_survives_each_step_of_the_upgrade(tmp_path: Path) -> None:
+    """v1 → v3 留**两份**备份：``-v1→v3``（升级前，v1 状态）与 ``-v2→v3``（上一步之前，v2 状态）。
+
+    目录名的读法是"**从库当时的版本** → **这次升级的目标版本**"。同一次升级里每条迁移各留
+    一份，于是"退回到升级前"与"退回到上一步之前"两个落点都拿得到——那个中间态
+    （有 ``kb_meta_cache``、还没有 ``backup_snapshots``）只在这一份里存在过。
+    """
+    db = Database(tmp_path / "kylab.db")
+    db.open()
+    db.script(SCHEMA_PATH.read_text(encoding="utf-8"))  # 停在 v1
+    try:
+        ensure_schema(db)
+
+        folders = sorted((tmp_path / "migration-backup").iterdir())
+        ranges = [item.name.split("-", 1)[1] for item in folders]
+        assert ranges == [
+            f"v{BASELINE_VERSION}→v{SCHEMA_VERSION}",
+            f"v2→v{SCHEMA_VERSION}",
+        ], f"每一次迁移都该留一份（读到 {ranges}）"
+
+        pre_upgrade = _backup_state(folders[0])
+        mid_upgrade = _backup_state(folders[1])
+        assert pre_upgrade["version"] == str(BASELINE_VERSION)
+        assert "kb_meta_cache" not in pre_upgrade["tables"]
+        assert "backup_snapshots" not in pre_upgrade["tables"]
+        assert mid_upgrade["version"] == "2"
+        assert "kb_meta_cache" in mid_upgrade["tables"]
+        assert "backup_snapshots" not in mid_upgrade["tables"]
+
+        with db.read() as conn:
+            recorded = conn.execute(
+                "SELECT value FROM schema_metadata WHERE key = ?", (KEY_LAST_BACKUP,)
+            ).fetchone()["value"]
+        assert Path(recorded) == folders[-1] / db.path.name, "last_backup 指向最后那一份"
+    finally:
+        db.close()
+
+
+def test_repeated_ensure_schema_neither_migrates_nor_backs_up_again(tmp_path: Path) -> None:
+    """幂等：第二次 ``ensure_schema`` 既不建表也不再多留备份（反复启动不会攒一堆备份）。"""
+    db = Database(tmp_path / "kylab.db")
+    db.open()
+    try:
+        ensure_schema(db)
+        backup_dir = tmp_path / "migration-backup"
+        first = sorted(item.name for item in backup_dir.iterdir())
+
+        assert ensure_schema(db) == SCHEMA_VERSION
+
+        assert sorted(item.name for item in backup_dir.iterdir()) == first
+    finally:
+        db.close()
+
+
+def test_the_two_queue_read_shapes_use_their_indexes(database: Database) -> None:
+    """两条索引各对着一种读形状（规范 3："建了但用不上 = 白建"）。
+
+    队列那一问（还等着传的、到点的、最旧在前）与服务层真正下推的那条 ORDER BY 逐字一致；
+    最近几份那一问同理。改这两条查询时索引会立刻不匹配——那就是这条用例的作用。
+    """
+    due = _explain(
+        database,
+        "SELECT * FROM backup_snapshots"
+        " WHERE state IN ('pending', 'uploading', 'failed')"
+        "   AND (next_attempt_at_ms IS NULL OR next_attempt_at_ms <= 1)"
+        " ORDER BY created_at_ms ASC, id ASC LIMIT 3",
+    )
+    recent = _explain(
+        database,
+        "SELECT * FROM backup_snapshots ORDER BY created_at_ms DESC, id DESC LIMIT 20",
+    )
+
+    assert "idx_backup_snapshots_queue" in due
+    assert "idx_backup_snapshots_recent" in recent
+
+
+def _backup_state(folder: Path) -> dict[str, object]:
+    """读一份迁移前备份：版本、表名、拿得到那条会话吗。"""
+    with sqlite3.connect(folder / "kylab.db") as copy:
+        copy.row_factory = sqlite3.Row
+        names = {row[0] for row in copy.execute("SELECT name FROM sqlite_master")}
+        row = copy.execute("SELECT value FROM schema_metadata WHERE key = 'version'").fetchone()
+        kept = copy.execute("SELECT title FROM conversations WHERE id = 'c_old'").fetchone()
+    return {"version": str(row[0]), "tables": names, "kept": None if kept is None else kept[0]}
