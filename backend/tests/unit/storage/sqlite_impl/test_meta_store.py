@@ -6,10 +6,11 @@
 三块内容：
 
 1. **接口核对**（§6.4 第一条 + §2.1）：``SqliteMetaStore`` 的方法集合**恰好**是
-   本机域那一块加**四块"本机独有"**的并集——``LOCAL_METHODS``（本机域）、
+   本机域那一块加**五块"本机独有"**的并集——``LOCAL_METHODS``（本机域）、
    ``LOCAL_LEDGER_METHODS``（导入台账，M2 阶段 5）、``LOCAL_CACHE_METHODS``（知识库快照，
    M4）、``LOCAL_SNAPSHOT_METHODS``（快照打包与读回，M5 阶段 2）、``LOCAL_BACKUP_METHODS``
-   （备份待传队列，M5 阶段 3）——既不少（少一个就是某条边角路径上的 AttributeError），
+   （备份待传队列，M5 阶段 3）、``LOCAL_ERASER_METHODS``（安全擦除，M5 阶段 6 收尾）——
+   既不少（少一个就是某条边角路径上的 AttributeError），
    也不多（多一个就是偷偷实现了别的域的活），并且结构上满足那 8 个窄协议。
 2. **字段一致性**（§6.4 的 R10）：记录 dataclass 的字段 ↔ 表的列名逐表比对。
    两份 schema 漂移的典型形态就是"某个字段忘了落库"，这条机械查得出来。
@@ -40,6 +41,7 @@ from app.storage.base import (
     ImportLedger,
     KbMetaCache,
     KbMetaCacheRecord,
+    LocalEraser,
     LocalSnapshotArchiver,
     MCPServerRecord,
     MetaStore,
@@ -57,6 +59,7 @@ from app.storage.repositories import MaintenanceRepo
 from app.storage.sqlite_impl import (
     LOCAL_BACKUP_METHODS,
     LOCAL_CACHE_METHODS,
+    LOCAL_ERASER_METHODS,
     LOCAL_EXTRA,
     LOCAL_LEDGER_METHODS,
     LOCAL_METHODS,
@@ -116,16 +119,17 @@ def store(database: Database) -> SqliteMetaStore:
 
 
 def test_store_covers_exactly_the_local_method_set() -> None:
-    """本机域方法集**恰好**是本机域那一块 + 四块"本机独有"的并集：一个不多、一个不少。
+    """本机域方法集**恰好**是本机域那一块 + 五块"本机独有"的并集：一个不多、一个不少。
 
-    那四块**都不在** ``LOCAL_METHODS`` 里，它们单独登记：阶段 5 的八个导入台账方法
+    那五块**都不在** ``LOCAL_METHODS`` 里，它们单独登记：阶段 5 的八个导入台账方法
     （``LOCAL_LEDGER_METHODS``：那两张表只有本机档有）、M4 的六个快照方法
     （``LOCAL_CACHE_METHODS``：``kb_meta_cache`` 同样是本机独有的一张表）、M5 的
     三个打包 / 读回方法（``LOCAL_SNAPSHOT_METHODS``：服务器档的库就是它自己，没有"把自己
-    打成一份便携的包"这条动作；第三个是阶段 5 加的"逐条读全量会话"）与 M5 阶段 3 的五个
+    打成一份便携的包"这条动作；第三个是阶段 5 加的"逐条读全量会话"）、M5 阶段 3 的五个
     队列方法（``LOCAL_BACKUP_METHODS``：服务器档自己就是备份的目的地，没有"排队往别处传"
-    这条动作）。所以这条断言的右边是
-    **五块清单**——多一个方法就必须进其中之一，而"哪些算本机域"这条纪律一个字没松。
+    这条动作）与阶段 6 收尾的安全擦除那一个方法（``LOCAL_ERASER_METHODS``：它擦的是
+    **本机那个库文件**，服务器档的数据在 PG 里）。所以这条断言的右边是
+    **六块清单**——多一个方法就必须进其中之一，而"哪些算本机域"这条纪律一个字没松。
     """
     public = {
         name
@@ -138,12 +142,14 @@ def test_store_covers_exactly_the_local_method_set() -> None:
         | set(LOCAL_CACHE_METHODS)
         | set(LOCAL_SNAPSHOT_METHODS)
         | set(LOCAL_BACKUP_METHODS)
+        | set(LOCAL_ERASER_METHODS)
     )
     assert len(LOCAL_METHODS) == 81
     assert len(LOCAL_LEDGER_METHODS) == 8
     assert len(LOCAL_CACHE_METHODS) == 6
     assert len(LOCAL_SNAPSHOT_METHODS) == 4
     assert len(LOCAL_BACKUP_METHODS) == 5
+    assert len(LOCAL_ERASER_METHODS) == 1
 
 
 def test_the_ledger_methods_are_not_on_the_meta_store_abc() -> None:
@@ -187,7 +193,7 @@ def test_the_snapshot_methods_are_outside_both_domains() -> None:
 
 
 def test_the_backup_methods_are_outside_both_domains() -> None:
-    """备份待传队列那五个方法（M5 阶段 3）与前三块同一条纪律：**两边都不属于**。
+    """备份待传队列那五个方法（M5 阶段 3）与前几块同一条纪律：**两边都不属于**。
 
     它**不是本机域**（五个方法都不在 ``MetaStore`` 上）；**也不是 KB 域**（``backup_snapshots``
     与知识库没有关系）。单独登记在 ``LOCAL_BACKUP_METHODS``，理由写在那张表的协议上
@@ -196,6 +202,25 @@ def test_the_backup_methods_are_outside_both_domains() -> None:
     assert not (set(LOCAL_BACKUP_METHODS) & set(MetaStore.__abstractmethods__))
     assert not (set(LOCAL_BACKUP_METHODS) & set(LOCAL_METHODS))
     assert not (set(LOCAL_BACKUP_METHODS) & set(LOCAL_LEDGER_METHODS))
+
+
+def test_the_eraser_method_is_outside_both_domains() -> None:
+    """安全擦除那一个方法（M5 阶段 6 收尾）与前几块同一条纪律：**两边都不属于**。
+
+    它**不是本机域**（不在 ``MetaStore`` 上——它连表都不看，是文件级的收尾：抹零 + 重建
+    库文件 + 收 WAL）；**也不是 KB 域**。单独登记在 ``LOCAL_ERASER_METHODS``，
+    理由写在那份协议上（``app/storage/base.py`` 的 ``LocalEraser``）。
+    """
+    assert not (set(LOCAL_ERASER_METHODS) & set(MetaStore.__abstractmethods__))
+    assert not (set(LOCAL_ERASER_METHODS) & set(LOCAL_METHODS))
+    assert not (set(LOCAL_ERASER_METHODS) & set(LOCAL_LEDGER_METHODS))
+    assert not (set(LOCAL_ERASER_METHODS) & set(LOCAL_BACKUP_METHODS))
+    assert not (set(LOCAL_ERASER_METHODS) & set(LOCAL_SNAPSHOT_METHODS))
+
+
+def test_the_store_satisfies_the_eraser_protocol(store: SqliteMetaStore) -> None:
+    """安全擦除那份协议也由**同一个** ``SqliteMetaStore`` 满足（M5 阶段 6）。"""
+    assert isinstance(store, LocalEraser)
 
 
 def test_the_store_satisfies_the_backup_queue_protocol(store: SqliteMetaStore) -> None:

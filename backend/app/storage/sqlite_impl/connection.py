@@ -32,6 +32,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
+from app.storage.base import StorageError
+
 #: ``STRICT`` 表的下限版本（SQLite 3.37，2021-11）；也是本项目本机库的最低要求。
 #: 比它低**明确报错**，不降级成非 STRICT 表——那会让"列类型写错了也照收"这类
 #: 静默错误重新回到库里（见 ``schema.sql`` 的类型纪律）。
@@ -46,6 +48,13 @@ WAL_AUTOCHECKPOINT = 1000
 
 #: ``-wal`` 文件的可见后缀：备份/清理时要连同它一起考虑。
 WAL_SUFFIXES = ("-wal", "-shm")
+
+#: ``secure_erase`` 里"收 WAL"那一步的重试次数。
+#:
+#: 为什么要有重试：``wal_checkpoint(TRUNCATE)`` 拿不到"没有别的读者"这个前提时立刻报
+#: ``busy``（``busy_timeout`` 已经在这一次里等过一轮），而**边车跑着、CLI 擦库**正是
+#: 这个方法要支持的那个场景——读者是一轮请求级别的短事务，多给两次机会它就过了。
+_WAL_TRUNCATE_ATTEMPTS = 3
 
 
 class SqliteVersionError(RuntimeError):
@@ -229,6 +238,55 @@ class Database:
                 yield conn
             finally:
                 conn.close()
+
+    def secure_erase(self) -> None:
+        """在本机库上做一次**安全擦除**：三件事一次做完，**边车不用重启**。
+
+        顺序不许换，每一步都有它挡的那种残留：
+
+        1. ``PRAGMA secure_delete = ON``——它管的是"被删 / 被改的页腾出来时要不要先抹零"。
+           这是**每连接**的 PRAGMA（不是库属性），所以必须在下面那条语句动手**之前**、
+           在**同一条连接**上设：换个连接设、或者设完就断开，等于没设；
+        2. ``VACUUM``——重建整份库文件，把上一步抹零腾出来的那些页连同页里的残留一起丢掉。
+           **不能在事务里**（SQLite 直接报错），所以走 ``maintenance()`` 那条临时连接；
+        3. ``PRAGMA wal_checkpoint(TRUNCATE)``——把 ``-wal`` 收进主库**并把 WAL 文件截成 0 字节**。
+
+        **第 3 步是这个方法存在的全部理由**：WAL 模式下明文的最近一份提交先落在
+        ``kylab.db-wal`` 里，而 ``VACUUM`` 只是把**新**内容写下去——那些旧帧仍然躺在
+        那个文件里（实测：630 KB 的 ``-wal`` 里还能 grep 到明文）。只有 TRUNCATE 模式的
+        检查点会把 WAL 文件截掉、连旧帧一起消失（``PASSIVE`` / ``FULL`` 只是回收可复用
+        空间，字节还在，下一个读的人照样捡得到）。于是"擦完就干净了"成立，
+        而不是"等边车退出（``close()`` 里那次检查点）才干净"。
+
+        一次调用做完三步、不关任何长连接（``maintenance()`` 借的是临时连接，用完即关），
+        所以**边车跑着的时候也能跑**——CLI 那条路正是这个场景。
+        """
+        with self.maintenance() as conn:
+            conn.execute("PRAGMA secure_delete = ON")
+            conn.execute("VACUUM")
+            self._truncate_wal(conn)
+
+    def _truncate_wal(self, conn: sqlite3.Connection) -> None:
+        """收 WAL 并截掉那个文件；**收不干净就如实抛**（不假装干净）。
+
+        ``wal_checkpoint`` 会返回 ``(busy, log, checkpointed)``：``busy`` 非 0 说明还有
+        别人占着（别的进程正在读这份库，或者长事务没放）。``busy_timeout`` 已经在这一步
+        里替我们等过一轮了，所以这里只再补少量重试——迁移是**显式动作**，多等两秒远比
+        "留着旧帧、报告里还说迁干净了"好。
+
+        重试仍不行就抛 ``StorageError``：那三种动作里前两步（抹零 + 重建库）已经完成，
+        主库是干净的；失败只意味着 ``-wal`` 里那几帧还在——这句话必须让调用方看见
+        （它要决定是"再跑一次"还是"接受这个残留"，而不是我们替他决定）。
+        """
+        for _ in range(_WAL_TRUNCATE_ATTEMPTS):
+            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row is None or int(row[0]) == 0:
+                return
+        raise StorageError(
+            "本机库的 WAL 收不干净（还有别的连接 / 进程占着这份库）：主库那几页已经擦干净了，"
+            f"但 -wal 里的旧帧还在（重试了 {_WAL_TRUNCATE_ATTEMPTS} 次）。"
+            "等没人读的时候再跑一次擦除；边车退出时那次检查点也会把它收掉。"
+        )
 
     # ------------------------------------------------------------------ 自检
 

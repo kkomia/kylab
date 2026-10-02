@@ -205,6 +205,28 @@ class StoreBundle:
     后者只在拿到 ``BackupSnapshots`` 时才存在——本机档配上它、服务器档是 ``None``。
     """
 
+    eraser: LocalEraser | None = None
+    """本机档独有的**安全擦除**（M5 阶段 6 收尾）：服务器档恒为 ``None``。
+
+    **与前四块（``ledger`` / ``kb_cache`` / ``snapshot`` / ``backup_queue``）同一条纪律、
+    同一套理由**（照那几段改写一遍，因为形状一模一样）：它擦的是**本机那个库文件**
+    （主库 + ``-wal`` + ``-shm``）——服务器档的数据在 PG 里，也没有系统钥匙串那一整套
+    动作（R14：那一档库里那份凭据不动，处置是 NAS 自己的访问控制）。所以它既不进
+    ``repositories.py`` 的 24 个域（那里的每个方法都必须在 ``MetaStore`` 上存在），也不进
+    ``LOCAL_METHODS``（那是"本机域 / KB 域"的划分：擦除连表都不看）。它在
+    ``sqlite_impl.LOCAL_ERASER_METHODS`` 单独登记，装配点见
+    ``core/storage.py::_build_local_stores``（与 ``meta`` / ``ledger`` / ``kb_cache`` /
+    ``snapshot`` / ``backup_queue`` 是**同一个**实例）。
+
+    **为什么值得单独一个字段**（而不是并进 ``meta``）：调用方是钥匙串收编的迁移器，
+    它要表达的动作是"这几处明文已经从库里删掉了，现在把那几页真的还回去"——那是**文件级**
+    的收尾（抹零 + 重建 + 收 WAL），不是任何一张表的读写。把它放在这一层，L2 那条纪律
+    （``services/`` 不许 import ``sqlite3``）才不用被破一次：三个 PRAGMA / VACUUM / 检查点
+    全在 ``sqlite_impl/`` 里，服务层只看见一个动词。
+
+    谁用它：``services/credentials.py``（唯一的调用方）；它经 ``StoreBundle.eraser`` 拿到。
+    """
+
     # ---- 按域切开的窄视图（v0.2，见 storage/repositories.py）----
     #
     # 它们**返回的是同一个 ``meta`` 实例**，只是按域收窄了类型：新代码依赖窄接口，
@@ -3437,6 +3459,50 @@ class BackupSnapshots(Protocol):
         ``attempts`` 与 ``last_error`` **一个都不动**：它们是历史（"试过几次、上次为什么
         失败"），复位改的是"能不能再试"，不是"试过没有"。``next_attempt_at`` 缺省为
         ``None`` = 立即到期——启动时没有理由再等一轮退避。
+        """
+        ...
+
+
+@runtime_checkable
+class LocalEraser(Protocol):
+    """本机档独有的**安全擦除**（``secure_erase`` 一个方法）：把本机那个库文件擦干净。
+
+    **与 ``ledger`` / ``kb_cache`` / ``snapshot`` / ``backup_queue`` 同一条纪律、同一套
+    理由**（照那四段改写一遍，因为形状一模一样）：它擦的是**本机那个库文件**——服务器档
+    的数据在 PG 里，那份凭据的处置是 NAS 自己的访问控制（方案 §5 的 R14 明写"不进本机
+    钥匙串"、也明写那一档"库里那份凭据不动"）。所以它既不进 ``repositories.py`` 的 24 个域
+    （那里的每个方法都必须在 ``MetaStore`` 上存在），也不进 ``LOCAL_METHODS``（那是
+    "本机域 / KB 域"的划分：擦除连表都不看，纯粹是文件级的收尾）。它在
+    ``sqlite_impl.LOCAL_ERASER_METHODS`` 单独登记，装配点见
+    ``core/storage.py::_build_local_stores``（与 ``meta`` / ``ledger`` / ``kb_cache`` /
+    ``snapshot`` / ``backup_queue`` 是**同一个**实例：写锁是进程内一把，那条纪律是对着
+    ``Database`` 说的）。
+
+    谁用它：``services/credentials.py``（钥匙串收编的迁移器——把库里那几处明文删掉 / 清掉
+    之后，那几页得真的还回去）。调用方在**同一次运行里**就要看到干净：主库、``-wal``、
+    ``-shm`` 三个文件一起（不是"等边车退出才算干净"）。
+    """
+
+    def secure_erase(self) -> None:
+        """把本机库擦干净：**抹零删页 → 重建库文件 → 收 WAL 并截掉那个文件**。
+
+        三件事的顺序不许换，每一步挡的是不同的一种残留：
+
+        1. ``PRAGMA secure_delete = ON``：被删 / 被改的页腾出来时先抹零。它是**每连接**的
+           PRAGMA，所以必须与下面那条语句在**同一条连接**上、且在它之前；
+        2. ``VACUUM``：重建整份库文件，把抹零腾出来的那些页连同页里的残留一起丢掉
+           （``VACUUM`` 不能在事务里跑）；
+        3. ``wal_checkpoint(TRUNCATE)``：把 ``-wal`` 收进主库并**把那个文件截成 0 字节**。
+
+        第 3 步是这条契约存在的理由：WAL 模式下明文的最近一份提交先落在 ``kylab.db-wal``
+        里，前两步只保证**主库**干净——旧帧还躺在 WAL 里等着被下一个读的人捡到。
+        所以判据是"同一次运行里，主库 + ``-wal``（+ ``-shm``）里 grep 明文都是 0 命中"，
+        而不是"重启之后干净"。
+
+        **边车跑着也能跑**（CLI 那条路正是这个场景）：三步在同一次调用里做完，不关任何
+        长连接。收 WAL 那一步拿不到"没有别的读者"时会 ``busy``——实现里有少量重试，
+        仍不行就**如实抛**（``StorageError``：主库已经擦干净了，剩下的是 WAL 里那几帧，
+        那句话得让调用方看见，由它决定是再跑一次还是接受这个残留）。
         """
         ...
 

@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.core.exceptions import SecretStoreUnavailable
+from app.core.exceptions import ConflictError, KylabError, SecretStoreUnavailable
 from app.services.runtime_config import mask_secret
 from app.services.secrets import (
     SecretStore,
@@ -64,7 +64,7 @@ from app.services.secrets import (
     platform_store,
     setting_target,
 )
-from app.storage.base import ModelProviderRecord, StoreBundle
+from app.storage.base import ModelProviderRecord, StorageError, StoreBundle
 
 __all__ = [
     "MIGRATED_SETTING_KEYS",
@@ -228,26 +228,43 @@ class CredentialsService:
         report.migrated.append({"item": item.item, "reason": ""})
 
     def _shrink(self) -> None:
-        """清页：把腾出来的那些页真的交还给系统（方案 §4.3-3）。
+        """清页：把腾出来的那些页**真的**交还给系统（方案 §4.3-3）。
 
-        **做得到与做不到的，都写在这里**（做不到的那一半要登记，不假装收编了）：
+        走 ``StoreBundle.eraser``（``LocalEraser.secure_erase``）：那一个动作里依次做完
+        ``PRAGMA secure_delete = ON`` → ``VACUUM`` → ``PRAGMA wal_checkpoint(TRUNCATE)``。
+        三件事都得做，缺哪一件都留一种残留：
 
-        - 做得到：``MetaStore.vacuum()``。``VACUUM`` 重建整份库文件，被删的行与被清的列
-          连同它们占过的页一起消失——判据是"库文件原始字节里 grep 哨兵串 0 命中"
-          （``tests/unit/services/test_credentials.py`` 那条，与阶段 2 的擦洗同一手法）；
-        - 做不到：``PRAGMA secure_delete = ON`` 与 ``wal_checkpoint(TRUNCATE)``。
-          前者是**每连接**的 PRAGMA，后者要把 ``-wal`` 收进主库——两件事都住在
-          ``storage/sqlite_impl/``，而 ``services/`` 不许 import ``sqlite3``（L2），
-          ``MetaStore.vacuum()`` 是这一层唯一够得到的维护入口。
+        - 缺抹零：被删的行 / 被清的列还在空闲页里等着被捡走；
+        - 缺 ``VACUUM``：那些页还没还给系统（文件里那块空间仍是这一份数据的历史）；
+        - 缺收 WAL：**WAL 模式下明文最近的一份提交先落在 ``kylab.db-wal`` 里**，前两步只
+          保证主库干净——旧帧还躺在那个文件里（阶段 6 实测：630 KB 的 ``-wal`` 里还能
+          grep 到明文）。这一条正是"迁移完就干净了"与"等边车退出才干净"的分界。
 
-        现场影响（量过，见阶段 6 报告的偏离一节）：本次运行期间 ``-wal`` 里还留着
-        那几帧旧明文，边车退出时 ``Database.close()`` 会做一次
-        ``wal_checkpoint(TRUNCATE)`` 把它收干净（关库之后整个数据目录 0 命中）。
-        要在**不重启**的前提下就做到"两个文件都干净"，落点是 storage 层加一个
-        ``secure_erase(...)``（``secure_delete`` + 删 + ``VACUUM`` + 收 WAL 一次做完）
-        ——那属于 ``storage/**``，留给阶段 8 的物证那一轮。
+        判据（``tests/unit/storage/sqlite_impl/test_secure_erase.py``）：**同一次运行里、
+        不重启、不关库**，主库 + ``-wal``（+ ``-shm``）里 grep 哨兵串全部 0 命中。
+
+        为什么还要那个 ``None`` 分支：``StoreBundle.eraser`` 只有本机档有（服务器档恒
+        ``None``）。走到这里而它是 ``None`` 的情形在真实部署里不存在（钥匙串不可用时
+        ``migrate`` 一开始就抛了），但接口上它是个合法状态——那时退回 ``vacuum()``
+        （至少把空闲页收掉），并在日志里说明"WAL 那一步没做"。
+
+        收 WAL 那一步撞上别的读者（``StorageError``）→ 翻成 ``ConflictError``（409）：
+        迁移**已经完成**了（钥匙串里有值、库里那几行 / 列也清了），只是收尾没做完。
+        原样抛出去会以 500「服务端出错了」的形式落到界面上——那句话把"再点一次就好"
+        藏了起来，而这件事是可重试的（清页那三步都幂等）。
         """
-        self._stores.meta.vacuum()
+        eraser = self._stores.eraser
+        if eraser is None:  # pragma: no cover - 服务器档进不到这里（钥匙串不可用就先抛了）
+            logger.warning(
+                "没有可用的安全擦除面（StoreBundle.eraser 为 None）：只做了 VACUUM，"
+                "-wal 里那几帧等下次检查点收掉"
+            )
+            self._stores.meta.vacuum()
+            return
+        try:
+            eraser.secure_erase()
+        except StorageError as exc:
+            raise ConflictError(f"{exc}（凭据那几步已经完成，重跑一次这一步即可）") from exc
 
     # ------------------------------------------------------------------ 待迁清单
 
@@ -409,6 +426,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _nas_token_command(service, args)
     except SecretStoreUnavailable as exc:
         print(f"这台机器收不了：{exc}", file=sys.stderr)
+        return 1
+    except KylabError as exc:
+        # 迁移本身跑完了、只是收尾那一步没成（比如收 WAL 撞上别的读者）——CLI 也要
+        # 说清"哪一步没成、下一步做什么"，而不是甩一份 traceback 出去。
+        print(f"这一轮没能收尾：{exc}", file=sys.stderr)
         return 1
 
 

@@ -2277,6 +2277,28 @@ class SqliteMetaStore:
         """
         return backup_archive.local_schema_version()
 
+    # ------------------------------------------------------------------ 安全擦除（明文清除的收尾）
+    #
+    # 第五块**本机独有**的方法：接口契约见 ``app/storage/base.py`` 的 ``LocalEraser``
+    # （本模块不继承它，与前面四块同一手法），登记点见 ``sqlite_impl.LOCAL_ERASER_METHODS``。
+    # 一句话理由：它擦的是**本机那个库文件**（主库 + ``-wal``），服务器档没有这份文件。
+    #
+    # **方法体只有一行**：真身全在 ``connection.py`` 的 ``Database.secure_erase()``
+    # （``PRAGMA secure_delete`` / ``VACUUM`` / ``wal_checkpoint(TRUNCATE)`` 三件事都是
+    # SQLite 方言，而且前两件必须是**同一条连接**上的动作——所以它属于 ``Database``，
+    # 不属于这一层）。这里留薄转发的理由与 ``dump_scrubbed_db`` 那一处一字不差：
+    # 组合根把 ``StoreBundle.eraser`` 指向 ``meta`` / ``ledger`` / ``kb_cache`` /
+    # ``snapshot`` / ``backup_queue`` 用的那个对象，而调用方（服务层）只许见 ``base.py``。
+
+    def secure_erase(self) -> None:
+        """把本机库擦干净：抹零删页 → 重建库文件 → 收 WAL 并截掉那个文件（一次做完）。
+
+        三条口径（三个动作的顺序、每步挡的是哪种残留、为什么边车不重启也能跑）写在
+        ``LocalEraser.secure_erase`` 那份契约与 ``connection.Database.secure_erase``
+        的实现说明上。这里只做转发。
+        """
+        self._db.secure_erase()
+
     # ------------------------------------------------------------------ 备份待传队列（M5）
     #
     # 第四块**本机独有**的表（前几块是导入台账、知识库快照、快照打包）：接口契约见

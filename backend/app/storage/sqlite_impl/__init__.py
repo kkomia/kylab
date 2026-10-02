@@ -29,7 +29,9 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
   "本机独有"（服务器档的库就是它自己，没有"把自己打成一份包"这条动作），
   理由同样写在常量上；
 - ``LOCAL_BACKUP_METHODS`` —— 备份待传队列那五个方法（M5 阶段 3）。第四块"本机独有"
-  （服务器档自己就是备份的目的地，没有"把一份快照排队传出去"这条动作）。
+  （服务器档自己就是备份的目的地，没有"把一份快照排队传出去"这条动作）；
+- ``LOCAL_ERASER_METHODS`` —— 安全擦除那一个方法（M5 阶段 6 收尾）。第五块"本机独有"
+  （它擦的是**本机那个库文件**，服务器档的数据在 PG 里，那份处置是 NAS 自己的访问控制）。
 
 **只实现本机域，不实现 ``MetaStore`` 全量 ABC**：本机档里知识库那半没有数据源
 （NAS 才是），所以 ``SqliteMetaStore`` 不继承 ``MetaStore``，也不该被当成一个完整的
@@ -57,6 +59,7 @@ from app.storage.repositories import (
 __all__ = [
     "LOCAL_BACKUP_METHODS",
     "LOCAL_CACHE_METHODS",
+    "LOCAL_ERASER_METHODS",
     "LOCAL_EXTRA",
     "LOCAL_LEDGER_METHODS",
     "LOCAL_METHODS",
@@ -201,6 +204,28 @@ LOCAL_BACKUP_METHODS: frozenset[str] = frozenset(
         "mark_backup_snapshot",
         # 崩溃恢复：uploading → pending
         "reset_uploading_snapshots",
+    }
+)
+
+#: **安全擦除**（阶段 6 收尾）：把本机库擦干净的那一个方法。
+#:
+#: **为什么它是第五块"本机独有"**（前四块是导入台账、知识库快照、快照打包、待传队列）：
+#:
+#: - **不进 ``LOCAL_METHODS``**：那是"``MetaStore`` 的哪些方法归本机"的划分，而这个方法
+#:   **不在 ``MetaStore`` 上**——它操作的是**本机那个库文件**（主库 + ``-wal`` + ``-shm``），
+#:   服务器档根本没有这份文件（它的数据在 PG 里，那里的处置是 NAS 自己的访问控制，R14）；
+#: - **也不是 KB 域**：它连表都不看，纯粹是文件级的收尾（抹零 + 重建 + 收 WAL）。
+#:
+#: 它与前四块同一套登记手法：单独一块清单 + 单独一个 ``StoreBundle`` 字段 ``eraser``
+#: + 用**同一个** ``SqliteMetaStore`` 实例。接口契约见 ``app/storage/base.py`` 的
+#: ``LocalEraser``；真身在 ``sqlite_impl/connection.py`` 的 ``Database.secure_erase``。
+#:
+#: 谁用它：``services/credentials.py``（凭据迁移器清完明文之后的收尾那一下，唯一的调用方）；
+#: 它经 ``StoreBundle.eraser`` 拿到（服务器档那个字段恒为 ``None``）。
+LOCAL_ERASER_METHODS: frozenset[str] = frozenset(
+    {
+        # 抹零 → VACUUM → wal_checkpoint(TRUNCATE)，三件事一次做完（边车不用重启）
+        "secure_erase",
     }
 )
 

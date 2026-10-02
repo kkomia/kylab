@@ -4,13 +4,16 @@
 
 ## 两条最强的判据（方案 §4.3-4）
 
-1. **库文件原始字节里 grep 哨兵串 → 0 命中**（收编 + 清页之后）；
+1. **库文件原始字节里 grep 哨兵串 → 0 命中**（收编 + 清页之后）——**同一次运行里、
+   不重启、不关库**，主库 / ``-wal`` / ``-shm`` 三个文件一起看（阶段 6 时这一条只能
+   退到"进程退出之后"，因为那时够不到收 WAL 那一步；见 `LocalEraser.secure_erase`）；
 2. **变异验证**：同一份现场**不跑迁移**时那些串查得到——否则第 1 条可能只是因为
    "查的地方本来就没有东西"（这条与阶段 2 那条擦洗判据同一手法）。
 
-两处都用了"**先关库再读字节**"的手法：本机库是 WAL 模式，明文的最近一份提交先落在
-``-wal`` 里，只有一次 ``wal_checkpoint(TRUNCATE)``（``Database.close()`` 会做）之后
-主库文件才是"这件事的全部"。这也正是判据要问的东西——**用户盘上那些字节能被谁捡到**。
+变异验证那一段仍然先"关库再读字节"：本机库是 WAL 模式，写进去的明文先落在 ``-wal``
+里，关库那一次 ``wal_checkpoint(TRUNCATE)`` 之后它才落进主库文件——那样这份证据与"迁移
+之后"的形态是同一种（都读主库 + 伴生文件），两段可比。判据问的东西始终是同一个：
+**用户盘上那些字节能被谁捡到**。
 
 ## 现场长什么样
 
@@ -114,6 +117,16 @@ def _grep(data_dir: Path, needle: str) -> int:
     return hits
 
 
+def _per_file(data_dir: Path, needle: str) -> dict[str, int]:
+    """库的那三个文件里各命中几次（**按文件报**：失败时一眼看得出是哪一份没擦干净）。"""
+    return {
+        name: (data_dir / name).read_bytes().count(needle.encode("utf-8"))
+        if (data_dir / name).exists()
+        else 0
+        for name in ("kylab.db", "kylab.db-wal", "kylab.db-shm")
+    }
+
+
 def _all_plaintext(data_dir: Path) -> dict[str, int]:
     needles = {
         "search": SEARCH_SENTINEL,
@@ -130,12 +143,19 @@ def _all_plaintext(data_dir: Path) -> dict[str, int]:
 def test_migrating_moves_the_plaintext_out_of_the_database_bytes(data_dir: Path) -> None:
     """收编之后：**两处该迁的明文在数据目录里 0 命中**，三处"只登记"的原样留着。
 
-    变异验证在上面那一段断言里：不跑迁移时两者都查得到（第 2~3 行）——否则
-    "0 命中"可能只是因为查错了地方。
+    三段各自的角色：
+
+    1. **变异验证**（收编前）：关门之后再 grep，两处明文都查得到——否则"0 命中"可能只是
+       查错了地方（先关库是为了让那份证据落在主库文件里，WAL 只在进程活着时是必需的）；
+    2. **收编**：`CredentialsService.migrate()` 跑一遍（它收尾会调 `secure_erase`）；
+    3. **判据（这一轮升级的地方）**：**同一次运行里、不重启、不关库**，三个文件都 0 命中。
+       阶段 6 时这里还得先 `reset_stores()`（关库）才干净——因为当时 `-wal` 里的旧帧
+       要等 `Database.close()` 那次检查点才消失；现在三件事（抹零 / VACUUM / 收 WAL）
+       在 `migrate()` 里一次做完。
     """
     stores = _stores(data_dir)
     _seed(stores)
-    _close()
+    _close()  # 只为变异验证那一段：让明文落进主库文件再查
 
     before = _all_plaintext(data_dir)
     assert before["search"] > 0, "没跑迁移时这份明文查得到（变异验证）"
@@ -145,10 +165,20 @@ def test_migrating_moves_the_plaintext_out_of_the_database_bytes(data_dir: Path)
     stores = _stores(data_dir)
     keychain = InMemorySecretStore()
     report = CredentialsService(stores, keychain).migrate()
-    _close()
+    # **不关库、不重启**：判据就在这一次运行里成立
+    assert _per_file(data_dir, SEARCH_SENTINEL) == {
+        "kylab.db": 0,
+        "kylab.db-wal": 0,
+        "kylab.db-shm": 0,
+    }, "收编过的明文不该还能在盘上捡到（三个文件都要干净）"
+    assert _per_file(data_dir, MODEL_SENTINELS["prov_1"]) == {
+        "kylab.db": 0,
+        "kylab.db-wal": 0,
+        "kylab.db-shm": 0,
+    }
 
     after = _all_plaintext(data_dir)
-    assert after["search"] == 0, "收编过的明文不该还能在盘上捡到"
+    assert after["search"] == 0
     assert after["model:prov_1"] == 0 and after["model:prov_2"] == 0
     assert after["registered:mineru.token"] > 0, "只登记的那两处**本来就该留着**"
     assert after["registered:paddleocr.token"] > 0
@@ -238,8 +268,12 @@ def test_a_leftover_plaintext_whose_value_is_already_in_the_keychain_is_cleaned(
     assert len(report.skipped) == 3
     assert all("已经" in item["reason"] for item in report.skipped)
     assert stores.meta.get_setting(SEARCH_KEY) is None
-    _close()
-    assert _grep(data_dir, SEARCH_SENTINEL) == 0
+    # 跳过也算"这一轮干过活"：清页那一步照样跑（不然库里那份重复的永远清不掉）
+    assert _per_file(data_dir, SEARCH_SENTINEL) == {
+        "kylab.db": 0,
+        "kylab.db-wal": 0,
+        "kylab.db-shm": 0,
+    }
 
 
 def test_the_keychain_wins_when_it_holds_a_different_value(data_dir: Path) -> None:
@@ -456,3 +490,63 @@ def test_the_cli_nas_token_needs_an_origin(
 
     assert code == 1
     assert "--origin" in capsys.readouterr().err
+
+
+def test_a_bundle_without_an_eraser_still_shrinks_the_pages(data_dir: Path) -> None:
+    """没有擦除面时（``eraser`` 为 ``None``）退回 ``vacuum()``：不崩，但**只做得到一半**。
+
+    这一档在真实部署里不存在（钥匙串不可用时 ``migrate`` 一开始就抛了），可接口上它是个
+    合法状态——所以行为要写死并钉住：空闲页照样收（主库干净），但 **WAL 那几帧收不掉**
+    （那正是 ``secure_erase`` 存在的理由）。它也是 `MetaStore.vacuum()` 至今仍被用到的
+    两个调用点之一（另一个是管理员那个"存储维护 → 整理"）。
+    """
+    from dataclasses import replace
+
+    stores = _stores(data_dir)
+    _seed(stores)
+    bare = replace(stores, eraser=None)
+
+    report = CredentialsService(bare, InMemorySecretStore()).migrate()
+
+    assert report.ok is True and report.pending_migration == 0
+    assert _per_file(data_dir, SEARCH_SENTINEL)["kylab.db"] == 0, "至少主库是干净的"
+
+
+def test_a_busy_wal_checkpoint_becomes_a_conflict_not_a_500(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """收 WAL 撞上别的读者 → ``ConflictError``（409）——**迁移本身是成功的**。
+
+    为什么值得一条用例：这一步的失败不是"没迁成"，而是"收尾没做完"。原样把
+    ``StorageError`` 抛到端点上会变成 500「服务端出错了」——那句话把"重跑一次这一步
+    就好"藏了起来（而它确实可重跑：抹零 / VACUUM / 收 WAL 三个动作都幂等）。
+
+    现场造法同 ``test_secure_erase.py``：另开一条连接持一个**旧**读事务，之后往库上写
+    一帧——检查点只能复制到那个读者的位置。``busy_timeout`` 与重试次数在这里调到最小
+    （两处都在**建库之前**调，新连接才会用上这个口径），否则为了造现场要等十几秒。
+    """
+    from app.core.exceptions import ConflictError
+    from app.storage.sqlite_impl import connection as connection_module
+    from app.storage.sqlite_impl.connection import Database
+
+    monkeypatch.setattr(connection_module, "BUSY_TIMEOUT_MS", 0)
+    monkeypatch.setattr(connection_module, "_WAL_TRUNCATE_ATTEMPTS", 1)
+    stores = _stores(data_dir)
+    _seed(stores)
+    reader = Database(data_dir / "kylab.db", allow_multiple_instances=True)
+    reader.open()
+    conn = reader.connection()
+    try:
+        conn.execute("BEGIN")
+        conn.execute("SELECT count(*) FROM conversations").fetchone()
+        stores.meta.set_setting("llm.temperature", "0.9")
+
+        with pytest.raises(ConflictError) as raised:
+            CredentialsService(stores, InMemorySecretStore()).migrate()
+    finally:
+        conn.execute("ROLLBACK")
+        reader.close()
+
+    message = str(raised.value)
+    assert "-wal" in message and "重跑一次" in message, "要说清哪一步没成、下一步做什么"
+    assert stores.meta.get_setting(SEARCH_KEY) is None, "库里那份已经清了（迁移那几步是成功的）"
