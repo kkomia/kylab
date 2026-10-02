@@ -14,7 +14,7 @@
  *
  * 网络一律替身：这些用例一条真请求都不发出去。
  */
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -55,6 +55,10 @@ function providerStatus(overrides: Partial<LocalBackup['provider']> = {}): Local
     app_version: '0.1.1',
     capabilities: { retention: { keep: 3, policy: 'keep_n' } },
     devices: [{ device_id: 'dev-1' }],
+    // M5 收口（`f7eb285`）：三栏本机配置（永远出现）
+    enabled: true,
+    include_workspace: false,
+    every_hours: 24,
     ...overrides,
   }
 }
@@ -328,13 +332,14 @@ describe('① 状态块：三态 + 两种"不能收快照"分开显示', () => {
       expect(calls.some((call) => call === `PATCH ${SHELL_BASE}/api/v1/local/backup`)).toBe(true),
     )
 
-    await user.click(
-      within(screen.getByTestId('backup-enabled')).getByRole('button', { name: '关掉' }),
-    )
-    await user.click(
-      within(screen.getByTestId('backup-include-workspace')).getByRole('button', { name: '带上' }),
-    )
-    await user.type(screen.getByLabelText('每多少小时自动打一份'), '6')
+    // 两栏开关是**真值回填**的：拨一下就是 PATCH 那一个键
+    await user.click(within(screen.getByTestId('backup-enabled')).getByRole('switch'))
+    await user.click(within(screen.getByTestId('backup-include-workspace')).getByRole('switch'))
+    // 间隔输入框回填的是当前值（24），改掉再存
+    const hoursInput = screen.getByLabelText('每多少小时自动打一份')
+    expect(hoursInput).toHaveValue('24')
+    await user.clear(hoursInput)
+    await user.type(hoursInput, '6')
     await user.click(screen.getByRole('button', { name: '保存间隔' }))
 
     const fetchMock = vi.mocked(fetch)
@@ -345,6 +350,116 @@ describe('① 状态块：三态 + 两种"不能收快照"分开显示', () => {
     expect(bodies).toContainEqual({ enabled: false })
     expect(bodies).toContainEqual({ include_workspace: true })
     expect(bodies).toContainEqual({ every_hours: 6 })
+  })
+
+  /* ---------------- M5 收口（`f7eb285`）：三栏直接读值，不再从人话反推 ---------------- */
+
+  it('① 三栏按后端给的值渲染（关 / 带上 / 12 小时）', async () => {
+    setBackupStatusForTest(
+      payload({
+        provider: providerStatus({
+          enabled: false,
+          include_workspace: true,
+          every_hours: 12,
+        }),
+      }),
+    )
+
+    renderPage()
+
+    const enabledRow = await screen.findByTestId('backup-enabled')
+    expect(within(enabledRow).getByText('关掉了')).toBeInTheDocument()
+    // 开关本身就是"关着"那一态（真值回填，不是按钮）
+    expect(within(enabledRow).getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+
+    const workspaceRow = screen.getByTestId('backup-include-workspace')
+    expect(within(workspaceRow).getByText('带上')).toBeInTheDocument()
+    expect(within(workspaceRow).getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+
+    // 间隔输入框回填 12，提示里也说得出来
+    expect(screen.getByLabelText('每多少小时自动打一份')).toHaveValue('12')
+    expect(screen.getByTestId('backup-every-hours').textContent).toContain(
+      '现在是每 12 小时自动打一份',
+    )
+  })
+
+  it('② 保存之后界面跟着回到新值（PATCH 的响应带回新三栏）', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(
+      payload({
+        provider: providerStatus({ enabled: true, include_workspace: false, every_hours: 24 }),
+      }),
+    )
+    routes.push({
+      method: 'PATCH',
+      match: '/local/backup',
+      reply: () =>
+        json(
+          payload({
+            provider: providerStatus({ enabled: false, include_workspace: true, every_hours: 6 }),
+          }),
+        ),
+    })
+
+    renderPage()
+
+    await user.click(within(await screen.findByTestId('backup-enabled')).getByRole('switch'))
+
+    // 拨完之后（PATCH 回来的整包写进模块）三栏都按新值显示
+    await waitFor(() =>
+      expect(within(screen.getByTestId('backup-enabled')).getByRole('switch')).toHaveAttribute(
+        'aria-checked',
+        'false',
+      ),
+    )
+    expect(within(screen.getByTestId('backup-enabled')).getByText('关掉了')).toBeInTheDocument()
+    expect(
+      within(screen.getByTestId('backup-include-workspace')).getByText('带上'),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('每多少小时自动打一份')).toHaveValue('6')
+  })
+
+  it('③ 不再依赖那句人话：reason 换一句完全不同的措辞，开关态照旧显示正确', async () => {
+    setBackupStatusForTest(
+      payload({
+        provider: providerStatus({
+          state: 'unconfigured',
+          available: false,
+          // 关掉那一档后端现在给的是别的措辞（这里再换一句更不像的）
+          reason: '这台机器还没接备份提供者：去「备份」里填一个地址',
+          base_url: '',
+          enabled: false,
+          include_workspace: false,
+          every_hours: 0,
+        }),
+      }),
+    )
+
+    renderPage()
+
+    const row = await screen.findByTestId('backup-enabled')
+    // 开关态只看 `enabled`（老实现是从 `base_url` 空 + reason 里有没有"被关掉"推的）
+    expect(within(row).getByText('关掉了')).toBeInTheDocument()
+    expect(within(row).getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+
+    // 反向也一样：开着的时候，哪怕原因句里带着"关掉"字样，也不许把开关画成关
+    cleanup()
+    setBackupStatusForTest(
+      payload({
+        provider: providerStatus({
+          state: 'unconfigured',
+          available: false,
+          reason: '地址是空的（不是被关掉）',
+          base_url: '',
+          enabled: true,
+        }),
+      }),
+    )
+    renderPage()
+
+    const openRow = await screen.findByTestId('backup-enabled')
+    expect(within(openRow).getByText('打开')).toBeInTheDocument()
+    expect(within(openRow).getByRole('switch')).toHaveAttribute('aria-checked', 'true')
   })
 })
 

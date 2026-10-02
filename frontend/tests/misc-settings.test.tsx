@@ -795,6 +795,9 @@ describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
         snapshot_reason: '',
         protocol_version: 1,
         capabilities: { retention: { keep: 3 } },
+        enabled: true,
+        include_workspace: false,
+        every_hours: 24,
       },
       backlog: {
         queued: 2,
@@ -870,16 +873,15 @@ describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
     // 地址那一格是后端解析后的地址
     expect(screen.getByLabelText('备份地址')).toHaveValue('http://nas:8000')
     expect(screen.getByRole('button', { name: '恢复默认' })).toBeInTheDocument()
-    // 三个读不回来的键是**动作**（不摆一个可能摆错的开关）
+    // 三栏现在是**读回来的真值**（M5 收口 `f7eb285`）：开关回填当前态、输入框回填当前值
+    const enabledRow = screen.getByTestId('settings-backup-enabled')
+    expect(within(enabledRow).getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+    expect(within(enabledRow).getByText('打开')).toBeInTheDocument()
     expect(
-      within(screen.getByTestId('settings-backup-enabled')).getByRole('button', { name: '打开' }),
-    ).toBeInTheDocument()
-    expect(
-      within(screen.getByTestId('settings-backup-include-workspace')).getByRole('button', {
-        name: '带上',
-      }),
-    ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '保存间隔' })).toBeDisabled() // 没填就不发
+      within(screen.getByTestId('settings-backup-include-workspace')).getByRole('switch'),
+    ).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByLabelText('每多少小时自动打一份')).toHaveValue('24')
+    expect(screen.getByRole('button', { name: '保存间隔' })).toBeDisabled() // 没改过就不发
   })
 
   it('改开关走 PATCH，只发那一个键（凭据类键一个都不带）', async () => {
@@ -890,9 +892,7 @@ describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
     renderMisc(<SettingsModal open onClose={() => undefined} />)
     await user.click(await screen.findByRole('button', { name: '备份' }))
     await user.click(
-      within(await screen.findByTestId('settings-backup-enabled')).getByRole('button', {
-        name: '关掉',
-      }),
+      within(await screen.findByTestId('settings-backup-enabled')).getByRole('switch'),
     )
 
     await waitFor(() => {
@@ -900,6 +900,35 @@ describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
       expect(String(patch?.[0])).toContain('/local/backup')
       expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ enabled: false })
     })
+  })
+
+  it('三栏按后端给的值渲染（关 / 带上 / 12 小时）——这一节读的是同一份数据', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(
+      backupPayload({
+        provider: {
+          ...backupPayload().provider,
+          enabled: false,
+          include_workspace: true,
+          every_hours: 12,
+        },
+      }),
+    )
+    stubBackupNetwork()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '备份' }))
+
+    const enabledRow = await screen.findByTestId('settings-backup-enabled')
+    expect(within(enabledRow).getByText('关掉了')).toBeInTheDocument()
+    expect(within(enabledRow).getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+    expect(
+      within(screen.getByTestId('settings-backup-include-workspace')).getByText('带上'),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('每多少小时自动打一份')).toHaveValue('12')
+    expect(screen.getByTestId('settings-backup-every-hours').textContent).toContain(
+      '现在是每 12 小时自动打一份',
+    )
   })
 
   it('提供者连不上时这一节照旧在（判据不是 "ready"）', async () => {

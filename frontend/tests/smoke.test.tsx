@@ -8,6 +8,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '@/app/App'
+import { resetBackupStore } from '@/api/backup'
 import { SESSION_TOKEN_STORAGE_KEY, setSessionToken, useSessionStore } from '@/lib/session'
 
 vi.mock('@/api/auth', async (importOriginal) => {
@@ -173,6 +174,17 @@ describe('应用壳', () => {
    * 在 `tests/backup-gate.test.tsx` 里逐条钉着。
    */
   it('`/backup` 落在备份页（本机档专属那一页挂上了路由）', { timeout: 15_000 }, async () => {
+    // **这一条只看路由挂没挂上**，与"这台机器上有没有边车在跑"无关：开发机上真有一套
+    // 边车时（`.tmp/m5-evidence/` 那种真机物证），`/backup` 是"本机档"、页面会照常渲染，
+    // 那句"只有本机档才有"就不会出现——所以这里把模块状态清干净、`fetch` 换成一律失败，
+    // 让这一档稳定落在"浏览器档"上（跑起来不会因为旁边有没有边车而红）。
+    resetBackupStore()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('这一条用例不发真请求')
+      }),
+    )
     window.history.pushState({}, '', '/backup')
     render(<App />)
 
@@ -182,6 +194,7 @@ describe('应用壳', () => {
       },
       { timeout: 12_000, interval: 50 },
     )
+    vi.unstubAllGlobals()
   })
 })
 

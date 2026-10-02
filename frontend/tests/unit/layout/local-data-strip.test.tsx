@@ -63,6 +63,9 @@ function backupPayload(overrides: Partial<LocalBackup> = {}): LocalBackup {
       credential: 'configured',
       snapshot_available: true,
       snapshot_reason: '',
+      enabled: true,
+      include_workspace: false,
+      every_hours: 24,
     },
     backlog: {
       queued: 0,
@@ -527,6 +530,9 @@ describe('顶栏状态条：备份那一行（M5 阶段 7）', () => {
           credential: 'configured',
           snapshot_available: false,
           snapshot_reason: '',
+          enabled: true,
+          include_workspace: false,
+          every_hours: 24,
         },
       }),
     )

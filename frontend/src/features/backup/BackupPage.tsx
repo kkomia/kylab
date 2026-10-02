@@ -25,14 +25,18 @@
  * 提供者三态与队列读数**在同一个响应里**（`GET /local/backup`），所以这一页只用
  * `useBackupStatus()` 一个订阅（模块级单份：设置里那一节、顶栏那条摘要读的是同一个结论）。
  *
- * ## 那三个"读不回来"的运行期键为什么是动作按钮，不是开关
+ * ## 四个可改项：三栏**读得回来**（2026-10-02 收口，`f7eb285`）
  *
- * `BackupProviderOut` 没有回 `enabled` / `include_workspace` / `every_hours` 这三栏
- * （它们只写得进去、读不回来），所以这里**不摆一个可能摆错的开关**：
- * 「打开 / 关掉 / 带上 / 不带」是**动作**（按下去就是按你选的设下去，回来的结论当场刷新），
- * 而"远端开关现在什么状态"由 `copy.ts::remoteSwitchVerdict` 从后端自己的解析规则推出来，
- * 推不出来时显示"读不到"。地址那一格是例外——它在响应里（`base_url`），所以照知识库那一节
- * 的"输入 + 保存 + 恢复默认"来。
+ * `GET /local/backup` 的 `provider` 块现在带回 `enabled` / `include_workspace` /
+ * `every_hours` 三栏（**三态都给**：远端连不上时也能显示当前配置），所以：
+ *
+ * - 远端开关与「带工作区产物」摆成**真值回填的开关**（当前是哪一态一眼看得出，
+ *   拨一下就 `PATCH` 那一个键）；
+ * - 间隔输入框**回填当前值**（`0` = 只手动）；
+ * - 地址那一格本来就在响应里（`base_url`），照知识库那一节的"输入 + 保存 + 恢复默认"。
+ *
+ * 这三栏曾经读不回来，界面只好从 `base_url` 是否非空 / `reason` 那句人话里反推开关态
+ * ——那套反推已经**删掉**（`copy.ts` 里也没有了），现在一律直接读值。
  */
 import { useCallback, useEffect, useState } from 'react'
 
@@ -62,6 +66,7 @@ import {
 import { notifyError, notifySuccess } from '@/features/misc/shared/toast'
 import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
+import { Switch } from '@/ui/switch'
 
 import { RestoreWizard, type RestoreTarget } from './RestoreWizard'
 import {
@@ -75,14 +80,16 @@ import {
   capabilityLines,
   deletedText,
   deleteMissingText,
+  enabledLabel,
+  everyHoursNowText,
+  everyHoursText,
+  includeWorkspaceLabel,
   pointLine,
   pointsUnavailableText,
   queueKindLabel,
   queueRowLine,
   queueStateLabel,
   quotaText,
-  remoteSwitchLabel,
-  remoteSwitchVerdict,
   snapshotCapabilityText,
   snapshotCreatedText,
 } from './copy'
@@ -155,14 +162,23 @@ function StatusBlock({ view }: { view: BackupView }) {
   const provider = view.provider
   /** 地址那一格：`null` = 还没动过，跟着后端解析后的地址走（保存后回到这个状态）。 */
   const [draft, setDraft] = useState<string | null>(null)
-  /** 间隔那一格：同上（后端没回这一栏，所以屏幕上它只是"这一次要设成多少"）。 */
-  const [hours, setHours] = useState('')
+  /** 间隔那一格：同上——`null` = 还没动过，**默认回填后端给的那个值**。 */
+  const [hours, setHours] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const resolved = provider?.base_url ?? ''
   const address = draft ?? resolved
   const edited = draft !== null && draft.trim() !== resolved
-  const verdict = remoteSwitchVerdict(provider)
+  /**
+   * 间隔：**回填当前值**（后端给的就是"现在生效的那个数"）；只在动过之后才允许保存。
+   *
+   * `every_hours` 认不出来时（界面比边车新）输入框留空、提示里说"读不到"——
+   * 填一个数照样能保存，但不假装知道现在是多少。
+   */
+  const currentHours = provider?.every_hours
+  const filledHours = typeof currentHours === 'number' ? String(currentHours) : ''
+  const hoursText = hours ?? filledHours
+  const hoursEdited = hours !== null && hours.trim() !== filledHours
   const caps = provider ? capabilityLines(provider) : []
 
   /** 四个可改项共用同一条 PATCH；后端写完会立刻重探并把最新整包回给我们。 */
@@ -171,6 +187,7 @@ function StatusBlock({ view }: { view: BackupView }) {
     try {
       const next = await patchLocalBackup(body)
       setDraft(null)
+      setHours(null)
       notifySuccess(
         next.provider.available
           ? `${done}（已重探：${backupStateLabel(next.provider.state)}）`
@@ -254,45 +271,48 @@ function StatusBlock({ view }: { view: BackupView }) {
           </div>
 
           {/* -------------------------------------------------- 远端开关 */}
+          {/* 当前态**读后端那一栏**（`provider.enabled`）：拨一下就是 `PATCH {enabled}` */}
           <div className="m-row" data-testid="backup-enabled">
             <div className="m-row-main">
               <span className="m-row-label">远端开关</span>
-              <span className="m-row-value">{remoteSwitchLabel(verdict)}</span>
+              <span className="m-row-value">{enabledLabel(provider.enabled)}</span>
             </div>
-            <Button
-              disabled={saving}
-              onClick={() => void patch({ enabled: true }, '远端开关已打开')}
-            >
-              打开
-            </Button>
-            <Button
-              disabled={saving}
-              onClick={() => void patch({ enabled: false }, '远端开关已关掉')}
-            >
-              关掉
-            </Button>
+            {/* 读不到当前值时**不摆开关**：摆一个"关着"的开关等于把不知道画成关着 */}
+            {provider.enabled === undefined ? null : (
+              <Switch
+                checked={provider.enabled}
+                disabled={saving}
+                aria-label="远端开关"
+                onCheckedChange={(next) =>
+                  void patch({ enabled: next }, next ? '远端开关已打开' : '远端开关已关掉')
+                }
+              />
+            )}
           </div>
           <p className="m-row-note">{ENABLED_NOTE}</p>
 
-          {/* -------------------------------------------------- 自动间隔 */}
+          {/* -------------------------------------------------- 自动间隔（回填当前值） */}
           <div className="m-edit-form" data-testid="backup-every-hours">
             <label className="m-edit-field">
               <span className="m-edit-label">每多少小时自动打一份</span>
               <Input
-                value={hours}
+                value={hoursText}
                 aria-label="每多少小时自动打一份"
                 onChange={(event) => setHours(event.target.value)}
               />
             </label>
-            <p className="m-edit-hint">{EVERY_HOURS_NOTE}</p>
+            <p className="m-edit-hint">
+              {everyHoursNowText(currentHours)}
+              {EVERY_HOURS_NOTE}
+            </p>
           </div>
           <div className="m-edit-actions">
             <Button
-              disabled={saving || !/^\d+$/.test(hours.trim())}
+              disabled={saving || !hoursEdited || !/^\d+$/.test(hoursText.trim())}
               onClick={() =>
                 void patch(
-                  { every_hours: Number(hours.trim()) },
-                  `已设为每 ${hours.trim()} 小时自动打一份`,
+                  { every_hours: Number(hoursText.trim()) },
+                  `已设为${everyHoursText(Number(hoursText.trim()))}`,
                 )
               }
             >
@@ -300,25 +320,29 @@ function StatusBlock({ view }: { view: BackupView }) {
             </Button>
           </div>
 
-          {/* -------------------------------------------------- 含工作区 */}
+          {/* -------------------------------------------------- 含工作区（同样是回填的真值） */}
           <div className="m-row" data-testid="backup-include-workspace">
             <div className="m-row-main">
               <span className="m-row-label">快照带工作区产物</span>
-              <span className="m-row-value">{INCLUDE_WORKSPACE_NOTE}</span>
+              <span className="m-row-value">
+                {includeWorkspaceLabel(provider.include_workspace)}
+              </span>
             </div>
-            <Button
-              disabled={saving}
-              onClick={() => void patch({ include_workspace: true }, '快照会带上工作区产物')}
-            >
-              带上
-            </Button>
-            <Button
-              disabled={saving}
-              onClick={() => void patch({ include_workspace: false }, '快照不带工作区产物')}
-            >
-              不带
-            </Button>
+            {provider.include_workspace === undefined ? null : (
+              <Switch
+                checked={provider.include_workspace}
+                disabled={saving}
+                aria-label="快照带工作区产物"
+                onCheckedChange={(next) =>
+                  void patch(
+                    { include_workspace: next },
+                    next ? '快照会带上工作区产物' : '快照不带工作区产物',
+                  )
+                }
+              />
+            )}
           </div>
+          <p className="m-row-note">{INCLUDE_WORKSPACE_NOTE}</p>
 
           {/* ---------------------------------------- 凭据（只读，永不回显） */}
           <div className="m-row">

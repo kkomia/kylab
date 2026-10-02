@@ -60,6 +60,10 @@ function providerStatus(overrides: Partial<LocalBackup['provider']> = {}): Local
     app_version: '0.1.1',
     capabilities: { snapshot: { available: true, max_blob_bytes: 2 * 1024 ** 3 } },
     devices: [{ device_id: 'dev-1', snapshots: 1 }],
+    // M5 收口（`f7eb285`）：这三栏是**本机侧的配置事实**，永远出现
+    enabled: true,
+    include_workspace: false,
+    every_hours: 24,
     ...overrides,
   }
 }
@@ -622,6 +626,83 @@ describe('⑦ 订阅契约（M4 那条"渲染一次 + 挂订阅之间状态变�
 
     expect(view.result.current.backlog?.queued).toBe(9)
     view.unmount()
+  })
+})
+
+describe('⑨ 三栏配置事实（M5 收口 `f7eb285`：直接读值，不再从人话反推）', () => {
+  it('GET 回来的三栏原样落在状态上（关 / 带上 / 12 小时）', async () => {
+    answers.push(
+      json(
+        payload({
+          provider: providerStatus({
+            enabled: false,
+            include_workspace: true,
+            every_hours: 12,
+          }),
+        }),
+      ),
+    )
+
+    await loadBackupStatus()
+
+    expect(backupView().provider?.enabled).toBe(false)
+    expect(backupView().provider?.include_workspace).toBe(true)
+    expect(backupView().provider?.every_hours).toBe(12)
+  })
+
+  it('提供者连不上时这三栏照样在（它们是本机侧的配置事实，不是远端结论）', async () => {
+    // 不 ready 那一档**真实形状**：`protocol_version` / `capabilities` / `devices` 键都不在
+    // （响应模型 `exclude_unset`），而三栏配置事实在
+    answers.push(
+      json(
+        payload({
+          provider: {
+            state: 'unavailable',
+            available: false,
+            reason: '连不上那台 NAS',
+            checked_at: null,
+            base_url: '',
+            credential: 'missing',
+            snapshot_available: false,
+            snapshot_reason: '',
+            enabled: false,
+            include_workspace: true,
+            every_hours: 0,
+          },
+        }),
+      ),
+    )
+
+    await loadBackupStatus()
+
+    // 不 ready 时 `protocol_version` 那几栏**根本不在**，而这三栏必须在
+    expect(backupView().provider?.protocol_version).toBeUndefined()
+    expect(backupView().provider?.enabled).toBe(false)
+    expect(backupView().provider?.include_workspace).toBe(true)
+    expect(backupView().provider?.every_hours).toBe(0)
+  })
+
+  it('开关态与 `base_url` / `reason` 无关：地址空 + 原因说是"没填地址"，enabled 照旧为真', async () => {
+    answers.push(
+      json(
+        payload({
+          provider: providerStatus({
+            state: 'unconfigured',
+            available: false,
+            reason: '这台机器还没接备份提供者',
+            base_url: '',
+            enabled: true,
+          }),
+        }),
+      ),
+    )
+
+    await loadBackupStatus()
+
+    expect(backupView().provider?.base_url).toBe('')
+    expect(backupView().provider?.enabled).toBe(true)
+    // 老实现在这一档只能说"读不到"（反推不出来），现在读得到
+    expect(backupView().provider?.enabled).not.toBeUndefined()
   })
 })
 

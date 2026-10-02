@@ -14,11 +14,12 @@
  *
  * 措辞全部从 `features/backup/copy.ts` 出（那一份是这条界面的唯一文案出口）。
  *
- * ## 那三个"读不回来"的键
+ * ## 那三栏现在**读得回来**（M5 收口，`f7eb285`）
  *
- * `BackupProviderOut` 只回地址（`base_url`），`enabled` / `every_hours` /
- * `include_workspace` 三栏读不回来——所以这里与备份页一样，摆的是**动作**
- * （打开 / 关掉 / 带上 / 不带 / 保存间隔）而不是可能摆错的开关，见 `copy.ts` 那段说明。
+ * `BackupProviderOut` 补上了 `enabled` / `include_workspace` / `every_hours`
+ * （**三态都给**：远端连不上时照样回当前配置），所以这里与备份页一样直接读值：
+ * 两栏开关**真值回填**（拨一下就是 `PATCH` 那一个键），间隔输入框回填当前值。
+ * 从 `base_url` / `reason` 那句人话反推开关态的那套已经删掉。
  */
 import { useState } from 'react'
 
@@ -30,9 +31,11 @@ import {
   EVERY_HOURS_NOTE,
   INCLUDE_WORKSPACE_NOTE,
   backupStateLabel,
+  enabledLabel,
+  everyHoursNowText,
+  everyHoursText,
+  includeWorkspaceLabel,
   queueSummaryText,
-  remoteSwitchLabel,
-  remoteSwitchVerdict,
   snapshotCreatedText,
 } from '@/features/backup/copy'
 
@@ -40,20 +43,25 @@ import { ErrorLine, SkeletonBlock, StatusTag } from '../shared/composites'
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
+import { Switch } from '@/ui/switch'
 
 export function BackupSection() {
   const backup = useBackupStatus()
   const provider = backup.provider
   /** 地址那一格：`null` = 还没动过（保存后回到这个状态）。 */
   const [draft, setDraft] = useState<string | null>(null)
-  const [hours, setHours] = useState('')
+  /** 间隔那一格：同上——`null` = 还没动过，输入框里就是后端给的那个值。 */
+  const [hours, setHours] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const resolved = provider?.base_url ?? ''
   const address = draft ?? resolved
   const edited = draft !== null && draft.trim() !== resolved
-  const verdict = remoteSwitchVerdict(provider)
+  const currentHours = provider?.every_hours
+  const filledHours = typeof currentHours === 'number' ? String(currentHours) : ''
+  const hoursText = hours ?? filledHours
+  const hoursEdited = hours !== null && hours.trim() !== filledHours
 
   /** 四个可改项共用同一条 PATCH（后端写完立刻重探并把最新整包回给我们）。 */
   async function patch(body: Parameters<typeof patchLocalBackup>[0], done: string): Promise<void> {
@@ -61,6 +69,7 @@ export function BackupSection() {
     try {
       const next = await patchLocalBackup(body)
       setDraft(null)
+      setHours(null)
       notifySuccess(
         next.provider.available
           ? `${done}（已重探：${backupStateLabel(next.provider.state)}）`
@@ -153,46 +162,48 @@ export function BackupSection() {
                 </Button>
               </div>
 
-              {/* ------------------------------------------------ 远端开关 */}
+              {/* ------------------------------------------------ 远端开关（读回来的真值） */}
               <div className="m-row" data-testid="settings-backup-enabled">
                 <div className="m-row-main">
                   <span className="m-row-label">远端开关</span>
-                  <span className="m-row-value">{remoteSwitchLabel(verdict)}</span>
+                  <span className="m-row-value">{enabledLabel(provider.enabled)}</span>
                 </div>
-                <Button
-                  disabled={saving}
-                  onClick={() => void patch({ enabled: true }, '远端开关已打开')}
-                >
-                  打开
-                </Button>
-                <Button
-                  disabled={saving}
-                  onClick={() => void patch({ enabled: false }, '远端开关已关掉')}
-                >
-                  关掉
-                </Button>
+                {/* 读不到当前值时**不摆开关**（摆一个"关着"的等于把不知道画成关着） */}
+                {provider.enabled === undefined ? null : (
+                  <Switch
+                    checked={provider.enabled}
+                    disabled={saving}
+                    aria-label="远端开关"
+                    onCheckedChange={(next) =>
+                      void patch({ enabled: next }, next ? '远端开关已打开' : '远端开关已关掉')
+                    }
+                  />
+                )}
               </div>
               <p className="m-row-note">{ENABLED_NOTE}</p>
 
-              {/* ------------------------------------------------ 自动间隔 */}
+              {/* ------------------------------------------------ 自动间隔（回填当前值） */}
               <div className="m-edit-form" data-testid="settings-backup-every-hours">
                 <label className="m-edit-field">
                   <span className="m-edit-label">每多少小时自动打一份</span>
                   <Input
-                    value={hours}
+                    value={hoursText}
                     aria-label="每多少小时自动打一份"
                     onChange={(event) => setHours(event.target.value)}
                   />
                 </label>
-                <p className="m-edit-hint">{EVERY_HOURS_NOTE}</p>
+                <p className="m-edit-hint">
+                  {everyHoursNowText(currentHours)}
+                  {EVERY_HOURS_NOTE}
+                </p>
               </div>
               <div className="m-edit-actions">
                 <Button
-                  disabled={saving || !/^\d+$/.test(hours.trim())}
+                  disabled={saving || !hoursEdited || !/^\d+$/.test(hoursText.trim())}
                   onClick={() =>
                     void patch(
-                      { every_hours: Number(hours.trim()) },
-                      `已设为每 ${hours.trim()} 小时自动打一份`,
+                      { every_hours: Number(hoursText.trim()) },
+                      `已设为${everyHoursText(Number(hoursText.trim()))}`,
                     )
                   }
                 >
@@ -200,25 +211,29 @@ export function BackupSection() {
                 </Button>
               </div>
 
-              {/* ------------------------------------------------ 含工作区 */}
+              {/* ------------------------------------------------ 含工作区（同样回填） */}
               <div className="m-row" data-testid="settings-backup-include-workspace">
                 <div className="m-row-main">
                   <span className="m-row-label">快照带工作区产物</span>
-                  <span className="m-row-value">{INCLUDE_WORKSPACE_NOTE}</span>
+                  <span className="m-row-value">
+                    {includeWorkspaceLabel(provider.include_workspace)}
+                  </span>
                 </div>
-                <Button
-                  disabled={saving}
-                  onClick={() => void patch({ include_workspace: true }, '快照会带上工作区产物')}
-                >
-                  带上
-                </Button>
-                <Button
-                  disabled={saving}
-                  onClick={() => void patch({ include_workspace: false }, '快照不带工作区产物')}
-                >
-                  不带
-                </Button>
+                {provider.include_workspace === undefined ? null : (
+                  <Switch
+                    checked={provider.include_workspace}
+                    disabled={saving}
+                    aria-label="快照带工作区产物"
+                    onCheckedChange={(next) =>
+                      void patch(
+                        { include_workspace: next },
+                        next ? '快照会带上工作区产物' : '快照不带工作区产物',
+                      )
+                    }
+                  />
+                )}
               </div>
+              <p className="m-row-note">{INCLUDE_WORKSPACE_NOTE}</p>
 
               {/* ------------------------------------------------ 凭据（只读） */}
               <div className="m-row">

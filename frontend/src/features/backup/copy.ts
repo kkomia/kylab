@@ -43,45 +43,45 @@ export function backupStateLabel(state: string): string {
 }
 
 /**
- * 「远端开关」现在是什么状态（`on` / `off` / `unknown`）。
+ * 「远端开关」现在是什么状态（**直接读后端给的那一栏**）。
  *
- * ## 为什么是"推"出来的，而不是读来的
+ * 2026-10-02 收口（`f7eb285`）：`BackupProviderOut` 补上了 `enabled`，所以这里不再从
+ * `base_url` 是否非空 / `reason` 那句人话里有没有"被关掉"去**反推**——那种反推既耦合
+ * 后端的措辞、又有一档只能说"读不到"。现在这一栏与其余几栏一样是**读来的事实**。
  *
- * `BackupProviderOut` **没有回**那三个运行期键（开关 / 间隔 / 含工作区）——它们只写得进
- * 去、读不回来。所以这一行**不摆一个可能摆错的开关**，而是：
+ * 口径提醒（别把它与"能不能连上"混了）：`enabled` 说的是"用户有没有把开关关掉"，
+ * 没填地址那一档它同样是 `true`；"现在通不通"由 `state` / `available` 说。
  *
- * 1. `base_url` 非空 → **打开**。这条判据来自后端自己的解析顺序
- *    （`resolve_backup_target`：关掉时**连地址都不再解析**，`base_url` 必为空），
- *    所以"地址非空"反过来就证明它是开着的；
- * 2. 地址空、但原因里带着"被关掉"那句 → **关掉了**（后端为这一档单独写了一句人话）；
- * 3. 两种情况都不是 → **读不到**（"没填地址"与"被关掉"在响应里长得一样）。
- *
- * 第 2 条读的是后端那句人话，所以它是**耦合**的：那句话改了，这一行退化成"读不到"
- * ——**不会错报成"打开"**，这是这条推断里唯一不能让步的一点（界面说错比说不知道坏得多）。
- * 后端哪天把这三个键回出来，这里就换成直接读值（阶段 8 登记）。
+ * `undefined` 只可能来自**界面比边车新**（老边车没回这三栏）：那时说"读不到"，
+ * 绝不按假值显示成"关掉了"（说错比说不知道坏得多）。
  */
-export type RemoteSwitchVerdict = 'on' | 'off' | 'unknown'
-
-/** 后端那句"被关掉了"里一定出现的那半句（见 `remoteSwitchVerdict` 第 2 条）。 */
-const DISABLED_MARKER = '被关掉'
-
-export function remoteSwitchVerdict(provider: BackupProviderStatus | null): RemoteSwitchVerdict {
-  if (!provider) return 'unknown'
-  if (provider.base_url) return 'on'
-  if (provider.reason?.includes(DISABLED_MARKER)) return 'off'
-  return 'unknown'
+export function enabledLabel(enabled: boolean | undefined): string {
+  if (enabled === undefined) return '读不到'
+  return enabled ? '打开' : '关掉了'
 }
 
-export function remoteSwitchLabel(verdict: RemoteSwitchVerdict): string {
-  if (verdict === 'on') return '打开'
-  if (verdict === 'off') return '关掉了'
-  return '读不到'
+/** 「快照带不带工作区产物」那一栏的状态（同样是读来的；认不出来就说读不到）。 */
+export function includeWorkspaceLabel(included: boolean | undefined): string {
+  if (included === undefined) return '读不到'
+  return included ? '带上' : '不带'
 }
 
-/** 那三个读不回来的运行期键各自的一句说明（改动立刻生效，所以不说"保存后重启"这类话）。 */
+/** 「每多少小时自动打一份」那栏的状态：`0` = 只手动（后端给的口径）。 */
+export function everyHoursText(hours: number | undefined): string {
+  if (typeof hours !== 'number' || !Number.isFinite(hours)) return '读不到'
+  if (hours <= 0) return '只手动打，不自动'
+  return `每 ${formatCount(hours)} 小时自动打一份`
+}
+
+/** 间隔那一行"现在是多少"的整句（认不出来时如实说读不到，不摆一个编出来的数）。 */
+export function everyHoursNowText(hours: number | undefined): string {
+  return typeof hours === 'number' ? `现在是${everyHoursText(hours)}。` : '当前值读不到。'
+}
+
+/** 那三栏各自的一句说明（改动立刻生效，所以不说"保存后重启"这类话）。 */
 export const ENABLED_NOTE = '关掉之后快照照旧在本机打，但不往远端传。'
 export const EVERY_HOURS_NOTE = '填 0 = 只手动打。改了立刻生效。'
-export const INCLUDE_WORKSPACE_NOTE = '默认不带：工作区里是你自己的项目文件。'
+export const INCLUDE_WORKSPACE_NOTE = '工作区里是你自己的项目文件，默认不带。'
 export const CREDENTIAL_NOTE = '凭据只从桌面壳那侧来，本机库里没有它。'
 
 /**

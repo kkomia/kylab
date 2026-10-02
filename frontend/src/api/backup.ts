@@ -128,6 +128,14 @@ export interface BackupProviderDevice {
  *
  * **不 ready 时后四段键都不出现**（响应模型 `exclude_unset`）——所以它们是可选的，
  * 而界面据此**不摆空行**（"没探到"与"真没有"是两件事）。
+ *
+ * ## 末尾三栏是**本机侧的配置事实**（与远端结论无关，所以是必填）
+ *
+ * `enabled` / `include_workspace` / `every_hours` 是"用户把它设成了什么"，
+ * **三态都给**（`unavailable` / `unconfigured` 时照样在）：远端连不上时界面照样要显示
+ * 当前配置。它们曾经只写得进去、读不回来，界面只好从 `reason` 那句人话里反推开关态
+ * ——那种反推在 2026-10-02 的收口里已经删掉，现在**直接读值**，所以这几个键
+ * **不是可选的**（契约就是"永远出现"）。
  */
 export interface BackupProviderStatus {
   state: BackupProviderState | string
@@ -149,6 +157,15 @@ export interface BackupProviderStatus {
   app_version?: string
   capabilities?: BackupCapabilities
   devices?: BackupProviderDevice[]
+  /**
+   * 用户有没有把远端开关关掉（**与"现在能不能连上"无关**：后者由 `state` / `available` 说，
+   * 所以"没填地址"那一档它也是 `true`）。界面据此把开关画对。
+   */
+  enabled: boolean
+  /** 快照里带不带工作区产物（默认不带）。 */
+  include_workspace: boolean
+  /** 每多少小时自动打一份（`0` = 只手动；默认 24）。 */
+  every_hours: number
 }
 
 /**
