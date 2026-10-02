@@ -19,6 +19,7 @@ mod config;
 mod logfile;
 mod probe;
 mod resources;
+mod secrets;
 mod sidecar;
 mod signin;
 
@@ -33,6 +34,8 @@ use tauri::{
     AppHandle, Manager, State, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
 };
 use tauri_plugin_opener::OpenerExt;
+
+use secrets::SecretStore;
 
 /// 本地配置页 / 引导页（`shell/src/index.html`，编译进 exe）。
 /// 窗口先落在这里——**这一页能调 Tauri 命令**（它是壳自己的页面），
@@ -158,6 +161,28 @@ impl Shell {
         resources::resources_root(&self.data_dir)
     }
 
+    /// **壳手里那把长期钥匙从哪儿来**（M5 阶段 6B）：**先系统钥匙串、再 `config.json`**。
+    ///
+    /// 顺序不能反：首启动的迁移已经把老值搬进钥匙串并清了配置那一栏，而在这之后用户换钥匙、
+    /// 服务器那边吊销，改的只会是钥匙串那一份——先看配置的话读到的是**过期的**那份。
+    /// 回落那一支只在两处走到：老配置第一次启动（迁移那一步还没轮到它）、以及这台机器上
+    /// 没有可用的钥匙串（那种档里明文本来就只能留在配置里，与 Python 侧 `use_keychain` 同一判断）。
+    ///
+    /// `origin` 是"这份钥匙属于哪个源"（`scheme://host:port`）：钥匙串里那一条就是按它找的。
+    fn api_key_for(&self, origin: &str) -> Option<String> {
+        if let Ok(target) = secrets::nas_token_target(origin) {
+            if let Some(value) = secrets::Keychain.get(&target) {
+                return Some(value);
+            }
+        }
+        let config = self.config.lock().ok()?;
+        if config.has_key_for(origin) {
+            config.api_key.clone()
+        } else {
+            None
+        }
+    }
+
     /// 兜底前端的候选根（包内那份 → 开发态仓库那份，见 `resources::bundled_roots`）。
     fn bundled_roots(&self) -> Vec<std::path::PathBuf> {
         resources::bundled_roots(&self.resource_dir)
@@ -195,22 +220,33 @@ struct StartupInfo {
 
 #[tauri::command]
 fn startup(window: WebviewWindow, shell: State<'_, Shell>) -> StartupInfo {
-    let config = shell.config.lock().expect("配置锁被污染了");
+    // ⚠️ 锁**只在块里**拿着：下面 `shell.api_key_for` 自己还要再锁一次
+    // （std 的 `Mutex` 不可重入，跨过去就是死锁）
+    let (server, recent, key_name, user_name) = {
+        let config = shell.config.lock().expect("配置锁被污染了");
+        (
+            config.server.clone(),
+            config.recent.clone(),
+            config.key_name.clone(),
+            config.user_name.clone(),
+        )
+    };
     let running = shell.sidecar.info();
     StartupInfo {
         role: window.label().to_string(),
-        server: config.server.clone(),
-        recent: config.recent.clone(),
+        // **有钥匙吗**：钥匙串优先（见 `Shell::api_key_for`）——首启动迁移之后配置里那一栏
+        // 是空的，只看配置的话用户每次开机都会被再要一次用户名密码
+        has_key: server
+            .as_deref()
+            .map(|origin| shell.api_key_for(origin).is_some())
+            .unwrap_or(false),
+        server,
+        recent,
         shell_version: env!("CARGO_PKG_VERSION").to_string(),
         resources: resources::status(&shell.resources_root(), &shell.bundled_roots()),
         app_url: resources::app_url().to_string(),
-        has_key: config
-            .server
-            .as_deref()
-            .map(|origin| config.has_key_for(origin))
-            .unwrap_or(false),
-        key_name: config.key_name.clone(),
-        user_name: config.user_name.clone(),
+        key_name,
+        user_name,
         sidecar_port: running.as_ref().map(|info| info.port),
         sidecar_base: running.map(|info| info.base),
     }
@@ -256,12 +292,12 @@ async fn connect(
         .await
         .map_err(|error| format!("探活没跑起来：{error}"))??;
 
-    let (has_key, saved_key_name) = {
+    // **有没有能用的钥匙**：钥匙串优先（见 `Shell::api_key_for`）——首启动的迁移把老值
+    // 搬进钥匙串、清掉配置那一栏之后，只看配置会让用户每次开机都被再要一次用户名密码。
+    let has_key = shell.api_key_for(&probed.origin).is_some();
+    let saved_key_name = {
         let config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
-        (
-            config.has_key_for(&probed.origin),
-            config.key_name.clone(),
-        )
+        config.key_name.clone()
     };
     let username = username.unwrap_or_default();
     let password = password.unwrap_or_default();
@@ -273,6 +309,8 @@ async fn connect(
     let mut key_prefix: Option<String> = None;
     let mut key_permission: Option<String> = None;
     let mut fresh_key: Option<(signin::IssuedKey, String)> = None;
+    // 刚领的那把到底进没进钥匙串（下面那句"登录成功"的日志要如实说，见 `migrate` 那条纪律）
+    let mut key_in_keychain = false;
 
     if !has_key || wants_sign_in {
         if username.trim().is_empty() || password.is_empty() {
@@ -319,6 +357,23 @@ async fn connect(
             // 否则下次启动会以为"没有钥匙"而再来一次登录。
             config.remember(&probed.origin);
             config.remember_key(&key.id, &key.name, display_name, &key.token);
+            // **刚领到的钥匙直接进系统钥匙串**（M5 阶段 6B）：读路径以钥匙串为准，所以这一把
+            // 必须先写进去——不然按源同名的旧那份会把新钥匙盖掉（换了账号却还在用旧钥匙）。
+            // 写不进去（这台机器没有可用的钥匙串）就走老路：明文留在配置里，下次启动再试迁移。
+            let stored = secrets::nas_token_target(&probed.origin)
+                .and_then(|target| secrets::Keychain.set(&target, &key.token));
+            match stored {
+                Ok(()) => {
+                    config.api_key = None;
+                    key_in_keychain = true;
+                }
+                Err(error) => logfile::log(
+                    &shell.dir,
+                    &format!(
+                        "新钥匙没能进系统钥匙串（{error}）：这次仍留在 config.json 里，下次启动再试迁移"
+                    ),
+                ),
+            }
         }
         // **新生成的设备 id 必须落盘**（`fresh_device`）：不然下次启动又换一个，
         // 服务器那边会把同一台电脑看成一串不同的电脑（工作区一次次"没了"）。
@@ -363,7 +418,11 @@ async fn connect(
     if signed_in {
         logfile::log(
             &shell.dir,
-            "登录成功：会话令牌用完即弃（**没有落盘**），长期凭据是配置里那把 API Key",
+            if key_in_keychain {
+                "登录成功：会话令牌用完即弃（**没有落盘**），长期凭据已进系统钥匙串"
+            } else {
+                "登录成功：会话令牌用完即弃（**没有落盘**），长期凭据仍留在 config.json 里（这台机器上钥匙串写不进去）"
+            },
         );
     }
 
@@ -372,14 +431,13 @@ async fn connect(
     // 顺序**必须在导航之前**：前端一加载就可能打 `/turn/stream`，那时边车得已经在听。
     // 用户在表单里主动点连接（`remember`）或刚换了钥匙 → 先把旧的停掉再起新的
     // （换服务器/换账号都得换一套 base+token）。
-    let key = {
-        let config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
-        config.api_key.clone()
-    };
+    // **起边车要的那把 token**：钥匙串优先、回落 config.json（理由见 `Shell::api_key_for`）。
+    // 两处都没有就是空串——边车那边照既有那句"壳里还没有钥匙"如实拒 ✓
+    let token = shell.api_key_for(&probed.origin).unwrap_or_default();
     // **这台电脑的设备 id**：备份按设备对齐恢复点，边车拿它认"这台电脑"（缺了就如实拒）。
     // 上面那段（连上服务器那一刻）已经生成过一次；这里再兜一次底，保证传下去的一定是个
     // 真 id（配置被人手改坏成这样时才走得到）。**短锁**：只读一下配置（要生成就顺手落盘），
-    // 与旁边 `key` 一样**不把锁跨 await 持有**。
+    // 与上面取 token 那一步一样**不把锁跨 await 持有**。
     let device_id = {
         let mut config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
         if config.ensure_device_id() {
@@ -396,7 +454,6 @@ async fn connect(
     let manager = Arc::clone(&shell.sidecar);
     let restart = remember || fresh_key.is_some();
     let api_base = format!("{}/api/v1", probed.url.trim_end_matches('/'));
-    let token = key.unwrap_or_default();
     let started = tauri::async_runtime::spawn_blocking(move || {
         if restart {
             manager.stop();
@@ -865,7 +922,44 @@ fn main() {
                 .path()
                 .resource_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let config = config::Config::load(&dir);
+            let mut config = config::Config::load(&dir);
+            // ------------------------------------------------------------ 老明文收编（M5 阶段 6B）
+            //
+            // **读配置这一步顺手迁一次**：升级前那份 `config.json` 里躺着明文 API Key，
+            // 它的家在系统钥匙串（`kylab:nas_token:<归一化地址>`）。
+            // 放在这里（启动时、一次）而不是别的调用点：迁移是"每次启动都会跑一下"的动作，
+            // 幂等那一半（配置里已空）就在 `migrate_api_key` 的入口上。
+            // **写不进钥匙串时明文原样留着**（见 `Migration::Failed`）——宁可留着，也别让用户
+            // 的钥匙凭空没了；那种情况如实记一行日志。
+            match config.migrate_api_key(&dir, &secrets::Keychain) {
+                config::Migration::Moved => logfile::log(
+                    &dir,
+                    "老配置里那把明文钥匙已迁进系统钥匙串（config.json 那一栏已清）",
+                ),
+                config::Migration::AlreadyStored => logfile::log(
+                    &dir,
+                    "系统钥匙串里已经是同一把钥匙：config.json 那一栏的明文已清（**没有重写**）",
+                ),
+                config::Migration::KeychainWins => logfile::log(
+                    &dir,
+                    "系统钥匙串里已有一把不同的钥匙（以它为准）：config.json 那一栏那份旧的已清",
+                ),
+                config::Migration::Failed(reason) => logfile::log(
+                    &dir,
+                    &format!(
+                        "钥匙没能进系统钥匙串（{reason}）：明文仍留在 config.json 里，下次启动再试（这台机器上钥匙串{}可用）",
+                        // 这一句要能分清"这台机器根本没有钥匙串"（Linux 桌面/容器）与
+                        // "有、但这次写失败了"——两者的下一步不一样
+                        if secrets::Keychain.available() { "是" } else { "不" }
+                    ),
+                ),
+                config::Migration::NoOrigin => logfile::log(
+                    &dir,
+                    "配置里有钥匙但没有能用的地址：这次不迁（明文原样留着）",
+                ),
+                // 每次启动的正常那一支：什么都不记（日志不该被"没事发生"淹掉）
+                config::Migration::Nothing => {}
+            }
             // 资源目录**启动时确保存在**（规格 §5.3 第一条）：不存在时协议层要读它，
             // 而"目录不存在"与"目录里没有可用版本"在日志里该是两件事
             let resources_root = resources::resources_root(&data_dir);
@@ -998,6 +1092,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::window_size_for;
+    // 端到端那条（真机、真钥匙串）
+    use super::secrets::{Keychain, SecretStore};
+    use std::sync::{Arc, Mutex};
 
     /// 这台开发机：3840 宽的屏按 225% 缩放 → 工作区约 1707×910 逻辑像素。
     #[test]
@@ -1038,5 +1135,69 @@ mod tests {
             let (width, _) = window_size_for(Some((area, 1040.0)));
             assert!(width >= 1488.0, "{area} 宽的屏上默认只有 {width}");
         }
+    }
+
+    /// **端到端那条链，真机、真钥匙串**（M5 阶段 6B）：
+    /// 老 `config.json` 里的明文 → 启动那一步迁移 → [`Shell::api_key_for`] 从**系统钥匙串**读回来。
+    ///
+    /// 三段各自都有用例（命名规则 / 迁移三条 / 读路径本身），这条把它们接起来：它证明的是
+    /// "启动这一步真的把老明文收编了、而读路径真的从钥匙串里取"——名字差一个字符、编码不是
+    /// UTF-8、或者读的还是配置那一栏，这条都会红。用的是探针地址（**不碰用户真正的 nas 那一条**），
+    /// 跑完自己删。
+    #[test]
+    fn the_migrated_key_is_read_back_out_of_the_real_keychain() {
+        // 真钥匙串用例之间要串起来（凭据管理器对并发的写/删不是原子的，见 `secrets::real`）
+        let _guard = super::secrets::real::lock();
+        if !Keychain.available() {
+            eprintln!("跳过：这台机器上没有可用的系统钥匙串");
+            return;
+        }
+        let origin = "http://cargo-migrate.invalid:8090";
+        let target = super::secrets::nas_token_target(origin).expect("拼得出名字");
+        let _ = Keychain.delete(&target); // 上一次跑到一半留下的可能性
+
+        let dir = std::env::temp_dir().join("kylab-desktop-test-real-migration");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建目录");
+        std::fs::write(
+            super::config::Config::path(&dir),
+            format!(r#"{{"server":"{origin}","api_key":"kylab_sk_端到端明文"}}"#),
+        )
+        .expect("写一份升级前的旧配置");
+
+        // ① 启动那一步：读配置 + 迁移（`main.rs` 的 `setup()` 里就是这两句）
+        let mut loaded = super::config::Config::load(&dir);
+        let outcome = loaded.migrate_api_key(&dir, &Keychain);
+
+        // ② 读路径：**生产代码就是它**（`connect` / `startup` 都问这一个函数）
+        let shell = super::Shell {
+            dir: dir.clone(),
+            data_dir: dir.clone(),
+            resource_dir: dir.clone(),
+            config: Mutex::new(loaded),
+            device_name: "端到端用例".to_string(),
+            sidecar: Arc::new(super::sidecar::Manager::new()),
+        };
+        let read_back = shell.api_key_for(origin);
+        let read_other_origin = shell.api_key_for("http://别的源.invalid:8090");
+        let on_disk =
+            std::fs::read_to_string(super::config::Config::path(&dir)).unwrap_or_default();
+        // 收干净：**先删再断言**，失败也不留东西
+        let _ = Keychain.delete(&target);
+        let left_behind = Keychain.get(&target);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(outcome, super::config::Migration::Moved, "{outcome:?}");
+        assert_eq!(
+            read_back.as_deref(),
+            Some("kylab_sk_端到端明文"),
+            "读路径要从钥匙串里取到它（配置那一栏已经清了，取到就只可能来自钥匙串）"
+        );
+        assert_eq!(read_other_origin, None, "别的源不该读到这把钥匙");
+        assert!(
+            !on_disk.contains("kylab_sk_端到端明文"),
+            "盘上那份明文该清了：{on_disk}"
+        );
+        assert_eq!(left_behind, None, "跑完不该留下东西");
     }
 }

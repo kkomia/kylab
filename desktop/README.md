@@ -114,7 +114,7 @@ cargo run --release    # 快得多，推荐
 
 ```
 <resource_dir>\sidecar-runtime\Scripts\python.exe -m app.sidecar
-    --server {base}/api/v1 --token {config.json 里的 api_key} --port 8765
+    --server {base}/api/v1 --token {系统钥匙串里的 API Key} --port 8765
     --workspace <壳数据目录>\workspace --data-dir <壳数据目录>
     --device-id {config.json 里的 device_id}
 ```
@@ -293,7 +293,7 @@ backend/.venv/Scripts/python.exe desktop/scripts/make-icons.py
 
 | 东西 | 位置（Windows） | 说明 |
 | --- | --- | --- |
-| 配置 | `%APPDATA%\com.kylab.desktop\config.json` | 就一个 `server` 字段 + 最近用过的几条 + 这台电脑的 `device_id` + 领到的 API Key |
+| 配置 | `%APPDATA%\com.kylab.desktop\config.json` | 就一个 `server` 字段 + 最近用过的几条 + 这台电脑的 `device_id`（**长期凭据不在这里：那把 API Key 进系统钥匙串**，`kylab:nas_token:<地址>`，控制面板 → 凭据管理器里看得到） |
 | 日志 | `%APPDATA%\com.kylab.desktop\kylab-desktop.log` | 一行一件事：启动（**界面从哪一份来**）、探活结果、资源更新、被拦掉的导航。托盘里「打开配置与日志」直接开这个文件夹 |
 | 热更新下来的界面 | `%APPDATA%\com.kylab.desktop\frontend-resources\` | `current` 指针（纯文本版本号）+ `v<版本>/dist/`（只留当前 + 上一版）。**整份删掉不会让壳打不开**：会退到包内兜底那份 |
 | 包内兜底界面 | `<exe 旁>\frontend-dist\` | 打包时收进去的 `frontend/dist`。绿色版要连它一起拷 |

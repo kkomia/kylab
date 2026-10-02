@@ -38,6 +38,10 @@ uuid = { version = "1", features = ["v4"] }
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
+    # 系统钥匙串（M5 阶段 6B）：`CredWriteW` / `CredReadW` / `CredDeleteW` / `CredFree`。
+    # **只是加 feature，不拉新包**（`Win32_Security_Credentials` → `Win32_Security` → `Win32`
+    # 全在同一个 `windows` crate 里，而它本来就在依赖树里，见 src/secrets.rs）。
+    "Win32_Security_Credentials",
     "Win32_System_JobObjects",
 ] }
 

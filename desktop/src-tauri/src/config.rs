@@ -1,7 +1,12 @@
-//! 壳的配置：**只存一个服务器地址**（外加最近用过的那几条、这台电脑的身份、
-//! 以及替用户领到的长期凭据）。
+//! 壳的配置：**只存一个服务器地址**（外加最近用过的那几条、这台电脑的身份）。
 //!
 //! 落在 `app_config_dir()/config.json`（Windows 是 `%APPDATA%\com.kylab.desktop\`）。
+//!
+//! **长期凭据不在这里了**（M5 阶段 6B）：那把钥匙的家是系统钥匙串
+//! （`kylab:nas_token:<归一化地址>`，见 `secrets` 模块）。`api_key` 那一栏**留着**是为了
+//! 读得动老配置——首次运行会把它迁进钥匙串并清掉（见 [`Config::migrate_api_key`]），
+//! 迁完之后它恒空。
+//!
 //! 手写读写而不是用 `tauri-plugin-store`：这里只有几个键，而"配置怎么不生效"
 //! 这类问题，一个肉眼可读、路径明确的 JSON 比插件的黑盒文件好排查。
 //!
@@ -40,8 +45,11 @@ pub struct Config {
     /// 是长期的那个（吊销在服务器的「API Keys」页），用户"配一次就一直用"。
     /// **密码一个字节都不落盘**（用户不该在配置文件里留下一份明文口令）。
     ///
-    /// 明文落盘是**有意的**：这台机器的这个用户目录本来就是"装着它就等于有权限"的边界；
-    /// 但**日志里绝不许出现它**（见 `main.rs` 里日志只写 id / 名字 / 前缀）。
+    /// **这一栏现在只是"老配置还读得动"**（M5 阶段 6B）：钥匙的家是系统钥匙串
+    /// （`kylab:nas_token:<归一化地址>`）。首次运行会把它迁进去并清掉这一栏
+    /// （[`Config::migrate_api_key`]）；迁移**写不进钥匙串时它原样留着**——宁可留着
+    /// 明文也不让用户丢钥匙（下次启动再试）。**日志里绝不许出现它**（见 `main.rs`
+    /// 里日志只写 id / 名字 / 前缀）。
     #[serde(default)]
     pub api_key: Option<String>,
     /// 钥匙的 id（`key_…`）：日志与界面用它来指认"是哪一把"。
@@ -53,6 +61,27 @@ pub struct Config {
     /// 领钥匙的那个账号（显示名优先，退回用户名）：只用于界面上说"你是谁"。
     #[serde(default)]
     pub user_name: Option<String>,
+}
+
+/// 老明文收编的结果（见 [`Config::migrate_api_key`]）。
+///
+/// 用类型而不是一个 `bool`：日志与用例都要能分清"迁了 / 钥匙串里本来就是同一把 /
+/// 钥匙串里那把不一样 / 写不进去"，而这四种在用户那边是三件不同的事
+/// （无事发生 / 已收编 / 丢了一次收编机会）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Migration {
+    /// 配置里本来就没有明文（或只有空白）：**什么都没做**——幂等的那一半。
+    Nothing,
+    /// 这次搬进钥匙串了。
+    Moved,
+    /// 钥匙串里已经是同一个值：只清掉配置那一栏，**不重写**钥匙串里那份。
+    AlreadyStored,
+    /// 钥匙串里有一份**不一样**的：以钥匙串为准，只清掉配置那一栏，**不覆盖**。
+    KeychainWins,
+    /// 配置里有明文但**没有地址**（或地址拼不出名字）：这次不迁，明文原样留着。
+    NoOrigin,
+    /// 写不进钥匙串：**配置那一栏原样留着**，下次启动再试（理由如实说）。
+    Failed(String),
 }
 
 impl Config {
@@ -130,10 +159,72 @@ impl Config {
         self.device_id = Some(uuid::Uuid::new_v4().to_string());
         true
     }
+
+    /// **首次运行把老明文搬进系统钥匙串**（M5 阶段 6B，方案 §4.2 #1）。
+    ///
+    /// 顺序与 Python 侧逐条对齐（`CredentialsService._move`）：**先写钥匙串、后清配置**。
+    /// 反过来的话，一次崩在中间就永久丢了一把钥匙（而"配置里还有明文"至少是可重跑的状态）。
+    ///
+    /// 三条硬要求各自落在哪里：
+    ///
+    /// - **幂等**：配置里没有明文时第一步就返回 [`Migration::Nothing`]（**一个字节都不写**）；
+    ///   钥匙串里已经是同一个值时走 [`Migration::AlreadyStored`]（**不重写**那把钥匙）——
+    ///   每次启动都会跑这一下，第二次之后走的都是这两支；
+    /// - **写失败就不清明文**：[`Migration::Failed`] 那一支**不碰 `api_key`、不落盘**。
+    ///   静默清掉等于用户那把钥匙没了，而钥匙串里什么都没有；
+    /// - **`api_key` 字段留在结构里**：老配置照旧读得出来，只是迁完之后恒空。
+    ///
+    /// 为什么不把它塞进 [`Config::load`]：`load` 是"读一个文件"的纯函数（很多用例在调它，
+    /// 其中就有带着明文的配置文件），而这一步要**注入一个钥匙串**、会**写盘**、还会**动系统**。
+    /// 分开之后，"迁移"这件事只有一个入口（`main.rs` 启动那一步）。
+    pub fn migrate_api_key(
+        &mut self,
+        dir: &Path,
+        store: &dyn crate::secrets::SecretStore,
+    ) -> Migration {
+        let plaintext = self.api_key.as_deref().unwrap_or_default().trim().to_string();
+        if plaintext.is_empty() {
+            // 空串不是秘密（与 Python 侧 `_items` 同一条）：这一支是**每次启动**都会走的
+            return Migration::Nothing;
+        }
+        let server = self.server.as_deref().unwrap_or_default().trim().to_string();
+        let Ok(target) = crate::secrets::nas_token_target(&server) else {
+            // 有钥匙却没有地址（或地址是空的）：名字拼不出来，**明文原样留着**
+            return Migration::NoOrigin;
+        };
+
+        let outcome = match store.get(&target) {
+            // 钥匙串里已经是同一个值：上一次迁过了，只剩配置里这份重复的
+            Some(current) if current == plaintext => Migration::AlreadyStored,
+            // 钥匙串里有一份**不一样**的：用户在这之后又改过（新值只落钥匙串），
+            // 所以以钥匙串为准，配置里这份是旧的——**不覆盖**（那会把用户的新值抹掉）
+            Some(_) => Migration::KeychainWins,
+            None => match store.set(&target, &plaintext) {
+                Ok(()) => Migration::Moved,
+                // 写不进去：**明文原样留着**，如实报，下次启动再试
+                Err(reason) => return Migration::Failed(reason),
+            },
+        };
+
+        // 走到这里：钥匙串里已经有一份能用的（刚写的，或本来就在的）→ 才动配置那一栏
+        self.api_key = None;
+        if let Err(error) = self.save(dir) {
+            // 盘上那份明文这次没清掉：下次启动会再走一遍（幂等），这里如实记一行
+            crate::logfile::log(
+                dir,
+                &format!(
+                    "钥匙已进系统钥匙串，但配置写不进去（{error}）：config.json 里那份明文这次没清掉"
+                ),
+            );
+        }
+        outcome
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 用例用的假钥匙串（真凭据管理器给不了"写不进去""已经有一份别的"这些状态）
+    use crate::secrets::fake::InMemoryStore;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("kylab-desktop-test-{name}"));
@@ -286,5 +377,148 @@ mod tests {
         config.device_id = Some("  ".to_string());
         assert!(config.ensure_device_id());
         assert_ne!(config.device_id.as_deref(), Some("  "));
+    }
+
+    // ---------------------------------------------------------------- 老明文收编（6B）
+
+    /// 一份"升级前"的配置：`api_key` 那一栏里躺着明文（老壳留下的那种）。
+    ///
+    /// `name` 每个用例各给一个：`temp_dir` 是按名字建的目录，**重名就会互相踩**
+    /// （用例是并行跑的，同一个目录里后跑的那个会把前一个的文件删掉）。
+    fn an_old_config_with_a_plaintext_key(name: &str) -> (PathBuf, Config) {
+        let dir = temp_dir(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            Config::path(&dir),
+            "{\"server\":\"http://nas:8090\",\"recent\":[\"http://nas:8090\"],\
+             \"api_key\":\"kylab_sk_明文\",\"key_id\":\"key_abc\",\
+             \"key_name\":\"桌面端 NAS\",\"user_name\":\"小又\"}",
+        )
+        .unwrap();
+        let config = Config::load(&dir);
+        assert_eq!(config.api_key.as_deref(), Some("kylab_sk_明文"), "读得出老明文");
+        (dir, config)
+    }
+
+    /// 老配置里那把明文钥匙：**首启动迁进钥匙串、配置里那一栏清掉**。
+    #[test]
+    fn the_plaintext_key_is_migrated_into_the_keychain_and_cleared() {
+        let (dir, mut config) = an_old_config_with_a_plaintext_key("migrate-moved");
+        let store = InMemoryStore::new();
+
+        let outcome = config.migrate_api_key(&dir, &store);
+
+        assert_eq!(outcome, Migration::Moved, "{outcome:?}");
+        assert!(config.api_key.is_none(), "迁完配置里那一栏该是空的");
+        assert_eq!(
+            store.names(),
+            vec!["kylab:nas_token:http://nas:8090".to_string()],
+            "名字就是两侧共用的那一条规则"
+        );
+        assert_eq!(
+            store.value("kylab:nas_token:http://nas:8090").as_deref(),
+            Some("kylab_sk_明文")
+        );
+        // 磁盘上那份也清了（"迁完还留一份明文"= 收编白做）
+        let on_disk = fs::read_to_string(Config::path(&dir)).unwrap();
+        assert!(!on_disk.contains("kylab_sk_明文"), "{on_disk}");
+        // 别的几栏一个都没动
+        let reloaded = Config::load(&dir);
+        assert_eq!(reloaded.server.as_deref(), Some("http://nas:8090"));
+        assert_eq!(reloaded.key_id.as_deref(), Some("key_abc"));
+        assert_eq!(reloaded.key_name.as_deref(), Some("桌面端 NAS"));
+        assert_eq!(reloaded.user_name.as_deref(), Some("小又"));
+    }
+
+    /// **幂等**：再跑一次是 no-op——不重写钥匙串里那把、配置那一栏还是空。
+    #[test]
+    fn the_migration_is_idempotent_and_never_rewrites() {
+        let (dir, mut config) = an_old_config_with_a_plaintext_key("migrate-idempotent");
+        let store = InMemoryStore::new();
+
+        assert_eq!(config.migrate_api_key(&dir, &store), Migration::Moved);
+        let writes = store.writes();
+
+        // 第二次启动：配置里已经空了 → **一个字节都不写**
+        assert_eq!(config.migrate_api_key(&dir, &store), Migration::Nothing);
+        assert_eq!(store.writes(), writes, "不该重写钥匙串");
+        assert_eq!(
+            store.value("kylab:nas_token:http://nas:8090").as_deref(),
+            Some("kylab_sk_明文")
+        );
+
+        // 手改回配置里还有同一份明文（上一次"写完钥匙串、还没清盘"那一刻崩了）：
+        // 也不重写，只把这份重复的清掉
+        config.api_key = Some("kylab_sk_明文".to_string());
+        assert_eq!(config.migrate_api_key(&dir, &store), Migration::AlreadyStored);
+        assert_eq!(store.writes(), writes, "同一个值不该再写一次");
+        assert!(config.api_key.is_none(), "这份重复的要清掉");
+        let on_disk = fs::read_to_string(Config::path(&dir)).unwrap();
+        assert!(!on_disk.contains("kylab_sk_明文"), "{on_disk}");
+    }
+
+    /// **写不了就别清明文**（R4 那条）：如实失败、`api_key` 原样留着、盘上那份也在
+    /// ——"不清就不算迁完"，用户下次启动还能用（而不是钥匙没了、钥匙串里也没有）。
+    #[test]
+    fn a_failed_keychain_write_leaves_the_plaintext_alone() {
+        let (dir, mut config) = an_old_config_with_a_plaintext_key("migrate-failed");
+        // 这台机器没有可用的钥匙串（Linux 桌面 / 容器 / CI 就是这一档）：`set` 明确失败
+        let store = InMemoryStore::unavailable();
+
+        let reason = match config.migrate_api_key(&dir, &store) {
+            Migration::Failed(reason) => reason,
+            other => panic!("应当如实失败（写不进钥匙串）：{other:?}"),
+        };
+
+        assert!(reason.contains("钥匙串"), "失败要说得出理由：{reason}");
+        assert_eq!(
+            config.api_key.as_deref(),
+            Some("kylab_sk_明文"),
+            "明文要原样留着"
+        );
+        let on_disk = fs::read_to_string(Config::path(&dir)).unwrap();
+        assert!(on_disk.contains("kylab_sk_明文"), "盘上那份也不许清：{on_disk}");
+        assert!(store.names().is_empty(), "什么都没写进去");
+    }
+
+    /// 钥匙串里已有一份**不一样**的（用户在这之后改过）：以钥匙串为准，**不覆盖**。
+    #[test]
+    fn a_keychain_value_wins_over_the_stale_plaintext() {
+        let (dir, mut config) = an_old_config_with_a_plaintext_key("migrate-keychain-wins");
+        let store = InMemoryStore::new();
+        store.seed("kylab:nas_token:http://nas:8090", "kylab_sk_新的");
+
+        let outcome = config.migrate_api_key(&dir, &store);
+
+        assert_eq!(outcome, Migration::KeychainWins, "{outcome:?}");
+        assert_eq!(store.writes(), 0, "**不许覆盖**钥匙串里那把新的");
+        assert_eq!(
+            store.value("kylab:nas_token:http://nas:8090").as_deref(),
+            Some("kylab_sk_新的")
+        );
+        assert!(config.api_key.is_none(), "配置里那份旧的清掉");
+    }
+
+    /// 没有地址（或地址是空的）：名字拼不出来 → **不迁**，明文原样留着；没有明文时
+    /// 是彻底的 no-op（**每次启动都会走这一支**，所以它连一个文件都不该写）。
+    #[test]
+    fn a_key_without_an_address_is_not_migrated() {
+        let dir = temp_dir("migrate-no-origin");
+        fs::create_dir_all(&dir).unwrap();
+        let store = InMemoryStore::new();
+        let mut config = Config::default();
+        config.api_key = Some("kylab_sk_明文".to_string());
+
+        assert_eq!(config.migrate_api_key(&dir, &store), Migration::NoOrigin);
+        assert_eq!(config.api_key.as_deref(), Some("kylab_sk_明文"));
+        assert!(store.names().is_empty());
+        assert!(!Config::path(&dir).exists(), "什么都没写");
+
+        config.api_key = None;
+        assert_eq!(config.migrate_api_key(&dir, &store), Migration::Nothing);
+        assert!(!Config::path(&dir).exists(), "没明文时也不该写盘");
+        // 空白串不算秘密（有人手改成 `""`）
+        config.api_key = Some("   ".to_string());
+        assert_eq!(config.migrate_api_key(&dir, &store), Migration::Nothing);
     }
 }
