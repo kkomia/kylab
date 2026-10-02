@@ -464,7 +464,7 @@ export async function getLocalBackup(): Promise<LocalBackup> {
  * `token` 类的键会被后端 422 拒掉。
  */
 export async function patchLocalBackup(patch: BackupPatch): Promise<LocalBackup> {
-  return run(async (token) => {
+  return run(async (token, gen) => {
     const payload = await requestLocal<LocalBackup>('/local/backup', {
       method: 'PATCH',
       body: JSON.stringify(patch),
@@ -474,7 +474,7 @@ export async function patchLocalBackup(patch: BackupPatch): Promise<LocalBackup>
         '备份响应不认识（没有 provider / backlog / snapshots：是不是本机后端比界面老？）',
       )
     }
-    apply(token, payload)
+    apply(token, gen, payload)
     return payload
   }, true)
 }
@@ -616,6 +616,24 @@ let inflightForced = false
 let newest = 0
 let applied = 0
 
+/**
+ * **状态被复位过几次**（`resetBackupStore()` / `setBackupStatusForTest()` 各 +1）。
+ *
+ * ## 为什么除了 `token`/`applied` 那对水位还要这一位
+ *
+ * `token`/`applied` 管的是"**同一次生命周期内**的新旧"：谁最后发出去，谁的结论算数。
+ * 但这条链上有一个**跨越复位的空档**：`requestLocal` 的第一次 `fetch` 并不发生在调用点，
+ * 而是**之后几拍**（`resolveLocalBase` 要先问壳要基址、再探一次活），所以"C 那一刻发出去
+ * 的读"完全可能在**复位之后**才真正打出去、才带回来一个结论。那时 `applied` 已经被复位
+ * 成 0，旧请求的 `token` 反而更大 → 水位那道闸门拦不住它 → 它把**复位之后**才摆好的那份
+ * 状态盖掉。
+ *
+ * 真机上的表现是"复位之后界面又闪回旧结论"；用例里的表现是"上一条用例的请求把这一条
+ * 注入的状态盖掉"（阶段 8 门禁上抓到过一次这种红，随机器快慢时有时无）。所以加这一位：
+ * **复位（含用例直接摆状态）之后，之前发出去的一律不算数**。
+ */
+let generation = 0
+
 function setStore(patch: Partial<BackupStore>): void {
   store = { ...store, ...patch }
   for (const listener of listeners) listener()
@@ -625,11 +643,15 @@ function setStore(patch: Partial<BackupStore>): void {
  * 单飞执行一次请求（三条搭配的理由与 `api/provider.ts::run` 逐条相同）：
  * 普通读 + 普通读合并；普通读 + 强制重探**不**合并（那一次读可能是改设置之前发出去的）；
  * 强制重探 + 强制重探合并。无论哪种，只有**最新**那一次的结论写进状态。
+ *
+ * `work` 还收一份**发起时的 `generation`**：结论回来时对一下这一位，复位之后就不许写
+ * （见 `generation` 那段说明）。
  */
-function run<T>(work: (token: number) => Promise<T>, force = false): Promise<T> {
+function run<T>(work: (token: number, gen: number) => Promise<T>, force = false): Promise<T> {
   if (inflight && (!force || inflightForced)) return inflight as Promise<T>
   const token = ++newest
-  const promise = work(token).finally(() => {
+  const gen = generation
+  const promise = work(token, gen).finally(() => {
     if (token === newest) {
       inflight = null
       inflightForced = false
@@ -640,7 +662,9 @@ function run<T>(work: (token: number) => Promise<T>, force = false): Promise<T> 
   return promise
 }
 
-function apply(token: number, data: LocalBackup): void {
+function apply(token: number, gen: number, data: LocalBackup): void {
+  // 复位（或用例直接摆状态）之后，**之前发出去的一律作废**（见 `generation`）
+  if (gen !== generation) return
   if (token < applied) return
   applied = token
   store = {
@@ -655,7 +679,8 @@ function apply(token: number, data: LocalBackup): void {
   for (const listener of listeners) listener()
 }
 
-function fail(token: number, cause: unknown): void {
+function fail(token: number, gen: number, cause: unknown): void {
+  if (gen !== generation) return
   const error = cause as (Error & { status?: number }) | undefined
   // 404 = 这一档**没有**这个端点（服务器档：备份的目的地就是它自己），与"本机档但读不到"
   // 是两件事——后者要让界面如实报"读不到"（不许静默）。
@@ -676,18 +701,18 @@ function fail(token: number, cause: unknown): void {
   for (const listener of listeners) listener()
 }
 
-function read(token: number): Promise<void> {
+function read(token: number, gen: number): Promise<void> {
   setStore({ loading: true })
   return getLocalBackup().then(
-    (data) => apply(token, data),
-    (cause: unknown) => fail(token, cause),
+    (data) => apply(token, gen, data),
+    (cause: unknown) => fail(token, gen, cause),
   )
 }
 
 /** 读一次（TTL 内不重问）。这是"挂载时读一次"用的那一条。 */
 export async function loadBackupStatus(): Promise<void> {
   if (store.fetchedAt > 0 && Date.now() - store.fetchedAt < BACKUP_TTL_MS) return
-  await run((token) => read(token))
+  await run((token, gen) => read(token, gen))
 }
 
 /**
@@ -698,7 +723,7 @@ export async function loadBackupStatus(): Promise<void> {
  * "NAS 又连上了吗"与"队列动了吗"，所以回来的整包直接写进状态。
  */
 export function refreshBackup(): Promise<void> {
-  return run(async (token) => {
+  return run(async (token, gen) => {
     setStore({ loading: true })
     try {
       const payload = await requestLocal<LocalBackup>('/local/backup', {
@@ -710,9 +735,9 @@ export function refreshBackup(): Promise<void> {
           '备份响应不认识（没有 provider / backlog / snapshots：是不是本机后端比界面老？）',
         )
       }
-      apply(token, payload)
+      apply(token, gen, payload)
     } catch (cause) {
-      fail(token, cause)
+      fail(token, gen, cause)
     }
   }, true)
 }
@@ -872,6 +897,8 @@ export function useBackupStatus(options: { enabled?: boolean } = {}): BackupView
 
 /** 用例用：把模块状态清干净（模块级状态必须靠调用方复位，与 `resetProviderStore` 同一条）。 */
 export function resetBackupStore(): void {
+  // 复位也**作废所有在飞的请求**（见 `generation`）：复位之后回来的结论不许写进来
+  generation += 1
   store = {
     data: null,
     settled: false,
@@ -899,6 +926,8 @@ export function setBackupStatusForTest(
   data: LocalBackup | null,
   options: { unsupported?: boolean; error?: string } = {},
 ): void {
+  // 直接摆状态同样是"从此刻起，之前发出去的都作废"（否则上一条用例的请求会盖掉它）
+  generation += 1
   store = {
     data,
     settled: options.unsupported === true || data !== null,
