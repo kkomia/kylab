@@ -47,9 +47,9 @@ from app.core.security import (
     verify_password,
 )
 from app.models.enums import UserRole
-from app.storage.base import SessionRecord, StoreBundle, UserRecord
+from app.storage.base import MetaStore, SessionRecord, StoreBundle, UserRecord
 
-__all__ = ["SESSION_TTL", "AuthService", "LoginResult"]
+__all__ = ["SESSION_TTL", "AuthService", "LoginResult", "ensure_url_signing_secret"]
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,31 @@ MIN_PASSWORD_CHARS = 8
 #: 下载签名密钥。首次 setup 生成一次并落库，之后长期不变——
 #: 凭据会轮换，而签出去的链接不该跟着失效。
 URL_SIGNING_SECRET_SETTING = "auth.url_signing_secret"  # noqa: S105
+
+
+def ensure_url_signing_secret(meta: MetaStore) -> str:
+    """把那条下载签名密钥准备好，回它的值（**幂等**：已经有就不动）。
+
+    两个档都要它，但入口不同：
+
+    - **服务器档**：``POST /auth/setup`` 里调它（``AuthService.setup`` 的第一步），
+      所以那一档的密钥从"首次初始化"来；
+    - **本机档**：**没有任何初始化流程**（它不挂 ``/auth/*``，也就永远跑不到 setup），
+      而它的 ``kylab.db`` 是全新的——不在组合根补这一下，那条键就永远是空的，
+      于是"下载签名"这条线上的每一个端点都回 401（头像 / 笔记配图 / 文档下载 /
+      产物预览），前端再把它当"登录失效"把人踢到登录页。
+
+    **幂等是硬要求**：已有就原样返回，绝不每次启动换一把——换了的话，所有已经发出去
+    的签名链接会一起失效（而"凭据轮换、链接不失效"正是这条键独立存在的原因）。
+    """
+    current = meta.get_setting(URL_SIGNING_SECRET_SETTING)
+    if current:
+        return str(current)
+    generated = secrets.token_urlsafe(32)
+    meta.set_setting(URL_SIGNING_SECRET_SETTING, generated)
+    logger.info("已生成下载签名密钥并落库（这条键原来没有：本机档由组合根补，服务器档来自初始化）")
+    return generated
+
 
 #: 哑哈希：用户不存在/没有口令时也拿它跑一遍 argon2，把"查无此人"与"口令错误"
 #: 拉到同一耗时——否则响应时间会泄露"这个用户名存在"（时序侧信道的用户枚举）。
@@ -149,12 +174,13 @@ class AuthService:
         return self._issue_session(user)
 
     def _ensure_signing_secret(self) -> None:
-        """下载签名密钥独立落库：它是密钥，不该复用任何用户凭据。"""
-        meta = self._stores.meta
-        if not meta.get_setting(URL_SIGNING_SECRET_SETTING):
-            # 直接用裸随机串，不借 generate_session_token：落库的是签名密钥不是
-            # 会话凭据，带上 kylab_st_ 前缀会让它看起来是另一种东西
-            meta.set_setting(URL_SIGNING_SECRET_SETTING, secrets.token_urlsafe(32))
+        """下载签名密钥独立落库：它是密钥，不该复用任何用户凭据。
+
+        生成那一段在 :func:`ensure_url_signing_secret` 里（本机档的组合根调的是**同一个**
+        函数）：两处各写一遍 token_urlsafe 就是两个"这把钥匙怎么来"的答案，
+        而它们迟早会漂（一处换了长度、另一处没换，签名就再也验不过）。
+        """
+        ensure_url_signing_secret(self._stores.meta)
 
     # ------------------------------------------------------------------ 登录
 
@@ -336,15 +362,12 @@ class AuthService:
         # 到顶先清已过锁定期的条目：spraying 随机用户名会把这张表慢慢撑大
         if len(self._failed) >= _MAX_FAILED_ENTRIES:
             now = time.monotonic()
-            self._failed = {
-                key: value for key, value in self._failed.items() if value[1] > now
-            }
+            self._failed = {key: value for key, value in self._failed.items() if value[1] > now}
         fails, _ = self._failed.get(username, (0, 0.0))
         fails += 1
-        locked_until = (
-            time.monotonic() + _LOCKOUT_SECONDS if fails >= _MAX_FAILED_ATTEMPTS else 0.0
-        )
+        locked_until = time.monotonic() + _LOCKOUT_SECONDS if fails >= _MAX_FAILED_ATTEMPTS else 0.0
         self._failed[username] = (fails, locked_until)
         if fails >= _MAX_FAILED_ATTEMPTS:
-            logger.warning("用户名「%s」连续登录失败 %d 次，锁定 %d 秒",
-                           username, fails, _LOCKOUT_SECONDS)
+            logger.warning(
+                "用户名「%s」连续登录失败 %d 次，锁定 %d 秒", username, fails, _LOCKOUT_SECONDS
+            )

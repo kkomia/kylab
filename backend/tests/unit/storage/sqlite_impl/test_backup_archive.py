@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services.auth import URL_SIGNING_SECRET_SETTING
 from app.services.runtime_config import SECRET_KEYS
 from app.storage.base import (
     ARTIFACT_IN_OBJECTS,
@@ -54,7 +55,19 @@ MCP_SENTINEL = "mcp_SENTINELtoken91bc7de2"
 SETTING_SENTINEL = "tavily_SENTINELsearch7de2a1f0"
 PREFIX_SENTINEL = "provider_SENTINELfamily4c8e"
 
-ALL_SENTINELS = (MODEL_SENTINEL, MCP_SENTINEL, SETTING_SENTINEL, PREFIX_SENTINEL)
+#: 本机自己的**签名材料**（``auth.url_signing_secret``）另用一个哨兵串：
+#: 它与其他几类不是一回事——那是本机档在组合根生成的一条（见
+#: ``services/auth.ensure_url_signing_secret``），**换一台机器重新生成更好**
+#: （签出去的链接本来就该重签），所以它同样不该跟着快照走。
+SIGNING_SENTINEL = "signing_SENTINELurlsecret4e7d"
+
+ALL_SENTINELS = (
+    MODEL_SENTINEL,
+    MCP_SENTINEL,
+    SETTING_SENTINEL,
+    PREFIX_SENTINEL,
+    SIGNING_SENTINEL,
+)
 
 
 @pytest.fixture
@@ -93,6 +106,13 @@ def _seed_secrets(db: Database) -> None:
                 "INSERT INTO app_settings (key, value, updated_at_ms) VALUES (?, ?, 1)",
                 (f"{prefix}demo_key", PREFIX_SENTINEL),
             )
+        # 真实的那条键（名字从常量取，不手抄）：它是 `auth.` 这一族的第一个成员，
+        # 而"整族排除"这条纪律要在这个**真名**上也成立（合成的 `auth.demo_key` 只证明
+        # 前缀匹配，证明不了"这条真的会被洗掉"）。
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at_ms) VALUES (?, ?, 1)",
+            (URL_SIGNING_SECRET_SETTING, SIGNING_SENTINEL),
+        )
 
 
 def _copy_path(tmp_path: Path) -> Path:
@@ -187,6 +207,10 @@ def test_an_unscrubbed_copy_would_contain_them(database: Database, tmp_path: Pat
 
     assert MODEL_SENTINEL.encode() in raw
     assert SETTING_SENTINEL.encode() in raw
+    # 五个哨兵一个都不能少（含那条签名密钥）：**变异验证**要的正是"这份副本里
+    # 确实有那些字"，否则上面那条"擦完 0 命中"可能只是查错了地方。
+    for sentinel in ALL_SENTINELS:
+        assert sentinel.encode() in raw, f"{sentinel} 不在未擦洗的副本里"
 
 
 def test_the_source_database_is_untouched(database: Database, tmp_path: Path) -> None:
@@ -200,7 +224,12 @@ def test_the_source_database_is_untouched(database: Database, tmp_path: Path) ->
     assert api_key == MODEL_SENTINEL
     assert MCP_SENTINEL in mcp["env"] and MCP_SENTINEL in mcp["headers"]
     assert _setting_keys(database.path) == sorted(
-        [*SECRET_KEYS, *(f"{prefix}demo_key" for prefix in SNAPSHOT_EXCLUDED_SETTING_PREFIXES)]
+        [
+            *SECRET_KEYS,
+            *(f"{prefix}demo_key" for prefix in SNAPSHOT_EXCLUDED_SETTING_PREFIXES),
+            # 真实的那条签名密钥（`auth.` 这一族的第一个成员）也原样留着
+            URL_SIGNING_SECRET_SETTING,
+        ]
     )
 
 

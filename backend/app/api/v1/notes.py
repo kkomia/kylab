@@ -16,7 +16,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 
-from app.api.auth import check_kb_scope, require_read, require_write, signing_secret
+from app.api.auth import (
+    check_kb_scope,
+    require_read,
+    require_write,
+    signing_secret_or_raise,
+)
 from app.api.v1.schemas import (
     NoteAiIn,
     NoteAiOut,
@@ -37,7 +42,7 @@ from app.api.v1.schemas import (
     NoteUpdateIn,
 )
 from app.core.config import Settings, get_settings
-from app.core.exceptions import InvalidRequestError, UnauthorizedError
+from app.core.exceptions import UnauthorizedError
 from app.core.services import Services, get_services
 from app.core.signing import SigningError, sign_resource, verify_resource
 from app.services.api_key import WRITE, Caller
@@ -87,7 +92,9 @@ def _folder_item(record, counts: dict[str, int]) -> NoteFolderOut:  # type: igno
 
 
 def _folder_payload(
-    services: Services, user_id: str | None, record  # type: ignore[no-untyped-def]
+    services: Services,
+    user_id: str | None,
+    record,  # type: ignore[no-untyped-def]
 ) -> NoteFolderOut:
     """写操作的响应：**条数是真的**。
 
@@ -247,9 +254,7 @@ def move_note_folder(
     不如让"换父级"像文档那样自成一条路径（``PATCH /documents/{id}/folder``）。
     """
     owner = _owner(caller)
-    record = services.notes.move_folder(
-        folder_id, user_id=owner, parent_id=payload.parent_id
-    )
+    record = services.notes.move_folder(folder_id, user_id=owner, parent_id=payload.parent_id)
     return _folder_payload(services, owner, record)
 
 
@@ -275,9 +280,7 @@ def move_note(
 ) -> NoteOut:
     """归属单独的端点（理由见 ``NoteUpdateIn`` 与 ``NotesService.move_note``）：
     编辑器那条自动保存 PATCH 不带 folder_id，两者互不覆盖。"""
-    record = services.notes.move_note(
-        note_id, user_id=_owner(caller), folder_id=payload.folder_id
-    )
+    record = services.notes.move_note(note_id, user_id=_owner(caller), folder_id=payload.folder_id)
     return NoteOut.model_validate(record)
 
 
@@ -395,9 +398,7 @@ async def upload_note_image(
         filename=file.filename or "image",
         content=await file.read(),
     )
-    secret = signing_secret(settings, services)
-    if not secret:
-        raise InvalidRequestError("尚未配置下载签名密钥，无法生成图片地址")
+    secret = signing_secret_or_raise(settings, services)
     signature, expires = sign_resource(
         image_resource(note_id, name), secret, ttl_seconds=IMAGE_URL_TTL_SECONDS
     )
@@ -418,9 +419,7 @@ def read_note_image(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
     """按签名取图。**刻意不挂 ``require_read``**：图片标签带不了自定义请求头。"""
-    secret = signing_secret(settings, services)
-    if not secret:
-        raise UnauthorizedError("尚未配置下载签名密钥，无法校验图片地址")
+    secret = signing_secret_or_raise(settings, services)
     try:
         verify_resource(image_resource(note_id, name), signature, expires, secret)
     except SigningError as exc:

@@ -139,6 +139,27 @@ class SecretTooLarge(InvalidRequestError):
     message = "这个秘密超过钥匙串单条的容量上限"
 
 
+class ServiceUnavailableError(KylabError):
+    """这个部署现在**没有这个能力**——**不是**"你的凭据不对"，也不是"我们出错了"。
+
+    503 的语义与 401 的语义在这里必须分开（这一条是它存在的全部理由）：
+
+    - **401** 的意思是"你是谁我不知道 / 你的凭据不对"，前端据此**跳登录页**——那是设计；
+    - 而"这台机器还没有下载签名密钥"是**我们这边没配好**：用户没做错任何事，把他踢到
+      登录页只会让他以为账号出了问题（桌面壳里实测到的那次就是这样：点一张产物卡片的
+      预览，人直接被弹到登录页）。
+    - 也不是 500：500 会把"缺一件事、补上/重试就好"这条出路藏起来。
+
+    与 ``KnowledgeBaseUnavailable`` / ``SecretStoreUnavailable`` 是同一档、不同起因，
+    所以 code 用更笼统的 ``service_unavailable``：调用方按 503 这一档处理（提示 + 重试），
+    具体缺什么写在 message 里。
+    """
+
+    code = "service_unavailable"
+    http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+    message = "这个部署现在没有这个能力"
+
+
 class UnauthorizedError(KylabError):
     """未提供凭据或凭据无效。
 

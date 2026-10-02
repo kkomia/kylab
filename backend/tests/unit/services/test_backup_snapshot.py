@@ -37,6 +37,7 @@ from app.core.config import Settings
 from app.core.exceptions import InvalidRequestError
 from app.core.storage import build_stores, reset_stores
 from app.services import backup_snapshot as module
+from app.services.auth import URL_SIGNING_SECRET_SETTING
 from app.services.backup_snapshot import (
     COUNT_KEYS,
     FORMAT_NAME,
@@ -73,7 +74,12 @@ SNAPSHOT_AT = datetime(2026, 10, 5, 8, 3, 0, tzinfo=UTC)
 MODEL_SENTINEL = "kylab_sk_SENTINELmodel7f3a91bc"
 MCP_SENTINEL = "mcp_SENTINELtoken91bc7de2"
 SETTING_SENTINEL = "tavily_SENTINELsearch7de2a1f0"
-ALL_SENTINELS = (MODEL_SENTINEL, MCP_SENTINEL, SETTING_SENTINEL)
+
+#: 本机自己的签名材料（``auth.url_signing_secret``）：它也不该跟着快照走
+#: （M5 纪律的直接推论——本机档在组合根生成它，换机器重新生成更好）。
+SIGNING_SENTINEL = "signing_SENTINELurlsecret4e7d"
+
+ALL_SENTINELS = (MODEL_SENTINEL, MCP_SENTINEL, SETTING_SENTINEL, SIGNING_SENTINEL)
 
 TOP_LEVEL_KEYS = {
     "format",
@@ -237,6 +243,12 @@ def seed_secrets(db: Database) -> None:
             "INSERT INTO app_settings (key, value, updated_at_ms)"
             " VALUES ('web.search_api_key', ?, 1)",
             (SETTING_SENTINEL,),
+        )
+        # 那条**真实**的签名密钥（键名从常量取，不手抄）：它属于 `auth.` 那一族，
+        # 而"整族不进快照"这条纪律要在这个真名上也成立。
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at_ms) VALUES (?, ?, 1)",
+            (URL_SIGNING_SECRET_SETTING, SIGNING_SENTINEL),
         )
 
 
@@ -449,16 +461,20 @@ def test_no_sentinel_survives_in_the_package(
 def test_redacted_section_lists_what_was_washed(
     stores: StoreBundle, db: Database, service: BackupSnapshotService, tmp_path: Path
 ) -> None:
-    """``redacted`` 如实列出洗掉的三条（用户要知道"恢复后要重配什么"）。"""
+    """``redacted`` 如实列出洗掉的四条（用户要知道"恢复后要重配什么"）。"""
     seed_secrets(db)
     result = service.create(into=tmp_path / "out", created_at=SNAPSHOT_AT)
 
     assert manifest_of(result.blob_path)["redacted"] == [
         {"table": "model_providers", "column": "api_key", "rows": 1},
         {"table": "mcp_servers", "column": "env,headers", "rows": 1},
+        # `auth.` 那一族：签名密钥被洗掉要**如实报**（它在恢复之后会重新生成，
+        # 但用户有权知道"包里没带它"）。两条设置按键名排序（报告那一层就是这么攒的）。
+        {"table": "app_settings", "key": URL_SIGNING_SECRET_SETTING, "rows": 1},
         {"table": "app_settings", "key": "web.search_api_key", "rows": 1},
     ]
     assert "web.search_api_key" in SECRET_KEYS, "这条判据的前提：它是 SECRET_KEYS 里的一员"
+    assert URL_SIGNING_SECRET_SETTING.startswith("auth."), "这条判据的前提：它属于 auth. 那一族"
 
 
 # ------------------------------------------------------------------ 三条"选择性"判据

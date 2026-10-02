@@ -27,7 +27,7 @@ from app.services import memory_index
 from app.services.api_key import ApiKeyService
 from app.services.approvals import ApprovalRegistry
 from app.services.artifacts import ArtifactService
-from app.services.auth import AuthService
+from app.services.auth import AuthService, ensure_url_signing_secret
 from app.services.avatars import AvatarService
 from app.services.backup_provider import BackupProviderClient
 from app.services.backup_queue import BackupQueueService
@@ -660,6 +660,20 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         bundle.meta.kb.bind_reader(
             CachedKnowledgeMetaReader(inner=provider.knowledge_meta(), cache=kb_cache)
         )  # type: ignore[attr-defined]
+
+    # **本机档的下载签名密钥**（这次修的 401）：本机档**没有任何初始化流程**
+    # （它不挂 `/auth/*`，``AuthService.setup`` 那条路走不到），而它的 ``kylab.db``
+    # 是全新的——不在装配时补这一下，``auth.url_signing_secret`` 就永远是空的，
+    # 于是"下载签名"这条线上的每个端点都回 401，前端再把它当"登录失效"把人踢到
+    # 登录页（桌面壳里实测到的那次：点产物卡片的「预览」）。
+    #
+    # 放在这里的三个理由：① 它只要 ``bundle.meta``，而这一层手上有完整的库；
+    # ② 与"本机独有的那几件"同一处，读代码的人一眼看得到本机档补了哪些东西；
+    # ③ 它是**幂等**的（见 ``services/auth.ensure_url_signing_secret``）——
+    # 已有就不动，绝不每次启动换一把（换了的话已经发出去的链接会一起失效）。
+    # **服务器档一个字都不动**：那一档的密钥来自 ``POST /auth/setup``。
+    if resolved.deployment == "local":
+        ensure_url_signing_secret(bundle.meta)
 
     # **备份那三件**（M5 阶段 4）：本机档才建，服务器档三个都是 None。
     #

@@ -16,7 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.api.auth import signing_secret
+from app.api.auth import signing_secret_or_raise
 from app.core.config import Settings, get_settings
 from app.core.exceptions import UnauthorizedError
 from app.core.services import Services, get_services
@@ -34,9 +34,7 @@ def get_avatar(
     expires: Annotated[int, Query(description="到期时间戳；由签发方给出")] = 0,
     signature: Annotated[str, Query(description="签名；见 core/signing.py")] = "",
 ) -> Response:
-    secret = signing_secret(settings, services)
-    if not secret:
-        raise UnauthorizedError("尚未配置签名密钥，无法校验头像链接")
+    secret = signing_secret_or_raise(settings, services)
     record = services.users.get(user_id)
     try:
         verify_resource(resource(user_id, record.avatar_key), signature, expires, secret)

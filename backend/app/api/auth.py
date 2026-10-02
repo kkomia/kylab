@@ -33,7 +33,7 @@ from typing import Annotated
 from fastapi import Depends, Header
 
 from app.core.config import Settings, get_settings
-from app.core.exceptions import ForbiddenError, UnauthorizedError
+from app.core.exceptions import ForbiddenError, ServiceUnavailableError, UnauthorizedError
 from app.core.services import Services, get_services
 from app.models.enums import ApiKeyPermission
 from app.services.api_key import LOCAL_CALLER, READ, WRITE, Caller, resolve_caller
@@ -162,8 +162,9 @@ def signing_secret(settings: Settings, services: Services) -> str | None:
     "这条链接只该给他"的依据，与其发一条永远有效的链接，不如让调用方走需要鉴权的
     常规接口（API 层据此拒绝）。
 
-    首次 ``POST /auth/setup`` 会生成一条落库（见 ``services/auth.py``），
-    所以只要系统已经初始化过，这里就不会是 None。
+    首次 ``POST /auth/setup`` 会生成一条落库，**本机档则在组合根生成一次**
+    （见 ``services/auth.ensure_url_signing_secret`` 与 ``core/services.py`` 那一段；
+    本机档没有初始化流程，不在装配时补这一下这条键就永远是空的）。
     """
     try:
         stored = services.runtime.get(URL_SIGNING_SECRET_SETTING)
@@ -171,3 +172,26 @@ def signing_secret(settings: Settings, services: Services) -> str | None:
         logger.warning("读取签名密钥失败，退回环境变量", exc_info=True)
         stored = None
     return stored or settings.url_signing_secret
+
+
+def signing_secret_or_raise(settings: Settings, services: Services) -> str:
+    """要签名密钥；**没有就抛 503**（不是 401）。
+
+    与 :func:`signing_secret` 的分工：那个返回 ``None`` 让调用方自己决定（有一处**故意**
+    不报错：预览时没有密钥就退化成"只能下载"，见 ``api/v1/documents.py`` 的 binary 那条）；
+    这个给"必须签发 / 必须校验"的那些端点用。
+
+    **为什么不是 401**（桌面壳里实测到的那次故障）：前端把 401 当"登录失效"并跳登录页
+    ——那是设计。而"这台机器还没有下载签名密钥"根本与用户的凭据无关，是**我们这边没配好**：
+    本机档（边车）没有初始化流程，密钥要么由组合根生成、要么这台机器真的没有可用的库。
+    踢到登录页只会让人以为账号出了问题，而正确的下一步是"补配置 / 稍后重试"。
+    503 正是这个语义（``ServiceUnavailableError``：这个部署现在没有这个能力）。
+    """
+    secret = signing_secret(settings, services)
+    if not secret:
+        raise ServiceUnavailableError(
+            "尚未配置下载签名密钥：请在环境里配置 KYLAB_URL_SIGNING_SECRET，"
+            "或让这台机器正常启动一次（本机档会在装配时生成一条并落库；"
+            "服务器档由首次初始化生成）"
+        )
+    return secret

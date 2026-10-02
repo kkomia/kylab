@@ -29,6 +29,7 @@ from app.api.auth import (
     require_read,
     require_write,
     signing_secret,
+    signing_secret_or_raise,
 )
 from app.api.v1.schemas import (
     ChunkList,
@@ -621,9 +622,7 @@ def preview_document(
         else services.documents.reading_view(document_id)
     )
     # 原件本身是什么类型：界面据此决定要不要给「原文版式 / 解析文本」这个切换
-    original_kind = content_kind(
-        services.documents.get(document_id).name, has_markdown=False
-    )
+    original_kind = content_kind(services.documents.get(document_id).name, has_markdown=False)
 
     if content.kind == "markdown":
         return PreviewOut(
@@ -679,18 +678,8 @@ def document_download_url(
     """
     _guard_document(services, caller, document_id)
 
-    secret = signing_secret(get_settings(), services)
-    if not secret:
-        # 没有签名密钥 = 系统处于无鉴权状态。此时**拒绝签发**，而不是发一条
-        # 永远有效的链接：那等于把"无鉴权"这个状态固化成永久凭据。
-        raise UnauthorizedError(
-            "尚未配置下载签名密钥：请配置 KYLAB_URL_SIGNING_SECRET，"
-            "或先完成首次初始化（会生成一条并落库）"
-        )
-
-    url, expires_at = services.documents.download_url(
-        document_id, fmt=fmt, secret=secret
-    )
+    secret = signing_secret_or_raise(get_settings(), services)
+    url, expires_at = services.documents.download_url(document_id, fmt=fmt, secret=secret)
     return DownloadUrlOut(url=url, expires_at=expires_at, format=fmt)
 
 
@@ -715,9 +704,7 @@ INLINE_BLOCKED_SUFFIXES = (".svg", ".svgz")
     "/documents/{document_id}/content",
     summary="按签名取内容（下载 / 页面内渲染）",
     response_class=Response,
-    responses={
-        200: {"content": {"application/octet-stream": {}}, "description": "文件内容"}
-    },
+    responses={200: {"content": {"application/octet-stream": {}}, "description": "文件内容"}},
 )
 def download_document_content(
     document_id: str,
@@ -749,9 +736,7 @@ def download_document_content(
     必须的：带着 ``attachment`` 的响应在 iframe 里会被浏览器**变成下载**
     （踩过：详情页一打开就下载 PDF）。
     """
-    secret = signing_secret(settings, services)
-    if not secret:
-        raise UnauthorizedError("尚未配置下载签名密钥，无法校验下载链接")
+    secret = signing_secret_or_raise(settings, services)
 
     try:
         verify_resource(signature_resource(document_id, fmt), signature, expires, secret)

@@ -17,7 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 
-from app.api.auth import require_read, require_write, signing_secret
+from app.api.auth import require_read, require_write, signing_secret_or_raise
 from app.api.v1.schemas import (
     ChatAttachmentOut,
     ChatMessageOut,
@@ -589,12 +589,7 @@ def file_download_url(
     """签发一条短期链接。**与文档下载同一套签名**，理由也一样：预览与下载按钮带不了头。"""
     # 取一次内容只为确认"这份文件真的读得到"：读不到就别签发一条注定 404 的链接
     _, name = services.artifacts.read_file(conversation_id, key)
-    secret = signing_secret(settings, services)
-    if not secret:
-        raise UnauthorizedError(
-            "尚未配置下载签名密钥：请配置 KYLAB_URL_SIGNING_SECRET，"
-            "或先完成首次初始化（会生成一条并落库）"
-        )
+    secret = signing_secret_or_raise(settings, services)
     url, expires_at = services.artifacts.file_url(
         conversation_id, key, secret=secret, inline=disposition == "inline"
     )
@@ -631,9 +626,7 @@ def download_file_content(
     它的授权凭据是 URL 里的签名，而签名绑定了"哪条会话、哪份文件、什么时候过期"——
     比一个长期令牌更窄。缺了签名或签名对不上都取不到内容。
     """
-    secret = signing_secret(settings, services)
-    if not secret:
-        raise UnauthorizedError("尚未配置下载签名密钥，无法校验下载链接")
+    secret = signing_secret_or_raise(settings, services)
     try:
         verify_resource(
             file_signature_resource(conversation_id, key),

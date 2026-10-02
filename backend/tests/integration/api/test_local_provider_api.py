@@ -432,13 +432,17 @@ def test_patch_with_an_empty_body_only_reprobes(
         _attach(nas, monkeypatch)
         _get(client)
         probes = len(nas.seen)
+        # 判据是"PATCH 前后**没有多出任何键**"，而不是"库里一条都没有"：
+        # 本机档组合根自己会在装配时补一条 `auth.url_signing_secret`
+        # （见 `services/auth.ensure_url_signing_secret`），那不是这个 PATCH 写的。
+        before = _app_settings(tmp_path)
 
         response = client.patch("/api/v1/local/provider", json={})
 
         assert response.status_code == 200, response.text
         assert response.json()["state"] == STATE_READY
         assert len(nas.seen) == probes + 1
-        assert _app_settings(tmp_path) == {}, "空 body 不该写任何键"
+        assert _app_settings(tmp_path) == before, "空 body 不该写任何键"
 
 
 # --------------------------------------------------- ④ refresh / 缓存 / R3
