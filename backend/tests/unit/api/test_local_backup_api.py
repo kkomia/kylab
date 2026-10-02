@@ -950,3 +950,123 @@ def test_migrate_says_503_when_the_machine_has_no_keychain(
         assert body["code"] == "secret_store_unavailable", "前端按 code 分支"
         assert "钥匙串" in body["message"]
         assert stores.meta.get_setting("web.search_api_key") == PLAINTEXT_SENTINEL, "原样留着"
+
+
+# --------------------------------------------- ⑨ 三栏本机配置读得回来（阶段 7 报的缺口）
+#
+# `GET /local/backup` 的 `provider` 块原来只回 `base_url`，于是「远端开关 / 间隔小时 /
+# 含不含工作区」三栏**只写得进去、读不回来**——界面只好摆动作按钮、从那句"被关掉了"
+# 反推当前态（退化方向是"读不到"）。这一节钉四件事。
+#
+# 三栏的口径都不在这里重写：`enabled` 调 `backup_provider.backup_enabled`（地址解析用的
+# 同一个判据）、`every_hours` 调 `BackupQueueService.every_hours`、`include_workspace`
+# 读同一个 `INCLUDE_WORKSPACE_KEY`（读不到按关，与打包器同一条口径）。
+
+CONFIG_COLUMNS = ("enabled", "include_workspace", "every_hours")
+
+
+def test_the_three_config_columns_are_always_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """① 三栏在**每一档**都出现：远端不可用、未配置、可用——它是本机配置事实。
+
+    三档各自的取法（顺序是有意的）：先在传输断着的时候读一次（第一次探测就成了
+    ``unavailable``），再用 PATCH 强制重探（GET 读 30s 缓存，中间切档会被缓存挡住）。
+    """
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+        nas.fail = httpx.ConnectError("NAS 连不上（用例）")
+
+        unavailable = client.get(BASE).json()["provider"]
+        assert unavailable["state"] == "unavailable"
+        assert all(key in unavailable for key in CONFIG_COLUMNS), unavailable
+
+        nas.fail = None
+        unconfigured = client.patch(f"{BASE}", json={"enabled": False}).json()["provider"]
+        assert unconfigured["state"] == "unconfigured"
+        assert all(key in unconfigured for key in CONFIG_COLUMNS), unconfigured
+
+        ready = client.patch(f"{BASE}", json={"enabled": True}).json()["provider"]
+        assert ready["state"] == "ready"
+        assert all(key in ready for key in CONFIG_COLUMNS), ready
+
+        again = client.get(BASE).json()["provider"]
+        assert all(key in again for key in CONFIG_COLUMNS), again
+
+
+def test_the_three_config_columns_read_back_what_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """② 设过的值读得回来（这一条就是那个缺口本身：**写得进去、读不回来**）。"""
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+
+        patched = client.patch(
+            f"{BASE}",
+            json={
+                "base_url": NAS,
+                "enabled": True,
+                "include_workspace": True,
+                "every_hours": 6,
+            },
+        ).json()["provider"]
+
+        assert patched["enabled"] is True
+        assert patched["include_workspace"] is True
+        assert patched["every_hours"] == 6
+        # 再 GET 一次（走的是缓存的三态 + 实时读的配置，两件事互不影响）
+        fresh = client.get(BASE).json()["provider"]
+        assert (fresh["enabled"], fresh["include_workspace"], fresh["every_hours"]) == (
+            True,
+            True,
+            6,
+        )
+
+        client.patch(f"{BASE}", json={"every_hours": 0, "include_workspace": False})
+        off = client.get(BASE).json()["provider"]
+        assert off["every_hours"] == 0 and off["include_workspace"] is False
+
+
+def test_the_three_config_columns_default_to_the_product_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """③ 没设过时是产品默认：``every_hours=24`` / ``include_workspace=false`` / ``enabled=true``。
+
+    这个文件的夹具为了让自动快照别来抢 ``backup/pending/``，把 ``DEFAULTS`` 里
+    ``every_hours`` 那一格改成了 0；这一条先把它恢复成产品默认
+    （``DEFAULT_EVERY_HOURS``），否则测的是夹具而不是产品行为。
+    """
+    from app.services.backup_queue import DEFAULT_EVERY_HOURS
+
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+        monkeypatch.setitem(
+            runtime_config.DEFAULTS, "provider.backup.every_hours", str(DEFAULT_EVERY_HOURS)
+        )
+
+        provider = client.get(BASE).json()["provider"]
+
+        assert provider["every_hours"] == 24
+        assert provider["include_workspace"] is False
+        assert provider["enabled"] is True
+
+
+def test_the_enabled_column_agrees_with_the_unconfigured_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """④ 关掉那一档：``enabled is False`` **且** ``state == "unconfigured"`` + 两句人话。
+
+    这一栏就是"为什么未配置"的答案（另一种成因是"没填地址"）。界面据此把开关画对，
+    不必再从 ``reason`` 那句话里反推——那是这一组键要消掉的东西。
+    """
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+
+        body = client.patch(f"{BASE}", json={"enabled": False}).json()
+        provider = body["provider"]
+
+        assert provider["enabled"] is False
+        assert provider["state"] == "unconfigured"
+        assert "被关掉了" in provider["reason"]
+        assert "本机打快照" in provider["reason"], "关掉只影响传不传得出去（那句话仍在）"
+        assert body["provider"]["base_url"] == "", "关掉时不解析地址（与解析口径一致）"

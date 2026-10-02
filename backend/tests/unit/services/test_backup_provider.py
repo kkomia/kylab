@@ -37,6 +37,7 @@ from app.services.backup_provider import (
     STATE_UNAVAILABLE,
     STATE_UNCONFIGURED,
     BackupProviderClient,
+    backup_enabled,
     resolve_backup_target,
 )
 from app.services.backup_queue import PendingUpload
@@ -747,3 +748,28 @@ def test_the_status_payload_hides_the_credentials(nas: FakeNas, clock: FakeClock
     text = json.dumps(client.status().to_payload(), ensure_ascii=False)
 
     assert TOKEN not in text and "Bearer" not in text
+
+
+def test_the_enabled_judgement_is_one_function_for_both_callers() -> None:
+    """``backup_enabled`` 是那一栏的**唯一判据**：地址解析与端点各调它，不各写一份。
+
+    判据表（口径与知识库那条一致）：**没有这个键 = 开**；``0`` / ``false`` / ``no`` /
+    ``off`` 才算关，大小写与两端空白不管。这张表原来只活在 ``resolve_backup_target``
+    的 if 里，阶段 7 的界面要"读得到这一栏"之后就抽出来了——抄第二份的典型后果是
+    "界面说开着、解析说关着"。
+    """
+    assert backup_enabled(lambda key: "") is True, "没有这个键 = 开"
+    assert backup_enabled(lambda key: "1") is True
+    assert backup_enabled(lambda key: "  TRUE ") is True
+    for off in ("0", "false", "no", "off", " OFF ", "False"):
+        assert backup_enabled(lambda key, raw=off: raw) is False, off
+
+    # 与地址解析同一处：同一个入参下，两者对"开 / 关"的结论必须一致
+    settings = Settings(
+        _env_file=None, deployment="local", server_url=NAS, token=TOKEN, device_id=DEVICE
+    )
+    for raw in ("", "1", "0", "off"):
+        getter = lambda key, raw=raw: raw if key == backup_provider.SETTING_ENABLED else ""  # noqa: E731
+        enabled = backup_enabled(getter)
+        configured = resolve_backup_target(settings, getter).configured
+        assert configured is enabled, f"enabled={raw!r} 时两处结论不一致"

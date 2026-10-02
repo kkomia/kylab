@@ -1172,6 +1172,42 @@ class BackupProviderOut(BaseModel):
     devices: list[dict[str, Any]] = Field(
         default_factory=list, description="这台提供者看得见的设备（每台：几份、多大、最近一份）"
     )
+    # ---- 下面三栏是**本机侧的配置事实**（不是远端结论）------------------
+    #
+    # 它们**永远出现**（包括 `state=unavailable` / `unconfigured` 的时候）：这三栏是
+    # "用户把它设成了什么"，与"那台 NAS 现在答不答得上来"是两件事——远端连不上的时候
+    # 界面照样该显示当前配置，否则那几栏就只剩"写得进去、读不回来"，退化方向是让界面
+    # 从"被关掉了"那句人话里反推当前态（那正是这一组键要消掉的东西）。
+    #
+    # 三栏各自的口径都**复用现成的判据**（见下面每一条的说明），不另写一套。
+
+    enabled: bool = Field(
+        default=True,
+        description="provider.backup.enabled 那一栏：开 / 关（没有这个键 = 开）",
+    )
+    """口径 = :func:`app.services.backup_provider.backup_enabled`（与地址解析同一个判据）。
+
+    "关"认 ``0`` / ``false`` / ``no`` / ``off``（大小写不敏感）；显式关掉时上面那个
+    ``state`` 会是 ``unconfigured``，而这一栏就是"为什么"。界面据此把开关画对，
+    不必再从 ``reason`` 那句话里反推。
+    """
+
+    include_workspace: bool = Field(default=False, description="快照里带不带工作区产物（默认不带）")
+    """口径 = ``BackupSnapshotService._include_workspace()``：读 ``INCLUDE_WORKSPACE_KEY``，
+    **读不到配置按关**（"默认不备"是那条判据的原话——把"读不到"当"备上"会把用户的文件发出去）。
+
+    这里按同一条口径读同一个键（``INCLUDE_WORKSPACE_KEY`` 也是从那个模块 import 的）：
+    打包器上那个方法是私有的，而"哪一档算开"这件事只有一个答案，两处读的是同一个
+    运行期配置对象。
+    """
+
+    every_hours: int = Field(default=0, description="每多少小时自动打一份（0 = 只手动）")
+    """口径 = :meth:`app.services.backup_queue.BackupQueueService.every_hours`（**直接调它**）。
+
+    那个方法里有三档回落（没配置 → 0 / 有配置没键 → 24 / 解析不了 → 24 + warning、
+    负数按 0），**一个字都不在这里重写**——抄一份就会与"自动快照到底什么时候打"
+    对不上，而那正是用户拿这一栏去核对的事。
+    """
 
 
 class BackupQueueRowOut(BaseModel):
@@ -1382,8 +1418,17 @@ def _backup_out(services: Services, *, refresh: bool = False) -> LocalBackupOut:
     provider = _backup_provider(services)
     queue = _backup_queue(services)
     status = provider.status(refresh=refresh)
+    # 三栏本机配置与远端三态**拼在同一份 payload** 里再过一遍响应模型（不逐字段接：
+    # 接一遍就是另写一份形状）。拼进去的三栏一定"被 set 过"，所以即使端点带
+    # `response_model_exclude_unset`，它们也**永远出现**——那是这一组键存在的全部意义
+    # （远端 unavailable / unconfigured 时界面照样读得到当前配置）。
+    payload = status.to_payload() | {
+        "enabled": backup_provider.backup_enabled(services.runtime.get),
+        "include_workspace": services.runtime.get_bool(INCLUDE_WORKSPACE_KEY, default=False),
+        "every_hours": queue.every_hours(),
+    }
     return LocalBackupOut(
-        provider=BackupProviderOut.model_validate(status.to_payload()),
+        provider=BackupProviderOut.model_validate(payload),
         backlog=_backup_backlog(queue),
         snapshots=[_backup_row(row) for row in queue.recent(limit=BACKUP_RECENT_ROWS)],
     )

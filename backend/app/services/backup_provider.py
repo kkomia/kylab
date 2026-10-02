@@ -94,6 +94,7 @@ __all__ = [
     "BackupProviderClient",
     "BackupProviderStatus",
     "BackupTarget",
+    "backup_enabled",
     "resolve_backup_target",
 ]
 
@@ -187,6 +188,20 @@ class BackupTarget:
         return "configured" if self.token else "missing"
 
 
+def backup_enabled(get_setting: Callable[[str], str]) -> bool:
+    """``provider.backup.enabled`` 那一栏现在是不是开着——**唯一判据**。
+
+    两处要用它，所以抽成一个函数：:func:`resolve_backup_target`（显式关 → 不配地址）
+    与 ``GET /local/backup`` 的 ``provider.enabled``（界面要**读得到**这一栏）。
+    抄第二份的典型后果是"界面说开着、解析说关着"——那种对不上正是这一处要防的。
+
+    口径（与知识库那条一致）：**没有这个键 = 开**（地址在就接上去）；命中
+    :data:`DISABLED_VALUES`（``0`` / ``false`` / ``no`` / ``off``，大小写不敏感、
+    两端空白不算）才算关。
+    """
+    return (get_setting(SETTING_ENABLED) or "").strip().lower() not in DISABLED_VALUES
+
+
 def resolve_backup_target(settings: Settings, get_setting: Callable[[str], str]) -> BackupTarget:
     """地址与凭据的**唯一解析处**（纯函数：只读入参，不打网络、不读写库）。
 
@@ -200,7 +215,7 @@ def resolve_backup_target(settings: Settings, get_setting: Callable[[str], str])
 
     纯函数的意义：这四条分支能被用例逐个钉住，而不用先跑起一台 NAS。
     """
-    if (get_setting(SETTING_ENABLED) or "").strip().lower() in DISABLED_VALUES:
+    if not backup_enabled(get_setting):
         return BackupTarget("", (settings.token or "").strip(), False, DISABLED_REASON)
     base = (get_setting(SETTING_BASE_URL) or "").strip() or (settings.server_url or "").strip()
     token = (settings.token or "").strip()
