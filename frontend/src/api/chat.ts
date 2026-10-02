@@ -14,6 +14,7 @@
 import {
   API_BASE,
   authHeaders,
+  checkSession,
   handleUnauthorized,
   request,
   requestLocal,
@@ -568,12 +569,19 @@ export interface ChatStreamHandle {
 /**
  * 非 2xx 的响应统一翻成错误。
  *
- * 401 单独走凭据失效那条路（清令牌 + 重新登录），与 `client.request` 同一口径：
- * 否则用户看到的是后端原文「请在请求头带上 Authorization: Bearer …」——
- * 那句话是写给调用方看的，不是写给用户看的。
+ * 401 走 `client.request` **同一条判据**（`checkSession()`）：**收到 401 不等于"登录过期"**
+ * ——服务端自己没配好（例如没配下载签名密钥）也会回 401，那时把人弹去登录页是错的
+ * （2026-10-02 的真 bug，见 `client.ts` 那一段）。只有 `/auth/me` 也 401 才清令牌 +
+ * 请求重新登录；`valid` / `unknown`（问不出结论）一律**保留后端原文、不登出**。
+ *
+ * 为什么这条链要单独写一次：SSE 这条流**不走 `client.request`**（响应体是持续打开的
+ * 字节流，套不进那个"响应是 JSON"的假设），所以 `unwrap` 里那处判定够不到它。
+ * 判据与那句话都借 `checkSession()` / `handleUnauthorized()`，不另写一套。
  */
 async function errorFromResponse(response: Response): Promise<Error> {
-  if (response.status === 401) return new Error(handleUnauthorized())
+  if (response.status === 401 && (await checkSession()) === 'invalid') {
+    return new Error(handleUnauthorized())
+  }
   return new Error(await messageFromResponse(response))
 }
 

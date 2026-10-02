@@ -26,6 +26,8 @@ import {
   type ChatPayload,
   type ChatSource,
 } from '@/api/chat'
+import { resetSessionProbeForTest } from '@/api/client'
+import { SESSION_TOKEN_STORAGE_KEY, useSessionStore } from '@/lib/session'
 import { clearSessionToken, setSessionToken } from '@/lib/session'
 import {
   DEFAULT_SIDECAR_BASE,
@@ -179,6 +181,114 @@ describe('chatStream', () => {
     )
 
     await expect(noPace({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow('对话端点返回 400')
+  })
+
+  /* --------------- SSE 那条链的 401（与 client.ts 同一条判据：401 ≠ 登录过期） --------------- */
+
+  /**
+   * 这一组钉的是"**这条流不走 `unwrap`**"那个缺口：SSE 自己翻错误（`errorFromResponse`），
+   * 所以 `client.ts` 里那处 401 判定够不到它——服务端配置类 401 原先仍会把用户弹到登录页。
+   * 判据现在借同一个 `checkSession()`：只有 `/auth/me` 也 401 才登出。
+   */
+  describe('SSE 的 401：同样先核会话', () => {
+    /** 探活那一趟（`/auth/me`）与对话流那条 `fetch` 分派。 */
+    function stubSse401(probe: () => Response | Promise<Response>): string[] {
+      const calls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          const target = String(url)
+          calls.push(target)
+          if (target.endsWith('/auth/me')) return probe()
+          return new Response(
+            JSON.stringify({ code: 'unauthorized', message: '尚未配置下载签名密钥，请联系管理员' }),
+            { status: 401 },
+          )
+        }),
+      )
+      return calls
+    }
+
+    beforeEach(() => {
+      window.localStorage.clear()
+      clearSessionToken()
+      resetSessionProbeForTest()
+    })
+
+    afterEach(() => {
+      resetSessionProbeForTest()
+    })
+
+    it('① 会话还在（`/auth/me` 200）→ **不登出**，错误就是后端那句话', async () => {
+      setSessionToken('kylab_st_alive')
+      const calls = stubSse401(
+        () =>
+          new Response(JSON.stringify({ id: 'u1', username: 'kkomia' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      )
+      const before = useSessionStore.getState().reloginCount
+
+      await expect(noPace({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow(
+        '尚未配置下载签名密钥，请联系管理员',
+      )
+
+      // 令牌留着（内存 + localStorage 两处），也没有请求重新登录
+      expect(useSessionStore.getState().token).toBe('kylab_st_alive')
+      expect(window.localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)).toBe('kylab_st_alive')
+      expect(useSessionStore.getState().reloginCount).toBe(before)
+      expect(calls.filter((call) => call.endsWith('/auth/me'))).toHaveLength(1)
+    })
+
+    it('② 会话真的失效（`/auth/me` 也 401）→ 清令牌 + 请求重新登录（**原行为**）', async () => {
+      setSessionToken('kylab_st_expired')
+      stubSse401(
+        () =>
+          new Response(JSON.stringify({ code: 'unauthorized', message: '会话已失效' }), {
+            status: 401,
+          }),
+      )
+      const before = useSessionStore.getState().reloginCount
+
+      await expect(noPace({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow(
+        '登录已过期，请重新登录',
+      )
+
+      expect(useSessionStore.getState().token).toBe('')
+      expect(window.localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)).toBeNull()
+      expect(useSessionStore.getState().reloginCount).toBe(before + 1)
+    })
+
+    it('③ 探活问不出结论（网络错 / 5xx）→ 不登出，抛原错误', async () => {
+      setSessionToken('kylab_st_alive')
+      stubSse401(() => {
+        throw new TypeError('fetch failed')
+      })
+      const before = useSessionStore.getState().reloginCount
+
+      await expect(noPace({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow(
+        '尚未配置下载签名密钥，请联系管理员',
+      )
+
+      expect(useSessionStore.getState().token).toBe('kylab_st_alive')
+      expect(window.localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)).toBe('kylab_st_alive')
+      expect(useSessionStore.getState().reloginCount).toBe(before)
+
+      // 5xx 那一档同理（对方自己出错，不是你的登录过期了）
+      resetSessionProbeForTest()
+      stubSse401(
+        () =>
+          new Response(JSON.stringify({ code: 'internal_error', message: '炸了' }), {
+            status: 500,
+          }),
+      )
+      await expect(noPace({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow(
+        '尚未配置下载签名密钥，请联系管理员',
+      )
+      expect(useSessionStore.getState().token).toBe('kylab_st_alive')
+      expect(useSessionStore.getState().reloginCount).toBe(before)
+    })
   })
 
   it('响应头一到就交出句柄：正文还没结束时「停止」已经可用', async () => {
