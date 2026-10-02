@@ -376,6 +376,19 @@ async fn connect(
         let config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
         config.api_key.clone()
     };
+    // **这台电脑的设备 id**：备份按设备对齐恢复点，边车拿它认"这台电脑"（缺了就如实拒）。
+    // 上面那段（连上服务器那一刻）已经生成过一次；这里再兜一次底，保证传下去的一定是个
+    // 真 id（配置被人手改坏成这样时才走得到）。**短锁**：只读一下配置（要生成就顺手落盘），
+    // 与旁边 `key` 一样**不把锁跨 await 持有**。
+    let device_id = {
+        let mut config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
+        if config.ensure_device_id() {
+            if let Err(error) = config.save(&shell.dir) {
+                logfile::log(&shell.dir, &format!("配置写不进去（{error}）"));
+            }
+        }
+        config.device_id.clone().unwrap_or_default()
+    };
     let runtime_root = sidecar::resolve_runtime(&shell.resource_dir, &shell.dir);
     let log_dir = shell.dir.clone();
     let data_dir = shell.data_dir.clone();
@@ -395,6 +408,7 @@ async fn connect(
             &workspace,
             &api_base,
             &token,
+            &device_id,
         )
     })
     .await

@@ -759,6 +759,7 @@ def test_probe_health_is_false_on_network_error() -> None:
 
 # ------------------------------------------------------------------ 流式（P4）
 
+
 def _events(response) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
     """把 SSE 响应拆成事件载荷（**按线上形状解析** ✓，不猜内部对象 ✗）。"""
     out: list[dict[str, Any]] = []
@@ -772,6 +773,7 @@ def _events(response) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
 
 
 # ------------------------------------------------- ASK 的通道（P4-4：确认条真的弹出来）
+
 
 class _NeedsApprovalRunner:
     """假执行器：**第一次要用户点头** ✓（登记一条待确认），拿到决定之后才**真的执行** ✓。
@@ -933,9 +935,7 @@ def test_deny_with_a_reason_reaches_the_model() -> None:
     runner = _NeedsApprovalRunner(registry)
     loop = _loop_with_approval(model, runner, registry)
 
-    thread, events, seen, state = _drive(
-        loop, [ChatMessage(role="user", content="帮我清一下盘")]
-    )
+    thread, events, seen, state = _drive(loop, [ChatMessage(role="user", content="帮我清一下盘")])
     assert seen.wait(10)
     request = next(item for item in events if isinstance(item, sidecar.ApprovalEvent))
     assert registry.decide(request.approval_id, DENY, "别删，换成清理临时目录") is True
@@ -984,9 +984,7 @@ def test_the_sse_approval_payload_matches_the_server_field_for_field() -> None:
     }
 
 
-def test_the_decision_endpoint_hands_the_answer_to_the_waiting_step(
-    tmp_path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_the_decision_endpoint_hands_the_answer_to_the_waiting_step(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """`POST /turn/approvals/{id}` 把决定交给**正在等它的那一步** ✓；失效的确认 → **409** ✓。
 
     判据打在**同一个登记表**上 ✓：端点调的就是 `Clients.approvals` ✓（不另造一套 ✗），
@@ -1009,9 +1007,7 @@ def test_the_decision_endpoint_hands_the_answer_to_the_waiting_step(
         assert registry.wait_decision(request.approval_id).decision == ALLOW_ONCE
 
         # 再点一次：已经没有这条了 → **409** ✓（不是回一句"已记录" ✗，照服务器口径 ✓）
-        again = client.post(
-            f"/turn/approvals/{request.approval_id}", json={"decision": "deny"}
-        )
+        again = client.post(f"/turn/approvals/{request.approval_id}", json={"decision": "deny"})
         assert again.status_code == 409, again.text
         # 错误信封是**统一那个**（`{code, message}`，与服务器一字不差）✓ ——
         # 边车挂上 `register_exception_handlers` 之前这里是 FastAPI 默认的 `detail`，
@@ -1805,3 +1801,117 @@ def test_no_knowledge_base_selected_means_no_handshake_at_all(tmp_path) -> None:
     assert not {"search", "attach_note_to_kb", "ingest_file"} & names
     assert "read_file" in names
 
+
+# ------------------------------------------------------------------ M5 阶段 4：设备身份
+
+
+def _run_main(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """跑 ``sidecar.main``，但**把 uvicorn 拦下来**（用例不该真起一个监听）。
+
+    ``main`` 里那句 ``import uvicorn`` 是函数内的局部导入，拿到的是**模块对象**本身
+    ——所以补 ``uvicorn.run`` 就够了（补 ``sidecar.uvicorn`` 是没有用的：那个名字在
+    ``main`` 作用域里根本不存在）。
+    """
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: None)  # type: ignore[arg-type]
+    sidecar.main(argv)
+
+
+def test_device_id_flows_from_argv_to_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--device-id`` → ``KYLAB_DEVICE_ID`` → ``Settings.device_id``（那条链的 Python 半边）。
+
+    壳在登录那一刻生成一次设备身份、每次起边车用 ``--device-id <uuid>`` 传下来（Rust 那
+    一侧已经这么做了）；这一条钉的是本机后端**接住了**它，并且一路落到组合根上——
+    快照打包器拿到的就是这一个 id（"绝不自动编一个"那条纪律的另一面）。
+
+    两档一起验：**argv 优先**于环境变量、而环境变量是它的默认值（与 ``--kb-url`` 那几个
+    同一形状）。
+    """
+    from app.core.config import get_settings
+    from app.core.services import get_services, reset_services
+
+    reset_services()
+    get_settings.cache_clear()
+    monkeypatch.setenv("KYLAB_DEVICE_ID", "dev-from-env")
+    _run_main(
+        [
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--server",
+            "http://server.test/api/v1",
+            "--token",
+            "t",
+        ],
+        monkeypatch,
+    )
+    assert get_settings().device_id == "dev-from-env", "环境变量是默认值"
+
+    reset_services()
+    get_settings.cache_clear()
+    _run_main(
+        [
+            "--device-id",
+            "dev-from-argv",
+            "--workspace",
+            str(tmp_path / "ws2"),
+            "--data-dir",
+            str(tmp_path / "data2"),
+            "--server",
+            "http://server.test/api/v1",
+            "--token",
+            "t",
+        ],
+        monkeypatch,
+    )
+    assert os.environ["KYLAB_DEVICE_ID"] == "dev-from-argv", "argv 优先于环境变量"
+    assert get_settings().device_id == "dev-from-argv"
+
+    services = get_services()
+    assert services.backup_snapshot is not None, "本机档必须装配出打包器"
+    result = services.backup_snapshot.create(into=tmp_path / "pending")
+    assert result.snapshot_id.startswith("dev-from-argv-"), "快照 id 里就是这台机器的身份"
+
+    reset_services()
+    get_settings.cache_clear()
+
+
+def test_without_a_device_id_the_snapshot_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """壳还没登录过（没有 ``--device-id``）→ 打快照**如实拒**（R12：绝不编一个 id）。"""
+    from app.core.config import get_settings
+    from app.core.exceptions import InvalidRequestError
+    from app.core.services import get_services, reset_services
+
+    reset_services()
+    get_settings.cache_clear()
+    monkeypatch.delenv("KYLAB_DEVICE_ID", raising=False)
+    _run_main(
+        [
+            "--workspace",
+            str(tmp_path / "ws"),
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--server",
+            "http://server.test/api/v1",
+            "--token",
+            "t",
+        ],
+        monkeypatch,
+    )
+
+    assert get_settings().device_id == ""
+    services = get_services()
+    assert services.backup_snapshot is not None
+    try:
+        with pytest.raises(InvalidRequestError) as excinfo:
+            services.backup_snapshot.create(into=tmp_path / "pending")
+        assert "设备身份" in str(excinfo.value)
+    finally:
+        reset_services()
+        get_settings.cache_clear()

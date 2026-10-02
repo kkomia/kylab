@@ -190,6 +190,7 @@ def pin_local_deployment(
     token: str = "",
     kb_url: str = "",
     kb_token: str = "",
+    device_id: str = "",
 ) -> None:
     """**入口自己钉死档位**（M2 §4.1）——三个环境变量，一个都不能省。
 
@@ -208,6 +209,9 @@ def pin_local_deployment(
       `.env` 里已有的值（"没传"与"显式置空"在引导级不是一回事：后者要清掉得改 `.env`）。
       默认档一个字都不用填：提供者客户端按"权威 + 覆盖"解析，
       ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN`` 就是它的继承源。
+    - ``KYLAB_DEVICE_ID``（M5 阶段 4）：**这台机器的设备身份**，壳生成、壳传
+      （``--device-id``）。与 ``kb_url`` 同一条"**有值才设**"：它是引导级的事实，
+      没传就是没有（本机档随后如实拒绝打快照，R12——**绝不自动编一个**）。
 
     顺带清掉两个单例缓存：档位是**进程启动时定一次**的东西（`get_settings` /
     `get_stores` / `get_services` 都是 `lru_cache`），而"先有人问过档位、再钉档"
@@ -225,6 +229,8 @@ def pin_local_deployment(
         os.environ["KYLAB_KB_URL"] = kb_url
     if kb_token:
         os.environ["KYLAB_KB_TOKEN"] = kb_token
+    if device_id:
+        os.environ["KYLAB_DEVICE_ID"] = device_id
     reset_services()
     reset_stores()
     get_settings.cache_clear()
@@ -836,9 +842,7 @@ class Clients:
         )
 
 
-def build_clients(
-    base_url: str, token: str, *, workspace: Path, data_dir: Path
-) -> Clients:
+def build_clients(base_url: str, token: str, *, workspace: Path, data_dir: Path) -> Clients:
     """唯一的装配处 ✓（方案 §4：`if` 只允许出现在这里）。
 
     **装配之前先把档位钉死**（M2 §4.1）：`create_app` 也会调一次（用例直接拿 app 时
@@ -1023,8 +1027,7 @@ def _record_turn(
     del turn_id  # 只作标识，不再参与写库（见 docstring 最后一段）
     if not conversation_id:
         return None, (
-            "未带会话 id（conversation_id），本轮**未落库**"
-            "（刷新后这一轮不会留在会话里）"
+            "未带会话 id（conversation_id），本轮**未落库**（刷新后这一轮不会留在会话里）"
         )
     try:
         clients.services.conversations.record_turn(
@@ -1060,9 +1063,7 @@ def _probe_health(url: str, timeout: float = 5.0) -> tuple[bool, str]:
     except httpx.HTTPError as exc:
         return False, f"网络不可达：{type(exc).__name__}: {exc}（url={url}）"
     if response.status_code >= 400:
-        return False, (
-            f"端点返回 {response.status_code}（url={url}）：{response.text[:200]}"
-        )
+        return False, (f"端点返回 {response.status_code}（url={url}）：{response.text[:200]}")
     return True, ""
 
 
@@ -1096,6 +1097,7 @@ def create_app(
     data_dir: Path | None = None,
     kb_url: str = "",
     kb_token: str = "",
+    device_id: str = "",
 ) -> FastAPI:
     """造边车应用（入口只做参数解析与 `uvicorn.run` ✓，方便用例直接拿 app ✓）。
 
@@ -1106,6 +1108,10 @@ def create_app(
     入口）。**留空 = 继承** ``base_url`` / ``token``（壳里那台 NAS），所以默认档
     一个字都不用传 ✓ —— 它们只往 ``pin_local_deployment`` 的"有值才设"那条路走。
 
+    ``device_id``（M5 阶段 4）是**这台机器的设备身份**：壳在登录那一刻生成一次、
+    之后每次起边车都传下来。它同样是"有值才设"，**留空就是没有** —— 本机档随后
+    如实拒绝打快照（R12：绝不自动编一个 id），而不是悄悄用一台匿名机器备份。
+
     **先把档位钉死**（`pin_local_deployment`）再建任何东西：`Clients` 会走本机档的
     组合根（`get_services()`），而那是按环境变量建单例的——钉晚了就会按服务器档
     去连 PG（"边车误连服务器库"那条路，不报错、只是写错库）。用例直接调本函数时
@@ -1113,7 +1119,12 @@ def create_app(
     """
     data_dir = data_dir or (workspace.parent / "data")
     pin_local_deployment(
-        data_dir, server_url=base_url, token=token, kb_url=kb_url, kb_token=kb_token
+        data_dir,
+        server_url=base_url,
+        token=token,
+        kb_url=kb_url,
+        kb_token=kb_token,
+        device_id=device_id,
     )
     clients = build_clients(base_url, token, workspace=workspace, data_dir=data_dir)
     _seed_local_files(clients)
@@ -1364,7 +1375,7 @@ def create_app(
                 return
 
             # 收尾那一步要**再发一次**：它先前以 `running` 出去过 ✓，而循环从不给它 `done` ✗
-            #（与 `/turn` 同一个 `_close_trailing_answer_step` ✓）—— 不发这一次，
+            # （与 `/turn` 同一个 `_close_trailing_answer_step` ✓）—— 不发这一次，
             # 前端会一直显示"正在组织回答" ✗，而这一轮其实已经结束了 ✓。
             before = [dict(step) for step in steps]
             _close_trailing_answer_step(steps)
@@ -1418,6 +1429,7 @@ def create_app(
 
             del target  # 工作区已在校验时定下 ✓（响应里不再回它：流式的载荷形状照服务器那条链 ✓）
             yield _sse({"type": "done", "answer": answer})
+
         return StreamingResponse(gen(), media_type=SSE_MEDIA_TYPE)
 
     @app.post(
@@ -1466,9 +1478,7 @@ def main(argv: list[str] | None = None) -> None:
         default=os.environ.get("KYLAB_SERVER_URL", "http://127.0.0.1:8000/api/v1"),
         help="服务器 API 基址（KB 与模型代理都在它下面）",
     )
-    parser.add_argument(
-        "--token", default=os.environ.get("KYLAB_TOKEN", ""), help="用户会话令牌"
-    )
+    parser.add_argument("--token", default=os.environ.get("KYLAB_TOKEN", ""), help="用户会话令牌")
     parser.add_argument(
         "--kb-url",
         default=os.environ.get("KYLAB_KB_URL", ""),
@@ -1478,6 +1488,11 @@ def main(argv: list[str] | None = None) -> None:
         "--kb-token",
         default=os.environ.get("KYLAB_KB_TOKEN", ""),
         help="知识库提供者的凭据覆盖（默认继承 --token；不落库、不进日志）",
+    )
+    parser.add_argument(
+        "--device-id",
+        default=os.environ.get("KYLAB_DEVICE_ID", ""),
+        help="这台机器的设备身份（壳生成并传入；没有它不自动编，见 M5 §3.1）",
     )
     parser.add_argument(
         "--workspace", default=None, help="本地工作区目录（默认 ~/.kylab/workspace）"
@@ -1501,6 +1516,7 @@ def main(argv: list[str] | None = None) -> None:
             data_dir=data_dir,
             kb_url=args.kb_url,
             kb_token=args.kb_token,
+            device_id=args.device_id,
         ),
         host=args.host,
         port=args.port,

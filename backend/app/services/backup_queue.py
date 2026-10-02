@@ -381,6 +381,20 @@ class BackupQueueService:
             last_error=newest.last_error if newest is not None else "",
         )
 
+    def recent(self, *, limit: int = 20) -> tuple[BackupSnapshotRecord, ...]:
+        """最近几份（新的在前）——**给界面列"哪几份没传上去、为什么"用的那一读**。
+
+        与 :meth:`backlog` 是一对：那个给计数（"还有 N 份"），这个给行（"是哪几份、什么
+        状态、上次失败的原因"）。两个都从同一张表读、同一把尺子排序，所以界面上的数与
+        列表不会是两件事。
+
+        **为什么要这一个方法（M5 阶段 4 加）**：``/local/backup`` 要把它当窄投影回给前端，
+        而 ``api/`` 那一层**不许 import 存储**（L1 规则：协议层只能转发 services/）——
+        队列这张表只有这一个服务持有，所以读它只能经这个方法。它不移动、不改任何东西，
+        纯粹是把 ``list_backup_snapshots(newest_first=True)`` 的读面收成一句。
+        """
+        return tuple(self._queue.list_backup_snapshots(newest_first=True, limit=int(limit)))
+
     def every_hours(self) -> int:
         """自动快照的间隔（小时，``0`` = 关）。
 

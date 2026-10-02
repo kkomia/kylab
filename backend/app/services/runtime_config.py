@@ -78,9 +78,7 @@ SETTING_GROUPS: dict[str, Any] = {
                 "type": "select",
                 # 值表来自 `services/embedding/protocols.py`（一处定义，别处只 import）：
                 # 这里再抄一份字符串，改协议名时就会漏掉一处
-                "options": [
-                    {"value": value, "label": label} for value, label in PROTOCOL_OPTIONS
-                ],
+                "options": [{"value": value, "label": label} for value, label in PROTOCOL_OPTIONS],
             },
         ],
     },
@@ -317,6 +315,33 @@ SETTING_GROUPS: dict[str, Any] = {
             },
         ],
     },
+    # 备份提供者（M5 阶段 4）。四个字段都是**本机档**的："快照打给谁、含不含工作区、
+    # 多久自动打一份"——服务器档自己就是备份的目的地，这一组对它没有意义
+    # （与知识库那两个运行期键同源；那一组的端点只有本机档有，见 ``api/v1/local.py``）。
+    #
+    # **凭据不在这一组里**：token 只从引导级来（壳的 ``--token`` / ``KYLAB_TOKEN``），
+    # 落库的键因此永远只有这四个（R3/R14：本机库里存不下凭据）。
+    "backup": {
+        "label": "备份",
+        "fields": [
+            {
+                "key": "provider.backup.base_url",
+                "label": "备份提供者地址（留空 = 用登录的那台 NAS）",
+                "type": "text",
+            },
+            {"key": "provider.backup.enabled", "label": "启用备份提供者", "type": "bool"},
+            {
+                "key": "provider.backup.include_workspace",
+                "label": "快照里带上工作区产物（默认不带）",
+                "type": "bool",
+            },
+            {
+                "key": "provider.backup.every_hours",
+                "label": "每多少小时自动打一份快照（0 = 只手动）",
+                "type": "int",
+            },
+        ],
+    },
 }
 
 #: 代码默认值。**只有行为参数**：模型身份来自注册表，没有默认模型这回事。
@@ -455,6 +480,17 @@ DEFAULTS: dict[str, str] = {
     # 让任意路径进 system prompt 等于绕过"哪些是设定、哪些是被召回的现场"这条分界。
     # 空值 = 默认顺序（不是"一份都不注入"）；想去掉哪一份就从这一行里删掉它。
     "memory.persona_files": "SOUL.md,PROFILE.md,AGENTS.md,MEMORY.md",
+    # 备份提供者（M5 阶段 4）。两个**有默认值**的行为参数（决策点 D3 + 方案 §2.2-2）；
+    # 地址与开关没有默认值：没有地址 = 不配、没有开关键 = 开（与知识库那两个键同一条口径，
+    # 见 ``services/backup_provider.resolve_backup_target`` 的四路解析）。
+    #
+    # 自动快照默认 **24 小时**（D3 批准）：这一格是"断网也不丢"的价值所在，关掉就只剩手动。
+    # 判据是"距最近一条快照记录（不论成败）超过 N 小时"——那只钟由阶段 3 的补传节拍
+    # 顺带看（方案 §3.2 的口径修正），不另起计时器。
+    "provider.backup.every_hours": "24",
+    # 工作区产物**默认不进快照**（方案 §2.2-2）：工作区里是用户的项目文件，
+    # v0.3 §4 那条"本机工作区文件 永不上传"是底线。打开之后才按额度备。
+    "provider.backup.include_workspace": "0",
 }
 
 

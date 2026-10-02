@@ -99,7 +99,7 @@ import threading
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -107,9 +107,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.auth import ReadDep, WriteDep
 from app.api.v1 import chat
 from app.core.config import Settings, get_settings
-from app.core.exceptions import InvalidRequestError, NotFoundError
+from app.core.exceptions import (
+    BadRequestError,
+    InvalidRequestError,
+    NotFoundError,
+    UpstreamError,
+)
 from app.core.services import Services, get_services
 from app.core.storage import LOCAL_DB_NAME
+from app.services import backup_provider
+from app.services.backup_provider import BackupProviderClient
+from app.services.backup_queue import EVERY_HOURS_KEY, PENDING_DIR, BackupQueueService
+from app.services.backup_snapshot import INCLUDE_WORKSPACE_KEY, BackupSnapshotService
 from app.services.kb_cache import (
     CACHEABLE_RESOURCES,
     DOC_LIST,
@@ -128,6 +137,7 @@ from app.services.knowledge_provider import (
     ProviderStatus,
 )
 from app.services.legacy_import import UNFINISHED_STATES, LegacyImporter
+from app.services.remote_clients import RemoteRejectedError, RemoteUnavailableError
 
 __all__ = ["chat_reads", "router"]
 
@@ -1099,6 +1109,471 @@ def rollback_import(
     importer = _importer(services)
     report = importer.rollback(batch_id)
     return _as_out(report)
+
+
+# ------------------------------------------------------------ 备份提供者（M5 阶段 4）
+#
+# 五条端点，两个面：
+#
+# - **本机那一半**（``backlog`` / ``snapshots`` / 「立即备份」）**连不上 NAS 也要给**
+#   ——备份是本地动作（打快照、排队都在本机），"NAS 断着"正是用户要看这一页的时刻
+#   （方案 §7 A 第二行的判据）；
+# - **远端那一半**（恢复点清单 / 删除）是**透传**：本机不做缓存之外的任何加工，
+#   形状照 NAS 的契约（``api/v1/backup.py``）。提供者不可用时**如实回三态 + 原因**，
+#   不是 500——这一页打不开比这一页说"连不上"糟得多。
+#
+# 凭据一个字都不收（R3/R14）：``PATCH`` 的白名单是四键，``token`` 只从引导级来。
+
+
+BACKUP_RECENT_ROWS = 20
+"""/local/backup 与 PATCH 回给前端的**队列最近几行**（新的在前）。
+
+20 这个数只为"够看"：队列本身有本地上限（3 份），但**历史行**（传成过 / 被丢掉的）
+会越积越多，界面那一屏只该画最近这些——再往前翻是"备份历史"那一页的事（阶段 7）。
+"""
+
+
+class BackupProviderOut(BaseModel):
+    """``BackupProviderStatus.to_payload()`` 的形状（**形状只在那一边拼一份**）。
+
+    ``available``（端点族通了）与 ``snapshot_available``（桶能用）**是两件事**（R5）：
+    NAS 活着但还没建桶时前者为真、后者为假，而 ``snapshot_reason`` 里就是那句
+    "下一步敲什么"。不 ready 时后四段**键都不出现**（``response_model_exclude_unset``）——
+    回空对象会让界面去猜"是没探到还是真没有"。
+    """
+
+    state: str = Field(description="ready / unavailable / unconfigured")
+    available: bool = Field(
+        description="端点族通了没有（**不是**「桶能用」，见 snapshot_available）"
+    )
+    reason: str = Field(default="", description="不可用时的原因（一句人话 + 下一步）")
+    checked_at: datetime | None = Field(default=None, description="这个结论是什么时候探的")
+    base_url: str = Field(default="", description="正在用的地址（未配时为空）")
+    credential: str = Field(
+        default="missing", description="configured / missing——凭据只看有没有，永不回显"
+    )
+    snapshot_available: bool = Field(
+        default=False, description="这台提供者现在能不能真收快照（桶建好没有）"
+    )
+    snapshot_reason: str = Field(
+        default="", description="不能收快照时那句话（服务端给的下一步，原样透传）"
+    )
+    protocol_version: int | None = Field(
+        default=None, description="提供者报的协议版本；比本机所知更高即判不可用"
+    )
+    app_version: str = Field(default="", description="提供者那一侧的版本（排障用）")
+    capabilities: dict[str, Any] = Field(
+        default_factory=dict, description="能力集（snapshot / restore / retention 三段）"
+    )
+    devices: list[dict[str, Any]] = Field(
+        default_factory=list, description="这台提供者看得见的设备（每台：几份、多大、最近一份）"
+    )
+
+
+class BackupQueueRowOut(BaseModel):
+    """本机待传队列的一行（窄投影：界面要的那几列，不含 blob 路径这类本机细节）。
+
+    ``state`` 的五档与 ``attempts`` / ``next_attempt_at`` / ``last_error`` 一起回答
+    "这一份传到哪一步了、为什么没成、下次什么时候再试"——文案由界面组织，这里只给事实。
+    """
+
+    id: str = Field(description="快照 id（<device>-<ts>-<hash8>，内容寻址）")
+    created_at: datetime = Field(description="这一份是什么时候打的")
+    kind: str = Field(description="manual / auto / pre_restore")
+    state: str = Field(description="pending / uploading / uploaded / failed / discarded")
+    blob_bytes: int = Field(default=0, description="本地那份包的大小")
+    attempts: int = Field(default=0, description="试过几次（失败自增）")
+    next_attempt_at: datetime | None = Field(
+        default=None, description="下次可试的时刻（null = 立即到期）"
+    )
+    last_error: str = Field(default="", description="最近一次失败的原因（成功过就清空）")
+    uploaded_at: datetime | None = Field(default=None, description="传成的时刻（没成就是 null）")
+    remote_device_id: str | None = Field(default=None, description="远端确认的设备坐标")
+    remote_snapshot_id: str | None = Field(default=None, description="远端确认的快照坐标")
+
+
+class BackupBacklogOut(BaseModel):
+    """「有几份没备上去」那一读（方案 §3.2：**如实报，不静默**）。
+
+    ``queued`` 是还没传上去的份数（pending / uploading / failed 三档）；
+    ``discarded`` 是被本地上限丢掉的份数——那几份确实没备上去，而原因不是网络。
+    """
+
+    queued: int = Field(default=0, description="还没备上去的份数")
+    bytes: int = Field(default=0, description="它们占的本地字节")
+    failed: int = Field(default=0, description="其中失败过的份数")
+    discarded: int = Field(default=0, description="被本地上限丢掉的份数（如实报）")
+    oldest_created_at: datetime | None = Field(default=None, description="队列里最旧那份的时刻")
+    last_error: str = Field(default="", description="最近一条失败原因")
+
+
+class LocalBackupOut(BaseModel):
+    """``GET|PATCH /local/backup`` 的整包：**提供者 + 队列 + 最近几行**。
+
+    **提供者不可用时本机那一半照常给**（方案 §7 A 第二行）：``provider.state`` 说
+    "连不上"，而 ``backlog`` / ``snapshots`` 说的是这台机器自己的事——两者互不掩盖。
+    """
+
+    provider: BackupProviderOut
+    backlog: BackupBacklogOut
+    snapshots: list[BackupQueueRowOut] = Field(
+        default_factory=list, description="本机队列最近几份（新的在前）"
+    )
+
+
+class BackupPatchIn(BaseModel):
+    """``PATCH /local/backup`` 的请求体：**只有四个键**（M5 §2.2 / §3.2 的运行期键）。
+
+    ``extra="forbid"``（与 ``ProviderPatchIn`` 同一条纪律）：**凭据类键一个都不收**
+    （R3/R14——token 只从引导级来），``token`` / ``api_key`` 这些名字会以"未知键"被
+    422 拒掉。白名单只有这一处，不在端点函数里再列一遍。
+
+    ``None`` = **不改这一项**（PATCH 的语义）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str | None = Field(
+        default=None, description="备份提供者地址；空串 = 回继承（壳里那台 NAS）；None = 不改"
+    )
+    enabled: bool | None = Field(
+        default=None, description="提供者开关；false = 显式关掉（快照照旧在本机打）；None = 不改"
+    )
+    include_workspace: bool | None = Field(
+        default=None, description="快照里带不带工作区产物（默认不带）；None = 不改"
+    )
+    every_hours: int | None = Field(
+        default=None, ge=0, description="每多少小时自动打一份（0 = 只手动）；None = 不改"
+    )
+
+
+class BackupSnapshotCreatedOut(BaseModel):
+    """``POST /local/backup/snapshots`` 的 202：**那一行 + 最新的队列读数**。
+
+    入队那一步会顺手试一次上传（方案 §3.3「立即触发」），所以这里的 ``state`` 多半是
+    ``failed`` + 一句 ``last_error``——**那也是入队成功**：快照已经在盘上、在队列里，
+    联网后那一轮补传会把它传上去（§7 A 第一行就是按这个口径写的）。
+    """
+
+    snapshot: BackupQueueRowOut
+    backlog: BackupBacklogOut
+
+
+class BackupPointsOut(BaseModel):
+    """``GET /local/backup/points``：**透传** NAS 的恢复点清单（本机只加一层三态）。
+
+    ``available=false`` 时 ``items`` / ``total`` / ``quota`` **没有意义**（它们会是空 / 0）：
+    判据是 ``available`` 与 ``reason``，界面据此显示"连不上，看不到恢复点"，
+    **不要把 0 显示成"还没备过"**（与 NAS 侧能力集里那句注释同一条口径）。
+    """
+
+    state: str = Field(description="ready / unavailable / unconfigured")
+    available: bool = Field(description="这一份清单是不是真的取到了")
+    reason: str = Field(default="", description="取不到时的原因（一句人话）")
+    checked_at: datetime | None = Field(default=None, description="这次探到结论的时刻")
+    items: list[dict[str, Any]] = Field(default_factory=list, description="恢复点（新的在前）")
+    total: int = Field(default=0, description="这台提供者上共几份（分页之外的总数）")
+    quota: dict[str, Any] = Field(
+        default_factory=dict, description="额度那一段（配了多少 / 用了多少）"
+    )
+
+
+class BackupPointDeletedOut(BaseModel):
+    """``DELETE /local/backup/points/{device}/{id}``：整份删掉几个对象（正常是 2）。"""
+
+    removed: int = Field(description="实际删掉的对象数（快照体 + 清单）")
+
+
+class _QueueRowView(Protocol):
+    """这一层**真的会读到**的那几个队列行字段（``storage.base.BackupSnapshotRecord`` 的窄视图）。
+
+    为什么不直接标注那个记录类型：``scripts/check_layering.py`` 的 L1 规则禁止协议层
+    import ``app.storage``（连 ``TYPE_CHECKING`` 块里的也算——那份检查走的是整棵 AST）。
+    所以这里给一份结构视图：它把"这一层用到哪几个字段"写在明处（多一个字段就得多写一行），
+    而实现方那一侧（``BackupQueueService.recent``）返回的真记录**结构上**满足它——认错了
+    字段名不会静默，取值那一步就炸（用例 15 条覆盖着这条路径）。
+    """
+
+    id: str
+    created_at: datetime
+    kind: str
+    state: str
+    blob_bytes: int
+    attempts: int
+    next_attempt_at: datetime | None
+    last_error: str
+    uploaded_at: datetime | None
+    remote_device_id: str | None
+    remote_snapshot_id: str | None
+
+
+def _backup_queue(services: Services) -> BackupQueueService:
+    """取**进程级**那个待传队列（组合根建的那一个）。
+
+    服务器档或手工构造的 `Services` 上是 `None` —— 与 `_provider` / `_kb_cache` 同一写法：
+    如实报"这一节只有本机档有"，**不装作答得上来**。
+    """
+    queue = services.backup_queue
+    if queue is None:
+        raise InvalidRequestError(
+            "备份队列只有本机档才有：服务器档自己就是备份的目的地（没有「排队往别处传」这条动作）"
+        )
+    return queue
+
+
+def _backup_provider(services: Services) -> BackupProviderClient:
+    """取**进程级**那个备份提供者客户端（组合根建的那一个，同时是队列的上传者）。"""
+    provider = services.backup_provider
+    if provider is None:
+        raise InvalidRequestError("备份提供者的状态只有本机档才有：服务器档就是那台提供者本身")
+    return provider
+
+
+def _backup_packer(services: Services) -> BackupSnapshotService:
+    """取**进程级**那个快照打包服务（打一份擦洗过的包）。"""
+    packer = services.backup_snapshot
+    if packer is None:
+        raise InvalidRequestError(
+            "快照打包只有本机档才有：服务器档没有「把自己打成一份包」这条动作"
+        )
+    return packer
+
+
+def _backup_row(row: _QueueRowView) -> BackupQueueRowOut:
+    """队列行 → 窄投影（**不含 blob_path**：那是本机细节，界面用不上）。"""
+    return BackupQueueRowOut(
+        id=row.id,
+        created_at=row.created_at,
+        kind=row.kind,
+        state=row.state,
+        blob_bytes=row.blob_bytes,
+        attempts=row.attempts,
+        next_attempt_at=row.next_attempt_at,
+        last_error=row.last_error,
+        uploaded_at=row.uploaded_at,
+        remote_device_id=row.remote_device_id,
+        remote_snapshot_id=row.remote_snapshot_id,
+    )
+
+
+def _backup_backlog(queue: BackupQueueService) -> BackupBacklogOut:
+    """队列读数 → 响应模型（``BackupQueueService.backlog()`` 那几个字段照搬）。"""
+    backlog = queue.backlog()
+    return BackupBacklogOut(
+        queued=backlog.queued,
+        bytes=backlog.bytes,
+        failed=backlog.failed,
+        discarded=backlog.discarded,
+        oldest_created_at=backlog.oldest_created_at,
+        last_error=backlog.last_error,
+    )
+
+
+def _backup_out(services: Services, *, refresh: bool = False) -> LocalBackupOut:
+    """整包：提供者三态 + 队列读数 + 最近几行（**一个函数两处用**：GET 与 PATCH）。
+
+    PATCH 那一处要 ``refresh=True``（写完立刻重探，好让"保存"这一下同时完成重渲染）；
+    GET 那一处读 30s 缓存（**不在渲染路径上等一次 NAS 往返**，R1）。
+    """
+    provider = _backup_provider(services)
+    queue = _backup_queue(services)
+    status = provider.status(refresh=refresh)
+    return LocalBackupOut(
+        provider=BackupProviderOut.model_validate(status.to_payload()),
+        backlog=_backup_backlog(queue),
+        snapshots=[_backup_row(row) for row in queue.recent(limit=BACKUP_RECENT_ROWS)],
+    )
+
+
+def _points_out(provider: BackupProviderClient, *, refresh: bool) -> BackupPointsOut:
+    """恢复点清单那一份响应（**取不到也是 200**：三态 + 原因，不是 500）。
+
+    先看状态：``state != ready`` 时一个请求都不发（``list_snapshots`` 自己也会挡一道）——
+    连不上的 NAS 不该被每开一次页面就打一次。
+    """
+    status = provider.status(refresh=refresh)
+    if not status.available:
+        return BackupPointsOut(
+            state=status.state,
+            available=False,
+            reason=status.reason,
+            checked_at=status.checked_at,
+        )
+    payload = provider.list_snapshots(refresh=refresh)
+    if payload is None:
+        # 状态说通了、清单却没取到（那一刻刚断）：**如实报**，别把空清单当成"一份都没有"
+        return BackupPointsOut(
+            state=backup_provider.STATE_UNAVAILABLE,
+            available=False,
+            reason=f"恢复点清单没取到（{status.base_url}）：请稍后再试一次",
+            checked_at=status.checked_at,
+        )
+    return BackupPointsOut(
+        state=backup_provider.STATE_READY,
+        available=True,
+        checked_at=status.checked_at,
+        items=[item for item in payload.get("items") or [] if isinstance(item, dict)],
+        total=int(payload.get("total") or 0),
+        quota=payload.get("quota") if isinstance(payload.get("quota"), dict) else {},
+    )
+
+
+def _pending_dir(settings: Settings) -> Path:
+    """打包落点：``<data_dir>/backup/pending``（**常量来自队列那一层，别处不手抄**）。"""
+    return Path(settings.data_dir).joinpath(*PENDING_DIR)
+
+
+@router.get(
+    "/backup",
+    response_model=LocalBackupOut,
+    # 不 ready 时提供者那四段**键都不出现**（不是 null / 空对象，见模型说明）
+    response_model_exclude_unset=True,
+    summary="备份：提供者状态 + 待传队列 + 最近几份（连不上也要给本机那一半）",
+)
+def local_backup(
+    services: Annotated[Services, Depends(get_services)],
+    caller: ReadDep,
+) -> LocalBackupOut:
+    """**备份这一页的整包**（方案 §7 A 第二行的判据）。
+
+    提供者那一半是 30s 缓存的三态（探针绝不抛：连不上 / 凭据错 / 版本不认识都是
+    ``unavailable`` + 原因）；本机那一半（队列读数与最近几行）**与提供者的状态无关**——
+    "这机器上有几份没备上去"是本地事实，NAS 断着它也照样答得上来。
+    """
+    return _backup_out(services)
+
+
+@router.patch(
+    "/backup",
+    response_model=LocalBackupOut,
+    response_model_exclude_unset=True,
+    summary="改备份提供者的地址 / 开关 / 含工作区 / 自动间隔（白名单四键，写完立刻重探）",
+)
+def update_local_backup(
+    payload: BackupPatchIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: WriteDep,
+) -> LocalBackupOut:
+    """改四个运行期键（落本机库 ``app_settings``），**写完立刻重探并回最新整包**。
+
+    - ``base_url``：空串 = **回继承**（壳里那台 NAS，那正是面板上的「恢复默认」）；
+    - ``enabled``：``false`` = 显式关掉（解析成 ``unconfigured`` + 那句"被关掉了"；
+      注意关掉**不影响本机打快照**，只是传不出去）；
+    - ``include_workspace`` / ``every_hours``：打包与自动快照那两个行为参数，
+      下一次调用立刻生效（打包器与队列都是每次现取）。
+
+    **凭据不在这里**（R3/R14）：``token`` 只从引导级来，被 ``extra="forbid"`` 挡在门外
+    ——本机库里因此永远不会出现 token。一个键都不给（空 body）= 只重探一次。
+    """
+    values: dict[str, str] = {}
+    if payload.base_url is not None:
+        values[backup_provider.SETTING_BASE_URL] = payload.base_url.strip()
+    if payload.enabled is not None:
+        values[backup_provider.SETTING_ENABLED] = "1" if payload.enabled else "0"
+    if payload.include_workspace is not None:
+        values[INCLUDE_WORKSPACE_KEY] = "1" if payload.include_workspace else "0"
+    if payload.every_hours is not None:
+        values[EVERY_HOURS_KEY] = str(payload.every_hours)
+    if values:
+        services.runtime.set(values)
+    return _backup_out(services, refresh=True)
+
+
+@router.post(
+    "/backup/snapshots",
+    response_model=BackupSnapshotCreatedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="立刻打一份快照并入队（断网也能打：202 + 队列一行 + 原因）",
+)
+def create_local_backup_snapshot(
+    services: Annotated[Services, Depends(get_services)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    caller: WriteDep,
+) -> BackupSnapshotCreatedOut:
+    """「立即备份」：**打包 → 入队 → 立刻试一次**（方案 §3.2 / §3.3）。
+
+    三件事的顺序就是要害：包先落在 ``<data_dir>/backup/pending/``（本地动作，不需要网络），
+    再登记成队列一行（跨重启续传的凭据），最后**顺手试一次上传**（不等那 5 分钟的节拍）。
+    所以断网时它照样回 202，而那一行是 ``failed`` + 一句 ``last_error`` ——
+    **那也是入队成功**（§7 A 第一行：两档都算成功）。
+
+    两处如实拒：没有**设备身份**（R12：壳没登录过 → 400 + 那句"先在桌面壳里登录一次"，
+    绝不编一个 id）与类型不在词表里（400）。打包与第一次尝试都在请求线程里（同步端点，
+    Starlette 会丢进线程池）——因为这一条的判据是"返回时队列已经有一行、原因可见"；
+    后续重试在 ``backup-upload`` 线程里，不挂在请求上。
+    """
+    packer = _backup_packer(services)
+    queue = _backup_queue(services)
+    try:
+        result = packer.create(into=_pending_dir(settings), kind="manual")
+    except InvalidRequestError as exc:
+        # R12 要的是 **400**（"请求形状对、内容与事实对不上"），而 ``InvalidRequestError``
+        # 在共享的状态码表里是 422（那一档的语义是"把字段改对再来"）——这里没有字段可改，
+        # 用户要做的动作是"先去壳里登录一次"。所以换成 ``BadRequestError``（只差状态码，
+        # code 仍是 invalid_request）。唯一可能从 ``create`` 出来的就是这个"没有设备身份"。
+        raise BadRequestError(str(exc)) from exc
+    row = queue.enqueue(result)
+    return BackupSnapshotCreatedOut(snapshot=_backup_row(row), backlog=_backup_backlog(queue))
+
+
+@router.get(
+    "/backup/points",
+    response_model=BackupPointsOut,
+    summary="恢复点清单（透传 NAS；连不上就如实回三态，不是 500）",
+)
+def local_backup_points(
+    services: Annotated[Services, Depends(get_services)],
+    caller: ReadDep,
+    refresh: bool = False,
+) -> BackupPointsOut:
+    """**能恢复哪些点**（方案 §3.4：本机端点透传 NAS ``GET /backup/snapshots``）。
+
+    缓存 30s（与提供者状态同一 TTL 口径）；``refresh=1`` 强制重取（用户点「刷新」时用）。
+    ``available=false`` 时 ``items`` / ``total`` / ``quota`` 是空的，界面据此说"看不到"
+    而不是"还没备过"——那两句话的下一步完全不同。
+
+    **阶段 5 的按点恢复从这里挑一份**：拿到 ``device_id`` + ``snapshot_id`` 之后走
+    ``services.backup_provider.download_snapshot`` 把那包取回来（见那一处的说明）。
+    """
+    return _points_out(_backup_provider(services), refresh=refresh)
+
+
+@router.delete(
+    "/backup/points/{device_id}/{snapshot_id}",
+    response_model=BackupPointDeletedOut,
+    summary="删一个恢复点（整份；服务端本来就没有 → 404 如实回）",
+)
+def delete_local_backup_point(
+    device_id: str,
+    snapshot_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    caller: WriteDep,
+) -> BackupPointDeletedOut:
+    """删**一个恢复点**（快照体 + 清单一起走，方案 §1.2 规矩 2：没有"删某个对象"的入口）。
+
+    两种失败各说各的话：服务端上没有这一份 → **404**（想删的那一份不在这儿，值得知道——
+    与 NAS 侧那条删除端点同一个判断）；连不上 → 503 + 原因（换一步再试）。
+
+    **本机队列那一行不动**：远端删掉的是"那一份备份"，而本机队列记的是"这份打到哪一步了"
+    ——两份账各有各的用途（传成过的那些行是"这台机器备过什么"的历史）。
+    """
+    provider = _backup_provider(services)
+    try:
+        removed = provider.delete_snapshot(device_id, snapshot_id)
+    except RemoteRejectedError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+    except RemoteUnavailableError as exc:
+        # **502 upstream_error**：连不上 NAS 是"外部依赖出错"，不是"我们内部出错了"
+        # （500），也不是"你请求写错了"（4xx）——用户看到文案就知道该去看网络。
+        #
+        # 为什么不是知识库那条 503：那一条的映射（``KnowledgeBaseUnavailable``）住在
+        # ``app.storage.base``，而 **L1 规则禁止协议层 import 存储**（`check_layering.py`
+        # 走整棵 AST，连 ``TYPE_CHECKING`` 里的算）。要一条"备份提供者不可用 → 503"，
+        # 得在 ``core/exceptions.py`` 里加一类异常（那份文件在白名单之外，见阶段 4 报告）。
+        raise UpstreamError(str(exc)) from exc
+    if removed == 0:
+        raise NotFoundError(f"这条路径上没有恢复点可删：{device_id}/{snapshot_id}")
+    return BackupPointDeletedOut(removed=removed)
 
 
 # ---------------------------------------------------------------- 薄重声明两条

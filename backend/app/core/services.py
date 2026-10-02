@@ -29,6 +29,9 @@ from app.services.approvals import ApprovalRegistry
 from app.services.artifacts import ArtifactService
 from app.services.auth import AuthService
 from app.services.avatars import AvatarService
+from app.services.backup_provider import BackupProviderClient
+from app.services.backup_queue import BackupQueueService
+from app.services.backup_snapshot import BackupSnapshotService
 from app.services.batch import DocumentBatchService
 from app.services.chat import ChatService
 from app.services.chunk import ChunkService
@@ -229,6 +232,49 @@ class Services:
     为什么带默认值：服务器档与手工构造 ``Services`` 的地方（脚本、测试）都不该被迫
     传一个不适用的对象；"没有它"本身就是一个合法状态，而不是配置漏项。
     """
+    backup_snapshot: BackupSnapshotService | None = None
+    """**本机快照打包服务**（M5 阶段 2 建，阶段 4 起接上端点与队列）。
+
+    本机档：打一份擦洗过的、可搬到别的机器的包（库 + 记忆 + 选择性产物 → tar.gz）。
+    它每次调用现取运行期配置（含不含工作区产物），所以设置页改完**不必重启**。
+
+    服务器档：``None``。那一档的库就是它自己，没有"把自己打成一份便携的包"这条动作
+    （``/local/backup`` 那一族端点也只在 ``local_router`` 上，见 ``api/v1/router.py``）。
+
+    为什么带默认值：与 ``provider`` / ``kb_cache`` 同一条理由——"没有它"是一个合法状态，
+    而不是配置漏项。
+    """
+
+    backup_provider: BackupProviderClient | None = None
+    """**备份提供者客户端**（M5 阶段 4 建）：本机打 NAS ``/backup/*`` 的唯一出口。
+
+    两个身份、同一个对象：① ``/local/backup`` 与 ``/local/backup/points`` 问它的状态与
+    恢复点清单；② 它是**补传队列的上传者**（``SnapshotUploader`` 那份协议），
+    ``upload`` 里的两次 PUT（先 blob 后 manifest）就是它发的。全进程只有这一份，
+    所以那份 30s 握手缓存与恢复点列表缓存也只有一份——改完地址各处看到的必然是同一个结论。
+
+    服务器档：``None``。那一档**自己就是**备份的目的地：它提供 ``/backup/*``
+    （``api/v1/backup.py``），没有"往另一台 NAS 传快照"这条动作。
+
+    为什么带默认值：同 ``provider``——"没有它"是合法状态。
+    """
+
+    backup_queue: BackupQueueService | None = None
+    """**备份待传队列服务**（M5 阶段 3 建，阶段 4 起在组合根里 ``start()``）。
+
+    它持有那一个 ``backup-upload`` 守护线程（断网入队、联网补传、退避、本地队列上限）与
+    "该不该自动打一份"的判据；``/local/backup`` 的 ``backlog`` 段读它的 :meth:`backlog`，
+    ``POST /local/backup/snapshots`` 走它的 ``enqueue``。
+
+    **它的线程在 ``build_services`` 里启动一次**（``start()`` = 崩溃复位
+    ``uploading → pending`` + 起线程），所以"这台进程负责补传"这件事只有一个起点——
+    与 worker 线程由组合根拉起的口径一致。
+
+    服务器档：``None``（那一档没有"排队往别处传"这条动作）。
+
+    为什么带默认值：同 ``provider``——"没有它"是合法状态。
+    """
+
     kb_cache: KbMetaCacheService | None = None
     """**知识库元数据快照服务**（M4 阶段 3 建；阶段 4 起 ``/local/kb-cache/*`` 用它）。
 
@@ -559,6 +605,40 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
             CachedKnowledgeMetaReader(inner=provider.knowledge_meta(), cache=kb_cache)
         )  # type: ignore[attr-defined]
 
+    # **备份那三件**（M5 阶段 4）：本机档才建，服务器档三个都是 None。
+    #
+    # 三件的分工是一条直线（与 M4 那条"提供者 + 缓存"同构）：
+    #   BackupSnapshotService（打包：库 + 记忆 + 选择性产物 → 擦洗过的 tar.gz）
+    #     → BackupQueueService（排队与补传：退避、上限、那一个 backup-upload 线程）
+    #       → BackupProviderClient（上传者：先 blob 后 manifest 两次 PUT）
+    # 而 `backup_provider` **同时**是 `/local/backup` 的状态源与恢复点清单源（两个读面、
+    # 一个对象、一份 30s 缓存）。三件都在这一层建的理由与 `provider` / `kb_cache` 一样：
+    # 它们要的是"能随设置改地址/改开关"的运行期能力，而那份能力只有服务层有。
+    backup_snapshot: BackupSnapshotService | None = None
+    backup_provider: BackupProviderClient | None = None
+    backup_queue: BackupQueueService | None = None
+    if resolved.deployment == "local":
+        # 设备身份从引导级来（壳的 `--device-id` → `KYLAB_DEVICE_ID` → Settings）：
+        # **没有就是没有**（R12：`create()` 会如实拒绝打快照，绝不编一个 id）。
+        backup_snapshot = BackupSnapshotService(
+            stores=bundle,
+            data_dir=resolved.data_dir,
+            device_id=resolved.device_id,
+            runtime_config=runtime,
+        )
+        backup_provider = BackupProviderClient(settings=resolved, get_setting=runtime.get)
+        backup_queue = BackupQueueService(
+            stores=bundle,
+            data_dir=resolved.data_dir,
+            uploader=backup_provider,
+            snapshotter=backup_snapshot,
+            runtime_config=runtime,
+        )
+        # **线程与崩溃复位的唯一起点**（阶段 3 定的纪律：`start()` = 复位
+        # `uploading → pending` + 起那一个 `backup-upload` 线程）。放在组合根而不是
+        # 放进某个端点：被谁先问到不该决定"这台机器有没有在补传"。
+        backup_queue.start()
+
     chat_service = ChatService(
         retrieval,
         runtime,
@@ -801,10 +881,19 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # **进程级那一个快照服务**（M4 阶段 3，与它上面那一个同生共死）：`/local/kb-cache/*`
         # 那族端点从 `Services` 上取它；服务器档与 provider 一起是 None。
         kb_cache=kb_cache,
+        # **备份那三件**（M5 阶段 4）：本机档建（上面那一段），服务器档一起是 None。
+        # `/local/backup` 那一族从它们取数；补传线程已经在上面起好了。
+        backup_snapshot=backup_snapshot,
+        backup_provider=backup_provider,
+        backup_queue=backup_queue,
     )
     # 槽里放进刚装好的这一份：定时任务的执行体从这一刻起可用
     # （`_run_scheduled` 只在 worker 领到 SCHEDULED 任务时被调用，那时这里早已填上）
     runner_slot.append(services)
+    if backup_queue is not None:
+        # 登记它那一个**守护线程**（见 `_BACKUP_QUEUES` 的说明）：`reset_services`
+        # 要把"这份服务图被扔掉了"这件事对线程也说到，否则它会继续碰旧的数据目录。
+        _BACKUP_QUEUES.append(backup_queue)
     return services
 
 
@@ -869,5 +958,19 @@ def get_services() -> Services:
     return build_services()
 
 
+_BACKUP_QUEUES: list[BackupQueueService] = []
+"""本进程建过的待传队列（**只为让 `reset_services` 能停掉它们那一个线程**）。
+
+为什么需要这一份登记：``backup-upload`` 是**守护线程**，它按节拍去碰本机库与
+``backup/pending/``——而 ``reset_services()`` 的语义是"把这份进程级服务图扔掉"。
+不登记的话，被扔掉的那一份会让线程接着跑：测试里表现为"tmp 目录都被清了它还在写"
+（Windows 上就是一句 `PermissionError`），生产里则是"重装服务图之后还有旧线程在传"。
+登记进来，`reset_services()` 就有东西可停（`stop()` 幂等，停一次就够）。
+"""
+
+
 def reset_services() -> None:
+    for queue in _BACKUP_QUEUES:
+        queue.stop()
+    _BACKUP_QUEUES.clear()
     get_services.cache_clear()

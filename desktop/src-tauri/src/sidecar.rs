@@ -6,6 +6,7 @@
 //! 壳（Rust）  ──起──▶  sidecar-runtime\Scripts\python.exe -m app.sidecar
 //!                        --server {base}/api/v1  --token {api_key}  --port 8765
 //!                        --workspace <用户可写目录>  --data-dir <壳的数据目录>
+//!                        --device-id <这台电脑的设备 id，config.json 里的 device_id>
 //! 前端（app://） ──打──▶  http://127.0.0.1:8765/turn/stream
 //! ```
 //!
@@ -22,6 +23,7 @@
 //!    **Job Object（KILL_ON_JOB_CLOSE）** 把子进程一起收走 ✓（见 `job` 模块）。
 
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -134,7 +136,9 @@ impl Manager {
     /// `runtime_root` 是边车运行时目录（`.../sidecar-runtime`）；
     /// `log_dir` 是壳的**配置目录**（日志落在它下面 —— 与 `main.rs` 里所有
     /// `logfile::log(&shell.dir, …)` 同一处，别传成数据目录：那会在数据目录里
-    /// 长出一份没人知道的日志）。
+    /// 长出一份没人知道的日志）；
+    /// `device_id` 是**这台电脑**的身份（`config.json` 里的 `device_id`，见
+    /// `config::Config::ensure_device_id`）—— 备份按设备对齐恢复点，边车少了它就没法办。
     pub fn ensure(
         &self,
         runtime_root: &Path,
@@ -143,9 +147,16 @@ impl Manager {
         workspace: &Path,
         server: &str,
         token: &str,
+        device_id: &str,
     ) -> Result<Info, String> {
         if token.trim().is_empty() {
             return Err("壳里还没有钥匙：先登录一次再起边车".to_string());
+        }
+        // **绝不替边车编一个设备 id** ✗：备份按设备对齐恢复点，编出来的那个会把
+        // 别的机器的恢复点认成这台电脑的。拿不到就如实拒，让用户去登录一次
+        // （登录那条路上壳会生成并落盘一个真 id，`main.rs` 里那段就是）。
+        if device_id.trim().is_empty() {
+            return Err("这台机器还没有设备身份：先登录一次再起边车（备份要按设备对齐）".to_string());
         }
         if let Some(info) = self.info() {
             return Ok(info);
@@ -177,18 +188,7 @@ impl Manager {
         // ⚠️ `--token` 只在命令行传：**这一行不许进日志**（argv 同机器可见）
         let mut command = Command::new(&python);
         command
-            .arg("-m")
-            .arg("app.sidecar")
-            .arg("--server")
-            .arg(server)
-            .arg("--token")
-            .arg(token)
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--workspace")
-            .arg(workspace)
-            .arg("--data-dir")
-            .arg(data_dir)
+            .args(arguments(server, token, port, workspace, data_dir, device_id))
             // 边车要 `app` 包在 import 路径上：运行时目录里就有 `app/`
             .current_dir(runtime_root)
             .stdout(Stdio::null())
@@ -294,6 +294,42 @@ impl Manager {
         *guard = Some(running);
         Ok(info)
     }
+}
+
+/// 交给 python 的那一串参数（**顺序就是这一份**）。
+///
+/// 为什么单独抽出来：起进程那条路要一份**真的**边车运行时，所以"命令行里到底带了
+/// 哪些开关"在 `ensure` 里断言不到；而在它之前就被挡下来的那些用例（少钥匙 / 少设备
+/// 身份）根本走不到拼装。抽成纯函数之后，`--device-id` 在不在命令行上就是一条能红能绿的
+/// 用例了（见 `the_command_line_really_carries_the_device_id`）。
+///
+/// 用 `OsString` 而不是 `String`：路径原样交给系统，不做有损转换（与抽之前一字不差）。
+fn arguments(
+    server: &str,
+    token: &str,
+    port: u16,
+    workspace: &Path,
+    data_dir: &Path,
+    device_id: &str,
+) -> Vec<OsString> {
+    vec![
+        "-m".into(),
+        "app.sidecar".into(),
+        "--server".into(),
+        server.into(),
+        // ⚠️ 这一项不许进日志（argv 同机器可见，见模块头三条纪律之一）
+        "--token".into(),
+        token.into(),
+        "--port".into(),
+        port.to_string().into(),
+        "--workspace".into(),
+        workspace.as_os_str().to_owned(),
+        "--data-dir".into(),
+        data_dir.as_os_str().to_owned(),
+        // **这台电脑的身份**：备份按设备对齐恢复点（空的那个在 `ensure` 里就被挡了）
+        "--device-id".into(),
+        device_id.into(),
+    ]
 }
 
 /// 边车运行时的解释器：先在**包内**找（安装版），再在仓库里找（`cargo run` 开发时）。
@@ -444,6 +480,9 @@ mod job {
 mod tests {
     use super::*;
 
+    /// 用例里用的设备 id（形状与 `config.json` 里那个 UUID v4 一样）。
+    const DEVICE_ID: &str = "3f0c1b8e-2a4d-4e77-9a1f-8c5b0d2e6f31";
+
     #[test]
     fn the_bundled_path_is_where_the_bundle_puts_it() {
         let root = PathBuf::from("C:/app/resources");
@@ -482,9 +521,62 @@ mod tests {
                 Path::new("C:/tmp/ws"),
                 "http://x/api/v1",
                 "  ",
+                DEVICE_ID,
             )
             .unwrap_err();
         assert!(error.contains("还没有钥匙"), "{error}");
+    }
+
+    /// **没有设备身份就拒**（M5 阶段 4）：备份按设备对齐恢复点，边车拿不到这台电脑的
+    /// id 就没法办。这里钉两件：`ensure` 直接 `Err` ✓、消息里说得出**是"设备身份"缺了** ✓
+    /// —— 用的是不存在的运行时路径（`C:/nope`），所以它是在**起进程之前**就挡下来的。
+    #[test]
+    fn an_empty_device_id_is_refused_before_spawning() {
+        let manager = Manager::new();
+        let error = manager
+            .ensure(
+                Path::new("C:/nope"),
+                Path::new("C:/tmp/logs"),
+                Path::new("C:/tmp"),
+                Path::new("C:/tmp/ws"),
+                "http://x/api/v1",
+                "kylab_sk_x",
+                "  ",
+            )
+            .unwrap_err();
+        assert!(error.contains("设备身份"), "{error}");
+    }
+
+    /// **命令行里真的带了 `--device-id`**（值就是传进去的那个 id）。
+    ///
+    /// 起进程那条路要一份真运行时，所以在 `ensure` 里断言不到拼装结果；这条直接钉
+    /// `arguments()`。少了这一条，"壳把设备身份传下去了"就只是注释里的一句话。
+    #[test]
+    fn the_command_line_really_carries_the_device_id() {
+        let args = arguments(
+            "http://x/api/v1",
+            "kylab_sk_x",
+            8765,
+            Path::new("C:/tmp/ws"),
+            Path::new("C:/tmp/data"),
+            DEVICE_ID,
+        );
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        let at = rendered
+            .iter()
+            .position(|argument| argument == "--device-id")
+            .unwrap_or_else(|| panic!("命令行里没有 --device-id：{rendered:?}"));
+        // 开关后面紧跟的就是那个 id，而且挨着 `--data-dir`（"这台机器的库"与"这台机器"一起传）
+        assert_eq!(rendered[at + 1], DEVICE_ID, "{rendered:?}");
+        assert_eq!(rendered[at - 2], "--data-dir", "{rendered:?}");
+        assert_eq!(rendered[at - 1], "C:/tmp/data", "{rendered:?}");
+        // 老的那几项一个都没少（抽函数时最容易顺手弄丢的东西）
+        for flag in ["-m", "app.sidecar", "--server", "--token", "--port", "--workspace"] {
+            assert!(rendered.iter().any(|argument| argument == flag), "少了 {flag}：{rendered:?}");
+        }
     }
 
     /// **端到端（P4-4 片② 的验收）**：壳起边车 → 真走一轮带工具的对话。
@@ -519,7 +611,7 @@ mod tests {
         eprintln!("边车运行时：{}；后端：{}", runtime.display(), api_base);
         let manager = Manager::new();
         let info = manager
-            .ensure(&runtime, &log_dir, &data_dir, &workspace, &api_base, &key)
+            .ensure(&runtime, &log_dir, &data_dir, &workspace, &api_base, &key, DEVICE_ID)
             .expect("壳起边车");
         eprintln!("① 边车已就绪：{}（端口 {}，默认端口 {}）", info.base, info.port, info.on_default_port);
         assert!(PORT_RANGE.contains(&info.port));

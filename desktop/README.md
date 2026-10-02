@@ -116,7 +116,12 @@ cargo run --release    # 快得多，推荐
 <resource_dir>\sidecar-runtime\Scripts\python.exe -m app.sidecar
     --server {base}/api/v1 --token {config.json 里的 api_key} --port 8765
     --workspace <壳数据目录>\workspace --data-dir <壳数据目录>
+    --device-id {config.json 里的 device_id}
 ```
+
+`--device-id` 是**这台电脑的身份**（壳首次登录时生成一次、此后不再换，落
+`config.json` 的 `device_id`）：备份按设备对齐恢复点，边车没有它就如实拒（绝不编一个）。
+手工起边车时省略它也能跑，只是备份那条链会拒绝工作。
 
 三件必须知道的事：
 
