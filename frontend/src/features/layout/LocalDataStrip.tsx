@@ -55,10 +55,25 @@
  *
  * 判据与面板同一处（`api/provider.ts`），并且**只在 `deployment === 'local'` 时才去探**
  * ——服务器档（浏览器 / NAS 网页端）里没有"提供者"这个概念，一次都不该问。
+ *
+ * ## 第四行：备份（M5 阶段 7）
+ *
+ * 同一份 `deployment === 'local'` 判据下再挂一条订阅（`api/backup.ts`），
+ * 而这一行**只在两种情况之一成立时显示**：
+ *
+ * - **还有几份没备上去**（`backlog.queued > 0`）：断网期间照样在本机打快照、排队等着传，
+ *   这件事不说，用户会以为"备份一直在好着"；
+ * - **提供者不是 ready**：远端那一半出事了（连不上 / 没配 / 还没探过）。
+ *
+ * 两边都安顿好了（ready 且队列空）**不显示**——那是重复侧栏与上一行的噪音。
+ * 行尾那颗「去备份页」是这一行的落点：那一页在这一档里一定有（判据是本机档，
+ * 与导航那一组同一处；提供者连不上时照样进得去）。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router'
 
+import { useBackupStatus, type BackupView } from '@/api/backup'
+import { backlogText, backupStateLabel } from '@/features/backup/copy'
 import { getKbCacheKnowledgeBases } from '@/api/kbCache'
 import { batchStateLabel, getLocalStatus, importAccountsText, type LocalStatus } from '@/api/local'
 import {
@@ -151,6 +166,12 @@ export function LocalDataStrip() {
    */
   const isLocalDeployment = accounts?.deployment === 'local'
   const provider = useKnowledgeProviderStatus({ enabled: isLocalDeployment })
+  /**
+   * 备份那一条摘要（M5 阶段 7）：**只在"有待传项或提供者非 ready"时显示**——
+   * 两边都安顿好了就不再占一行（那时"备份没事"与前两行重复，只会把顶栏撑长）。
+   * 订阅与知识库那条同一个判据（本机档才去读，服务器档里 `/local/backup` 根本不存在）。
+   */
+  const backup = useBackupStatus({ enabled: isLocalDeployment })
 
   return (
     <div
@@ -204,6 +225,64 @@ export function LocalDataStrip() {
       ) : null}
       {/* 第三行：知识库提供者（**本机档且非 ready** 才出现，见文件头） */}
       {isLocalDeployment ? <ProviderLine provider={provider} /> : null}
+      {/* 第四行：备份（**有待传项或提供者非 ready** 才出现，见文件头） */}
+      {isLocalDeployment ? <BackupLine backup={backup} /> : null}
+    </div>
+  )
+}
+
+/**
+ * 备份那一行（M5 阶段 7）。
+ *
+ * ## 什么时候显示（两个条件，任一成立）
+ *
+ * 1. **还有几份没备上去**（`backlog.queued > 0`）——这一行最要紧的那件事：
+ *    断网期间照样在打快照，用户得知道它们在排队；
+ * 2. **提供者不是 ready**（连不上 / 没配 / 还没探过）——远端那一半出事了。
+ *
+ * 两边都安顿好了（ready 且队列空）**不显示**：那是重复第二行与侧栏的噪音。
+ *
+ * ## 点进去到哪儿
+ *
+ * `/backup`（那一页在这一档里一定有：这一行的判据是本机档，与导航那一组的判据同一处）。
+ * 与知识库那条一样，**不摆一个点进去被弹回来的入口**：`backup.gate` 为假时这一行
+ * 根本不渲染（`enabled` 那一层已经保证了）。
+ */
+function BackupLine({ backup }: { backup: BackupView }) {
+  const queued = backup.backlog?.queued ?? 0
+  if (backup.data === null && backup.error === '') {
+    // 还没读到第一份结论：**不猜**（不先说"备份没事"再改口）。队列有账才算数，
+    // 所以这一档一个字都不显示——顶栏那两行已经在说本机后端怎么了。
+    return null
+  }
+  const ready = backup.ready
+  if (ready && queued === 0 && backup.data !== null) return null
+
+  const detail = backup.data
+    ? `${backlogText(backup.data.backlog)}${
+        ready
+          ? ''
+          : `；提供者${backupStateLabel(backup.state)}：${backup.reason || '（后端没给原因）'}`
+      }`
+    : `备份状态读不到：${backup.error}`
+
+  return (
+    <div
+      data-testid="local-backup-line"
+      title={detail}
+      className={`flex min-w-0 items-center gap-2 pl-[14px] text-[length:var(--text-micro-size)] ${
+        queued > 0 || (backup.data !== null && !ready)
+          ? 'text-[var(--status-warning)]'
+          : 'text-text-tertiary'
+      }`}
+    >
+      <span className="min-w-0 truncate">备份：{detail}</span>
+      <Link
+        to="/backup"
+        className="shrink-0 cursor-pointer rounded-control px-1.5 py-0.5 text-text-secondary transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary"
+      >
+        去备份页
+      </Link>
     </div>
   )
 }

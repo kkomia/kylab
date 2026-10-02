@@ -100,6 +100,7 @@ import { prefetchConversationDetail } from '@/features/chat/runtime/useChatData'
 import { useLiveTurn } from '@/features/chat/model/liveTurn'
 import {
   RiAddLine,
+  RiArchiveLine,
   RiArrowDownSLine,
   RiArrowRightSLine,
   RiBook2Line,
@@ -123,6 +124,7 @@ import {
 import { WorkspaceCreateDialog } from '@/features/misc/workspaces/WorkspaceCreateDialog'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
+import { useBackupStatus } from '@/api/backup'
 import { useKnowledgeProviderStatus } from '@/api/provider'
 import { warmKnowledgeBases } from '@/features/knowledge/store'
 import { formatCount, formatRelativeTime } from '@/lib/format'
@@ -308,6 +310,31 @@ const KNOWLEDGE_GROUP = {
   ],
 } as const
 
+/**
+ * 备份组（M5 阶段 7）：一个可折叠的子菜单，里面一条「备份与恢复」。
+ *
+ * **显隐的判据与知识库那一组刻意不同**：知识库那一组按提供者状态显隐（连不上就摘掉，
+ * 因为那一档知识库内容全在 NAS 上，点进去是空页面）；这一组判的是**这一档有没有本机后端**
+ * （`backupApplies`）——提供者连不上时**照样要在导航里**，那正是用户要看
+ * "还有几份没备上去、为什么没成"的时刻（备份是本地动作，队列那半的账与远端无关）。
+ *
+ * 形状照 `KNOWLEDGE_GROUP`：折叠头 + 一条子项（不铺队列行、不铺恢复点——那是页面里的事）。
+ */
+const BACKUP_GROUP = {
+  label: '备份',
+  icon: RiArchiveLine,
+  motion: 'slide',
+  children: [
+    {
+      to: '/backup',
+      label: '备份与恢复',
+      icon: RiArchiveLine,
+      exact: true,
+      page: 'backup',
+    },
+  ],
+} as const
+
 /** 会话行：链接 + 右端的「⋯」。菜单是链接的**兄弟**，不套在链接里。 */
 function ConversationRow({
   item,
@@ -417,6 +444,16 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const showKnowledge = !provider.blocked
 
   /**
+   * 备份那一组的显隐（M5 阶段 7）：**只看这一档有没有本机后端**（`backup.gate`）。
+   *
+   * 与上面那条刻意不同：提供者连不上时**照样要能进去**——那是"还有几份没备上去"的
+   * 主场景。服务器档（浏览器 / NAS 网页端）里 `gate` 是假，这一组不渲染。
+   * 订阅放这里还有一个作用：结论一回来（`status !== null`）就广播，组当场长出来。
+   */
+  const backup = useBackupStatus()
+  const showBackup = backup.gate
+
+  /**
    * 知识库那一项被划过/聚焦时顺手做的两件事（M4 阶段 5，照开发计划 12.55 的预取先例）：
    *
    * ① 把那一页的代码拉下来（点进去不必等 chunk，与导航项、会话行同一条做法）；
@@ -443,6 +480,8 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
   const [knowledgeOpen, setKnowledgeOpen] = useState(false)
+  /** 备份那一组的开合（与知识库那一组同一个形态，注释在 `BACKUP_GROUP` 上）。 */
+  const [backupOpen, setBackupOpen] = useState(false)
   /** 手动展开了哪几个项目。 */
   const [expandedProjects, setExpandedProjects] = useState<string[]>([])
   /** 「新增项目」弹窗开着吗（按钮在「项目」标题右边）。 */
@@ -540,6 +579,12 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const knowledgeActive =
     KNOWLEDGE_GROUP.children.some((item) => isActive(item.to, item.exact)) ||
     location.pathname.startsWith('/kb/')
+
+  /**
+   * 「备份」这一组里有没有当前项（M5 阶段 7）——它只有一条子项，所以这一行同时也是
+   * "组头要不要点亮"的判据（收起时用得上，与知识库那一组同一处置）。
+   */
+  const backupActive = BACKUP_GROUP.children.some((item) => isActive(item.to, item.exact))
 
   // 会话只有**一份**平铺清单，分组在这里做（两处各存一份的话，
   // "把某条会话挪进工作区"就得同时改两个地方）。
@@ -722,6 +767,66 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                       /* 划过就先把那一页的代码与"上次看到的那份"一起拿回来（M4 阶段 5） */
                       onMouseEnter={() => preloadKnowledgeBases()}
                       onFocus={() => preloadKnowledgeBases()}
+                      aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
+                      className={
+                        isActive(item.to, item.exact)
+                          ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-selected)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
+                          : 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control px-2 text-[length:var(--text-meta-size)] text-text-secondary no-underline transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
+                      }
+                    >
+                      <item.icon size={14} aria-hidden="true" />
+                      <span className="truncate">{item.label}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {/* 备份组（M5 阶段 7）：**判据是本机档，不是提供者 ready**（见 `BACKUP_GROUP` 的说明）。
+            提供者不可用时这一项照旧在——那正是要看"还有几份没备上去"的时刻。 */}
+        {showBackup && (
+          <div className="flex flex-col" data-testid="nav-backup-group">
+            <button
+              type="button"
+              className={cn(
+                NAV_ROW,
+                collapsed && NAV_ROW_COLLAPSED,
+                'w-full cursor-pointer border-0 text-left',
+                backupActive && !backupOpen ? 'bg-[var(--bg-selected)]' : 'bg-transparent',
+              )}
+              aria-expanded={backupOpen}
+              title={collapsed ? BACKUP_GROUP.label : undefined}
+              onClick={() => setBackupOpen((open) => !open)}
+            >
+              <BACKUP_GROUP.icon
+                size={18}
+                className={`ly-nav-motion-${BACKUP_GROUP.motion} shrink-0`}
+                aria-hidden="true"
+              />
+              <span className="ly-collapsible">{BACKUP_GROUP.label}</span>
+              {!collapsed && (
+                <RiArrowRightSLine
+                  size={13}
+                  aria-hidden="true"
+                  className={
+                    backupOpen
+                      ? 'shrink-0 rotate-90 text-text-tertiary transition-transform'
+                      : 'shrink-0 text-text-tertiary transition-transform'
+                  }
+                />
+              )}
+            </button>
+            {backupOpen && !collapsed && (
+              <ul className="mt-0 mb-1 list-none p-0 pl-6">
+                {BACKUP_GROUP.children.map((item) => (
+                  <li key={item.to}>
+                    <Link
+                      to={item.to}
+                      /* 划过先把那一页的代码拉下来（与其余导航项同一条做法） */
+                      onMouseEnter={() => preloadPage(item.page as PageName)}
+                      onFocus={() => preloadPage(item.page as PageName)}
                       aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
                       className={
                         isActive(item.to, item.exact)

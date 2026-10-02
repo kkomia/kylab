@@ -29,6 +29,7 @@ import { ensureAuthStatus, restoreSession } from '@/lib/sessionActions'
 import { hasCredential, sessionToken, useSessionStore } from '@/lib/session'
 import { loadRoster } from '@/lib/operator'
 import { PAGES } from '@/app/routes'
+import { BackupRoute } from '@/features/backup/BackupRoute'
 import { ProviderRoute } from '@/features/knowledge/ProviderRoute'
 import { AppShell } from '@/features/layout'
 
@@ -40,6 +41,7 @@ const KnowledgeBaseView = lazy(PAGES.knowledgeBase)
 const WikiView = lazy(PAGES.wiki)
 const DocumentView = lazy(PAGES.document)
 const NotesView = lazy(PAGES.notes)
+const BackupPage = lazy(PAGES.backup)
 const LoginPage = lazy(PAGES.login)
 const TasksPage = lazy(PAGES.tasks)
 const MemoryPage = lazy(PAGES.memory)
@@ -72,6 +74,7 @@ const TITLES: Array<[RegExp, string]> = [
   [/^\/tasks/, '任务中心'],
   [/^\/memory/, '记忆'],
   [/^\/capabilities/, '能力'],
+  [/^\/backup/, '备份'],
 ]
 
 /**
@@ -268,6 +271,18 @@ export function App() {
                 <Route path="/tasks" element={<TasksPage />} />
                 <Route path="/memory" element={<MemoryPage />} />
                 <Route path="/capabilities" element={<CapabilitiesPage />} />
+                {/*
+                  「备份」也是本机档专属（M5 阶段 7），但守卫的判据**不是**"提供者 ready"：
+                  连不上远端时正是要看"有几份没备上去"，所以那一档照常放行。
+                */}
+                <Route
+                  path="/backup"
+                  element={
+                    <BackupRoute>
+                      <BackupPage />
+                    </BackupRoute>
+                  }
+                />
                 {/* 旧地址保留成重定向，免得旧书签变 404（与旧前端同一处置） */}
                 <Route path="/search" element={<Navigate to="/knowledge-bases" replace />} />
                 <Route path="/settings" element={<Navigate to="/" replace />} />

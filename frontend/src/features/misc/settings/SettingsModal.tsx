@@ -20,10 +20,12 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Archive,
   BookOpen,
   CircleUser,
   Database,
   Folder,
+  KeyRound,
   Keyboard,
   Languages,
   LogOut,
@@ -36,6 +38,7 @@ import {
 } from 'lucide-react'
 import { useNavigate } from 'react-router'
 
+import { useBackupStatus } from '@/api/backup'
 import { useKnowledgeProviderStatus } from '@/api/provider'
 import {
   changePassword as apiChangePassword,
@@ -80,6 +83,8 @@ import {
   StatusTag,
 } from '../shared/composites'
 import { AppearanceSection } from './AppearanceSection'
+import { BackupSection } from './BackupSection'
+import { CredentialsSection } from './CredentialsSection'
 import { KnowledgeConnectionSection } from './KnowledgeConnectionSection'
 import { ModelRegistryPanel, REGISTRY_QUERY_KEY } from './ModelRegistryPanel'
 import { SettingGroupPanel, SETTINGS_QUERY_KEY, settingsPayloadOf } from './SettingGroupPanel'
@@ -93,6 +98,8 @@ type SectionKey =
   | 'services'
   | 'storage'
   | 'knowledge'
+  | 'backup'
+  | 'credentials'
   | 'appearance'
   | 'shortcuts'
   | 'users'
@@ -124,6 +131,11 @@ const SECTIONS: { key: SectionKey; label: string; icon: typeof Server; adminOnly
   // 浏览器 / NAS 网页端没有这一节（那一档知识库就是它自己）——入口由 `navGroups`
   // 那一层按 `provider.gate` 摘掉，见下面 `visibleSections` 那一段。
   { key: 'knowledge', label: '知识库连接', icon: BookOpen },
+  // **同为「本机档专属」的两节**（M5 阶段 7）：备份的四项配置与"库里那几处明文凭据"。
+  // 判据同样是本机档（不是"备份提供者 ready"）：远端连不上正是要看队列的时候；
+  // 入口由 `visibleSections` 按 `backup.gate` 摘掉。
+  { key: 'backup', label: '备份', icon: Archive },
+  { key: 'credentials', label: '凭据', icon: KeyRound },
   { key: 'users', label: '用户', icon: Users, adminOnly: true },
   { key: 'system', label: '系统与安全', icon: CircleUser },
   { key: 'appearance', label: '外观', icon: Moon },
@@ -146,6 +158,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
    * 真正的读写在那节自己身上（自读自管，与 `StorageSection` 同一形态）。
    */
   const provider = useKnowledgeProviderStatus()
+  /**
+   * 备份的状态（M5 阶段 7）：**只用来决定「备份」「凭据」两节有没有入口**——
+   * 判据是本机档（`gate`），不是"提供者 ready"（那两节在远端连不上时才有用）。
+   * 真正的读写在那两节自己身上（自读自管，与 `StorageSection` 同一形态）。
+   */
+  const backup = useBackupStatus()
 
   /** 打开设置落在「模型注册」——它是配置模型的主路径。 */
   const [section, setSection] = useState<SectionKey>('registry')
@@ -273,11 +291,18 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       (!item.adminOnly || isAdmin) &&
       // 「知识库连接」只有本机档才有（M3 阶段 6）：服务器档里那一节的入口**不存在**
       // （点了只会看到一句"只有本机档才有"，不如不给入口）
-      (item.key !== 'knowledge' || provider.gate),
+      (item.key !== 'knowledge' || provider.gate) &&
+      // 「备份」「凭据」同理（M5 阶段 7），但**判据不是"备份提供者 ready"**：
+      // 远端连不上时正是要看"还有几份没备上去"的时候（备份是本地动作）。
+      (item.key !== 'backup' || backup.gate) &&
+      (item.key !== 'credentials' || backup.gate),
   )
   const navGroups = [
     { label: '模型', keys: ['registry', 'models', 'llm'] as SectionKey[] },
-    { label: '服务', keys: ['services', 'storage', 'knowledge'] as SectionKey[] },
+    {
+      label: '服务',
+      keys: ['services', 'storage', 'knowledge', 'backup', 'credentials'] as SectionKey[],
+    },
     { label: '功能', keys: featureGroups.map((item) => `feature:${item.key}` as SectionKey) },
     { label: '账户', keys: ['users', 'system'] as SectionKey[] },
     { label: '偏好', keys: ['appearance', 'shortcuts'] as SectionKey[] },
@@ -900,6 +925,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
           {section === 'storage' && <StorageSection />}
           {section === 'knowledge' && <KnowledgeConnectionSection />}
+          {section === 'backup' && <BackupSection />}
+          {section === 'credentials' && <CredentialsSection />}
           {section === 'appearance' && <AppearanceSection />}
           {section === 'shortcuts' && <ShortcutsSection />}
 

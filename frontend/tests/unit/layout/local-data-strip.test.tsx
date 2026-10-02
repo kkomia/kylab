@@ -12,11 +12,12 @@
  *
  * 判据与 `api/sidecar.test.ts` 同源（同一份 `localStatus()`），这里验的是**它有没有被显示**。
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { resetBackupStore, setBackupStatusForTest, type LocalBackup } from '@/api/backup'
 import { resetKbCacheSupport } from '@/api/kbCache'
 import { resetProviderStore, setProviderStatusForTest, type ProviderStatus } from '@/api/provider'
 import { resetSidecarProbe, setLocalDataForTest } from '@/api/sidecar'
@@ -43,6 +44,48 @@ function stubShell(answer: { port?: number; base?: string } | null): void {
     core: {
       invoke: vi.fn(async () => answer),
     },
+  })
+}
+
+/**
+ * 一份备份读数（M5 阶段 7，`GET /local/backup`）：顶栏第四行的判据。
+ *
+ * 默认是"ready 且队列空"——那一档**不显示**那一行（两边都安顿好了，不再占一行）。
+ */
+function backupPayload(overrides: Partial<LocalBackup> = {}): LocalBackup {
+  return {
+    provider: {
+      state: 'ready',
+      available: true,
+      reason: '',
+      checked_at: '2026-10-05T10:00:00Z',
+      base_url: 'http://nas:8000',
+      credential: 'configured',
+      snapshot_available: true,
+      snapshot_reason: '',
+    },
+    backlog: {
+      queued: 0,
+      bytes: 0,
+      failed: 0,
+      discarded: 0,
+      oldest_created_at: null,
+      last_error: '',
+    },
+    snapshots: [],
+    ...overrides,
+  }
+}
+
+/**
+ * 把"备份那条读"接进替身：本机档里顶栏会顺带问一次 `/local/backup`，
+ * 各用例的替身只关心自己那一条，所以统一在这里回一份读数（要别的档就 `setBackupStatusForTest`）。
+ */
+function withBackup(handler: (target: string) => Response | Promise<Response>) {
+  return vi.fn(async (url: string) => {
+    const target = String(url)
+    if (target.includes('/local/backup')) return json(backupPayload())
+    return handler(target)
   })
 }
 
@@ -73,7 +116,7 @@ function stubProviderFetch(options: { hang?: boolean; provider?: unknown } = {})
   const providerUrl = 'http://127.0.0.1:8765/api/v1/local/provider'
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url: string) => {
+    withBackup(async (url: string) => {
       const target = String(url)
       if (target.endsWith('/health')) return okJson()
       if (target.includes('/local/provider')) {
@@ -104,6 +147,7 @@ beforeEach(() => {
   resetSidecarProbe()
   setLocalDataForTest(undefined)
   resetProviderStore()
+  resetBackupStore()
   resetKbCacheSupport()
 })
 
@@ -112,6 +156,7 @@ afterEach(() => {
   setLocalDataForTest(undefined)
   resetSidecarProbe()
   resetProviderStore()
+  resetBackupStore()
 })
 
 describe('顶栏状态条', () => {
@@ -119,7 +164,7 @@ describe('顶栏状态条', () => {
     stubShell({ port: 8766, base: 'http://127.0.0.1:8766' })
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => okJson()),
+      withBackup(async () => okJson()),
     )
 
     render(<LocalDataStrip />)
@@ -150,7 +195,7 @@ describe('顶栏状态条', () => {
     stubShell(null)
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => okJson()),
+      withBackup(async () => okJson()),
     )
     render(<LocalDataStrip />)
     await waitFor(() => expect(screen.getByText('本机后端未启动')).toBeInTheDocument())
@@ -184,7 +229,7 @@ describe('顶栏状态条', () => {
     stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) =>
+      withBackup(async (url: string) =>
         url.endsWith('/api/v1/local/status')
           ? json({
               deployment: 'local',
@@ -229,7 +274,7 @@ describe('顶栏状态条', () => {
     stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) =>
+      withBackup(async (url: string) =>
         url.endsWith('/api/v1/local/status') ? json({ message: '炸了' }, 500) : okJson(),
       ),
     )
@@ -245,7 +290,7 @@ describe('顶栏状态条', () => {
     stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) =>
+      withBackup(async (url: string) =>
         url.includes('/local/provider') ? json(providerStatus()) : okJson(),
       ),
     )
@@ -343,7 +388,7 @@ describe('顶栏状态条：非 ready 时那条入口', () => {
     stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      withBackup(async (url: string) => {
         const target = String(url)
         if (target.endsWith('/health')) return okJson()
         if (target.includes('/local/kb-cache/knowledge-bases')) {
@@ -415,5 +460,96 @@ describe('顶栏状态条：非 ready 时那条入口', () => {
     const line = await screen.findByTestId('local-provider-line')
     await waitFor(() => expect(screen.queryByTestId('local-kb-snapshot-entry')).toBeNull())
     expect(line.textContent).toContain('知识库提供者不可用')
+  })
+})
+
+/**
+ * 第四行：备份（M5 阶段 7）。
+ *
+ * 这一行的判据是"**有待传项或提供者非 ready**"——两边都安顿好了（ready 且队列空）
+ * 就不显示（重复侧栏与上一行只是噪音）。三档各钉一条，外加那条入口落在 `/backup`。
+ */
+describe('顶栏状态条：备份那一行（M5 阶段 7）', () => {
+  function renderStripped() {
+    return render(
+      <MemoryRouter>
+        <LocalDataStrip />
+      </MemoryRouter>,
+    )
+  }
+
+  it('⑫ ready 且队列空：**不**多那一行', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    setBackupStatusForTest(backupPayload())
+    stubProviderFetch()
+
+    renderStripped()
+
+    await waitFor(() => expect(screen.getByText('本机')).toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByTestId('local-backup-line')).toBeNull())
+  })
+
+  it('⑬ 还有几份没备上去：那一行说清份数，并给一条去 `/backup` 的入口', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    setBackupStatusForTest(
+      backupPayload({
+        backlog: {
+          queued: 2,
+          bytes: 4096,
+          failed: 1,
+          discarded: 1,
+          oldest_created_at: null,
+          last_error: '连不上远端',
+        },
+      }),
+    )
+    stubProviderFetch()
+
+    renderStripped()
+
+    const line = await screen.findByTestId('local-backup-line')
+    expect(line.textContent).toContain('还有 2 份没备上去')
+    expect(line.textContent).toContain('一共丢过 1 份')
+    const entry = within(line).getByRole('link', { name: '去备份页' })
+    expect(entry).toHaveAttribute('href', '/backup')
+  })
+
+  it('⑭ 提供者连不上（队列空也一样显示）：原因写在这一行里', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    setBackupStatusForTest(
+      backupPayload({
+        provider: {
+          state: 'unavailable',
+          available: false,
+          reason: '连不上那台 NAS：连接被拒绝',
+          checked_at: '2026-10-05T10:00:00Z',
+          base_url: 'http://nas:8000',
+          credential: 'configured',
+          snapshot_available: false,
+          snapshot_reason: '',
+        },
+      }),
+    )
+    stubProviderFetch()
+
+    renderStripped()
+
+    const line = await screen.findByTestId('local-backup-line')
+    expect(line.textContent).toContain('提供者不可用')
+    expect(line.textContent).toContain('连接被拒绝')
+    // 悬停那层与显示同一句话（截断的是显示，不是事实）
+    expect(line.getAttribute('title')).toContain('没有没备上去的')
+  })
+
+  it('⑮ 备份状态读不到：如实写一行（不静默）', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    setBackupStatusForTest(null, { error: '本机后端未启动：边车没有应答' })
+    stubProviderFetch()
+
+    renderStripped()
+
+    const line = await screen.findByTestId('local-backup-line')
+    expect(line.textContent).toContain('备份状态读不到')
+    expect(line.textContent).toContain('边车没有应答')
   })
 })

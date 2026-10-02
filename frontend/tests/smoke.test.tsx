@@ -163,6 +163,26 @@ describe('应用壳', () => {
     // 落地页是概览（`/`），所以 redirect 记的是它
     expect(window.location.search).toContain('redirect=%2F')
   })
+
+  /**
+   * `/backup` 那条路由挂上了（M5 阶段 7）。
+   *
+   * 这一档（浏览器里、没有桌面壳）**不是本机档**，所以看到的是守卫那句说明——
+   * 这一条同时在验两件事：路由指向的是 `BackupRoute`+`BackupPage`（不是 404 页），
+   * 以及"不是本机档"那一条分支说得清楚。本机档那一支（提供者连不上也放行）
+   * 在 `tests/backup-gate.test.tsx` 里逐条钉着。
+   */
+  it('`/backup` 落在备份页（本机档专属那一页挂上了路由）', { timeout: 15_000 }, async () => {
+    window.history.pushState({}, '', '/backup')
+    render(<App />)
+
+    await waitFor(
+      () => {
+        expect(screen.getByText(/「备份」只有本机档/)).toBeInTheDocument()
+      },
+      { timeout: 12_000, interval: 50 },
+    )
+  })
 })
 
 describe('启动期的骨架（D30，2026-09-28 走查）', () => {

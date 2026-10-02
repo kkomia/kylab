@@ -22,6 +22,13 @@
  *
  * 其余字段（`data_dir` / `database` / `database_bytes`…）也一并声明：
  * 状态条把库路径写进 `title`，排障第一眼要看的正是它。
+ *
+ * ## 阶段 7 补上两条（恢复向导要用）
+ *
+ * 导入的**进度**与**回滚**这两个端点 M2 就有（`ImportBatchOut`），只是一直没有人从界面
+ * 调用：备份页的恢复向导正是"用快照当来源的一次导入"，所以进度读
+ * `GET /local/import/{batch_id}`、回滚走 `POST /local/import/{batch_id}/rollback`——
+ * 与 CLI 在另一个进程里开的批次查的是**同一份台账**。
  */
 
 import { requestLocal } from './client'
@@ -117,4 +124,62 @@ export function importAccountsText(status: LocalStatus): string {
       : '没有未随导入的文件引用',
   )
   return parts.join(' · ')
+}
+
+/* ------------------------------------------------------------------ 进度与回滚（恢复向导用） */
+
+/**
+ * 一个批次的进度（`ImportBatchOut`）。
+ *
+ * 形状对着后端那个响应模型抄：`counts` 是**逐次型**的形状（后端那份 `counts_json` 原样），
+ * 恢复那一趟会把 `counts["restore"]` 一段并进来——取那一段的唯一入口是
+ * `api/backup.ts::restoreCountsOf`（它知道那一小段的字段）。
+ */
+export interface ImportBatch {
+  batch_id: string
+  /** `planned` / `running` / `done` / `failed` / `rolled_back`。 */
+  state: string
+  source: string
+  dry_run: boolean
+  counts: Record<string, unknown>
+  error: string
+  updated_at: string | null
+}
+
+/** 响应过一道形状检查：类型是手写的，而这条链上有真实的版本错配可能。 */
+function looksLikeBatch(payload: unknown): payload is ImportBatch {
+  if (!payload || typeof payload !== 'object') return false
+  const record = payload as Partial<ImportBatch>
+  return typeof record.state === 'string' && !!record.counts && typeof record.counts === 'object'
+}
+
+/**
+ * 查一个批次到哪一步了（恢复向导轮询它）。
+ *
+ * **批不存在时后端 404**：那句话的意思是"这个 id 不认识"，与"还没开始"是两件事——
+ * 所以这里不吞，由调用方如实说出来。
+ */
+export async function getImportBatch(batchId: string): Promise<ImportBatch> {
+  const payload = await requestLocal<ImportBatch>(`/local/import/${encodeURIComponent(batchId)}`)
+  if (!looksLikeBatch(payload)) {
+    throw new Error('导入进度不认识（没有 state / counts：是不是本机后端比界面老？）')
+  }
+  return payload
+}
+
+/**
+ * 回滚一个批次（同步返回结论）。
+ *
+ * 两条规则按台账办：**我们新建的**没再动过就删、**替换过的**用导入前的快照恢复，
+ * 而**在本机改过的一律保留**并如实报数——`counts` 里逐条说着哪几条没动、为什么。
+ */
+export async function rollbackImportBatch(batchId: string): Promise<ImportBatch> {
+  const payload = await requestLocal<ImportBatch>(
+    `/local/import/${encodeURIComponent(batchId)}/rollback`,
+    { method: 'POST' },
+  )
+  if (!looksLikeBatch(payload)) {
+    throw new Error('回滚结论不认识（没有 state / counts：是不是本机后端比界面老？）')
+  }
+  return payload
 }

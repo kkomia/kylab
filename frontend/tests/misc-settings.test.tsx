@@ -7,7 +7,7 @@
  * 3. **测试连接失败要就地显示后端那句话**（不是一句"失败"）；
  * 4. **成员看不到「用户」分组**（写与管理端点是 `require_admin`）。
  */
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -70,6 +70,7 @@ vi.mock('@/api/knowledgeBases', () => ({
 import { clearAvatar } from '@/api/auth'
 import { bindSlot, getRegistry } from '@/api/modelRegistry'
 import { getSettings, testConnection, type SettingsView } from '@/api/settings'
+import { resetBackupStore, setBackupStatusForTest, type LocalBackup } from '@/api/backup'
 import { resetProviderStore, setProviderStatusForTest } from '@/api/provider'
 import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
 import { SettingsModal } from '@/features/misc/settings/SettingsModal'
@@ -770,5 +771,272 @@ describe('「本机留了一份」那一块（M4 阶段 6）', () => {
     const block = await screen.findByTestId('kept-snapshot-row')
     await waitFor(() => expect(block.textContent).toContain('读不到'))
     expect(block.textContent).toContain('还没有')
+  })
+})
+
+/* ------------------- 「备份」与「凭据」两节（M5 阶段 7，本机档专属） ------------------- */
+
+/**
+ * 这两节与「知识库连接」同一处置：**本机档才有入口**，而入口的判据是"这一档有没有
+ * 本机后端"（`api/backup.ts::backupGateApplies`），**不是**"备份提供者 ready"——
+ * 远端连不上时正是要看"还有几份没备上去"的时候。
+ */
+describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
+  function backupPayload(overrides: Partial<LocalBackup> = {}): LocalBackup {
+    return {
+      provider: {
+        state: 'ready',
+        available: true,
+        reason: '',
+        checked_at: '2026-10-05T10:00:00Z',
+        base_url: 'http://nas:8000',
+        credential: 'configured',
+        snapshot_available: true,
+        snapshot_reason: '',
+        protocol_version: 1,
+        capabilities: { retention: { keep: 3 } },
+      },
+      backlog: {
+        queued: 2,
+        bytes: 4096,
+        failed: 1,
+        discarded: 1,
+        oldest_created_at: null,
+        last_error: '连不上远端',
+      },
+      snapshots: [],
+      ...overrides,
+    }
+  }
+
+  /** 备份那两条 + 凭据那两条的网络替身（按路径分派，PATCH 回一份新整包）。 */
+  function stubBackupNetwork(options: { secrets?: unknown; secretsStatus?: number } = {}): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const target = String(url)
+        const body = (payload: unknown, status = 200): Response =>
+          new Response(JSON.stringify(payload), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          })
+        if (target.endsWith('/health')) return body({ ok: true })
+        if (target.includes('/local/backup')) {
+          return init?.method === 'PATCH'
+            ? body(
+                backupPayload({
+                  provider: { ...backupPayload().provider, base_url: 'http://nas:9000' },
+                }),
+              )
+            : body(backupPayload())
+        }
+        if (target.includes('/local/secrets/migrate')) {
+          return body({ moved: 2, skipped: 0, failed: [] })
+        }
+        if (target.includes('/local/secrets')) {
+          if (options.secretsStatus) return body({ message: 'nope' }, options.secretsStatus)
+          return body(options.secrets ?? { store: 'available', pending_migration: 2 })
+        }
+        return body({})
+      }),
+    )
+  }
+
+  beforeEach(() => {
+    resetBackupStore()
+    resetProviderStore()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    resetBackupStore()
+    resetProviderStore()
+  })
+
+  it('「备份」一节在「服务」那一组里，四项配置与队列摘要都在', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(backupPayload())
+    stubBackupNetwork()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '备份' }))
+
+    // 连接 + 队列（两半分开说）
+    expect(screen.getByTestId('settings-backup-state').textContent).toContain('已连接')
+    expect(screen.getByTestId('settings-backup-backlog').textContent).toContain('还有 2 份没备上去')
+    expect(screen.getByTestId('settings-backup-backlog').textContent).toContain('一共丢过 1 份')
+    // 凭据只读、不回显
+    expect(screen.getByText('已配置（桌面壳里的那把钥匙）')).toBeInTheDocument()
+    // 地址那一格是后端解析后的地址
+    expect(screen.getByLabelText('备份地址')).toHaveValue('http://nas:8000')
+    expect(screen.getByRole('button', { name: '恢复默认' })).toBeInTheDocument()
+    // 三个读不回来的键是**动作**（不摆一个可能摆错的开关）
+    expect(
+      within(screen.getByTestId('settings-backup-enabled')).getByRole('button', { name: '打开' }),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByTestId('settings-backup-include-workspace')).getByRole('button', {
+        name: '带上',
+      }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存间隔' })).toBeDisabled() // 没填就不发
+  })
+
+  it('改开关走 PATCH，只发那一个键（凭据类键一个都不带）', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(backupPayload())
+    stubBackupNetwork()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '备份' }))
+    await user.click(
+      within(await screen.findByTestId('settings-backup-enabled')).getByRole('button', {
+        name: '关掉',
+      }),
+    )
+
+    await waitFor(() => {
+      const patch = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'PATCH')
+      expect(String(patch?.[0])).toContain('/local/backup')
+      expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ enabled: false })
+    })
+  })
+
+  it('提供者连不上时这一节照旧在（判据不是 "ready"）', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(
+      backupPayload({
+        provider: {
+          ...backupPayload().provider,
+          state: 'unavailable',
+          available: false,
+          reason: '连不上那台 NAS',
+        },
+      }),
+    )
+    stubBackupNetwork()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '备份' }))
+
+    expect(await screen.findByText('连不上那台 NAS')).toBeInTheDocument()
+    // 队列那半照旧
+    expect(screen.getByTestId('settings-backup-backlog').textContent).toContain('还有 2 份没备上去')
+  })
+
+  it('「凭据」一节只说处数与钥匙串可用性，**不回声任何秘密**', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(backupPayload())
+    stubBackupNetwork({ secrets: { store: 'available', pending_migration: 2 } })
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '凭据' }))
+
+    const pending = await screen.findByTestId('secrets-pending')
+    expect(pending.textContent).toContain('2 处明文凭据在库里')
+    expect(pending.textContent).toContain('可以迁进系统钥匙串')
+    expect(screen.getByTestId('secrets-store').textContent).toContain('可用')
+    expect(screen.getByRole('button', { name: '迁进系统钥匙串' })).toBeEnabled()
+  })
+
+  it('点「迁进系统钥匙串」：POST 之后用报告里那个数当结论', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(backupPayload())
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const target = String(url)
+        const body = (payload: unknown, status = 200): Response =>
+          new Response(JSON.stringify(payload), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          })
+        if (target.includes('/local/backup')) return body(backupPayload())
+        if (target.includes('/local/secrets/migrate')) {
+          // 报告的形状照 `SecretMigrationOut`（项里带的是"位置名"，界面只数个数）
+          return body({
+            store: 'available',
+            migrated: [
+              { item: 'setting:web.search_api_key', reason: '' },
+              { item: 'model_provider:p1', reason: '' },
+            ],
+            skipped: [],
+            failed: [],
+            pending_migration: 0,
+          })
+        }
+        return body({ store: 'available', pending_migration: 2 })
+      }),
+    )
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '凭据' }))
+    await user.click(await screen.findByRole('button', { name: '迁进系统钥匙串' }))
+
+    expect(await screen.findByText('已经迁了 2 处，都收好了')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByTestId('secrets-pending').textContent).toContain('都收好了'),
+    )
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true)
+    // **项名不上屏幕**（那是本机库里的键名，不是给用户看的东西）
+    expect(screen.queryByText(/web\.search_api_key/)).toBeNull()
+  })
+
+  it('有失败项：如实报数，并说清明文还在库里（可以再点一次）', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(backupPayload())
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const target = String(url)
+        const body = (payload: unknown, status = 200): Response =>
+          new Response(JSON.stringify(payload), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          })
+        if (target.includes('/local/backup')) return body(backupPayload())
+        if (target.includes('/local/secrets/migrate')) {
+          return body({
+            store: 'available',
+            migrated: [{ item: 'setting:a', reason: '' }],
+            skipped: [],
+            failed: [{ item: 'model_provider:p1', reason: '写不进去' }],
+            pending_migration: 1,
+          })
+        }
+        return body({ store: 'available', pending_migration: 2 })
+      }),
+    )
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '凭据' }))
+    await user.click(await screen.findByRole('button', { name: '迁进系统钥匙串' }))
+
+    expect(
+      await screen.findByText('迁了 1 处，还有 1 处没迁成（明文还在库里，可以再点一次）'),
+    ).toBeInTheDocument()
+    expect(screen.getByTestId('secrets-pending').textContent).toContain('1 处明文凭据在库里')
+  })
+
+  it('这一版没有那两个端点（404）：如实说"这一版还没有这一项"（不显示成 0 处）', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(backupPayload())
+    stubBackupNetwork({ secretsStatus: 404 })
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '凭据' }))
+
+    expect(await screen.findByTestId('secrets-unsupported')).toHaveTextContent('这一版还没有这一项')
+    expect(screen.queryByTestId('secrets-pending')).toBeNull()
+  })
+
+  it('服务器档（这一档没有本机后端）：两节的入口都**不存在**', async () => {
+    setBackupStatusForTest(null, { unsupported: true })
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+
+    expect(await screen.findByRole('button', { name: '服务配置' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '备份' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '凭据' })).toBeNull()
   })
 })

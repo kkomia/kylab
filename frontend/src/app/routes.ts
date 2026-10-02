@@ -23,6 +23,9 @@ export const PAGES = {
   wiki: () => import('@/features/knowledge').then((m) => ({ default: m.WikiView })),
   document: () => import('@/features/knowledge').then((m) => ({ default: m.DocumentView })),
   notes: () => import('@/features/notes/NotesView').then((m) => ({ default: m.NotesView })),
+  // 备份（M5 阶段 7）：**本机档专属**的一页，路由外面还包一层 `BackupRoute`
+  // （那一层只判"这一档有没有本机后端"，不判提供者连没连上）。
+  backup: () => import('@/features/backup/BackupPage').then((m) => ({ default: m.BackupPage })),
   tasks: () => import('@/features/misc/tasks/TasksPage').then((m) => ({ default: m.TasksPage })),
   memory: () =>
     import('@/features/misc/memory/MemoryPage').then((m) => ({ default: m.MemoryPage })),
