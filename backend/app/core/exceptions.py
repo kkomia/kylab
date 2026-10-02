@@ -104,6 +104,41 @@ class UpstreamError(KylabError):
     message = "外部服务调用失败"
 
 
+class SecretStoreUnavailable(KylabError):
+    """系统钥匙串现在用不上（M5 阶段 6，方案 §4.1 的第二条口径）。
+
+    **503 而不是 500**：这台机器**没有**系统钥匙串（Linux 桌面 / 容器里 / CI），
+    这是"这个部署现在没有这个能力"，不是"我们出错了"——500 会把"凭据只能留在本机库里"
+    这条出路藏起来。
+
+    它同时是**写不进去**时的失败信号：``SecretStore.set`` 在不可用时抛它，
+    而调用方（迁移器、设置写入路径）**绝不因此把秘密写回明文**——写不了就如实报，
+    让用户决定（方案 §4.3-5：不清明文 = 不算迁完）。
+
+    为什么住在这里而不是 ``services/secrets.py``：本仓的领域异常一律住这个模块
+    （见文件头那条分层约定），而"HTTP 状态码 + code"这套信封也在这里——服务层只抛类，
+    协议层不写映射。``services/secrets.py`` 会再导出一次，方案里那个落点仍然成立。
+    """
+
+    code = "secret_store_unavailable"
+    http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+    message = "系统钥匙串当前不可用"
+
+
+class SecretTooLarge(InvalidRequestError):
+    """一个秘密超过钥匙串单条的容量上限（2560 字节）——**如实拒，绝不截断**。
+
+    截断是最坏的一种处置：它写进去一个"看起来存下来了"的半个钥匙，而用户要等到
+    某次调用失败才会发现。422 的语义（"把内容改对再来"）在这里正好：用更短的那种令牌。
+
+    用它的主要是 MCP 那类"整段 env / headers"的值（方案 §4.2 把它们列为"只登记不迁"，
+    技术理由之一就是这条上限）。
+    """
+
+    code = "secret_too_large"
+    message = "这个秘密超过钥匙串单条的容量上限"
+
+
 class UnauthorizedError(KylabError):
     """未提供凭据或凭据无效。
 

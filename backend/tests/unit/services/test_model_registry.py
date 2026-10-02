@@ -8,17 +8,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
 import httpx
 import pytest
 import respx
 
+from app.core.config import Settings
 from app.core.exceptions import (
     ConflictError,
     InvalidRequestError,
     NotFoundError,
     UpstreamError,
 )
+from app.core.storage import build_stores, reset_stores
 from app.services.model_registry import SLOTS, ModelRegistryService
+from app.services.runtime_config import mask_secret
+from app.services.secrets import InMemorySecretStore, model_provider_target
+from app.storage.base import StoreBundle
 
 
 @pytest.fixture
@@ -153,9 +161,7 @@ def test_register_model_needs_an_existing_provider(registry: ModelRegistryServic
 def test_dim_is_stored_for_embedding_models(registry: ModelRegistryService) -> None:
     """dim 是模型属性，登记一次就不该再让用户在两处各填一遍。"""
     provider = _provider(registry, kind="embedding")
-    model = _model(
-        registry, provider.id, model_id="bge-m3", dim=1024, capabilities=["embedding"]
-    )
+    model = _model(registry, provider.id, model_id="bge-m3", dim=1024, capabilities=["embedding"])
     assert model.dim == 1024
 
 
@@ -476,3 +482,134 @@ def test_embedding_target_rejects_a_missing_key(registry: ModelRegistryService) 
 
     with pytest.raises(InvalidRequestError, match="API Key"):
         registry.embedding_target(model.id)
+
+
+# ------------------------------------------------------------ 凭据收进钥匙串（M5 阶段 6）
+#
+# 这一组**自带本机库**（带 `local` marker）：文件里其他用例跑在 PG 上，而"凭据的家是
+# 系统钥匙串"这件事只在本机档成立（R14：服务器档恒 NullSecretStore，它库里那份凭据不动）。
+#
+# 判据一句话：**API 形状零改动**（`ModelProviderRecord.api_key` 读得出真正的钥匙、
+# `/model-registry` 那两个字段照旧），变的只是"它从哪儿来"——DB 那一列在钥匙串档上恒空。
+
+
+@pytest.fixture
+def local_bundle(tmp_path: Path) -> Iterator[StoreBundle]:
+    stores = build_stores(
+        Settings(_env_file=None, deployment="local", data_dir=tmp_path / "data")  # type: ignore[call-arg]
+    )
+    yield stores
+    reset_stores()
+
+
+@pytest.fixture
+def keychain() -> InMemorySecretStore:
+    return InMemorySecretStore()
+
+
+@pytest.fixture
+def keyed_registry(local_bundle: StoreBundle, keychain: InMemorySecretStore):
+    return ModelRegistryService(local_bundle, secrets=keychain)
+
+
+@pytest.mark.local
+def test_a_new_provider_keeps_its_key_in_the_keychain_only(
+    keyed_registry: ModelRegistryService,
+    local_bundle: StoreBundle,
+    keychain: InMemorySecretStore,
+) -> None:
+    """建档那次就把钥匙写进钥匙串；**DB 列是空的**，而返回的记录读得出真正的钥匙。"""
+    created = keyed_registry.create_provider(
+        kind="llm", name="供应商甲", base_url="https://api.example.com", api_key="sk-real-key"
+    )
+
+    assert keychain.get(model_provider_target(created.id)) == "sk-real-key"
+    assert local_bundle.meta.get_model_provider(created.id).api_key == "", "明文不进库"
+    assert created.api_key == "sk-real-key", "API 形状不变：调用方照旧读得到它"
+
+
+@pytest.mark.local
+def test_reads_fill_the_key_from_the_keychain(
+    keyed_registry: ModelRegistryService, keychain: InMemorySecretStore
+) -> None:
+    """三个读面都要填：``get_provider`` / ``list_providers`` / ``resolve``。
+
+    `resolve` 是最容易漏的那个（一条 JOIN 出来的记录），而它正好在
+    "每建一次 LLM 客户端"的热路径上——漏了它的表现是"设置页显示已配置，
+    真跑起来报没有 API Key"。
+    """
+    created = keyed_registry.create_provider(kind="llm", name="甲", api_key="sk-real-key")
+
+    assert keyed_registry.get_provider(created.id).api_key == "sk-real-key"
+    assert [item.api_key for item in keyed_registry.list_providers()] == ["sk-real-key"]
+
+    model = keyed_registry.register_model(
+        provider_id=created.id, model_id="m-1", capabilities=["chat"]
+    )
+    keyed_registry.bind("chat", model.id)
+    resolved = keyed_registry.resolve("chat")
+    assert resolved is not None
+    assert resolved[0].api_key == "sk-real-key"
+
+    keychain.delete(model_provider_target(created.id))
+    assert keyed_registry.get_provider(created.id).api_key == ""
+    with pytest.raises(InvalidRequestError, match="API Key"):
+        keyed_registry.chat_target(model.id)
+
+
+@pytest.mark.local
+def test_updating_the_key_lands_in_the_keychain_and_empty_clears_it(
+    keyed_registry: ModelRegistryService,
+    local_bundle: StoreBundle,
+    keychain: InMemorySecretStore,
+) -> None:
+    created = keyed_registry.create_provider(kind="llm", name="甲", api_key="sk-one")
+
+    keyed_registry.update_provider(created.id, api_key="sk-two")
+    assert keychain.get(model_provider_target(created.id)) == "sk-two"
+    assert local_bundle.meta.get_model_provider(created.id).api_key == ""
+
+    # None = 保持原值（前端不动那一栏时传的就是它）
+    kept = keyed_registry.update_provider(created.id, name="改了名字")
+    assert kept.api_key == "sk-two" and kept.name == "改了名字"
+
+    # 空串 = 清空（明确动作）
+    cleared = keyed_registry.update_provider(created.id, api_key="")
+    assert cleared.api_key == "" and keychain.get(model_provider_target(created.id)) is None
+
+
+@pytest.mark.local
+def test_a_masked_key_is_treated_as_unchanged(
+    keyed_registry: ModelRegistryService, keychain: InMemorySecretStore
+) -> None:
+    """界面上显示的掩码被回传时**不能当成新密钥**（那样密钥就被毁了）。"""
+    created = keyed_registry.create_provider(kind="llm", name="甲", api_key="sk-abcdefghij")
+
+    record = keyed_registry.update_provider(created.id, api_key=mask_secret("sk-abcdefghij"))
+
+    assert record.api_key == "sk-abcdefghij"
+    assert keychain.get(model_provider_target(created.id)) == "sk-abcdefghij"
+
+
+@pytest.mark.local
+def test_deleting_a_provider_takes_its_key_out_of_the_keychain(
+    keyed_registry: ModelRegistryService, keychain: InMemorySecretStore
+) -> None:
+    """删供应商**先删钥匙串那一条**：不留一条谁也不认领的秘密。"""
+    created = keyed_registry.create_provider(kind="llm", name="甲", api_key="sk-real-key")
+
+    keyed_registry.delete_provider(created.id)
+
+    assert keychain.get(model_provider_target(created.id)) is None
+    assert keychain.names() == ()
+
+
+@pytest.mark.local
+def test_without_a_keychain_the_column_stays_the_home(local_bundle: StoreBundle) -> None:
+    """不传钥匙串（服务器档 / 手工装配）时**一条行为都不变**：库那一列就是凭据的家。"""
+    registry = ModelRegistryService(local_bundle)
+
+    created = registry.create_provider(kind="llm", name="甲", api_key="sk-in-db")
+
+    assert local_bundle.meta.get_model_provider(created.id).api_key == "sk-in-db"
+    assert registry.get_provider(created.id).api_key == "sk-in-db"

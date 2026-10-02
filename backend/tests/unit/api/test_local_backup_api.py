@@ -842,3 +842,111 @@ def test_the_backup_keys_live_in_defaults_but_not_in_setting_groups() -> None:
     # ``base_url`` / ``enabled`` 与知识库那一对同一口径：本来就没有 DEFAULTS 条目
     assert "provider.backup.base_url" not in DEFAULTS
     assert "provider.backup.enabled" not in DEFAULTS
+
+
+# ------------------------------------------------------------ ⑧ 钥匙串（阶段 6）
+#
+# 两条端点只回答两件事：**这台机器有没有钥匙串**、**还有几处明文等着收编**。
+# 秘密的**值**一个字节都不许出现在响应里——这里用哨兵串在整份 JSON 里 grep 来钉它。
+#
+# 用例把钥匙串换成 `InMemorySecretStore`（monkeypatch 组合根里那个 `platform_store`）：
+# 在开发机上跑用例**不该往真的 Windows 凭据管理器里写东西**，而"写进去了"这件事
+# 由 `test_secrets.py` 那条真机用例（配 `cmdkey /list`）负责。
+
+
+SECRETS = "/api/v1/local/secrets"
+PLAINTEXT_SENTINEL = "tavily_SENTINEL_endpoint_2c71"
+
+
+def _provider_with_plaintext() -> Any:
+    """一家带明文凭据的供应商（收编的第二个目标：``model_providers.api_key``）。"""
+    from app.storage.base import ModelProviderRecord
+
+    return ModelProviderRecord(
+        id="prov_endpoint", kind="llm", name="端点用例供应商", api_key="kylab_sk_endpoint"
+    )
+
+
+@pytest.fixture
+def keychain(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """把组合根建的钥匙串换成进程内那份（用例自己拿着它核对写进去了什么）。"""
+    from app.core import services as services_module
+    from app.services.secrets import InMemorySecretStore
+
+    store = InMemorySecretStore()
+    monkeypatch.setattr(services_module, "platform_store", lambda: store)
+    return store
+
+
+def test_secrets_status_reports_numbers_without_any_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas, keychain: Any
+) -> None:
+    """``GET /local/secrets``：只报可用性与"还有几处明文"，**一个秘密都不回显**。"""
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+        stores = get_stores()
+        stores.meta.set_setting("web.search_api_key", PLAINTEXT_SENTINEL)
+        stores.meta.create_model_provider(
+            _provider_with_plaintext(),
+        )
+
+        response = client.get(SECRETS)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body == {"store": "available", "pending_migration": 2}
+        assert PLAINTEXT_SENTINEL not in response.text, "秘密的值一个字节都不出去"
+
+
+def test_migrate_endpoint_moves_the_plaintext_and_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas, keychain: Any
+) -> None:
+    """``POST /local/secrets/migrate``：逐项报告 + 库里那份真的没了 + 钥匙串里真的有了。"""
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+        stores = get_stores()
+        stores.meta.set_setting("web.search_api_key", PLAINTEXT_SENTINEL)
+        provider = stores.meta.create_model_provider(_provider_with_plaintext())
+
+        response = client.post(f"{SECRETS}/migrate")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["store"] == "available"
+        assert [item["item"] for item in body["migrated"]] == [
+            "setting:web.search_api_key",
+            f"model_provider:{provider.id}",
+        ]
+        assert body["failed"] == [] and body["pending_migration"] == 0
+        assert PLAINTEXT_SENTINEL not in response.text
+
+        assert keychain.get("kylab:setting:web.search_api_key") == PLAINTEXT_SENTINEL
+        assert keychain.get(f"kylab:model_provider:{provider.id}") == "kylab_sk_endpoint"
+        assert stores.meta.get_setting("web.search_api_key") is None
+        assert stores.meta.get_model_provider(provider.id).api_key == ""
+        assert client.get(SECRETS).json()["pending_migration"] == 0, "再查一次是 0（可重跑）"
+
+
+def test_migrate_says_503_when_the_machine_has_no_keychain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """没有钥匙串（Linux 桌面 / 容器 / CI）→ **503 + 一句人话**，而且**明文不动**。"""
+    from app.core import services as services_module
+    from app.services.secrets import NullSecretStore
+
+    monkeypatch.setattr(services_module, "platform_store", NullSecretStore)
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+        stores = get_stores()
+        stores.meta.set_setting("web.search_api_key", PLAINTEXT_SENTINEL)
+
+        status = client.get(SECRETS)
+        response = client.post(f"{SECRETS}/migrate")
+
+        assert status.status_code == 200, status.text
+        assert status.json() == {"store": "unavailable", "pending_migration": 0}
+        assert response.status_code == 503, response.text
+        body = response.json()
+        assert body["code"] == "secret_store_unavailable", "前端按 code 分支"
+        assert "钥匙串" in body["message"]
+        assert stores.meta.get_setting("web.search_api_key") == PLAINTEXT_SENTINEL, "原样留着"

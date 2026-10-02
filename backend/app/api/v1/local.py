@@ -1,6 +1,6 @@
 """本机档专属端点（M2 阶段 3、阶段 5；M3 阶段 5）。
 
-这个模块装四样东西，都是"**只在本机档成立**"的那几件：
+这个模块装五样东西，都是"**只在本机档成立**"的那几件：
 
 1. ``GET /local/status``（`router`）——**我的数据在哪**。桌面壳与界面显示"本机运行时"
    那条状态条靠它（阶段 4 接线），排障时第一眼看的也是它：这一档的库文件在哪、
@@ -12,7 +12,9 @@
    （三态状态 + 能力集 + 库清单；改地址与开关）。见下面那一节；
 4. ``/local/kb-cache/*``（`router`，M4 阶段 4/6）——**知识库元数据快照族的只读面**
    （页面"先画一帧"用的那几条读 + 一条用量读数 + 一条主动再验证 + 一条清理）。见下面那一节；
-5. **两条薄重声明**（`chat_reads`）——``GET /conversations/{id}/events`` 与
+5. ``/local/secrets`` 两条（`router`，M5 阶段 6）——**钥匙串**：这台机器有没有、
+   还有几处明文等着收编、以及"收编"这个显式动作。见下面那一节；
+6. **两条薄重声明**（`chat_reads`）——``GET /conversations/{id}/events`` 与
    ``GET /chat/context-usage``。
 
 ## 为什么要"薄重声明"而不是整 include `chat.router`（M2 §4.2 照抄）
@@ -120,6 +122,7 @@ from app.services.backup_provider import BackupProviderClient
 from app.services.backup_queue import EVERY_HOURS_KEY, PENDING_DIR, BackupQueueService
 from app.services.backup_restore import BackupRestoreError, BackupRestorer
 from app.services.backup_snapshot import INCLUDE_WORKSPACE_KEY, BackupSnapshotService
+from app.services.credentials import CredentialsService
 from app.services.kb_cache import (
     CACHEABLE_RESOURCES,
     DOC_LIST,
@@ -1728,6 +1731,103 @@ def _run_restore(
         )
     except Exception:  # pragma: no cover - restore 已吞掉失败，这里是最后的兜底
         logger.exception("按点恢复线程异常退出：%s", batch_id)
+
+
+# ------------------------------------------------------------ 钥匙串（M5 阶段 6）
+#
+# 两条端点，只回答两件事：**这台机器有没有钥匙串**、**还有几处明文等着收编**。
+# 秘密的**值**一个字节都不出现在响应里（方案 §4.2 末段："过渡态可观测"指的就是
+# `pending_migration` 这个数，而不是把那份凭据回显出来核对）。
+#
+# 为什么"收编"是一个**显式动作**（不在这里顺手做）：改用户的存储位置要有意识
+# ——所以有数（GET）、有按钮（POST /migrate）、有 CLI（`python -m app.services.credentials`），
+# 但没有"启动时悄悄搬一遍"。方案 §4.2 末段那句"不静默迁移"就是这个形状。
+#
+# 写不进去（钥匙串不可用 / 这一条超过单条上限）由服务层抛领域异常：
+# `SecretStoreUnavailable` → **503**（`core/exceptions` 里那个信封；
+# "这台机器没有这个能力"不是 500，也不是"你请求写错了"）。
+
+
+class SecretsStatusOut(BaseModel):
+    """``GET /local/secrets``：**只报数与可用性，绝不回显任何秘密**。
+
+    ``pending_migration`` 是"库里还有几处明文等着收编"（设置里那一个键 + 每个还带明文
+    列的供应商算一处）。钥匙串不可用（Linux 桌面 / 容器 / CI）时它**恒为 0**：
+    那种机器上库就是凭据的家，没有"等着迁"这回事——`store: unavailable` 已经说清了。
+    """
+
+    store: str = Field(description="available / unavailable（这台机器有没有可用的系统钥匙串）")
+    pending_migration: int = Field(
+        default=0, description="库里还剩几处明文等着收编（钥匙串不可用时恒 0）"
+    )
+
+
+class SecretMigrationOut(BaseModel):
+    """``POST /local/secrets/migrate``：**逐项**说清迁了 / 跳过了（为什么）/ 失败了（为什么）。
+
+    ``pending_migration`` 是**跑完之后**还剩几处——成功是 0，有失败的就是失败那几处
+    （那个数就是"可重跑"的判据）；``failed`` 里那几条的明文**原样留在库里**
+    （方案 §4.3-5：不清就不算迁完），所以失败了也不会丢凭据。
+    """
+
+    store: str = Field(description="available / unavailable")
+    migrated: list[dict[str, Any]] = Field(default_factory=list, description="这次搬进钥匙串的项")
+    skipped: list[dict[str, Any]] = Field(
+        default_factory=list, description="跳过没搬的项（含原因：已经迁过 / 钥匙串里已有别的值）"
+    )
+    failed: list[dict[str, Any]] = Field(
+        default_factory=list, description="没搬成的项（含原因；那几处的明文没动）"
+    )
+    pending_migration: int = Field(default=0, description="跑完之后还剩几处明文")
+
+
+def _credentials(services: Services) -> CredentialsService:
+    """取进程级那个收编服务（组合根建的那一个）。"""
+    service = services.credentials
+    if service is None:
+        raise InvalidRequestError(
+            "凭据收编只有本机档才有：服务器档的凭据是它自己的家当（R14），不进本机钥匙串"
+        )
+    return service
+
+
+@router.get(
+    "/secrets",
+    response_model=SecretsStatusOut,
+    summary="钥匙串：可用性与还有几处明文（只报数，不回显任何秘密）",
+)
+def local_secrets(
+    services: Annotated[Services, Depends(get_services)],
+    caller: ReadDep,
+) -> SecretsStatusOut:
+    """**凭据这一页要的那两个数**（阶段 7 的"凭据"一节靠它渲染）。
+
+    永远是 200：钥匙串不可用也是一种**结论**（`store: unavailable`），而不是一次失败
+    ——把它做成错误的话，页面就没法说清"这台机器收不了凭据"这件事。
+    """
+    return SecretsStatusOut.model_validate(_credentials(services).status())
+
+
+@router.post(
+    "/secrets/migrate",
+    response_model=SecretMigrationOut,
+    summary="把库里的旧明文凭据收进系统钥匙串（逐项、幂等、可重跑）",
+)
+def migrate_local_secrets(
+    services: Annotated[Services, Depends(get_services)],
+    caller: WriteDep,
+) -> SecretMigrationOut:
+    """**显式收编**：逐项搬进钥匙串、搬一项清一项，然后收一次空闲页（VACUUM）。
+
+    幂等：已经迁过的项会跳过（顺手清掉库里那份重复的），所以"再点一次"是安全的。
+    失败的那些**明文不动**并如实进 ``failed``，可以重跑。
+
+    钥匙串整条不可用时**不返回报告而是 503**（`SecretStoreUnavailable` 那个信封）：
+    那种情况下"逐项失败"没有意义——一项都写不进去，而报告里一长串同样的原因
+    比一句"这台机器没有系统钥匙串"难懂得多。
+    """
+    report = _credentials(services).migrate()
+    return SecretMigrationOut.model_validate(report.as_dict())
 
 
 # ---------------------------------------------------------------- 薄重声明两条

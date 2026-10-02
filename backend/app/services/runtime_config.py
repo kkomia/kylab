@@ -39,11 +39,13 @@ from app.services.embedding.protocols import (
     supports_media,
 )
 from app.services.llm import LLMConfig
+from app.services.secrets import SecretStore, setting_target, use_keychain
 from app.services.thinking import normalize_effort
 from app.services.web import SEARCH_PROVIDERS
 from app.storage.base import StoreBundle
 
 __all__ = [
+    "KEYCHAIN_SETTING_KEYS",
     "SECRET_KEYS",
     "SETTING_GROUPS",
     "RuntimeConfigService",
@@ -61,6 +63,23 @@ SECRET_KEYS = frozenset(
         "web.search_api_key",
     }
 )
+
+KEYCHAIN_SETTING_KEYS = frozenset({"web.search_api_key"})
+"""``SECRET_KEYS`` 里**已经收编进系统钥匙串**的那几个（M5 阶段 6，方案 §4.2）。
+
+读路径的改道**只覆盖这一个集合**，而不是整个 ``SECRET_KEYS``——口径的差别在这里：
+
+- 收编过的键（``web.search_api_key``）**只问钥匙串**：读不到 = 没配，绝不回退去读库里那份
+  （回退等于留着两条真相源，"收编"就白做了）；
+- 只登记、没收编的两个（``mineru.token`` / ``paddleocr.token``）**照旧走库与 ``.env``**：
+  它们的家没有变（方案 §4.2 把它们划成"只登记不迁"）。把它们的读也改成"只看钥匙串"，
+  用户原先配好的那份会当场变成"没配"（连设置页都显示未配置），而迁移器又不去搬它们
+  ——那个值等于被静默丢掉，而"静默丢凭据"是这一整套收编里最不该出现的后果。
+
+两份清单必须一致：改道的那几个 == 迁移器真正会搬的那几个。用例
+``test_the_redirect_list_matches_the_migrator`` 钉着这条（加一处收编就要同时改两处，
+或者当场红）。
+"""
 
 #: 分组与字段定义。前端设置页按这个结构渲染，不自己硬编码字段名。
 #:
@@ -585,12 +604,20 @@ class RuntimeConfigService:
         settings: Settings | None = None,
         *,
         registry: object | None = None,
+        secrets: SecretStore | None = None,
     ) -> None:
         self._stores = stores
         self._settings = settings
         self._registry = registry
         """模型注册器（G1）。**可选**：没有它时全部走 .env / 设置页那套，
         所以既有部署与既有测试不受影响——注册器是叠加层，不是替换。"""
+        self._secrets = secrets
+        """钥匙串（M5 阶段 6）。**可选**：不传就完全照旧（库 > 引导值 > 默认值）——
+        服务器档与那些手工装配的地方（CLI、用例）都走这一支，一条行为都不变。"""
+        #: 收编过的那几个键是不是改走钥匙串。**建对象时定一次**：组合根建的是进程级
+        #: 单例，而"这台机器有没有钥匙串"不该在每次读设置时都去问一遍（Windows 上那是
+        #: 一次 CredReadW）。判据本身只有一处（``secrets.use_keychain``）。
+        self._keychain = use_keychain(secrets)
         #: 设置值的短 TTL 缓存（键 → (读入时刻, 库里的值或 None)）。
         #: 见 ``_CACHE_TTL_SECONDS`` 与 ``_CACHEABLE_KEYS``。
         self._cache: dict[str, tuple[float, str | None]] = {}
@@ -611,7 +638,12 @@ class RuntimeConfigService:
         """取一个键的最终值：数据库 > .env 引导值 > 代码默认值。
 
         热路径上的键走**短 TTL 缓存**（见 ``_CACHE_TTL_SECONDS``）。
+
+        **收编过的密钥是例外**（``KEYCHAIN_SETTING_KEYS``）：只问钥匙串，
+        读不到就是没配——不回退库 / ``.env`` / 默认值（M5 阶段 6 的第一条口径）。
         """
+        if self._keychain and key in KEYCHAIN_SETTING_KEYS:
+            return self._secret(key)
         stored = self._cached(key)
         if stored is not None:
             return stored
@@ -619,6 +651,22 @@ class RuntimeConfigService:
         if boot:
             return boot
         return DEFAULTS.get(key, "")
+
+    def _secret(self, key: str) -> str:
+        """钥匙串里那个键的值（**没配就是空串**，与"库里没有"同一个返回值形状）。"""
+        if self._secrets is None:  # pragma: no cover - 只有 _keychain 为真时才会走到这里
+            return ""
+        return self._secrets.get(setting_target(key)) or ""
+
+    def _keychain_values(self, keys: Sequence[str]) -> dict[str, str]:
+        """改道的那几个键在钥匙串里的值（**改道过的键一定出现在结果里**，哪怕是空串）。
+
+        一定要"出现"：`get_many` 是按"在不在结果里"决定要不要回落的，漏一个就是
+        "读不到 → 悄悄回落到库里那份明文"——正是第一条口径要挡的那件事。
+        """
+        if not self._keychain or self._secrets is None:
+            return {}
+        return {key: self._secret(key) for key in keys if key in KEYCHAIN_SETTING_KEYS}
 
     # ------------------------------------------------------------------ 缓存
 
@@ -672,12 +720,17 @@ class RuntimeConfigService:
         ordered = list(dict.fromkeys(keys))
         if not ordered:
             return {}
-        stored = self._many_cached(ordered)
+        kn = self._keychain_values(ordered)
+        stored = self._many_cached([key for key in ordered if key not in kn])
         return {
             key: (
-                stored[key]
-                if key in stored
-                else (self._bootstrap_value(key) or DEFAULTS.get(key, ""))
+                kn[key]
+                if key in kn
+                else (
+                    stored[key]
+                    if key in stored
+                    else (self._bootstrap_value(key) or DEFAULTS.get(key, ""))
+                )
             )
             for key in ordered
         }
@@ -718,13 +771,31 @@ class RuntimeConfigService:
 
         - 空字符串：密钥视为"清除"，非密钥视为"恢复默认"（写空即回落默认值）；
         - ``clear_secrets`` 里的键即使给了值也只清空——用于"删除凭据"这个明确动作。
+
+        **收编过的密钥走钥匙串**（M5 阶段 6）：写进系统钥匙串、**库里一个字节都不落**；
+        空值 / ``clear_secrets`` 就是把钥匙串里那一条删掉。写不进去时钥匙串自己抛
+        ``SecretStoreUnavailable``（端点 503）——**绝不退回库里写明文**。
         """
         drop = clear_secrets or set()
         for key, value in values.items():
+            text = (value or "").strip()
+            if self._keychain and key in KEYCHAIN_SETTING_KEYS:
+                if key in drop or not text:
+                    self._secrets.delete(setting_target(key))  # type: ignore[union-attr]
+                elif "…" in text:
+                    # 掩码被当成新值回写是最容易踩的坑（界面上显示的 `sk-xu…ten` 不是密钥）
+                    continue
+                else:
+                    self._secrets.set(setting_target(key), text)  # type: ignore[union-attr]
+                if self._stores.meta.get_setting(key) is not None:
+                    # 库里还留着这一份旧明文（迁移之前写的）：这次写入之后它就是死数据。
+                    # 不删的话，`pending_migration` 会一直报一处"等着迁"——而它其实
+                    # 已经被钥匙串里的新值取代了，用户点一次"迁"只会得到一条"跳过"。
+                    self._stores.meta.delete_setting(key)
+                continue
             if key in drop:
                 self._stores.meta.set_setting(key, "")
                 continue
-            text = (value or "").strip()
             # 掩码被当成新值回写是最容易踩的坑：界面上显示的 `sk-xu…ten` 不是密钥
             if key in SECRET_KEYS and "…" in text:
                 continue

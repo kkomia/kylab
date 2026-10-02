@@ -10,15 +10,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
 from app.core.config import Settings
+from app.core.storage import build_stores, reset_stores
+from app.services.credentials import MIGRATED_SETTING_KEYS
 from app.services.model_registry import ModelRegistryService
 from app.services.runtime_config import (
     DEFAULTS,
+    KEYCHAIN_SETTING_KEYS,
     SECRET_KEYS,
     SETTING_GROUPS,
     RuntimeConfigService,
     mask_secret,
 )
+from app.services.secrets import InMemorySecretStore, setting_target
+from app.storage.base import StoreBundle
 from tests.conftest import bind_model
 
 
@@ -359,9 +369,11 @@ def test_repeated_reads_hit_the_cache(runtime, bundle, monkeypatch) -> None:  # 
 
 
 def test_a_key_that_is_not_in_the_database_is_remembered_too(
-    runtime, bundle, monkeypatch  # type: ignore[no-untyped-def]
+    runtime,
+    bundle,
+    monkeypatch,  # type: ignore[no-untyped-def]
 ) -> None:
-    """"库里没有这一项"也要记住。
+    """ "库里没有这一项"也要记住。
 
     否则"没配过的键"每次都白查一遍——而设置页打开的 ``describe()`` 里大半都是这种键。
     """
@@ -398,7 +410,9 @@ def test_set_clears_the_cache_immediately(runtime, bundle, monkeypatch) -> None:
 
 
 def test_keys_written_by_other_services_are_never_cached(
-    runtime, bundle, monkeypatch  # type: ignore[no-untyped-def]
+    runtime,
+    bundle,
+    monkeypatch,  # type: ignore[no-untyped-def]
 ) -> None:
     """按实体生成的键（``document.<id>.*`` / ``trash.<id>.*``）**不进缓存**。
 
@@ -424,3 +438,188 @@ def test_entries_expire_after_the_ttl(runtime, bundle, monkeypatch) -> None:  # 
     runtime.get("chat.top_k")
 
     assert len(calls) == 2
+
+
+# ------------------------------------------------------------ 钥匙串收编（M5 阶段 6）
+#
+# 这一节的用例**自带本机库**（带 `local` marker）：文件里其他用例跑在 PG 上，而"钥匙串
+# 是凭据的家"这件事只在本机档成立（R14：服务器档恒 NullSecretStore，它库里那份凭据不动）。
+#
+# 口径（方案 §4.2）：**收编过的那几个键**（`KEYCHAIN_SETTING_KEYS`）只问钥匙串——
+# 读不到 = 没配，不回退去读库里那份明文；**只登记的那几个**（mineru / paddleocr token）
+# 照旧走库与 `.env`（它们的家没有变）。前端契约（`describe()` 的掩码与 `configured`）
+# 一个字都不改。
+
+
+@pytest.fixture
+def local_bundle(tmp_path: Path) -> Iterator[StoreBundle]:
+    """本机档的真装配（SQLite 落在 tmp_path）。"""
+    stores = build_stores(
+        Settings(_env_file=None, deployment="local", data_dir=tmp_path / "data")  # type: ignore[call-arg]
+    )
+    yield stores
+    reset_stores()
+
+
+@pytest.fixture
+def keychain() -> InMemorySecretStore:
+    return InMemorySecretStore()
+
+
+@pytest.fixture
+def keyed_runtime(local_bundle: StoreBundle, keychain: InMemorySecretStore) -> RuntimeConfigService:
+    """连着钥匙串的那一份（本机档 + 钥匙串可用 → 收编过的键改道）。"""
+    return RuntimeConfigService(local_bundle, secrets=keychain)
+
+
+@pytest.mark.local
+def test_the_redirect_list_matches_the_migrator() -> None:
+    """改道的那几个 == 迁移器真正会搬的那几个（两份清单必须一致）。
+
+    它们分开写是因为**读者不同**：这一份说的是"读哪儿"，那一份说的是"搬什么"。
+    但要是不一致，就会出现两种坏结果之一：读改了却没搬（用户配好的值当场变成"没配"），
+    或者搬了却没改读（库里清了、读的还是库 → 永远读到空）。
+    """
+    assert KEYCHAIN_SETTING_KEYS <= SECRET_KEYS
+    assert set(MIGRATED_SETTING_KEYS) & SECRET_KEYS == KEYCHAIN_SETTING_KEYS
+    assert frozenset({"web.search_api_key"}) == KEYCHAIN_SETTING_KEYS
+
+
+@pytest.mark.local
+def test_a_collected_key_is_read_from_the_keychain(
+    keyed_runtime: RuntimeConfigService,
+    local_bundle: StoreBundle,
+    keychain: InMemorySecretStore,
+) -> None:
+    """收编过的键**只问钥匙串**：库里那份明文在也不读（过渡态不是真相源）。"""
+    local_bundle.meta.set_setting("web.search_api_key", "still-in-the-database")
+
+    assert keyed_runtime.get("web.search_api_key") == "", "库里那份明文不该被读出来"
+
+    keychain.set(setting_target("web.search_api_key"), "from-the-keychain")
+    assert keyed_runtime.get("web.search_api_key") == "from-the-keychain"
+
+    keychain.delete(setting_target("web.search_api_key"))
+    assert keyed_runtime.get("web.search_api_key") == "", "读不到 = 没配"
+
+
+@pytest.mark.local
+def test_a_collected_key_is_read_from_the_keychain_in_bulk_too(
+    keyed_runtime: RuntimeConfigService, keychain: InMemorySecretStore
+) -> None:
+    """``get_many`` 也要走同一条口径（快照那几个读都走它）。
+
+    漏了它，那些读就会"读不到 → 悄悄回落到库里那份明文"——正是第一条口径要挡的事。
+    """
+    keychain.set(setting_target("web.search_api_key"), "bulk-key")
+
+    values = keyed_runtime.get_many(["web.search_api_key", "chat.top_k"])
+
+    assert values["web.search_api_key"] == "bulk-key"
+    assert values["chat.top_k"] == DEFAULTS["chat.top_k"], "没改道的键照旧"
+
+
+@pytest.mark.local
+def test_writing_a_collected_key_lands_in_the_keychain_only(
+    keyed_runtime: RuntimeConfigService,
+    local_bundle: StoreBundle,
+    keychain: InMemorySecretStore,
+) -> None:
+    """写入路径：**密钥落钥匙串、库里不落**；空值就是删掉那一条。"""
+    local_bundle.meta.set_setting("web.search_api_key", "the-old-plaintext")
+
+    keyed_runtime.set({"web.search_api_key": "the-new-key"})
+
+    assert keychain.get(setting_target("web.search_api_key")) == "the-new-key"
+    assert local_bundle.meta.get_setting("web.search_api_key") is None, (
+        "库里那份旧明文顺手清掉（它已经是死数据，留着只会让「还有 N 处等着迁」永远不为 0）"
+    )
+
+    keyed_runtime.set({"web.search_api_key": ""})
+
+    assert keychain.get(setting_target("web.search_api_key")) is None
+    assert local_bundle.meta.get_setting("web.search_api_key") is None
+
+
+@pytest.mark.local
+def test_a_masked_value_is_never_written_into_the_keychain(
+    keyed_runtime: RuntimeConfigService, keychain: InMemorySecretStore
+) -> None:
+    """掩码被当成新值回写 → **跳过**（老坑；现在它挡在写钥匙串之前）。"""
+    keyed_runtime.set({"web.search_api_key": "the-real-key"})
+
+    keyed_runtime.set({"web.search_api_key": mask_secret("the-real-key")})
+
+    assert keychain.get(setting_target("web.search_api_key")) == "the-real-key"
+
+
+@pytest.mark.local
+def test_a_registered_only_key_still_reads_and_writes_the_database(
+    keyed_runtime: RuntimeConfigService,
+    local_bundle: StoreBundle,
+    keychain: InMemorySecretStore,
+) -> None:
+    """**只登记、没收编**的那两个照旧走库（它们的家没有变）。
+
+    把它们的读也改成"只看钥匙串"，用户原先配好的那份会当场变成"没配"（设置页显示未配置），
+    而迁移器又不去搬它们——那个值等于被静默丢掉。
+    """
+    local_bundle.meta.set_setting("mineru.token", "db-mineru-token")
+
+    assert keyed_runtime.get("mineru.token") == "db-mineru-token"
+
+    keyed_runtime.set({"mineru.token": "db-mineru-token-2"})
+
+    assert local_bundle.meta.get_setting("mineru.token") == "db-mineru-token-2"
+    assert "kylab:setting:mineru.token" not in keychain.names(), "没收编的键不进钥匙串"
+
+
+@pytest.mark.local
+def test_describe_keeps_the_same_contract(
+    keyed_runtime: RuntimeConfigService, keychain: InMemorySecretStore
+) -> None:
+    """**前端契约零改动**：`describe()` 回的仍是掩码 + ``configured``（值不出去）。"""
+    keychain.set(setting_target("web.search_api_key"), "sk-abcdefghij")
+
+    entry = next(
+        field
+        for group in keyed_runtime.describe()["groups"]
+        for field in group["fields"]
+        if field["key"] == "web.search_api_key"
+    )
+
+    assert entry["value"] == mask_secret("sk-abcdefghij")
+    assert entry["configured"] is True
+    assert "sk-abcdefghij" not in str(entry), "原值一个字节都不出去"
+
+
+@pytest.mark.local
+def test_without_a_keychain_everything_stays_as_before(
+    local_bundle: StoreBundle,
+) -> None:
+    """不传钥匙串（服务器档 / 手工装配 / CLI）时**一条行为都不变**：库就是凭据的家。"""
+    runtime = RuntimeConfigService(local_bundle)
+    local_bundle.meta.set_setting("web.search_api_key", "db-plaintext")
+
+    assert runtime.get("web.search_api_key") == "db-plaintext"
+
+    runtime.set({"web.search_api_key": "db-plaintext-2"})
+
+    assert local_bundle.meta.get_setting("web.search_api_key") == "db-plaintext-2"
+
+
+@pytest.mark.local
+def test_an_unavailable_store_keeps_the_database_as_the_home(
+    local_bundle: StoreBundle,
+) -> None:
+    """钥匙串**不可用**（Linux 桌面 / CI / 容器）时照旧走库：那种档里库就是家。
+
+    在这一档上"一律走钥匙串"会把用户已经配好的凭据读成"没配"（而写又写不进去），
+    等于把一个可用的配置功能关掉。判据只有一处：``secrets.use_keychain``。
+    """
+    runtime = RuntimeConfigService(local_bundle, secrets=InMemorySecretStore(available=False))
+    local_bundle.meta.set_setting("web.search_api_key", "db-plaintext")
+
+    assert runtime.get("web.search_api_key") == "db-plaintext"
+    runtime.set({"web.search_api_key": "db-plaintext-2"})
+    assert local_bundle.meta.get_setting("web.search_api_key") == "db-plaintext-2"

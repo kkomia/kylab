@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import replace
 
 from app.core.exceptions import (
     ConflictError,
@@ -30,6 +31,7 @@ from app.core.exceptions import (
     UpstreamError,
 )
 from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
+from app.services.secrets import SecretStore, model_provider_target, use_keychain
 from app.storage.base import ModelProviderRecord, RegisteredModelRecord, StoreBundle
 
 __all__ = ["SLOTS", "ModelRegistryService"]
@@ -67,10 +69,60 @@ CAPABILITIES: dict[str, str] = {
 
 
 class ModelRegistryService:
-    """供应商与模型目录，以及"哪个用途用哪个模型"的绑定。"""
+    """供应商与模型目录，以及"哪个用途用哪个模型"的绑定。
 
-    def __init__(self, stores: StoreBundle) -> None:
+    **凭据的家**（M5 阶段 6，方案 §4.2）：供应商那把 API Key 搬进了系统钥匙串
+    （``kylab:model_provider:<id>``），所以这一层要在**读出记录之后把它填回**、
+    **写入时只落钥匙串**。对调用方完全透明：``ModelProviderRecord.api_key`` 这个字段
+    与 `/model-registry` 那两个响应字段（``api_key_configured`` / ``api_key_hint``）
+    **一个字节都没变**——变的只是"那个值从哪儿来"。
+
+    ``secrets`` 不传 / 钥匙串不可用（服务器容器 / Linux 桌面 / CI）时一切照旧：
+    库那一列就是凭据的家（§4.5 的边界 + R14"服务器档库里那份凭据不动"）。
+    """
+
+    def __init__(self, stores: StoreBundle, *, secrets: SecretStore | None = None) -> None:
         self._stores = stores
+        self._secrets = secrets
+        #: 凭据是不是改走钥匙串（判据只有一处：``secrets.use_keychain``）。
+        #: 建对象时定一次——组合根建的是进程级单例，而每次读记录都去探一遍钥匙串
+        #: 只会给热路径（``resolve`` 在每建一次 LLM 客户端的路上）平白加一次系统调用。
+        self._keychain = use_keychain(secrets)
+
+    # ------------------------------------------------------------------ 凭据（钥匙串那一侧）
+
+    def _with_key(self, record: ModelProviderRecord) -> ModelProviderRecord:
+        """把记录里的 ``api_key`` 补成**真正生效的那一把**（钥匙串档上问钥匙串）。
+
+        读出来的地方全都过这一层：`get_provider` / `list_providers` / `resolve` /
+        两个写方法的返回值。少过一处，那一处的调用方就会看到"没配"——而它明明配着。
+        """
+        if not self._keychain or self._secrets is None:
+            return record
+        return replace(record, api_key=self._secrets.get(model_provider_target(record.id)) or "")
+
+    def _for_db(self, record: ModelProviderRecord) -> ModelProviderRecord:
+        """落库前的那一份：钥匙串档上**列里永远是空**（明文一个字节都不进库）。"""
+        if not self._keychain:
+            return record
+        return replace(record, api_key="")
+
+    def _store_key(self, provider_id: str, value: str) -> None:
+        """把一把钥匙写进钥匙串（钥匙串档上的唯一写入路径）。
+
+        写不进去时钥匙串自己抛 ``SecretStoreUnavailable``（端点 503）——**退回库里写明文
+        是不允许的**（那正是要收编掉的东西）。这时调用它的那个写方法会整条失败，
+        用户看到一句"钥匙串不可用"而不是"保存成功"。
+        """
+        if not self._keychain or self._secrets is None:
+            return
+        self._secrets.set(model_provider_target(provider_id), value)
+
+    def _clear_key(self, provider_id: str) -> None:
+        """删掉钥匙串里那一条（删供应商 / 清空凭据时；本来就没有也算成功）。"""
+        if not self._keychain or self._secrets is None:
+            return
+        self._secrets.delete(model_provider_target(provider_id))
 
     # ------------------------------------------------------------------ 供应商
 
@@ -90,26 +142,32 @@ class ModelRegistryService:
         cleaned = name.strip()
         if not cleaned:
             raise InvalidRequestError("供应商名称不能为空")
-        return self._stores.meta.create_model_provider(
+        provider_id = f"prov_{uuid.uuid4().hex[:12]}"
+        stored = self._stores.meta.create_model_provider(
             ModelProviderRecord(
-                id=f"prov_{uuid.uuid4().hex[:12]}",
+                id=provider_id,
                 kind=kind,
                 name=cleaned,
                 base_url=base_url.strip(),
-                api_key=api_key.strip(),
+                # 钥匙串档上列里是空：明文只落钥匙串（先建档、再存钥匙——见下面那行）
+                api_key="" if self._keychain else api_key.strip(),
                 enabled=enabled,
             )
         )
+        # 顺序是"先建档、再存钥匙"：钥匙串写失败时 provider 已经存在（UI 上看到"没配"），
+        # 用户重填一次就走 PATCH 那条路——比"钥匙存进去了但供应商没建成"好收拾
+        # （后者会在钥匙串里留一条谁也不认领的秘密）。
+        if cleaned_key := api_key.strip():
+            self._store_key(provider_id, cleaned_key)
+        return self._with_key(stored)
 
     def get_provider(self, provider_id: str) -> ModelProviderRecord:
         record = self._stores.meta.get_model_provider(provider_id)
         if record is None:
             raise NotFoundError(f"供应商不存在：{provider_id}")
-        return record
+        return self._with_key(record)
 
-    def embedding_target(
-        self, model_pk: str
-    ) -> tuple[ModelProviderRecord, RegisteredModelRecord]:
+    def embedding_target(self, model_pk: str) -> tuple[ModelProviderRecord, RegisteredModelRecord]:
         """取一个可直接用于嵌入的（供应商, 模型）。
 
         **校验放在这一处**：建库时选模型、运行时按 pk 解析，两处都要"能用"这个判断，
@@ -233,7 +291,7 @@ class ModelRegistryService:
         return None
 
     def list_providers(self) -> list[ModelProviderRecord]:
-        return self._stores.meta.list_model_providers()
+        return [self._with_key(record) for record in self._stores.meta.list_model_providers()]
 
     def update_provider(
         self,
@@ -250,6 +308,12 @@ class ModelRegistryService:
         这个区分是必要的：设置页把密钥掩码显示成 ``••••``，用户不动它时
         前端回传的是掩码而不是真实密钥——若把掩码当新值写进去，密钥就被毁了。
         所以"没改"与"清空"必须是两个不同的输入。
+
+        钥匙串档上那把钥匙落在钥匙串（``kylab:model_provider:<id>``），DB 列**永远为空**：
+        - 非 ``None``、非空 → 写钥匙串；
+        - 空串 → 删掉钥匙串里那一条（"清空凭据"这个明确动作）；
+        - 含 ``…`` 的值当"没改"跳过（那看着就是界面回传的掩码——与
+          ``RuntimeConfigService.set`` 同一条防漂）。
         """
         record = self.get_provider(provider_id)
         if name is not None:
@@ -260,11 +324,19 @@ class ModelRegistryService:
         if base_url is not None:
             record.base_url = base_url.strip()
         if api_key is not None:
-            record.api_key = api_key.strip()
+            cleaned_key = api_key.strip()
+            if "…" in cleaned_key:
+                pass  # 掩码：当"没改"（防漂，理由见 docstring）
+            elif cleaned_key:
+                self._store_key(provider_id, cleaned_key)
+                record.api_key = cleaned_key
+            else:
+                self._clear_key(provider_id)
+                record.api_key = ""
         if enabled is not None:
             record.enabled = enabled
-        self._stores.meta.update_model_provider(record)
-        return record
+        self._stores.meta.update_model_provider(self._for_db(record))
+        return self._with_key(record)
 
     def delete_provider(self, provider_id: str) -> None:
         """删供应商**连同它下面的模型**，并**解绑引用它们的槽位**。
@@ -272,8 +344,12 @@ class ModelRegistryService:
         解绑这一步容易漏：模型没了但槽位还指着它，之后每次检索都报
         "绑定的模型不存在"——而用户在设置页看到的是一个灰色下拉，很难联想到
         是自己删了供应商造成的。
+
+        钥匙串里那把钥匙**先删**（删供应商这条路上最该确定的事就是"凭据不再留着"；
+        反过来先删行的话，一次失败会在钥匙串里留一条谁也认不领的秘密）。
         """
         self.get_provider(provider_id)
+        self._clear_key(provider_id)
         for model in self._stores.meta.list_registered_models(provider_id):
             self._unbind_model(model.id)
         self._stores.meta.delete_model_provider(provider_id)
@@ -376,9 +452,7 @@ class ModelRegistryService:
     def bind(self, slot: str, model_pk: str | None) -> None:
         """把某个用途绑定到某个模型；``None`` 表示解绑（回到走设置页那套）。"""
         if slot not in SLOTS:
-            raise InvalidRequestError(
-                f"未知的用途：{slot}（可选：{'、'.join(SLOTS)}）"
-            )
+            raise InvalidRequestError(f"未知的用途：{slot}（可选：{'、'.join(SLOTS)}）")
         if model_pk is None:
             self._stores.meta.delete_setting(f"{BINDING_PREFIX}{slot}")
             logger.info("用途 %s 已解绑，回退到设置页的配置", slot)
@@ -417,7 +491,10 @@ class ModelRegistryService:
             raise InvalidRequestError(f"未知的用途：{slot}")
         found = self._stores.meta.resolve_model_binding(f"{BINDING_PREFIX}{slot}")
         if found is not None:
-            return found
+            provider, model = found
+            # 凭据也要补上：这条路在"每建一次 LLM 客户端"的热路径上，
+            # 而 runtime_config 那两份快照（embedding / llm）就是从这里拿 api_key 的
+            return self._with_key(provider), model
         # 解不出来：要么本来就没绑，要么绑的模型/供应商已经不在了。
         # 后者要留一条线索（前面那两种"不该发生，因为删的时候会解绑"的情形）。
         bound = self._stores.meta.get_setting(f"{BINDING_PREFIX}{slot}")

@@ -39,6 +39,7 @@ from app.services.chunk import ChunkService
 from app.services.commands import CommandService
 from app.services.conversation import ConversationService
 from app.services.conversation_export import ConversationExportService
+from app.services.credentials import CredentialsService
 from app.services.documents import DocumentService
 from app.services.embedding import build_embedder
 from app.services.embedding.base import EmbeddingProvider
@@ -72,6 +73,7 @@ from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
 from app.services.schedule_runner import run_scheduled_task
 from app.services.schedules import ScheduleService
+from app.services.secrets import NullSecretStore, SecretStore, platform_store
 from app.services.share import ShareService
 from app.services.skill_blurb import SkillBlurbService
 from app.services.skill_market import SkillMarketService
@@ -311,6 +313,30 @@ class Services:
     而不是配置漏项。
     """
 
+    secrets: SecretStore | None = None
+    """**系统钥匙串**（M5 阶段 6）：凭据的家（本机档就是 Windows 凭据管理器）。
+
+    两个服务从它取：``runtime``（收编过的那几个设置键）与 ``models``（供应商的 API Key）。
+    这一位是**进程级那一个**对象——两处各建一个就会出现"设置页存进去了、聊天那边读不到"
+    这类最难查的分叉（两边都"成功"了）。
+
+    服务器档：``NullSecretStore``（R14）。那一档**没有**系统钥匙串，它库里那份凭据照旧
+    是凭据的家；`secrets.use_keychain()` 为假，两个服务走原来的库路径。
+    手工构造的 ``Services``（用例、脚本）留 ``None``——同样是"没有钥匙串"那一档。
+
+    为什么带默认值：同 ``provider``——"没有它"是合法状态。
+    """
+
+    credentials: CredentialsService | None = None
+    """**旧明文收编**（M5 阶段 6）：把库里的明文凭据搬进钥匙串的那个服务。
+
+    它只有三个动作（``status`` / ``migrate`` / NAS 钥匙那三个方法），而且是**显式的**：
+    没有任何调用点会顺手调 ``migrate``（不静默迁移，方案 §4.2）。
+
+    两种档都建：钥匙串不可用时 ``status()`` 如实回 ``store: unavailable`` 且
+    ``pending_migration: 0``——那种机器上"等着迁"这件事不存在（库就是凭据的家）。
+    """
+
 
 class _RuntimeEmbedder(EmbeddingProvider):
     """把 `RuntimeConfigService` 包成 embedding provider。
@@ -439,10 +465,21 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     resolved = settings or get_settings()
     bundle = stores or build_stores(resolved)
 
+    # 系统钥匙串（M5 阶段 6，方案 §4.1 / §4.5）：**先建它**，因为下面两个服务都要从它取。
+    #
+    # 本机档用这台机器上真正的钥匙串（Windows 凭据管理器；别的平台是 Null），
+    # **服务器档恒 NullSecretStore**（R14）：NAS 容器里没有系统钥匙串，它库里那份凭据
+    # 照旧是凭据的家（`use_keychain` 为假 → 两个服务走原来的库路径）。
+    # 这不是"漏了收编"，而是如实登记边界——容器里那份凭据的边界是 NAS 的访问控制。
+    secrets: SecretStore = platform_store() if resolved.deployment == "local" else NullSecretStore()
     # 注册器先建、再交给 runtime：runtime 的快照要**优先取注册表里绑定的模型**，
     # 未绑定时才回退到设置页那套字段（叠加层，见 services/model_registry.py）
-    registry = ModelRegistryService(bundle)
-    runtime = RuntimeConfigService(bundle, resolved, registry=registry)
+    registry = ModelRegistryService(bundle, secrets=secrets)
+    runtime = RuntimeConfigService(bundle, resolved, registry=registry, secrets=secrets)
+    # 旧明文收编（M5 阶段 6）：**显式动作**的服务，没有任何调用点会顺手调它
+    # （不静默迁移，方案 §4.2 末段）。两种档都建：钥匙串不可用时它如实报
+    # `store: unavailable` 且 `pending_migration: 0`（那种档里"等着迁"这件事不存在）。
+    credentials = CredentialsService(bundle, secrets)
     # 记忆服务**先建**：ChatService 要拿它把长期记忆注入 system prompt。
     # 工作区放在数据目录下（见 services/memory.py 与设计文档 §2.2）：
     # 与其它数据一起备份/迁移，一个部署只有一处要备份
@@ -917,6 +954,10 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         backup_provider=backup_provider,
         backup_queue=backup_queue,
         backup_restore=backup_restore,
+        # **钥匙串与收编**（M5 阶段 6）：上面建的那两份。`/local/secrets` 那两个端点
+        # 从它们取数；两个服务（runtime / models）已经拿着同一个 `secrets` 对象了。
+        secrets=secrets,
+        credentials=credentials,
     )
     # 槽里放进刚装好的这一份：定时任务的执行体从这一刻起可用
     # （`_run_scheduled` 只在 worker 领到 SCHEDULED 任务时被调用，那时这里早已填上）
