@@ -6,10 +6,10 @@
 三块内容：
 
 1. **接口核对**（§6.4 第一条 + §2.1）：``SqliteMetaStore`` 的方法集合**恰好**是
-   三块清单的并集——``LOCAL_METHODS``（本机域）、``LOCAL_LEDGER_METHODS``（导入台账，
-   M2 阶段 5）、``LOCAL_CACHE_METHODS``（知识库快照，M4）——既不少（少一个就是某条
-   边角路径上的 AttributeError），也不多（多一个就是偷偷实现了别的域的活），
-   并且结构上满足那 8 个窄协议。
+   四块清单的并集——``LOCAL_METHODS``（本机域）、``LOCAL_LEDGER_METHODS``（导入台账，
+   M2 阶段 5）、``LOCAL_CACHE_METHODS``（知识库快照，M4）、``LOCAL_SNAPSHOT_METHODS``
+   （快照打包与读回，M5 阶段 2）——既不少（少一个就是某条边角路径上的 AttributeError），
+   也不多（多一个就是偷偷实现了别的域的活），并且结构上满足那 8 个窄协议。
 2. **字段一致性**（§6.4 的 R10）：记录 dataclass 的字段 ↔ 表的列名逐表比对。
    两份 schema 漂移的典型形态就是"某个字段忘了落库"，这条机械查得出来。
 3. **行为**：会话 / 消息 / 事件 / 产物 / 笔记 / 文件夹级联 / 设置 / 工作区三态 /
@@ -37,6 +37,7 @@ from app.storage.base import (
     ImportLedger,
     KbMetaCache,
     KbMetaCacheRecord,
+    LocalSnapshotArchiver,
     MCPServerRecord,
     MetaStore,
     ModelProviderRecord,
@@ -45,6 +46,7 @@ from app.storage.base import (
     RegisteredModelRecord,
     ScheduledTaskRecord,
     SessionEventRecord,
+    SnapshotSource,
     UsageEventRecord,
     WorkspaceRecord,
 )
@@ -55,6 +57,7 @@ from app.storage.sqlite_impl import (
     LOCAL_LEDGER_METHODS,
     LOCAL_METHODS,
     LOCAL_PROTOCOLS,
+    LOCAL_SNAPSHOT_METHODS,
 )
 from app.storage.sqlite_impl import meta_store as meta_store_module
 from app.storage.sqlite_impl.connection import Database
@@ -105,23 +108,30 @@ def store(database: Database) -> SqliteMetaStore:
 
 
 def test_store_covers_exactly_the_local_method_set() -> None:
-    """本机域方法集**恰好**是三块清单的并集：一个不多、一个不少。
+    """本机域方法集**恰好**是四块清单的并集：一个不多、一个不少。
 
-    另外两块**都不在** ``LOCAL_METHODS`` 里，它们单独登记：阶段 5 的八个导入台账方法
-    （``LOCAL_LEDGER_METHODS``：那两张表只有本机档有）与 M4 的六个快照方法
-    （``LOCAL_CACHE_METHODS``：``kb_meta_cache`` 同样是本机独有的一张表，理由写在那个
-    常量上）。所以这条断言的右边是**三块清单**——多一个方法就必须进其中之一，
-    而"哪些算本机域"这条纪律一个字没松。
+    另外三块**都不在** ``LOCAL_METHODS`` 里，它们单独登记：阶段 5 的八个导入台账方法
+    （``LOCAL_LEDGER_METHODS``：那两张表只有本机档有）、M4 的六个快照方法
+    （``LOCAL_CACHE_METHODS``：``kb_meta_cache`` 同样是本机独有的一张表）与 M5 阶段 2 的
+    两个打包 / 读回方法（``LOCAL_SNAPSHOT_METHODS``：服务器档的库就是它自己，没有"把自己
+    打成一份便携的包"这条动作，理由写在那两个常量上）。所以这条断言的右边是**四块清单**
+    ——多一个方法就必须进其中之一，而"哪些算本机域"这条纪律一个字没松。
     """
     public = {
         name
         for name, value in vars(SqliteMetaStore).items()
         if not name.startswith("_") and callable(value)
     }
-    assert public == set(LOCAL_METHODS) | set(LOCAL_LEDGER_METHODS) | set(LOCAL_CACHE_METHODS)
+    assert public == (
+        set(LOCAL_METHODS)
+        | set(LOCAL_LEDGER_METHODS)
+        | set(LOCAL_CACHE_METHODS)
+        | set(LOCAL_SNAPSHOT_METHODS)
+    )
     assert len(LOCAL_METHODS) == 81
     assert len(LOCAL_LEDGER_METHODS) == 8
     assert len(LOCAL_CACHE_METHODS) == 6
+    assert len(LOCAL_SNAPSHOT_METHODS) == 2
 
 
 def test_the_ledger_methods_are_not_on_the_meta_store_abc() -> None:
@@ -142,11 +152,30 @@ def test_the_cache_methods_are_outside_both_domains() -> None:
     它**不是本机域**（``LOCAL_METHODS`` 是"``MetaStore`` 里哪些归本机"的划分，而它不在
     ``MetaStore`` 上）；**也不是 KB 域**（KB 域的方法必须在 ``MetaStore`` 上存在，
     服务器档要有实现——而服务器档的 KB 元数据本来就是它自己的家当，没有"抄一份 NAS
-    快照"这条动作）。所以它单独登记在 ``LOCAL_CACHE_METHODS``，三块清单两两不相交。
+    快照"这条动作）。所以它单独登记在 ``LOCAL_CACHE_METHODS``，四块清单两两不相交。
     """
     assert not (set(LOCAL_CACHE_METHODS) & set(MetaStore.__abstractmethods__))
     assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_METHODS))
     assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_LEDGER_METHODS))
+    assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_SNAPSHOT_METHODS))
+
+
+def test_the_snapshot_methods_are_outside_both_domains() -> None:
+    """快照打包与读回（M5 阶段 2）与前三块同一条纪律：**两边都不属于**。
+
+    它**不是本机域**（那两个方法不在 ``MetaStore`` 上）；**也不是 KB 域**（它读写的全是
+    本机库那几张表：会话 / 产物 / 设置，与知识库没有关系）。所以它单独登记在
+    ``LOCAL_SNAPSHOT_METHODS``；四块清单两两不相交这条纪律由上面两条一起钉住。
+    """
+    assert not (set(LOCAL_SNAPSHOT_METHODS) & set(MetaStore.__abstractmethods__))
+    assert not (set(LOCAL_SNAPSHOT_METHODS) & set(LOCAL_METHODS))
+    assert not (set(LOCAL_SNAPSHOT_METHODS) & set(LOCAL_LEDGER_METHODS))
+
+
+def test_the_store_satisfies_the_snapshot_protocols(store: SqliteMetaStore) -> None:
+    """快照那两份协议（写面 / 读面）由**同一个** ``SqliteMetaStore`` 满足（M5 §3.5）。"""
+    assert isinstance(store, LocalSnapshotArchiver)
+    assert isinstance(store, SnapshotSource)
 
 
 def test_the_store_satisfies_the_import_ledger_protocol(store: SqliteMetaStore) -> None:
@@ -196,9 +225,9 @@ def test_local_protocols_do_not_touch_the_kb_domain() -> None:
     }
     assert not (kb_methods & LOCAL_METHODS)
     for prefix in ("document", "chunk", "wiki", "task", "trash", "image", "parse_result"):
-        assert not [
-            name for name in LOCAL_METHODS if name.startswith(prefix)
-        ], f"本机域混进了 {prefix}* 的方法"
+        assert not [name for name in LOCAL_METHODS if name.startswith(prefix)], (
+            f"本机域混进了 {prefix}* 的方法"
+        )
 
 
 # ------------------------------------------------------------------ 字段一致性（R10）
@@ -248,8 +277,7 @@ def test_record_fields_match_table_columns(
     with database.read() as conn:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     expected = {
-        f"{item.name}_ms" if item.name in DATETIME_FIELDS else item.name
-        for item in fields(record)
+        f"{item.name}_ms" if item.name in DATETIME_FIELDS else item.name for item in fields(record)
     } - record_only
     assert expected <= columns, f"{table} 少了这些列：{sorted(expected - columns)}"
     assert columns - table_only == expected, (
@@ -318,9 +346,7 @@ def test_list_query_uses_a_covering_index_without_a_temp_sort(database: Database
     """§6.2：列表查询的 ``EXPLAIN QUERY PLAN`` 不含 ``USE TEMP B-TREE FOR ORDER BY``。"""
     sql = LIST_CONVERSATIONS_SQL + LIST_CONVERSATIONS_ORDER
     with database.read() as conn:
-        plan = " | ".join(
-            str(row["detail"]) for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}")
-        )
+        plan = " | ".join(str(row["detail"]) for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}"))
     assert "idx_conversations_recent" in plan
     assert "TEMP B-TREE" not in plan.upper()
 
@@ -818,12 +844,8 @@ def test_arm_scheduled_task_can_claim_from_null(store: SqliteMetaStore) -> None:
 
 def test_list_scheduled_tasks_puts_finished_ones_last(store: SqliteMetaStore) -> None:
     store.create_scheduled_task(_task(id="s_done", next_run_at=None))
-    store.create_scheduled_task(
-        _task(id="s_soon", next_run_at=datetime(2026, 4, 1, tzinfo=UTC))
-    )
-    store.create_scheduled_task(
-        _task(id="s_later", next_run_at=datetime(2026, 5, 1, tzinfo=UTC))
-    )
+    store.create_scheduled_task(_task(id="s_soon", next_run_at=datetime(2026, 4, 1, tzinfo=UTC)))
+    store.create_scheduled_task(_task(id="s_later", next_run_at=datetime(2026, 5, 1, tzinfo=UTC)))
     assert [item.id for item in store.list_scheduled_tasks()] == ["s_soon", "s_later", "s_done"]
 
 

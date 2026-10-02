@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -67,6 +68,7 @@ __all__ = [
     "IMPORT_OUTCOMES",
     "IMPORT_STATES",
     "IMPORT_UNFINISHED_STATES",
+    "SNAPSHOT_EXCLUDED_SETTING_PREFIXES",
     "ApiKeyRecord",
     "ChunkRecord",
     "ConversationArtifactRecord",
@@ -83,6 +85,7 @@ __all__ = [
     "KbMetaCacheRecord",
     "KbMetaCacheStats",
     "KnowledgeBaseRecord",
+    "LocalSnapshotArchiver",
     "MetaStore",
     "NoteFolderRecord",
     "ObjectStore",
@@ -92,6 +95,13 @@ __all__ = [
     "SessionEventRecord",
     "SessionRecord",
     "ShareRecord",
+    "SnapshotArtifactRef",
+    "SnapshotConversationRef",
+    "SnapshotDbView",
+    "SnapshotDumpReport",
+    "SnapshotFormatError",
+    "SnapshotRedaction",
+    "SnapshotSource",
     "StorageError",
     "StoreBundle",
     "TaskRecord",
@@ -149,6 +159,26 @@ class StoreBundle:
 
     页面上"先画快照"那一层（``/local/kb-cache/*``）与 reader 面的缓存包装器都从
     它取数。**它严格可弃**（v0.3 §5.3）：删了只丢速度，不丢数据——真话永远在 NAS 上。
+    """
+
+    snapshot: LocalSnapshotArchiver | SnapshotSource | None = None
+    """本机档独有的**快照打包与读回**（M5 阶段 2）：服务器档恒为 ``None``。
+
+    **与 ``ledger`` / ``kb_cache`` 同一条纪律、同一套理由**（照那两段改写一遍，因为形状
+    一模一样）：快照这件事是**本机独有**的——服务器档的库就是它自己，没有"把自己打成
+    一份便携的包"这条动作，也不该有（NAS 侧那一半是**收包**：``api/v1/backup.py`` 的
+    七条端点，与这里的两份面是两回事）。所以它既不进 ``repositories.py`` 的 24 个域
+    （那里的每个方法都必须在 ``MetaStore`` 上存在），也不进 ``LOCAL_METHODS``（那是
+    "本机域 / KB 域"的划分：快照既不是本机域的读写，也不是 KB 域的东西）。它在
+    ``sqlite_impl.LOCAL_SNAPSHOT_METHODS`` 单独登记，装配点见
+    ``core/storage.py::_build_local_stores``（与 ``meta`` / ``ledger`` / ``kb_cache`` 是
+    **同一个**实例：写锁是进程内一把，那条纪律是对着 ``Database`` 说的）。
+
+    **两份面，同一个对象**：``LocalSnapshotArchiver`` 是写面（把在线备份 + 擦洗 + VACUUM
+    出来的副本交给打包器），``SnapshotSource`` 是读面（从一份快照库里读会话 / 产物 Key /
+    设置）。分开的理由不是"两个对象"，而是**两个调用方要的东西不同**：打包那一层只该
+    看见"给我一份擦洗干净的副本"，而阶段 5 的按点恢复只该看见"这份快照里有什么"。
+    两份面都由 ``SqliteMetaStore`` 满足（SQLite 方言只许住在 ``sqlite_impl/``）。
     """
 
     # ---- 按域切开的窄视图（v0.2，见 storage/repositories.py）----
@@ -325,6 +355,26 @@ class KnowledgeBaseUnavailable(StorageError):
 
     def __init__(self, message: str | None = None) -> None:
         super().__init__(message or self.message)
+
+
+class SnapshotFormatError(StorageError):
+    """快照**读不了**：格式不认识、版本比本机新、结构不完整。
+
+    **与 ``schema.py`` 那条"不降级"同一句话**（M5 §2.3 的兼容判据）：读到一份自己不认识的
+    快照，唯一诚实的动作是**当场拒绝**，不是"按旧结构猜着读"——猜错了的结果是往用户的
+    库里写进半截数据，而"读不了"只是恢复不了这一份。三种情况都走这里：
+
+    - ``format`` 不是 ``kylab-backup``（这不是我们的包）；
+    - ``format_version`` / ``schema_version`` 高于本机认识的上限（更省事的做法是
+      "只读我认识的那几列"，那正是猜）；
+    - 必备字段缺席或类型不对（一份半截的 manifest）。
+
+    **住在接口层**的理由与 ``KnowledgeBaseUnavailable`` 一模一样：抛出它的不止
+    ``sqlite_impl``（``read_snapshot_db`` 读快照库的 schema 版本时抛），还有
+    ``services/backup_snapshot.py`` 的 manifest 解析器——而 ``services/`` 只允许
+    import ``app.storage.base``（工程规范 §3.3 L2）。两处抛同一个类型，调用方才有
+    一句话可捕获。
+    """
 
 
 # --------------------------------------------------------------------- 对象存储的
@@ -2940,6 +2990,201 @@ class KbMetaCache(Protocol):
 
         不加"字节数从哪来"的判断：它就是把 ``payload`` 的 UTF-8 长度加起来——
         与 ``MAX_TOTAL_BYTES`` 同一把尺子，否则"报出来的数"与"淘汰时的数"会对不上。
+        """
+        ...
+
+
+# ---------------------------------------------------- 快照打包与读回（本机档独有）
+#
+# 第三块**只属于本机档**的存储契约（M5 阶段 2，方案 §2.3 / §3.5）。它住在这里的理由与
+# 导入台账、知识库快照一模一样：``services/`` 只许见 ``app.storage.base``（工程规范 §3.3
+# 的 L2），而"把本机库打成一份擦洗干净、可搬到别的机器的包"这件事**只有本机档有**
+# （服务器档的库就是它自己，没有"打包带走"这条动作；NAS 侧那一半是收包，见
+# ``api/v1/backup.py``）。登记点见 ``sqlite_impl.LOCAL_SNAPSHOT_METHODS`` 与
+# ``StoreBundle.snapshot``。
+#
+# **两份面分开**（形似 ``ImportLedger`` 与 ``KbMetaCache``，但那是两个对象、这里是同一个
+# 对象的两面）：写面 ``LocalSnapshotArchiver`` 给打包那一层用，它关心的只有一件事——
+# "给我一份擦洗过的副本"（在线备份 + 擦洗 + ``VACUUM`` 全在存储层，因为那些是 SQLite
+# 方言）；读面 ``SnapshotSource`` 给按点恢复那一层用，它关心的是"这份快照里有什么"。
+# 分成两份协议不是仪式：打包不该看得见"快照里有哪些会话"（它照单全收），
+# 恢复不该看得见"怎么造一份副本"。
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotRedaction:
+    """擦洗清单里的一条：**哪个表的哪一列 / 哪个键被清掉了，几行**（M5 §2.4）。
+
+    ``frozen`` 与 ``KbMetaCacheRecord`` 同一个理由：它是一份**已经发生过的动作**的记录，
+    改一个字段等于伪造一件没做过的事。形状就是 manifest 的 ``redacted`` 段那一条
+    （方案 §2.3），``as_payload()`` 是那一处唯一的拼装点——两处各拼一遍，字段名迟早会漂。
+
+    两种粒度用哪个字段表达，取决于擦洗动作本身：
+
+    - **列级**（``model_providers.api_key`` → ``''``、``mcp_servers.env,headers`` → ``'{}'``）：
+      行还在，值是空的，``column`` 写列名（两列一起清的那一条按方案写成 ``"env,headers"``）；
+    - **行级**（``app_settings`` 里的凭据键 → ``DELETE``）：整行没了，``key`` 写那一个键。
+    """
+
+    table: str
+    column: str = ""
+    key: str = ""
+    rows: int = 0
+
+    def as_payload(self) -> dict[str, Any]:
+        """manifest ``redacted`` 段里的一条（列级与行级两种形状，见类说明）。"""
+        if self.column:
+            return {"table": self.table, "column": self.column, "rows": self.rows}
+        return {"table": self.table, "key": self.key, "rows": self.rows}
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotDumpReport:
+    """一份**擦洗过的副本**的读数（``LocalSnapshotArchiver.dump_scrubbed_db`` 的返回）。
+
+    它是一次观察，不是一个可以被改的记录（``frozen``）：副本落盘之后，这份读数就是
+    "包里有什么、洗掉了什么"的唯一依据，manifest 那两个段直接由它来。
+
+    ``counts`` 是**库侧事实**（会话 / 消息 / 事件 / 笔记 / 工作区 / 定时任务 / 产物 /
+    设置的行数），键名与 manifest 的 ``counts`` 段对得上；``memory_files`` 不在里面——
+    记忆是文件不是库，由打包那一层扫目录补上。
+    """
+
+    path: Path
+    """副本落点（打包前那条"目录里只有 kylab.db"的断言查的就是它所在的目录）。"""
+    bytes: int
+    schema_version: int
+    """副本里的 ``schema_metadata.version``：manifest 的 ``schema_version`` 就是它。"""
+    counts: dict[str, int] = field(default_factory=dict)
+    redacted: tuple[SnapshotRedaction, ...] = ()
+    """洗掉了什么（**按表名排序，稳定**）：manifest 的 ``redacted`` 段原样用它。"""
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotConversationRef:
+    """快照里的一条会话（读面的**窄投影**，不是 ``ConversationRecord``）。
+
+    为什么另给一个类型而不是直接回 ``ConversationRecord``：这份东西来自**一份快照文件**，
+    不是本机库——它的每个字段都只保证"当时是这样"。真要把会话整条搬进本机库，
+    那是阶段 5 的 ``ConversationTransfer``（它走 ``ImportLedger`` 那条台账路径）。
+
+    ``updated_at_ms`` 给成毫秒整数而不是 ``datetime``：它的唯一用途是与导入台账的
+    ``source_updated_at_ms`` / ``local_updated_at_ms`` 比大小（M2 那三条覆盖规则），
+    同一把尺子比"更早/更晚"才不会有第二次换算。
+    """
+
+    id: str
+    title: str = ""
+    messages: int = 0
+    updated_at_ms: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotArtifactRef:
+    """快照里的一条产物记录（``conversation_artifacts`` 的窄投影）。
+
+    打包那一层要的三件事全在这里：``storage`` 决定走哪条"选择性"判据（位置判据 /
+    工作区判据），``location`` 指出字节在哪（对象 Key 或工作区里的绝对路径），
+    ``size_bytes`` 是库里记的大小（真实大小以磁盘为准，见打包那一层的额度判据）。
+
+    ``location`` 是**由调用方解释**的字符串（与 ``ConversationArtifactRecord.location``
+    同一口径）：存储层不知道工作区是什么，它只把这一列读出来。
+    """
+
+    id: str
+    conversation_id: str
+    name: str
+    format: str = ""
+    size_bytes: int = 0
+    storage: str = ARTIFACT_IN_OBJECTS
+    location: str = ""
+    workspace_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotDbView:
+    """一份快照库读出来的全集（``SnapshotSource.read_snapshot_db`` 的返回）。
+
+    四项就是读面能回答的全部问题（方案 §2.1 的内容物清单在库里的那一半）：
+
+    - ``counts``：库侧事实的行数（与 ``SnapshotDumpReport.counts`` 同一个形状）；
+    - ``conversations``：会话清单（阶段 5 的 dry-run 先据它报"会新建哪些"）；
+    - ``artifacts``：产物记录（``location`` 就是打包/还原用的 Key 或路径）；
+    - ``settings_keys``：设置有哪些键（**值不在这里**：恢复只补本机没有的键，
+      而且 ``SECRET_KEYS`` 与三个前缀的行已经被擦洗掉了——读得出来就说明它们没进包）。
+
+    **记忆不在这里**：它在 ``<data_dir>/memory/**`` 是文件，不是库里的行——
+    读它的是打包/恢复那一层扫目录，不该让存储层假装它也在库里。
+    """
+
+    schema_version: int
+    counts: dict[str, int] = field(default_factory=dict)
+    conversations: tuple[SnapshotConversationRef, ...] = ()
+    artifacts: tuple[SnapshotArtifactRef, ...] = ()
+    settings_keys: tuple[str, ...] = ()
+
+
+SNAPSHOT_EXCLUDED_SETTING_PREFIXES: tuple[str, ...] = ("provider.", "model.", "backup.")
+"""擦洗 ``app_settings`` 时**除了 ``SECRET_KEYS`` 还要整族排除**的键前缀（M5 §2.4）。
+
+这三族是"连上谁"与"怎么连"的键（提供者地址与钥匙、模型侧凭据、备份自己的开关），
+与 ``runtime_config.SECRET_KEYS`` 一起构成"凭据类设置"的判据。**为什么放在接口层**：
+它是**契约**而不是某一个实现的做法——阶段 6（钥匙串收编）要拿同一份前缀去判"库里还有
+哪些明文凭据没迁完"，如果那边自己再写一遍 ``"provider."``，两处就会各漂各的
+（那正是方案 §2.4 要求"引用常量本身、不手抄"的那类漂移）。
+
+判据的**另一半**（``SECRET_KEYS`` 本身）住在 ``services/runtime_config.py``：
+"哪些键是密钥"是设置那一层的事实，存储层不许在模块级反向依赖它——所以那一半由擦洗的
+调用点现取（见 ``sqlite_impl/backup_archive.py`` 的 ``_excluded_settings``）。
+"""
+
+
+@runtime_checkable
+class LocalSnapshotArchiver(Protocol):
+    """本机档独有的**写面**：造一份擦洗过的库副本（M5 §2.3 / §2.4）。
+
+    ``runtime_checkable`` 与 ``ImportLedger`` / ``KbMetaCache`` 同一个理由：结构化类型下
+    不继承也必须满足，否则这份协议只是文档——用例要能一句话核对"装上去的那个实现真的
+    满足它"。
+
+    **只有一个方法**：擦洗那三条（``secure_delete`` → 白名单外清列删行 → ``VACUUM``）
+    与"在线备份"必须一起发生、且必须发生在**副本**上——把它们拆成几个可单独调用的方法，
+    就等于允许调用方"先备份、忘了擦洗"。所以这里给的是一个整体的动作，不是零件。
+    """
+
+    def dump_scrubbed_db(self, dest: Path) -> SnapshotDumpReport:
+        """把本机库**在线备份**到 ``dest``，在副本上擦洗掉秘密，``VACUUM`` 之后回收读数。
+
+        四条口径（方案 §2.4，一条都不能省）：
+
+        1. 用 ``sqlite3.Connection.backup()``（在线备份 API）：WAL 下安全，**复制期间
+           不停边车**，拷出来的是一致的快照；
+        2. 擦洗只动副本，**源库一个字节不动**；
+        3. 先 ``PRAGMA secure_delete = ON`` 再删/清，最后 ``VACUUM``——SQLite 的
+           UPDATE/DELETE 不覆盖旧页内容，只做前两步的话明文会留在空闲页里，
+           而"包解开后 grep 哨兵串 0 命中"正是这一步的判据；
+        4. 副本是**单文件、不带 ``-wal``**：它可能落在只读介质上（阶段 5 会只读打开它）。
+        """
+        ...
+
+
+@runtime_checkable
+class SnapshotSource(Protocol):
+    """本机档独有的**读面**：从一份快照库里读出"包里有什么"（M5 §3.4 的恢复输入）。
+
+    同样只有一个方法：读面的每一项都在同一份快照上，分几次读只会多几个可能对不上的
+    瞬间（会话与产物是同一个库里的两张表）。
+    """
+
+    def read_snapshot_db(self, db_path: Path) -> SnapshotDbView:
+        """读一份快照库（``<解包目录>/db/kylab.db``）。
+
+        **只读打开**（``mode=ro``）：快照是只读的观察对象，读它不该产生 ``-journal`` /
+        ``-wal``，也不该给"顺手改一下"留下任何可能。
+
+        版本不认识就抛 ``SnapshotFormatError``（``schema_version`` 高于本机识别的上限
+        → 拒绝，照 ``schema.py`` 那条"不降级"的纪律）：更省事的做法是"只读我认识的那几列"，
+        那正是"猜着读"。
         """
         ...
 

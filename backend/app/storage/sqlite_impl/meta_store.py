@@ -38,6 +38,7 @@ import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from app.core.exceptions import ConflictError
@@ -62,9 +63,12 @@ from app.storage.base import (
     RegisteredModelRecord,
     ScheduledTaskRecord,
     SessionEventRecord,
+    SnapshotDbView,
+    SnapshotDumpReport,
     UsageEventRecord,
     WorkspaceRecord,
 )
+from app.storage.sqlite_impl import backup_archive
 from app.storage.sqlite_impl.connection import Database
 
 logger = logging.getLogger(__name__)
@@ -2219,3 +2223,35 @@ class SqliteMetaStore:
         ).fetchone()
         if int(total["n"]) > MAX_TOTAL_BYTES:
             conn.execute(EVICT_OVER_BUDGET_SQL, (MAX_TOTAL_BYTES,))
+
+    # ------------------------------------------------------------------ 快照打包与读回（M5）
+    #
+    # 第三块**本机独有**的能力（前两块是导入台账与知识库快照）：把本机库打成一份
+    # 擦洗干净的包、以及从一份快照库里读回"包里有什么"。它不在 ``LOCAL_METHODS`` 里
+    # （那是"``MetaStore`` 的哪些方法归本机"的划分），而是在
+    # ``sqlite_impl.LOCAL_SNAPSHOT_METHODS`` 单独登记——接口契约见 ``app/storage/base.py``
+    # 的 ``LocalSnapshotArchiver`` / ``SnapshotSource``（本模块不继承它们：那两份协议是给
+    # 组合根与用例做结构核对的）。
+    #
+    # **方法体只有一行**：真身全在 ``backup_archive.py``（在线备份、``PRAGMA secure_delete``、
+    # ``VACUUM``、快照库的那几条 SELECT 都是 SQLite 方言，只许住那个文件）。这里留一层
+    # 薄转发的理由是"同一个实例"——组合根把 ``StoreBundle.snapshot`` 指向 ``meta`` /
+    # ``ledger`` / ``kb_cache`` 用的那个对象（写锁是进程内一把，那条纪律是对着 ``Database``
+    # 说的），而调用方（服务层）只许见 ``base.py`` 的协议，不许见 ``backup_archive``。
+
+    def dump_scrubbed_db(self, dest: Path) -> SnapshotDumpReport:
+        """把本机库**在线备份 + 擦洗 + ``VACUUM``** 到 ``dest``（源库一个字节不动）。
+
+        四条口径（先备份、只动副本、``secure_delete`` 之后才删、``VACUUM`` 收尾）写在
+        ``LocalSnapshotArchiver.dump_scrubbed_db`` 那份契约上，实现与判据用例在
+        ``sqlite_impl/backup_archive.py``。
+        """
+        return backup_archive.dump_scrubbed_db(self._db, dest)
+
+    def read_snapshot_db(self, db_path: Path) -> SnapshotDbView:
+        """读一份**快照库**（不是本机库）：会话 / 产物 Key / 设置键 / 计数。
+
+        参数是路径而不是"当前库"：阶段 5 的按点恢复读的是解包出来的 staging 目录里那一份，
+        所以这个方法只借这条转发路径，不碰 ``self._db``。
+        """
+        return backup_archive.read_snapshot_db(db_path)

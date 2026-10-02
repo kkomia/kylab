@@ -170,6 +170,9 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
     是本机独有的，服务器档恒为 ``None``（那条纪律与理由写在 ``base.StoreBundle.ledger``）。
     **第七个字段 ``kb_cache``**（M4 阶段 1）同一条口径：知识库元数据快照（``kb_meta_cache``）
     也只有本机有，服务器档恒为 ``None``（理由写在 ``base.StoreBundle.kb_cache``）。
+    **第八个字段 ``snapshot``**（M5 阶段 2）还是同一条口径：快照打包与读回只有本机有
+    （服务器档的库就是它自己，没有"把自己打成一份便携的包"这条动作），服务器档恒为
+    ``None``（理由写在 ``base.StoreBundle.snapshot``）。
     """
     from app.storage.local_impl.object_store import LocalObjectStore
     from app.storage.split_impl import (
@@ -195,11 +198,11 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
     for subdir in STORAGE_SUBDIRS:
         (data_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    # **同一个实例三处用**（阶段 5 起两处，M4 再添一处）：``meta`` 走它做本机域读写，
-    # ``ledger`` 走它做导入台账与"一条会话整体写入"，``kb_cache`` 走它做知识库元数据
-    # 快照。三个 SqliteMetaStore 指向同一个库文件也能跑，但那会造出三条连接集合与
-    # 三个对象——而"写锁是进程内一把"这条纪律是对着 `Database` 说的，不是对着仓储对象
-    # 说的。同一个实例没有这个问题。
+    # **同一个实例四处用**（阶段 5 起两处，M4 再添一处，M5 再添一处）：``meta`` 走它做本机域
+    # 读写，``ledger`` 走它做导入台账与"一条会话整体写入"，``kb_cache`` 走它做知识库元数据
+    # 快照，``snapshot`` 走它做快照打包与读回。四个 SqliteMetaStore 指向同一个库文件也能跑，
+    # 但那会造出四条连接集合与四个对象——而"写锁是进程内一把"这条纪律是对着 `Database` 说的，
+    # 不是对着仓储对象说的。同一个实例没有这个问题。
     local_store = SqliteMetaStore(database)
 
     return StoreBundle(
@@ -218,6 +221,9 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
         # 知识库元数据快照同理（M4 §3.3）：缓存层服务 KB 域的读路径，但数据主人是本机，
         # 写者只有本机后端一个（M4 §2.3）。服务器档不缓存 KB 元数据——那是它自己的家当。
         kb_cache=local_store,
+        # 快照打包与读回同理（M5 §2.3 / §2.4）：本机库里的明文凭据要靠它擦掉，
+        # 服务器档没有这条动作（NAS 侧那一半是收包，见 api/v1/backup.py）。
+        snapshot=local_store,
     )
 
 

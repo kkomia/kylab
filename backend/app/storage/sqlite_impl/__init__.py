@@ -13,7 +13,7 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
 - ``validate.py``     运维自检入口：``python -m app.storage.sqlite_impl.validate``
                       （表/索引计数之外还报出快照表的行数与字节数）
 
-**本机域的清单都在这一个模块里**（都不许手抄，见下面三个常量）：
+**本机域的清单都在这一个模块里**（都不许手抄，见下面四个常量）：
 
 - ``LOCAL_METHODS`` —— ``MetaStore`` 的哪些方法归本机（阶段 2 的路由表按它算补集）；
 - ``LOCAL_LEDGER_METHODS`` —— ``imports`` / ``import_items`` 那族方法。它们**不在**
@@ -21,7 +21,10 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
   单独登记并把理由写在那儿；
 - ``LOCAL_CACHE_METHODS`` —— 知识库元数据快照那六个方法（M4）。同样**不在**
   ``MetaStore`` 上，同样单独登记；它多出来的一句是"为什么它既不属于本机域也不属于
-  KB 域"。
+  KB 域"；
+- ``LOCAL_SNAPSHOT_METHODS`` —— 快照打包与读回那两个方法（M5 阶段 2）。第三块
+  "本机独有"（服务器档的库就是它自己，没有"把自己打成一份包"这条动作），
+  理由同样写在常量上。
 
 **只实现本机域，不实现 ``MetaStore`` 全量 ABC**：本机档里知识库那半没有数据源
 （NAS 才是），所以 ``SqliteMetaStore`` 不继承 ``MetaStore``，也不该被当成一个完整的
@@ -52,6 +55,7 @@ __all__ = [
     "LOCAL_LEDGER_METHODS",
     "LOCAL_METHODS",
     "LOCAL_PROTOCOLS",
+    "LOCAL_SNAPSHOT_METHODS",
     "local_methods",
 ]
 
@@ -133,6 +137,30 @@ LOCAL_CACHE_METHODS: frozenset[str] = frozenset(
         "drop_kb_meta_cache",
         "purge_kb_meta_cache",
         "kb_meta_cache_stats",
+    }
+)
+
+#: **快照打包与读回**（M5 阶段 2）：本机库 → 擦洗过的副本 → 便携的包，以及反向读回。
+#:
+#: **为什么它是第三块"本机独有"**（前两块是导入台账、知识库快照）：
+#:
+#: - **不进 ``LOCAL_METHODS``**：那是"``MetaStore`` 的哪些方法归本机"的划分，而这两个
+#:   方法**不在 ``MetaStore`` 上**——服务器档的库就是它自己，没有"把自己打成一份便携的包"
+#:   这条动作（NAS 侧那一半是**收包**：``api/v1/backup.py`` 的七条端点，与本模块无关）；
+#: - **也不是 KB 域**：它读写的全是本机库那几张表（会话 / 产物 / 设置），与知识库没有关系。
+#:
+#: 所以它与前两块同一套登记手法：单独一块清单 + 单独一个 ``StoreBundle`` 字段 ``snapshot``
+#: + 用**同一个** ``SqliteMetaStore`` 实例。接口契约见 ``app/storage/base.py`` 的
+#: ``LocalSnapshotArchiver``（写面）与 ``SnapshotSource``（读面）。
+#:
+#: 谁用它们：``services/backup_snapshot.py``（打包，唯一的写面调用方）与阶段 5 的按点恢复
+#: （读面）；两者都经 ``StoreBundle.snapshot`` 拿到（服务器档那个字段恒为 ``None``）。
+LOCAL_SNAPSHOT_METHODS: frozenset[str] = frozenset(
+    {
+        # 写面：在线备份 + 擦洗 + VACUUM + 读数（源库一个字节不动）
+        "dump_scrubbed_db",
+        # 读面：从一份快照库里读会话 / 产物 Key / 设置键 / 计数
+        "read_snapshot_db",
     }
 )
 
