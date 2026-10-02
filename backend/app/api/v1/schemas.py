@@ -3052,3 +3052,211 @@ class ProviderHandshakeOut(BaseModel):
     """**这次调用看得见**的库（受限 key 只看到范围内的：方案 R9 要防的元信息泄露）。"""
     server_time: datetime
     """服务端当前时间（UTC，带时区）。界面据此显示"上次确认是什么时候"。"""
+
+
+# ------------------------------------------------- 备份提供者（M5 阶段 1 握手）
+#
+# 与上面那族同一份写法、同一个 `_PROVIDER_CONFIG`：两个提供者的握手结构是平行的
+# （provider / protocol_version / capabilities / caller / server_time），差别只在
+# 能力集的内容与"带回来的那一批东西"（库清单 ↔ 设备与额度）。
+# **协议版本各是一个整数**：备份那边不认识知识库的 1，反过来也一样。
+
+
+class BackupSnapshotCapsOut(BaseModel):
+    """快照这一族能不能用、怎么用（``/backup/snapshots/*`` 那五条）。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    available: bool = True
+    """**现在能不能写快照**：为假时通常是"备份桶还没建出来"或对象存储连不上。
+
+    它是握手唯一会随环境变的能力位。为假时**握手仍然是 200**——客户端据此把页面切成
+    "这里还没准备好 + 下一步做什么"，而不是显示成服务器坏了（方案 R5）。
+    """
+    unavailable_reason: str = ""
+    """``available`` 为假时那句**可执行的下一步**（为真时是空串）。"""
+    transport: str = "octet-stream"
+    """快照体怎么发：``octet-stream`` = 裸字节流 ``PUT``（不是 multipart 表单）。"""
+    format: str = "tar.gz"
+    """打包格式。"""
+    manifest: str = "json"
+    """清单格式。"""
+    checksum: str = "sha256"
+    """校验算法：整份快照体的 sha256，服务端**边收边算**。"""
+    max_blob_bytes: int = 0
+    """单份快照体的上限（字节）。超了是 ``413``，且不落桶——客户端据此在打包时就分档。"""
+    max_snapshots_per_device: int = 0
+    """每台设备最多留几份（保留份数）。与 ``retention.keep`` **同一个数**。"""
+    encryption: str = "none"
+    """加密口径（自描述字段，当前恒为 ``none``）。"""
+
+
+class BackupRestoreCapsOut(BaseModel):
+    """恢复这一族：这份存储**够不够按点恢复**。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    point_in_time: bool = False
+    """能不能按时间点挑一份恢复点（就是"列恢复点 + 取清单"这两件事）。"""
+    manifest_listing: bool = False
+    """恢复点清单里有没有清单（计数 / 被跳过项 / schema 版本都在里面，恢复前能先看）。"""
+    download: bool = False
+    """快照体能不能下载。"""
+    partial_restore: bool = False
+    """一份快照够不够"只恢复一部分"（清单逐条列了内容物，成员也逐个可取）。"""
+
+
+class BackupQuotaOut(BaseModel):
+    """额度那一段：**配了多少、用了多少**（方案 §1.4：握手一次给全，不另开端点）。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    policy: str = "keep_n"
+    """保留策略：留最近 N 份。服务端**不替用户删**（超限报 409）——所以这里只有策略名。"""
+    keep: int = 0
+    """每台设备的保留份数上限。"""
+    quota_bytes: int = 0
+    """这一整批设备的字节上限（``KYLAB_BACKUP_QUOTA_BYTES``）。"""
+    used_bytes: int = 0
+    """已经用了多少字节。桶不可用时是 ``0``——**那不是"零"，是数不出来**，
+    以 ``capabilities.snapshot.available`` 为准。"""
+    snapshots: int = 0
+    """已经有多少份恢复点（同上：桶不可用时数不出来）。"""
+
+
+class BackupCapabilitiesOut(BaseModel):
+    """备份提供者的能力集（方案 §1.3 契约）。
+
+    每一项都回答"这台提供者**现在**能不能做这件事"——与知识库那族同一条口径：
+    不认识的字段忽略、不认识的能力位就不摆，所以新增能力位是向后兼容的。
+    """
+
+    model_config = _PROVIDER_CONFIG
+
+    snapshot: BackupSnapshotCapsOut
+    restore: BackupRestoreCapsOut
+    retention: BackupQuotaOut
+
+
+class BackupDeviceBriefOut(BaseModel):
+    """握手里的一台设备：**几份、多大、最近一份是什么时候**。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    device_id: str
+    """设备 id（壳的 ``config.json.device_id``，UUID v4）。"""
+    device_name: str = ""
+    """设备名（清单里自报的那个，只给人看，不参与判等——与工作区那个设备头同一条口径）。"""
+    snapshots: int = 0
+    """这台设备有几份**完整**的恢复点。"""
+    bytes: int = 0
+    """这台的恢复点一共占了多少字节（快照体之和）。"""
+    latest_snapshot_id: str = ""
+    """最近那一份的 ``snapshot_id``（恢复点目录名；配 ``device_id`` 用）。"""
+    latest_at: datetime | None = None
+    """最近那一份的时间（清单里的 ``created_at``，取不到时退到对象时间）。"""
+
+
+class BackupSnapshotOut(BaseModel):
+    """一个恢复点（``GET /backup/snapshots`` 的一行）。
+
+    这几位的取值来自**清单**（客户端写的那份自描述文件）：服务端只做形状上的归一
+    （不认识的类型给默认值），不做业务解释——所以新增清单字段不需要改这里。
+    """
+
+    model_config = _PROVIDER_CONFIG
+
+    snapshot_id: str
+    """恢复点目录名（``<snapshot_ts>-<hash8>``）。配 ``device_id`` 唯一确定一份。"""
+    device_id: str
+    """哪台设备的。"""
+    device_name: str = ""
+    """设备名（只给人看）。"""
+    created_at: datetime
+    """这份快照的时间（UTC，带时区）。"""
+    bytes: int = 0
+    """快照体在桶里的**真实字节数**（不是清单自报的那个）。"""
+    sha256: str = ""
+    """快照体的 sha256（清单里那份；清单没写就是空串）。"""
+    kind: str = ""
+    """怎么来的：``manual`` / ``auto`` / ``pre_restore``。"""
+    schema_version: int = 0
+    """快照里那份本机库的 schema 版本（恢复前据此判"能不能读"）。"""
+    app_version: str = ""
+    """打这份快照时的应用版本。"""
+    counts: dict[str, int] = Field(default_factory=dict)
+    """内容物计数（会话 / 消息 / 事件 / 笔记 / 产物…），清单里报什么就是什么。"""
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+    """**没进包的内容物，逐条如实列**（名称 / 大小 / 原因）。
+
+    服务端原样透传（不裁剪字段）：界面与恢复报告都要照着它说清"哪些没备"。
+    """
+    encryption: str = "none"
+    """加密口径（自描述字段）。"""
+
+
+class BackupSnapshotListOut(BaseModel):
+    """``GET /backup/snapshots`` 的响应（规范 §1.5 的分页）。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    items: list[BackupSnapshotOut] = Field(default_factory=list)
+    """这一页的恢复点（**最近在前**）。"""
+    total: int = 0
+    """符合过滤条件的总数（不是这一页的条数）。"""
+    quota: BackupQuotaOut
+    """额度：**与设备过滤无关**，永远是这把钥匙看得见的全局用量。"""
+
+
+class BackupUploadOut(BaseModel):
+    """一次上传的结果（blob 与 manifest 同一个形状）。
+
+    ``bytes`` / ``sha256`` 都是**落桶之后从对象存储读回来的事实**（不是请求里自报的那个）
+    ——重试的客户端据此确认"桶里那一份和我手里这一份是不是同一份"。
+    """
+
+    model_config = _PROVIDER_CONFIG
+
+    snapshot_id: str
+    """哪一份恢复点（``device_id`` 在路径里，所以这里只回它）。"""
+    bytes: int = 0
+    """落桶之后的字节数。"""
+    sha256: str = ""
+    """落桶之后对象元数据里的 sha256。"""
+
+
+class BackupHandshakeOut(BaseModel):
+    """备份提供者握手（方案 §1.3）。
+
+    与知识库握手同一个形状（``provider`` / ``protocol_version`` / ``capabilities`` /
+    ``caller`` / ``server_time``），把"库清单"换成"设备摘要 + 额度"：
+
+    - ``devices``：**这次调用看得见**的全部设备。备份**不建 ACL**——可见范围就是这把钥匙
+      能看见的全部设备（方案 §1.5 的边界，登记为"将来要按设备限权"的一条）；
+    - ``retention`` 在 ``capabilities`` 里（与知识库把"库清单"放顶层不同）：额度是
+      "这台提供者怎么记账"的一部分，跟着能力集走更顺。
+
+    响应体里同样**没有"凭据怎么了"**：401 / 403 走 HTTP 状态码与统一错误信封。
+    """
+
+    model_config = _PROVIDER_CONFIG
+
+    provider: str
+    """提供者种类，固定 ``backup``。"""
+    protocol_version: int
+    """**握手协议版本**：整数、只增，备份这边当前是 ``1``。
+
+    与知识库那个 ``1`` 是两件事：两个提供者各自演进，客户端**分开判**。
+    """
+    app_version: str
+    """服务端应用版本（给人看、排查用）。"""
+    api_version: str
+    """HTTP 路径版本（固定 ``v1``）。"""
+    capabilities: BackupCapabilitiesOut
+    caller: ProviderCallerOut
+    """这次调用在提供者看来是谁（**与知识库握手同一份形状**，所以客户端可以共用一份解析）。
+    """
+    devices: list[BackupDeviceBriefOut] = Field(default_factory=list)
+    """**这次调用看得见**的设备摘要（含各自的份数、字节与最近一份）。"""
+    server_time: datetime
+    """服务端当前时间（UTC，带时区）。"""

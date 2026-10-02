@@ -70,6 +70,11 @@ services:
       KYLAB_S3_REGION: ${KYLAB_S3_REGION:-us-east-1}
       # 容器内网互通走 http
       KYLAB_S3_SECURE: "false"
+      # 备份快照桶（M5 阶段 1）：**与知识库那个桶分开**，同一个 MinIO、同一对凭据。
+      # 这台机器上的桶是 1Panel 那份 MinIO 里的，**不在这份 compose 里建**——
+      # 建桶的命令见同目录 README 的「备份桶」一节。缺桶不会阻塞启动：
+      # 后端"启动不校验桶"，握手会如实报不可用 + 下一步；第一次上传时顺手补建。
+      KYLAB_BACKUP_BUCKET: ${KYLAB_BACKUP_BUCKET:-kylab-backup}
       # ---- 应用 ----
       # 内嵌消费线程：**必须开着**，否则上传的文档只会排队
       KYLAB_RUN_WORKER: "true"

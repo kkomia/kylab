@@ -51,6 +51,21 @@ class InvalidRequestError(KylabError):
     message = "请求参数不合法"
 
 
+class BadRequestError(InvalidRequestError):
+    """请求本身就不对（**400 那一档**，M5 阶段 1 加的）。
+
+    与父类只差状态码，``code`` 仍是 ``invalid_request``（《API 接口规范》§1.3 那两档
+    本来就是同一个码的两种状态：422 是"字段校验没过"，400 是"请求形状对、内容与事实对不上"）。
+    用它的是备份上传那两条：**sha256 / bytes 与实收不符**（服务端边收边算，对不上就拒收）、
+    以及路径段与清单归属那类"这个请求描述的东西本身不成立"。
+
+    为什么非要 400 而不是 422：422 的语义是"把字段改对再来"，而这两种情况调用方把字段
+    改对也没用——它得**重新打包、重新算哈希**（或换一条路径），那是一步不同的动作。
+    """
+
+    http_status = status.HTTP_400_BAD_REQUEST
+
+
 class UnsupportedContentError(KylabError):
     """请求的东西现在拿不到（还没解析完、格式不支持）。
 

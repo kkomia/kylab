@@ -260,12 +260,45 @@ KYLAB_S3_BUCKET=kylab
 **为什么不把这些写进仓库**：仓库里那份 `deploy/docker-compose.yml` 用的是占位默认值
 （`kylab-dev-secret` 之类），真实凭据只活在这台机器的 `.env` 里。`.env` 不要提交。
 
+## 备份桶（M5 阶段 1；2026-10-02 亲核过这台 NAS）
+
+备份提供者的快照落在**另一个桶**里（默认 `kylab-backup`，与知识库那个 `kylab` 分开：
+一个是索引的原件、一个是用户会按恢复点整份删的整机快照，生命周期完全不同）。
+那个桶**不在这份 compose 里建**——MinIO 是 1Panel 装的那个容器（`kylab-minio`）。
+
+**`mc` 从哪跑**（2026-10-02 实测的三条事实）：这台 NAS 的**宿主上没有 `mc`**
+（`command -v mc` 空），本地也没有 `minio/mc` 镜像；**但 `kylab-minio` 容器里自带**
+（`/usr/bin/mc`，RELEASE.2025-08-13，根 compose 的 healthcheck 用的就是它）。
+所以最短的一条路是**进那个容器跑**——凭据取容器自己的环境变量，不经过你的 shell 历史，
+也不用拉任何镜像：
+
+```bash
+# 在 NAS 上：一行（幂等，重复跑不报错；只建桶，不碰任何已有对象）
+docker exec kylab-minio sh -c \
+  'mc alias set kylab http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null &&
+   mc mb --ignore-existing kylab/kylab-backup'
+# 核对：应该列出 kylab 与 kylab-backup 两个桶
+docker exec kylab-minio sh -c 'mc ls kylab'
+```
+
+想换个桶名就**两处一起改**：`app/.env` 里加 `KYLAB_BACKUP_BUCKET=你的桶名`
+（compose 已经把它透传进后端），再把上面那条 `mc mb` 的最后一段换成同一个名字。
+
+**没有建桶也能先把应用起起来**：后端"**启动不校验桶**"，缺桶时备份握手仍然 200，
+只是如实报 `capabilities.snapshot.available=false` + 一句可执行的下一步；
+第一次真的上传时它还会顺手补建（要有 `s3:CreateBucket` 权限）。所以建桶是一步
+**有意识的部署动作**，不是启动的前提。
+
+（1Panel 面板里那份 MinIO 的控制台是 `http://<NAS>:9001`，也可以直接在它的
+「Buckets → Create Bucket」里建——两条路等价，用哪条都行。）
+
 ## 持久化
 
 | 数据 | 落在哪 | 备份方式 |
 | --- | --- | --- |
 | 元数据 / 向量 / 全文 | `kylab-postgres` 的 `/vol1/1000/docker/kylab/pgdata` | **`pg_dump`**，不要直接拷运行中的 data 目录 |
 | 原件 / Markdown / 图片 | `kylab-minio` 的 `/vol1/1000/docker/1panel/data/1panel/apps/minio/minio/data` | 拷目录即可（对象是只写不改的） |
+| 备份快照（M5；桶名默认 `kylab-backup`） | 同上——同一个 MinIO 数据目录里的另一个桶 | 同上 |
 | 表格副本（DuckDB）、日志 | `/vol1/1000/docker/kylab/data`（bind mount） | 拷目录，或整卷备份 |
 
 容器重建、`docker compose down` 都不会动这三处。

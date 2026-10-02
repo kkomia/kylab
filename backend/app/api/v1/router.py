@@ -18,6 +18,7 @@ from app.api.v1 import (
     api_keys,
     auth,
     avatars,
+    backup,
     chat,
     chunks,
     conversations,
@@ -66,6 +67,9 @@ api_router.include_router(search.router)
 # 本机档是客户端角色，所以它在下面那张白名单里是**故意不挂**的
 # （见 `api/v1/provider.py` 的模块头）
 api_router.include_router(provider.router)
+# 备份提供者（M5 阶段 1）：同样**服务器档专属**——NAS 侧持 S3 凭据收快照（路 B），
+# 本机档是客户端角色（它调 `/backup/*`，不提供它们），见 `api/v1/backup.py` 的模块头
+api_router.include_router(backup.router)
 api_router.include_router(chat.router)
 api_router.include_router(settings.router)
 api_router.include_router(stats.router)
@@ -154,3 +158,7 @@ local_router.include_router(local.chat_reads)
 # 客户端这一侧要看状态、改地址走的是本机自己的那条：`/local/provider`（M3 阶段 5，
 # 在上面那个 `local.router` 上）。
 # 在服务端 `api_router` 上则是一条正常端点（见上面那行 include）。
+#
+# `backup`（M5 阶段 1）同理：**备份提供者也是那台 NAS**（路 B：S3 凭据只活在服务端，
+# 客户端手里还是那把 API Key）。本机侧是客户端，走 `/local/backup*`（M5 阶段 4 在上面的
+# `local.router` 上）。把这一族挂进本机档只会得到一堆"本机自己跟自己说话"的端点。

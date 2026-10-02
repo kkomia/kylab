@@ -658,6 +658,147 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/backup/handshake": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 备份提供者握手（连通性 + 能力集 + 设备与额度）
+         * @description 一次调用回答：**凭据有效吗、这台提供者能做什么、有哪些设备的恢复点、额度用了多少**。
+         *
+         *     鉴权在它前面（``require_read``）：没有凭据是 401、凭据无效是 401、凭据有效但越权是 403
+         *     ——**都不是这个响应体的一部分**（与知识库握手同一条口径：一次握手能回来，就说明
+         *     连通与凭据都已经过了）。
+         *
+         *     **桶不可用时它仍然是 200**（方案 R5）：``capabilities.snapshot.available=false``
+         *     + 一句可执行的下一步，而不是让客户端把"NAS 还没建桶"当成"服务器坏了"。
+         */
+        get: operations["handshake_api_v1_backup_handshake_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列恢复点（最近在前，可按设备过滤）
+         * @description 恢复点清单（规范 §1.5 的分页：``limit`` + ``offset`` + ``total``）。
+         *
+         *     **只列"完整"的恢复点**：有清单、有快照体、清单读得出来（方案 §1.2 规矩 3）——
+         *     上传中断留下的孤儿 blob 不在里面（它留着不删，append-only，但谁也恢复不了它）。
+         */
+        get: operations["list_snapshots_api_v1_backup_snapshots_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/snapshots/{device_id}/{snapshot_id}/blob": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 流式下载一份快照体
+         * @description 流式下载快照体（**不整份进内存**）。
+         *
+         *     响应头里给两样东西：``Content-Length``（进度条用）与 ``X-Kylab-Sha256``（**下载方据此
+         *     校验**——恢复流程要求"下载 → 校验 sha256（不符即中止，绝不落位）"，而不校验 sha256
+         *     就落位，等于把一次网络抖动变成一份坏快照）。
+         */
+        get: operations["get_snapshot_blob_api_v1_backup_snapshots__device_id___snapshot_id__blob_get"];
+        /**
+         * 上传一份快照体（append-only：路径即幂等键）
+         * @description 接收一整份快照体（``Content-Type: application/octet-stream``）。
+         *
+         *     顺序是这条端点的要害：**先收完、验完，再落桶**。所以
+         *     "sha256 / bytes 与实收不符 → 400"这条判据才成立（那一刻桶里还是干净的），
+         *     "超 2 GiB → 413"也是同一条道理。
+         *
+         *     只读 key 在 ``require_write`` 就被挡住了（403），根本走不到这里。
+         */
+        put: operations["put_snapshot_blob_api_v1_backup_snapshots__device_id___snapshot_id__blob_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/snapshots/{device_id}/{snapshot_id}/manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 上传清单（完成标记：这一份传完了）
+         * @description 接收这一个恢复点的清单（``manifest.json``，≤1 MiB）。
+         *
+         *     **它是完成标记**，所以有两条额外的硬规矩：快照体必须已经在桶里（否则 409），
+         *     以及清单里的 ``device_id`` / ``snapshot_id`` 必须对得上这条路径（否则 400）——
+         *     一份"描述别的设备"的清单落在这条路径上，恢复时会把两边的账搅在一起。
+         */
+        put: operations["put_snapshot_manifest_api_v1_backup_snapshots__device_id___snapshot_id__manifest_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/snapshots/{device_id}/{snapshot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 取一份恢复点的清单（manifest.json 原样）
+         * @description 取清单。**原样回**（不做字段裁剪、不做类型收紧）。
+         *
+         *     服务端**不解释**清单的业务字段：它是客户端写、客户端读的那份自描述文件
+         *     （方案 §2.3）。用响应模型收一遍字段看着"更类型化"，代价是把不认识的新字段
+         *     悄悄删掉——那是"不猜着读"的反面，也是数据丢失。
+         */
+        get: operations["get_snapshot_manifest_api_v1_backup_snapshots__device_id___snapshot_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * 删掉一个恢复点（整份：快照体 + 清单）
+         * @description 删掉一个恢复点 —— **删除的粒度就是它**（方案 §1.2 规矩 2：没有"删某个对象"的入口）。
+         *
+         *     两个对象一起走，所以删除永远是一次显式动作、不会留下半个恢复点。返回 ``removed``
+         *     是**实际删掉的对象数**（正常是 2；若上一次上传只留下了孤儿 blob，这里会是 1——
+         *     那条路也是清掉半截上传的唯一入口）。什么都没删到就是 404：让它像"成了"对调用方
+         *     没有好处（想删的那一份不在这儿，值得知道）。
+         */
+        delete: operations["delete_snapshot_api_v1_backup_snapshots__device_id___snapshot_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat/stream": {
         parameters: {
             query?: never;
@@ -3719,6 +3860,368 @@ export interface components {
             models: components["schemas"]["AvailableModelOut"][];
             /** Count */
             count: number;
+        };
+        /**
+         * BackupCapabilitiesOut
+         * @description 备份提供者的能力集（方案 §1.3 契约）。
+         *
+         *     每一项都回答"这台提供者**现在**能不能做这件事"——与知识库那族同一条口径：
+         *     不认识的字段忽略、不认识的能力位就不摆，所以新增能力位是向后兼容的。
+         */
+        BackupCapabilitiesOut: {
+            snapshot: components["schemas"]["BackupSnapshotCapsOut"];
+            restore: components["schemas"]["BackupRestoreCapsOut"];
+            retention: components["schemas"]["BackupQuotaOut"];
+        };
+        /**
+         * BackupDeviceBriefOut
+         * @description 握手里的一台设备：**几份、多大、最近一份是什么时候**。
+         */
+        BackupDeviceBriefOut: {
+            /**
+             * Device Id
+             * @description 设备 id（壳的 ``config.json.device_id``，UUID v4）。
+             */
+            device_id: string;
+            /**
+             * Device Name
+             * @description 设备名（清单里自报的那个，只给人看，不参与判等——与工作区那个设备头同一条口径）。
+             * @default
+             */
+            device_name: string;
+            /**
+             * Snapshots
+             * @description 这台设备有几份**完整**的恢复点。
+             * @default 0
+             */
+            snapshots: number;
+            /**
+             * Bytes
+             * @description 这台的恢复点一共占了多少字节（快照体之和）。
+             * @default 0
+             */
+            bytes: number;
+            /**
+             * Latest Snapshot Id
+             * @description 最近那一份的 ``snapshot_id``（恢复点目录名；配 ``device_id`` 用）。
+             * @default
+             */
+            latest_snapshot_id: string;
+            /**
+             * Latest At
+             * @description 最近那一份的时间（清单里的 ``created_at``，取不到时退到对象时间）。
+             */
+            latest_at?: string | null;
+        };
+        /**
+         * BackupHandshakeOut
+         * @description 备份提供者握手（方案 §1.3）。
+         *
+         *     与知识库握手同一个形状（``provider`` / ``protocol_version`` / ``capabilities`` /
+         *     ``caller`` / ``server_time``），把"库清单"换成"设备摘要 + 额度"：
+         *
+         *     - ``devices``：**这次调用看得见**的全部设备。备份**不建 ACL**——可见范围就是这把钥匙
+         *       能看见的全部设备（方案 §1.5 的边界，登记为"将来要按设备限权"的一条）；
+         *     - ``retention`` 在 ``capabilities`` 里（与知识库把"库清单"放顶层不同）：额度是
+         *       "这台提供者怎么记账"的一部分，跟着能力集走更顺。
+         *
+         *     响应体里同样**没有"凭据怎么了"**：401 / 403 走 HTTP 状态码与统一错误信封。
+         */
+        BackupHandshakeOut: {
+            /**
+             * Provider
+             * @description 提供者种类，固定 ``backup``。
+             */
+            provider: string;
+            /**
+             * Protocol Version
+             * @description **握手协议版本**：整数、只增，备份这边当前是 ``1``。
+             *
+             *     与知识库那个 ``1`` 是两件事：两个提供者各自演进，客户端**分开判**。
+             */
+            protocol_version: number;
+            /**
+             * App Version
+             * @description 服务端应用版本（给人看、排查用）。
+             */
+            app_version: string;
+            /**
+             * Api Version
+             * @description HTTP 路径版本（固定 ``v1``）。
+             */
+            api_version: string;
+            capabilities: components["schemas"]["BackupCapabilitiesOut"];
+            /** @description 这次调用在提供者看来是谁（**与知识库握手同一份形状**，所以客户端可以共用一份解析）。 */
+            caller: components["schemas"]["ProviderCallerOut"];
+            /**
+             * Devices
+             * @description **这次调用看得见**的设备摘要（含各自的份数、字节与最近一份）。
+             */
+            devices?: components["schemas"]["BackupDeviceBriefOut"][];
+            /**
+             * Server Time
+             * Format: date-time
+             * @description 服务端当前时间（UTC，带时区）。
+             */
+            server_time: string;
+        };
+        /**
+         * BackupQuotaOut
+         * @description 额度那一段：**配了多少、用了多少**（方案 §1.4：握手一次给全，不另开端点）。
+         */
+        BackupQuotaOut: {
+            /**
+             * Policy
+             * @description 保留策略：留最近 N 份。服务端**不替用户删**（超限报 409）——所以这里只有策略名。
+             * @default keep_n
+             */
+            policy: string;
+            /**
+             * Keep
+             * @description 每台设备的保留份数上限。
+             * @default 0
+             */
+            keep: number;
+            /**
+             * Quota Bytes
+             * @description 这一整批设备的字节上限（``KYLAB_BACKUP_QUOTA_BYTES``）。
+             * @default 0
+             */
+            quota_bytes: number;
+            /**
+             * Used Bytes
+             * @description 已经用了多少字节。桶不可用时是 ``0``——**那不是"零"，是数不出来**，
+             *     以 ``capabilities.snapshot.available`` 为准。
+             * @default 0
+             */
+            used_bytes: number;
+            /**
+             * Snapshots
+             * @description 已经有多少份恢复点（同上：桶不可用时数不出来）。
+             * @default 0
+             */
+            snapshots: number;
+        };
+        /**
+         * BackupRestoreCapsOut
+         * @description 恢复这一族：这份存储**够不够按点恢复**。
+         */
+        BackupRestoreCapsOut: {
+            /**
+             * Point In Time
+             * @description 能不能按时间点挑一份恢复点（就是"列恢复点 + 取清单"这两件事）。
+             * @default false
+             */
+            point_in_time: boolean;
+            /**
+             * Manifest Listing
+             * @description 恢复点清单里有没有清单（计数 / 被跳过项 / schema 版本都在里面，恢复前能先看）。
+             * @default false
+             */
+            manifest_listing: boolean;
+            /**
+             * Download
+             * @description 快照体能不能下载。
+             * @default false
+             */
+            download: boolean;
+            /**
+             * Partial Restore
+             * @description 一份快照够不够"只恢复一部分"（清单逐条列了内容物，成员也逐个可取）。
+             * @default false
+             */
+            partial_restore: boolean;
+        };
+        /**
+         * BackupSnapshotCapsOut
+         * @description 快照这一族能不能用、怎么用（``/backup/snapshots/*`` 那五条）。
+         */
+        BackupSnapshotCapsOut: {
+            /**
+             * Available
+             * @description **现在能不能写快照**：为假时通常是"备份桶还没建出来"或对象存储连不上。
+             *
+             *     它是握手唯一会随环境变的能力位。为假时**握手仍然是 200**——客户端据此把页面切成
+             *     "这里还没准备好 + 下一步做什么"，而不是显示成服务器坏了（方案 R5）。
+             * @default true
+             */
+            available: boolean;
+            /**
+             * Unavailable Reason
+             * @description ``available`` 为假时那句**可执行的下一步**（为真时是空串）。
+             * @default
+             */
+            unavailable_reason: string;
+            /**
+             * Transport
+             * @description 快照体怎么发：``octet-stream`` = 裸字节流 ``PUT``（不是 multipart 表单）。
+             * @default octet-stream
+             */
+            transport: string;
+            /**
+             * Format
+             * @description 打包格式。
+             * @default tar.gz
+             */
+            format: string;
+            /**
+             * Manifest
+             * @description 清单格式。
+             * @default json
+             */
+            manifest: string;
+            /**
+             * Checksum
+             * @description 校验算法：整份快照体的 sha256，服务端**边收边算**。
+             * @default sha256
+             */
+            checksum: string;
+            /**
+             * Max Blob Bytes
+             * @description 单份快照体的上限（字节）。超了是 ``413``，且不落桶——客户端据此在打包时就分档。
+             * @default 0
+             */
+            max_blob_bytes: number;
+            /**
+             * Max Snapshots Per Device
+             * @description 每台设备最多留几份（保留份数）。与 ``retention.keep`` **同一个数**。
+             * @default 0
+             */
+            max_snapshots_per_device: number;
+            /**
+             * Encryption
+             * @description 加密口径（自描述字段，当前恒为 ``none``）。
+             * @default none
+             */
+            encryption: string;
+        };
+        /**
+         * BackupSnapshotListOut
+         * @description ``GET /backup/snapshots`` 的响应（规范 §1.5 的分页）。
+         */
+        BackupSnapshotListOut: {
+            /**
+             * Items
+             * @description 这一页的恢复点（**最近在前**）。
+             */
+            items?: components["schemas"]["BackupSnapshotOut"][];
+            /**
+             * Total
+             * @description 符合过滤条件的总数（不是这一页的条数）。
+             * @default 0
+             */
+            total: number;
+            /** @description 额度：**与设备过滤无关**，永远是这把钥匙看得见的全局用量。 */
+            quota: components["schemas"]["BackupQuotaOut"];
+        };
+        /**
+         * BackupSnapshotOut
+         * @description 一个恢复点（``GET /backup/snapshots`` 的一行）。
+         *
+         *     这几位的取值来自**清单**（客户端写的那份自描述文件）：服务端只做形状上的归一
+         *     （不认识的类型给默认值），不做业务解释——所以新增清单字段不需要改这里。
+         */
+        BackupSnapshotOut: {
+            /**
+             * Snapshot Id
+             * @description 恢复点目录名（``<snapshot_ts>-<hash8>``）。配 ``device_id`` 唯一确定一份。
+             */
+            snapshot_id: string;
+            /**
+             * Device Id
+             * @description 哪台设备的。
+             */
+            device_id: string;
+            /**
+             * Device Name
+             * @description 设备名（只给人看）。
+             * @default
+             */
+            device_name: string;
+            /**
+             * Created At
+             * Format: date-time
+             * @description 这份快照的时间（UTC，带时区）。
+             */
+            created_at: string;
+            /**
+             * Bytes
+             * @description 快照体在桶里的**真实字节数**（不是清单自报的那个）。
+             * @default 0
+             */
+            bytes: number;
+            /**
+             * Sha256
+             * @description 快照体的 sha256（清单里那份；清单没写就是空串）。
+             * @default
+             */
+            sha256: string;
+            /**
+             * Kind
+             * @description 怎么来的：``manual`` / ``auto`` / ``pre_restore``。
+             * @default
+             */
+            kind: string;
+            /**
+             * Schema Version
+             * @description 快照里那份本机库的 schema 版本（恢复前据此判"能不能读"）。
+             * @default 0
+             */
+            schema_version: number;
+            /**
+             * App Version
+             * @description 打这份快照时的应用版本。
+             * @default
+             */
+            app_version: string;
+            /**
+             * Counts
+             * @description 内容物计数（会话 / 消息 / 事件 / 笔记 / 产物…），清单里报什么就是什么。
+             */
+            counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Skipped
+             * @description **没进包的内容物，逐条如实列**（名称 / 大小 / 原因）。
+             *
+             *     服务端原样透传（不裁剪字段）：界面与恢复报告都要照着它说清"哪些没备"。
+             */
+            skipped?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Encryption
+             * @description 加密口径（自描述字段）。
+             * @default none
+             */
+            encryption: string;
+        };
+        /**
+         * BackupUploadOut
+         * @description 一次上传的结果（blob 与 manifest 同一个形状）。
+         *
+         *     ``bytes`` / ``sha256`` 都是**落桶之后从对象存储读回来的事实**（不是请求里自报的那个）
+         *     ——重试的客户端据此确认"桶里那一份和我手里这一份是不是同一份"。
+         */
+        BackupUploadOut: {
+            /**
+             * Snapshot Id
+             * @description 哪一份恢复点（``device_id`` 在路径里，所以这里只回它）。
+             */
+            snapshot_id: string;
+            /**
+             * Bytes
+             * @description 落桶之后的字节数。
+             * @default 0
+             */
+            bytes: number;
+            /**
+             * Sha256
+             * @description 落桶之后对象元数据里的 sha256。
+             * @default
+             */
+            sha256: string;
         };
         /** Body_upload_avatar_api_v1_auth_avatar_post */
         Body_upload_avatar_api_v1_auth_avatar_post: {
@@ -10287,6 +10790,314 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ProviderHandshakeOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    handshake_api_v1_backup_handshake_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupHandshakeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_snapshots_api_v1_backup_snapshots_get: {
+        parameters: {
+            query?: {
+                /** @description 只看这台设备的（默认全部） */
+                device_id?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupSnapshotListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_snapshot_blob_api_v1_backup_snapshots__device_id___snapshot_id__blob_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                device_id: string;
+                snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 快照体（tar.gz） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/octet-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_snapshot_blob_api_v1_backup_snapshots__device_id___snapshot_id__blob_put: {
+        parameters: {
+            query: {
+                /** @description 整份快照体的 sha256（十六进制 64 位） */
+                sha256: string;
+                /** @description 整份快照体的字节数 */
+                bytes: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                device_id: string;
+                snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 同路径同内容：幂等 no-op，桶里那份不动 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupUploadOut"];
+                };
+            };
+            /** @description 新建了一份恢复点的快照体 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description sha256 / bytes 与实收不符：拒收，且**不落桶** */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 同路径不同内容 / 超保留份数 / 超配额（服务端不覆盖、也不替你删） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 超过 max_blob_bytes：不落桶 */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_snapshot_manifest_api_v1_backup_snapshots__device_id___snapshot_id__manifest_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                device_id: string;
+                snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 同一份清单已经在了：幂等 no-op */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupUploadOut"];
+                };
+            };
+            /** @description 清单已落桶——这一刻起这个恢复点可枚举、可恢复 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 不是合法 JSON 对象 / 清单里的 device_id、snapshot_id 与路径不符 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 快照体不在（先传 blob）/ 同路径清单内容不同 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 超过 1 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_snapshot_manifest_api_v1_backup_snapshots__device_id___snapshot_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                device_id: string;
+                snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 清单原文 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_snapshot_api_v1_backup_snapshots__device_id___snapshot_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                device_id: string;
+                snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description 这条路径上什么都没有 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
