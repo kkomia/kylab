@@ -278,6 +278,22 @@ interface ProbeState {
 const probe: ProbeState = { available: null, reason: '', at: 0 }
 
 /**
+ * **探活结论被复位过几次**（`resetSidecarProbe()` 每次 +1）——与 `api/backup.ts` 的
+ * `generation`、`api/provider.ts` 的那一位**同形、同一条理由**（那两处的注释写得更细）。
+ *
+ * 这条链上有一个**跨越复位的空档**：`sidecarAvailable()` 的 `fetch` 不在调用点上
+ * （要先 `ensureLocalBase()` 问壳），所以"那一刻发出去的探活"可能**在复位之后**才回来；
+ * 那份结论（`probe.available/reason/at`）一旦写进去，就会把复位之后重新探的那份盖掉
+ * ——表现是"复位之后顶栏又闪回上一次的结论"，用例里则是跨用例干扰
+ * （2026-10-02 门禁抓到的抖动就是这一族；实测：复位后放行旧的探活，`localStatus()`
+ * 会被写成"走本机"，而它本该是"还没探过"）。
+ *
+ * 复位在**生产代码里没有调用点**（`resetSidecarProbe` 是用例出口），所以这一位不影响
+ * 真机行为；它把"复位"这件事的语义补完整：**复位之后，之前发出去的一律不算数**。
+ */
+let probeGeneration = 0
+
+/**
  * 给界面读的状态位（走哪条链不是静默的）。
  *
  * `reason` 现在**三种状态都说得清** ✓（默认开之后，"开关未启用"那句话只覆盖"显式关" ✓，
@@ -332,6 +348,8 @@ export function sidecarStatus(): {
  * 那些也是模块级缓存，用例之间必须互不影响 ✓。
  */
 export function resetSidecarProbe(): void {
+  // 复位也**作废所有在飞的探活**（见 `probeGeneration`）：复位之后回来的结论不许写进来
+  probeGeneration += 1
   probe.available = null
   probe.reason = ''
   probe.at = 0
@@ -359,7 +377,10 @@ export function resetSidecarProbe(): void {
  */
 export async function sidecarAvailable(options: { force?: boolean } = {}): Promise<boolean> {
   await ensureLocalBase()
+  // **这一探是什么时候发起的**：结论回来时对一下，复位之后就不许写（见 `probeGeneration`）
+  const gen = probeGeneration
   if (shellLookup === 'missing' || shellLookup === 'failed') {
+    if (gen !== probeGeneration) return false
     probe.available = false
     probe.reason = shellReason
     probe.at = Date.now()
@@ -370,16 +391,24 @@ export async function sidecarAvailable(options: { force?: boolean } = {}): Promi
     return probe.available
   }
   const base = sidecarBase()
+  // 这一探**这次测出来的结论**（要不要写进缓存另说：复位之后就不写，见 `probeGeneration`）
+  let available: boolean
   try {
     const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5_000) })
-    probe.available = response.ok
-    probe.reason = response.ok ? '' : `边车 /health 返回 HTTP ${response.status}`
+    available = response.ok
+    if (gen === probeGeneration) {
+      probe.available = available
+      probe.reason = available ? '' : `边车 /health 返回 HTTP ${response.status}`
+    }
   } catch (error) {
-    probe.available = false
-    probe.reason = `边车不可达（${base}）：${error instanceof Error ? error.message : String(error)}`
+    available = false
+    if (gen === probeGeneration) {
+      probe.available = false
+      probe.reason = `边车不可达（${base}）：${error instanceof Error ? error.message : String(error)}`
+    }
   }
-  probe.at = Date.now()
-  return probe.available
+  if (gen === probeGeneration) probe.at = Date.now()
+  return available
 }
 
 /**

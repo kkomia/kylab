@@ -287,4 +287,47 @@ describe('④ 用量读数与清除（M4 阶段 6：设置面板那一块）', (
     answers = [json({ detail: '本机后端没起来' }, 503)]
     await expect(clearKbCache()).rejects.toThrow()
   })
+
+  /**
+   * **复位之后，晚到的 404 不许把"这一档没有这一族"记回来**（2026-10-02 收口那轮加的闸门，
+   * 与 `api/provider.ts` / `api/backup.ts` / `api/sidecar.ts` 的那几位**同形**）。
+   *
+   * 为什么值得一条用例：`readQuiet` 开头那句 `if (unsupported) return null` 会让**后面所有**
+   * 读一次请求都不发。所以这一笔一旦被上一条用例的晚到 404 写回来，表现就是"某一条用例
+   * 悄悄不读快照了"——而那与"本机后端没这一族"长得一模一样，红的时候看不出与谁有关。
+   */
+  it('复位之后：上一条那笔晚到的 404 不许把 unsupported 记回来（后面的读照旧发请求）', async () => {
+    let open = false
+    let openGate: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const target = String(url)
+        // 探活那一趟照旧放行（不然这条链走不到 kb-cache 那一步）
+        if (target.endsWith('/health')) return json({ ok: true })
+        if (!target.includes('/local/kb-cache')) throw new Error(`用例没预备：${target}`)
+        if (!open) await gate
+        return json({ message: 'Not Found' }, 404)
+      }),
+    )
+    const cacheCalls = (): number =>
+      vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('/local/kb-cache')).length
+
+    const pending = getKbCacheKnowledgeBases()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    resetKbCacheSupport() // 下一条用例的常态
+    open = true
+    openGate()
+    await pending
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // 复位之后必须**真的再打一次**（而不是被上一条那笔 404 记成"这一档没有"）
+    const before = cacheCalls()
+    await getKbCacheKnowledgeBases()
+    expect(cacheCalls()).toBe(before + 1)
+  })
 })

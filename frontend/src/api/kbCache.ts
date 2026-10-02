@@ -146,8 +146,23 @@ export function docListViewKey(kbId: string, view: DocListView = {}): string {
 /** 这一档有没有这一族（一次 404 之后就不必再问了）。 */
 let unsupported = false
 
+/**
+ * **这一笔被复位过几次**（`resetKbCacheSupport()` 每次 +1）——与 `api/backup.ts` 的
+ * `generation`、`api/provider.ts` 的那一位、`api/sidecar.ts` 的 `probeGeneration`
+ * **同形、同一条理由**（那几处的注释写得更细）。
+ *
+ * 这一位管的是 `unsupported` 那一笔的**晚到写入**：`requestLocal()` 的第一次 `fetch`
+ * 不在调用点上（要先问壳 + 探一次活），所以"那一刻发出去的那条读"可能**在复位之后**
+ * 才带着 404 回来。它一旦把 `unsupported` 记回真，**下一条用例的读就一次请求都不发了**
+ * （`readQuiet` 开头那句直接返回 `null`）——表现是"某一条用例悄悄不读快照了"，
+ * 红的时候还看不出与谁有关（2026-10-02 实测过：复位后放行旧 404，后面那次读的
+ * `fetch` 调用数纹丝不动）。所以：**复位之后，之前发出去的那一笔不许写回来**。
+ */
+let supportGeneration = 0
+
 /** 用例用：把「这一档没有这一族」记的那一笔清掉（模块级状态必须靠调用方复位）。 */
 export function resetKbCacheSupport(): void {
+  supportGeneration += 1
   unsupported = false
 }
 
@@ -176,11 +191,16 @@ async function readQuiet<T>(
   init?: RequestInit,
 ): Promise<T | null> {
   if (unsupported) return null
+  // 这一读是**那一刻**发出去的：结论回来时对一下复位计数（见 `supportGeneration`）
+  const gen = supportGeneration
   try {
     const payload = await requestLocal<unknown>(path, init)
     return looks(payload) ? payload : null
   } catch (error) {
-    if ((error as { status?: number } | undefined)?.status === 404) unsupported = true
+    // 复位之后回来的 404 不作数：那一笔属于上一次生命周期
+    if ((error as { status?: number } | undefined)?.status === 404 && gen === supportGeneration) {
+      unsupported = true
+    }
     return null
   }
 }

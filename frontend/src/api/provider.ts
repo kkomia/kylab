@@ -253,7 +253,7 @@ export async function getLocalProvider(refresh = false): Promise<ProviderStatus>
  * **凭据不在这里**：`base_url` / `enabled` 是白名单，`token` 类的键会被后端 422 拒掉。
  */
 export async function patchLocalProvider(patch: ProviderPatch): Promise<ProviderStatus> {
-  return run(async (token) => {
+  return run(async (token, gen) => {
     const status = await requestLocal<ProviderStatus>('/local/provider', {
       method: 'PATCH',
       body: JSON.stringify(patch),
@@ -261,7 +261,7 @@ export async function patchLocalProvider(patch: ProviderPatch): Promise<Provider
     if (!status || typeof status !== 'object' || typeof status.state !== 'string') {
       throw new Error('知识库提供者响应不认识（没有 state：是不是本机后端比界面老？）')
     }
-    apply(token, status)
+    apply(token, gen, status)
     return status
   }, true)
 }
@@ -304,6 +304,23 @@ let inflightForced = false
 let newest = 0
 let applied = 0
 
+/**
+ * **状态被复位过几次**（`resetProviderStore()` / `setProviderStatusForTest()` 各 +1）。
+ *
+ * 与 `api/backup.ts` 里那一位**同形、同一条理由**（那一份的注释写得更细，这里只留结论）：
+ * `token`/`applied` 管的是"**同一次生命周期内**的新旧"，可这条链上有一个**跨越复位的
+ * 空档**——`requestLocal()` 的第一次 `fetch` 不在调用点上（要先问壳要基址、再探一次活），
+ * 所以"C 那一刻发出去的读"完全可能在**复位之后**才回来。那时 `applied` 已经被复位成 0，
+ * 旧请求的 `token` 反而更大 → 水位那道闸门拦不住它 → 它把复位之后才摆好的那份状态盖掉。
+ *
+ * 真机上的表现是"复位之后界面又闪回旧结论"；用例里的表现是**跨用例干扰**——
+ * 上一条用例（或本文件里某个没打桩的挂载）发出去的那条读，把这一条用例注入的状态盖掉，
+ * 于是"红哪一条"随机器快慢变（2026-10-02 门禁上抓到过：设置弹窗那一份时而红在这条、
+ * 时而红在那条，单跑必绿）。所以加这一位：**复位（含用例直接摆状态）之后，
+ * 之前发出去的一律不算数**。
+ */
+let generation = 0
+
 function setStore(patch: Partial<ProviderStore>): void {
   store = { ...store, ...patch }
   for (const listener of listeners) listener()
@@ -323,10 +340,11 @@ function setStore(patch: Partial<ProviderStore>): void {
  * 无论哪种，只有**最新**那一次的结论写进状态（`applied` 那个水位）——
  * 否则一个慢的旧请求回来会把刚保存的新地址又盖回去。
  */
-function run<T>(work: (token: number) => Promise<T>, force = false): Promise<T> {
+function run<T>(work: (token: number, gen: number) => Promise<T>, force = false): Promise<T> {
   if (inflight && (!force || inflightForced)) return inflight as Promise<T>
   const token = ++newest
-  const promise = work(token).finally(() => {
+  const gen = generation
+  const promise = work(token, gen).finally(() => {
     if (token === newest) {
       inflight = null
       inflightForced = false
@@ -337,8 +355,10 @@ function run<T>(work: (token: number) => Promise<T>, force = false): Promise<T> 
   return promise
 }
 
-/** 把一次请求的结论写进状态（**只有最新的那一次算数**）。 */
-function apply(token: number, status: ProviderStatus): void {
+/** 把一次请求的结论写进状态（**只有最新的那一次算数**，且**复位之前发出去的不算**）。 */
+function apply(token: number, gen: number, status: ProviderStatus): void {
+  // 复位（或用例直接摆状态）之后，**之前发出去的一律作废**（见 `generation`）
+  if (gen !== generation) return
   if (token < applied) return
   applied = token
   store = {
@@ -353,7 +373,8 @@ function apply(token: number, status: ProviderStatus): void {
   for (const listener of listeners) listener()
 }
 
-function fail(token: number, cause: unknown): void {
+function fail(token: number, gen: number, cause: unknown): void {
+  if (gen !== generation) return
   const error = cause as (Error & { status?: number }) | undefined
   // 404 = 这一档**没有**这个端点（服务器档：浏览器 / NAS 网页端），
   // 与"本机档但读不到"是两件事——后者要让界面如实报"读不到"（不许静默）。
@@ -376,11 +397,11 @@ function fail(token: number, cause: unknown): void {
 }
 
 /** 真去读一次（`loadProviderStatus` / `refresh` 的实现）。 */
-function read(token: number, force: boolean): Promise<void> {
+function read(token: number, gen: number, force: boolean): Promise<void> {
   setStore({ loading: true })
   return getLocalProvider(force).then(
-    (status) => apply(token, status),
-    (cause: unknown) => fail(token, cause),
+    (status) => apply(token, gen, status),
+    (cause: unknown) => fail(token, gen, cause),
   )
 }
 
@@ -391,7 +412,7 @@ function read(token: number, force: boolean): Promise<void> {
  */
 export async function loadProviderStatus(): Promise<void> {
   if (store.fetchedAt > 0 && Date.now() - store.fetchedAt < PROVIDER_TTL_MS) return
-  await run((token) => read(token, false))
+  await run((token, gen) => read(token, gen, false))
 }
 
 /**
@@ -399,7 +420,7 @@ export async function loadProviderStatus(): Promise<void> {
  * 时的 30s 轮询都走它。单飞保证同一次"重探"只打一个请求。
  */
 export function refresh(): Promise<void> {
-  return run((token) => read(token, true), true)
+  return run((token, gen) => read(token, gen, true), true)
 }
 
 /* ------------------------------------------------------------------ 一档一判：本机档才看它 */
@@ -547,6 +568,8 @@ export function useKnowledgeProviderStatus(options: { enabled?: boolean } = {}):
  * 的 `resetKnowledgeBaseCache` 同一条纪律）。
  */
 export function resetProviderStore(): void {
+  // 复位也**作废所有在飞的请求**（见 `generation`）：复位之后回来的结论不许写进来
+  generation += 1
   store = {
     status: null,
     settled: false,
@@ -574,6 +597,8 @@ export function setProviderStatusForTest(
   status: ProviderStatus | null,
   options: { unsupported?: boolean; error?: string } = {},
 ): void {
+  // 直接摆状态同样是"从此刻起，之前发出去的都作废"
+  generation += 1
   store = {
     status,
     settled: options.unsupported === true || status !== null,

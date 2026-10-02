@@ -335,3 +335,46 @@ describe('⑦ 本机后端回的**相对**链接要贴到本机基址上（签�
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
+
+/* ------------------- 复位之后，晚到的探活结论不许写进来（`probeGeneration`） ------------------- */
+
+/**
+ * 与 `api/backup.ts` 的 `generation` / `api/provider.ts` 的那一位同形、同一条理由：
+ * `sidecarAvailable()` 的 `fetch` 不在调用点上（要先 `ensureLocalBase()` 问壳），所以
+ * "那一刻发出去的探活"可能**在复位之后**才回来。那份结论一旦写进 `probe`
+ * （`available/reason/at`），就会把复位之后重新探的那份盖掉——真机上是"顶栏又闪回上一次
+ * 的结论"，用例里是跨用例干扰（2026-10-02 那次全量抖动就是这一族）。
+ *
+ * `resetSidecarProbe()` 在生产代码里没有调用点（它就是用例出口），所以这一位只把
+ * "复位"的语义补完整：**复位之后，之前发出去的一律不算数**。
+ */
+describe('复位之后，晚到的探活结论不许写进来', () => {
+  it('复位之后放行旧探活：`localStatus()` 仍是"还没探过"，不是被它写成"走本机"', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    let open = false
+    let openGate: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (!open) await gate
+        return okJson()
+      }),
+    )
+
+    const pending = localAvailable()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    resetSidecarProbe() // 下一条用例的常态
+    open = true
+    openGate()
+    await pending
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // 复位之后回到"还没探过"（`available: null`），而不是被那条旧探活写成 true
+    expect(localStatus().available).toBeNull()
+    expect(localStatus().kind).toBe('local')
+  })
+})

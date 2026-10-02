@@ -371,3 +371,50 @@ describe('⑤ 这一档有没有"提供者"这个概念', () => {
     expect(providerView().status).toBeNull()
   })
 })
+
+/* ------------------- 复位之后，晚到的结论不许写进来（`generation`） ------------------- */
+
+/**
+ * 与 `api/backup.ts` 的 `generation` 同形、同一条理由：`requestLocal()` 的第一次 `fetch`
+ * 不在调用点上（要先问壳 + 探一次活），所以"那一刻发出去的读"可能**在复位之后**才回来。
+ * 水位（`token`/`applied`）拦不住它——复位把 `applied` 清成 0，旧请求的 `token` 反而更大。
+ *
+ * 这一条是 2026-10-02 那次前端全量抖动的**确定性版本**（门禁上时而红"知识库连接那一节"、
+ * 时而红"连不上时显示原因"，单跑必绿）：把那条读攥在手里，复位 + 注入之后才放行——
+ * 拿到的结论（这里故意给真实边车那种 `ready`）**一个字都不许写进状态**。
+ */
+describe('⑨ 复位之后，晚到的结论不许写进状态（generation）', () => {
+  it('复位 + 注入"浏览器档"之后，旧请求的 ready 结论不许把 gate 翻回真', async () => {
+    let open = false
+    let openGate: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const target = String(url)
+        if (target.endsWith('/health')) {
+          if (!open) await gate
+          return json({ ok: true })
+        }
+        // 真实边车那种"有提供者"的答案
+        return json({ state: 'ready', available: true, reason: '', base_url: 'http://nas:8000' })
+      }),
+    )
+    const pending = loadProviderStatus()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    resetProviderStore()
+    setProviderStatusForTest(null, { unsupported: true }) // 浏览器档：这一档不按提供者显隐
+    open = true
+    openGate()
+    await pending.catch(() => undefined)
+    for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(providerGateApplies()).toBe(false)
+    expect(providerView().status).toBeNull()
+    // 注入那份的"已安顿"也在（说明没人把状态整个换掉）
+    expect(providerView().settled).toBe(true)
+  })
+})
