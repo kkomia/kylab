@@ -634,7 +634,16 @@ class BackupProviderClient:
         try:
             payload = self._handshake(target)
         except RemoteClientError as exc:
-            return unavailable(f"{exc}。下一步：核对「备份」里的地址与网络。")
+            # **不在这里再拼一句"下一步"**（原来是 `f"{exc}。下一步：核对「备份」里的地址
+            # 与网络。"`）：连不上那一条的提示语由 `_send` 拼——它知道"哪一步没发出去、
+            # 发到哪儿"，是**唯一**该拼那句的地方。两处都拼就会出现"同一句话连出两遍、
+            # 中间还多一个空句号"（阶段 8 的截图 08/09 就是那个现场：
+            # `…无法连接。。下一步：… 。下一步：…`）。
+            #
+            # 拒绝类（401 / 404 / 5xx）与"回的不是握手体"那几档**本来就不该有那句**：
+            # 它们说的是"到了、但对面说不"，下一步与"核对地址与网络"不是同一件事
+            # ——各自的文案里已经写了该看什么（凭据 / 端点 / 升级）。
+            return unavailable(str(exc))
         except Exception as exc:  # 探针绝不抛，理由见方法说明
             logger.warning("备份握手探测没能跑完（当不可用处理）", exc_info=True)
             return unavailable(f"握手没跑成（{type(exc).__name__}）：{exc}")
@@ -714,8 +723,14 @@ class BackupProviderClient:
             ) as client:
                 return client.request(method, path, params=params, content=content, headers=headers)
         except httpx.HTTPError as exc:
+            # 这一条是**唯一**拼那句提示语的地方（"下一步"由知道"发到哪儿失败了"的这一层
+            # 给出；状态那一层只把它原样透出去）。见 `_probe` 里那段说明。
+            #
+            # `_ended` 而不是 f"{exc}。"：Windows 自己的错误文本**已经带句号**
+            # （`[WinError 10061] …无法连接。`），再拼一个就成了 `。。`
+            # ——截图里那个空句号就是这么来的。
             raise RemoteUnavailableError(
-                f"{what}：连不上备份提供者（{target.base_url}）——{exc}。"
+                f"{what}：连不上备份提供者（{target.base_url}）——{_ended(str(exc))}"
                 "下一步：核对「备份」里的地址与网络。"
             ) from exc
 
@@ -762,6 +777,22 @@ def _rejected(
             f"{what}：备份提供者出错了（HTTP {code}）：{body}（地址 {target.base_url}）"
         )
     return RemoteRejectedError(f"{what}：提供者拒绝了请求（HTTP {code}，{where}）：{body}")
+
+
+def _ended(text: str) -> str:
+    """给一句人话收尾：**已经有句号就不再加一个**。
+
+    为什么需要它（截图 08/09 那个空句号的根因）：Windows 自己的错误文本**带句号**
+    （``[WinError 10061] 由于目标计算机积极拒绝，无法连接。``），而我们在它后面还要接着
+    写"下一步：…"——两处各加一个就成了 ``。。``。同一个动作在别处也会遇到
+    （服务端回的那句话、``_body(response)`` 的片段都可能自带句号），所以收在这里。
+
+    只认**句末**标点：句号 / 叹号 / 问号（含全角）。
+    """
+    cleaned = (text or "").strip()
+    if not cleaned or cleaned.endswith(("。", "！", "？", ".", "!", "?")):
+        return cleaned
+    return f"{cleaned}。"
 
 
 def _coordinates(pending: PendingUpload) -> tuple[str, str]:

@@ -773,3 +773,155 @@ def test_the_enabled_judgement_is_one_function_for_both_callers() -> None:
         enabled = backup_enabled(getter)
         configured = resolve_backup_target(settings, getter).configured
         assert configured is enabled, f"enabled={raw!r} 时两处结论不一致"
+
+
+# --------------------------------------------------- 提示语只拼一处（阶段 8 的截图 08/09）
+#
+# 现场那句话（界面状态块）：
+#   `握手：连不上备份提供者（http://127.0.0.1:9）——[WinError 10061] 由于目标计算机积极拒绝，
+#     无法连接。。下一步：核对「备份」里的地址与网络。 。下一步：核对「备份」里的地址与网络。`
+# 两个毛病：① `_send` 与 `_probe` **各拼了一遍**同一句提示；② 系统错误文本自带句号，
+# 后面又接一句，于是中间多出一个空句号（`。。`）。
+#
+# 这一节把"那句话只在一处拼、且句号不叠"钉成判据。提示语**只数关键词**（不把整句抄
+# 第二遍）：整句抄一遍就等于在用例里又维护了一份文案。
+
+TIP = "下一步"
+DOUBLE_PERIOD = "。。"
+#: Windows 自己的错误文本**自带句号**——真机上连不上时就是这一句（截图里那句）。
+WIN_ERROR = "[WinError 10061] 由于目标计算机积极拒绝，无法连接。"
+
+
+def _offline(nas: FakeNas) -> None:
+    """全面断网：每一发都连不上，错误文本自带句号。"""
+    nas.fail = httpx.ConnectError(WIN_ERROR)
+
+
+def _fails_after_handshake(nas: FakeNas) -> None:
+    """握手照常、**之后每一发都连不上**。
+
+    为什么要这个更细的替身：全面断网时 `list_snapshots` 会先卡在状态那一层（它先看
+    `status().available`），根本走不到列表请求那一次 `_send`——那样"列表失败"这条路的
+    消息就测不到了。这个替身让握手过得去，其余每一条都真的走到失败分支。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/backup/handshake"):
+            return nas.handler(request)
+        raise httpx.ConnectError(WIN_ERROR)
+
+    nas.transport = httpx.MockTransport(handler)
+
+
+def _fails_at_handshake(nas: FakeNas, flavour: str) -> None:
+    """把"握手那一步怎么失败"摆出来（401/404/500 / 回的不是握手体）。
+
+    这个替身只用在这一条用例里：`FakeNas` 上没有"握手状态码"那一个旋钮（它有的是
+    列表 / 上传那几档），而这里要的是状态那一层**四种成因各一条**的文案。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/backup/handshake"):
+            if flavour == "not-a-handshake":
+                return httpx.Response(200, json={"hello": "world"})
+            return httpx.Response(int(flavour), text="握手不行")
+        return nas.handler(request)
+
+    nas.transport = httpx.MockTransport(handler)
+
+
+def test_a_connection_failure_says_the_next_step_exactly_once(
+    nas: FakeNas, clock: FakeClock
+) -> None:
+    """① 连不上时那句提示在 ``reason`` 里**恰好出现一次**（原来两处各拼一遍）。"""
+    _offline(nas)
+    reason = make_client(nas, clock).status(refresh=True).reason
+
+    assert TIP in reason, "该有的提示不能一起删掉"
+    assert reason.count(TIP) == 1, reason
+    assert DOUBLE_PERIOD not in reason, reason
+    assert reason.endswith("核对「备份」里的地址与网络。"), "提示语仍然收尾在那一句上"
+
+
+@pytest.mark.parametrize(
+    ("flavour", "expected"),
+    [
+        ("connect", ""),
+        ("timeout", ""),
+        ("401", "凭据"),
+        ("404", "握手端点"),
+        ("500", "出错了"),
+        ("not-a-handshake", "协议版本"),
+    ],
+)
+def test_no_status_reason_carries_a_double_period(
+    nas: FakeNas, clock: FakeClock, flavour: str, expected: str
+) -> None:
+    """② 六档状态原因里**都不出现 `。。`**（含连不上那一档：系统错误文本自带句号）。
+
+    参数化的是"哪一种失败"，不是"哪一条路径"：状态这一层要经得起地址打错、对面是别的
+    服务、协议版本不认识这几种情形（它们各自的文案都不该被拼出空句号）。
+    """
+    if flavour == "connect":
+        _offline(nas)
+    elif flavour == "timeout":
+        nas.fail = httpx.ReadTimeout("timed out")
+    else:
+        _fails_at_handshake(nas, flavour)
+
+    reason = make_client(nas, clock).status(refresh=True).reason
+
+    assert DOUBLE_PERIOD not in reason, reason
+    if expected:
+        assert expected in reason, reason
+
+
+@pytest.mark.parametrize("where", ["handshake", "upload", "list", "download", "delete"])
+def test_no_failure_path_repeats_the_next_step(
+    nas: FakeNas,
+    clock: FakeClock,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    where: str,
+) -> None:
+    """③ 五条失败路径各一次：**提示语不重复、句号不叠**。
+
+    "用户会看到的那句话"在这几条路上形态不同——四条抛出来（上传 / 下载 / 删除 / 握手），
+    列表那一条**只记日志**（读面按约定回 ``None``），所以那一档从日志里取。
+    """
+    if where == "handshake":
+        _offline(nas)  # 这一条路要的就是"握手那一步连不上"
+    else:
+        _fails_after_handshake(nas)
+    client = make_client(nas, clock)
+    with caplog.at_level("WARNING", logger="app.services.backup_provider"):
+        message = _failure_message(client, tmp_path, where, caplog)
+
+    assert message, where
+    assert message.count(TIP) <= 1, message
+    assert DOUBLE_PERIOD not in message, message
+
+
+def _failure_message(
+    client: BackupProviderClient,
+    tmp_path: Path,
+    where: str,
+    caplog: pytest.LogCaptureFixture,
+) -> str:
+    """那条路失败时留给用户的那句话（抛出来的原文，或日志里那一行）。"""
+    if where == "handshake":
+        return client.status(refresh=True).reason
+    if where == "upload":
+        with pytest.raises(RemoteClientError) as raised:
+            client.upload(make_pending(tmp_path / "in"))
+        return str(raised.value)
+    if where == "list":
+        assert client.list_snapshots() is None, "列表失败按约定回 None"
+        return caplog.records[-1].getMessage()
+    if where == "download":
+        with pytest.raises(RemoteClientError) as raised:
+            client.download_snapshot(DEVICE, SNAPSHOT_SEGMENT, tmp_path / "pkg.tar.gz")
+        return str(raised.value)
+    with pytest.raises(RemoteClientError) as raised:
+        client.delete_snapshot(DEVICE, SNAPSHOT_SEGMENT)
+    return str(raised.value)
