@@ -461,6 +461,44 @@ class BackupProviderClient:
 
     # ------------------------------------------------------------------ 下载 / 删除
 
+    def manifest(self, device_id: str, snapshot_id: str) -> dict[str, Any] | None:
+        """取一份恢复点的**清单**（``GET /backup/snapshots/{device}/{id}``，原样回）。
+
+        M5 阶段 5 的 dry-run 用它：清单（≤1 MiB）里就有计数 / 被跳过项 / schema 版本 /
+        ``redacted``，足够回答"会新建哪些会话、哪些产物不在包里、要重配几项凭据"——
+        **不必把可能上 GB 的快照体先下下来**（那是"看清单再决定"的全部意义，也是
+        NAS 那条清单 PUT 要求"先传快照体后传清单"的反面用法）。
+
+        取不到（未配 / 连不上 / 被拒 / 没有这一份 / 回的不是 JSON 对象）→ ``None``：
+        调用方（恢复的 dry-run）拿 ``status()`` 的结论配一句话如实回，**不是 500**。
+        与 :meth:`list_snapshots` 同一条口径：这一层的读**不抛**。
+        """
+        status = self.status()
+        if not status.available:
+            return None
+        target = self.target()
+        try:
+            response = self._send(
+                "取恢复点清单",
+                target=target,
+                method="GET",
+                path=f"/backup/snapshots/{device_id}/{snapshot_id}",
+                timeout=self._handshake_timeout,
+            )
+        except RemoteClientError as exc:
+            logger.warning("恢复点清单没取到：%s", exc)
+            return None
+        if response.status_code >= 400:
+            logger.warning(
+                "恢复点清单没取到（HTTP %s，%s/%s）：%s",
+                response.status_code,
+                device_id,
+                snapshot_id,
+                _body(response),
+            )
+            return None
+        return _json_or_none(response)
+
     def download_snapshot(
         self, device_id: str, snapshot_id: str, dest: str | Path
     ) -> dict[str, Any]:

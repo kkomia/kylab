@@ -29,12 +29,20 @@ import pytest
 
 from app.services.runtime_config import SECRET_KEYS
 from app.storage.base import (
+    ARTIFACT_IN_OBJECTS,
+    ARTIFACT_IN_WORKSPACE,
     SNAPSHOT_EXCLUDED_SETTING_PREFIXES,
     SnapshotFormatError,
     SnapshotRedaction,
     StorageError,
 )
-from app.storage.sqlite_impl.backup_archive import dump_scrubbed_db, read_snapshot_db
+from app.storage.sqlite_impl import backup_archive
+from app.storage.sqlite_impl.backup_archive import (
+    dump_scrubbed_db,
+    iter_snapshot_transfers,
+    local_schema_version,
+    read_snapshot_db,
+)
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.schema import SCHEMA_VERSION, prepare
 
@@ -442,3 +450,176 @@ def test_read_snapshot_db_refuses_a_library_without_a_version(
 
     with pytest.raises(SnapshotFormatError):
         read_snapshot_db(dest)
+
+
+# ---------------------------------------------------- 逐会话全量（阶段 5 加的那条读面）
+#
+# 这一节是**按点恢复**的输入：``iter_snapshot_transfers`` 逐条吐 ``ConversationTransfer``，
+# 导入器因此不需要知道"这一批是从 NAS 拉的还是从包里读的"。判据有三类：
+#
+# ① 与 ``read_snapshot_db`` 同一份事实（计数能对上）；② 三条子表的顺序**逐字照存储层
+# 那三条 ``ORDER BY``**（顺序错了，导进来的会话"哪句话在前"就错了）；③ 该拒的拒
+# （版本不认识），该只读的只读（读完不留 ``-wal``）。
+
+
+def _seed_for_transfers(db: Database) -> None:
+    """种两条会话：时间顺序与插入顺序**刻意不一致**（否则 SQL 排没排看不出来）。"""
+    with db.session() as conn:
+        conn.execute(
+            "INSERT INTO conversations"
+            " (id, title, kb_ids, owner_id, model_pk, thinking, thinking_effort, pinned,"
+            "  context_summary, summary_upto, archived_at_ms, created_at_ms, updated_at_ms)"
+            " VALUES ('c_1', '先写的', '[\"kb_1\", \"kb_2\"]', 'usr_1', 'mp_1::gpt', 1, 'high', 1,"
+            "         '压过的上下文', 'm_1b', NULL, 10, 20),"
+            "        ('c_2', '后写的', '[]', NULL, NULL, NULL, NULL, 0,"
+            "         '', NULL, NULL, 30, 40)"
+        )
+        # 插入顺序是 b 先、a 后，而时间戳是 a 在前、b 在后（同一毫秒里也照 rowid）
+        conn.execute(
+            "INSERT INTO chat_messages"
+            " (id, conversation_id, role, content, sources, steps, thinking, attachments,"
+            "  created_at_ms)"
+            " VALUES ('m_1b', 'c_1', 'assistant', '后一句', '[]', '[]', '', '[]', 21),"
+            "        ('m_1a', 'c_1', 'user', '前一句', '[{\"index\": 1}]',"
+            '         \'[{"tool": "search"}]\', \'想过\', \'[{"key": "k"}]\', 21),'
+            "        ('m_1c', 'c_1', 'user', '更晚的一句', '[]', '[]', '', '[]', 99)"
+        )
+        # 事件按 seq 排：插入顺序 2 → 1 → 3
+        conn.execute(
+            "INSERT INTO session_events (conversation_id, seq, kind, payload, created_at_ms)"
+            " VALUES ('c_1', 2, 'turn/complete', '{\"status\": \"ok\"}', 5),"
+            "        ('c_1', 1, 'turn/start', '{\"query\": \"你好\"}', 9),"
+            "        ('c_1', 3, 'note', '{}', 1)"
+        )
+        conn.execute(
+            "INSERT INTO conversation_artifacts"
+            " (id, conversation_id, name, format, size_bytes, storage, location,"
+            "  workspace_id, created_at_ms)"
+            " VALUES ('a_2', 'c_1', '晚的.docx', 'docx', 2, 'object', 'conversations/c_1/b.docx',"
+            "         NULL, 8),"
+            "        ('a_1', 'c_1', '早的.pptx', 'pptx', 1, 'workspace', 'E:/项目/早.pptx',"
+            "         'ws_1', 7),"
+            "        ('a_3', 'c_2', '别的.docx', 'docx', 3, 'object', 'conversations/c_2/c.docx',"
+            "         NULL, 9)"
+        )
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at_ms)"
+            " VALUES ('ui.theme', 'dark', 1), ('llm.temperature', '0.3', 1)"
+        )
+        conn.execute(
+            "INSERT INTO model_providers (id, kind, name, base_url, api_key, created_at_ms,"
+            " updated_at_ms) VALUES ('mp_1', 'openai', '供应商甲', 'https://x', '', 1, 1)"
+        )
+
+
+def test_iter_snapshot_transfers_reads_the_whole_conversation(
+    database: Database, tmp_path: Path
+) -> None:
+    """逐会话全量：会话那几个字段 / 摘要上界 / 消息 / 事件 / 产物**逐条读回来**。
+
+    与导入那条链看到的形状同一种：``ConversationTransfer``（导入器只认它）。
+    """
+    _seed_for_transfers(database)
+    dest = _copy_path(tmp_path)
+    dump_scrubbed_db(database, dest)
+
+    transfers = {item.conversation.id: item for item in iter_snapshot_transfers(dest)}
+
+    assert sorted(transfers) == ["c_1", "c_2"], "会话按 updated_at_ms DESC"
+    first = transfers["c_1"]
+    assert first.conversation.title == "先写的"
+    assert tuple(first.conversation.kb_ids) == ("kb_1", "kb_2")
+    assert first.conversation.owner_id == "usr_1"
+    assert first.conversation.model_pk == "mp_1::gpt"
+    assert first.conversation.thinking is True, "三态列：1 是 True，不是「跟随默认」"
+    assert first.conversation.thinking_effort == "high"
+    assert first.conversation.pinned is True
+    assert first.conversation.archived_at is None
+    assert first.conversation.created_at is not None
+    assert first.summary == "压过的上下文" and first.summary_upto == "m_1b"
+    # 消息：created_at_ms 升序，同一毫秒里按 rowid（先插入的在前）
+    assert [item.id for item in first.messages] == ["m_1b", "m_1a", "m_1c"]
+    assert first.messages[1].sources == ({"index": 1},)
+    assert first.messages[1].steps == ({"tool": "search"},)
+    assert first.messages[1].thinking == "想过"
+    assert first.messages[1].attachments == ({"key": "k"},)
+    # 事件：**按 seq**（时间戳在这是乱的：5 / 9 / 1）
+    assert [item.seq for item in first.events] == [1, 2, 3]
+    assert [item.kind for item in first.events] == ["turn/start", "turn/complete", "note"]
+    assert first.events[0].payload == {"query": "你好"}
+    assert first.events[0].id is not None
+    # 产物：created_at_ms 升序（工作区那一份**保原样**：location 是那台机器上的路径）
+    assert [item.id for item in first.artifacts] == ["a_1", "a_2"]
+    assert first.artifacts[0].storage == ARTIFACT_IN_WORKSPACE
+    assert first.artifacts[0].location == "E:/项目/早.pptx"
+    assert first.artifacts[1].storage == ARTIFACT_IN_OBJECTS
+    # 第二条会话是空的：一条消息都没有时也该读回来（不是"跳过这条"）
+    assert transfers["c_2"].messages == [] and transfers["c_2"].events == []
+    assert transfers["c_2"].conversation.thinking is None, "NULL 保持三态里的「跟随默认」"
+
+
+def test_both_read_surfaces_agree_on_the_same_facts(database: Database, tmp_path: Path) -> None:
+    """两条读面（清单视图 / 逐会话全量）对同一份快照给出**一致**的事实。
+
+    它们服务两个动作（预演与真恢复），而"预演说会新建 2 条，真恢复却只进来 1 条"是最坏的
+    一种不一致——所以计数与逐条读出来的条数在这里对齐。
+    """
+    _seed_for_transfers(database)
+    dest = _copy_path(tmp_path)
+    dump_scrubbed_db(database, dest)
+
+    view = read_snapshot_db(dest)
+    transfers = list(iter_snapshot_transfers(dest))
+
+    assert view.counts["conversations"] == len(transfers) == 2
+    assert view.counts["messages"] == sum(len(item.messages) for item in transfers)
+    assert view.counts["session_events"] == sum(len(item.events) for item in transfers)
+    assert view.counts["artifacts"] == sum(len(item.artifacts) for item in transfers)
+    assert view.counts["settings"] == len(view.settings) == len(view.settings_keys)
+    assert [item.id for item in view.conversations] == [
+        item.conversation.id for item in transfers
+    ], "会话清单与逐条读的顺序同一条（updated_at_ms DESC, id）"
+    assert view.settings_keys == tuple(view.settings), "两份设置读面同源"
+    assert view.model_provider_names == ("供应商甲",), "恢复后要重配的模型凭据按名字说"
+
+
+def test_iter_snapshot_transfers_is_read_only(database: Database, tmp_path: Path) -> None:
+    """只读打开：读完一份快照不留 ``-journal`` / ``-wal`` / ``-shm``（与清单视图同一条）。"""
+    _seed_for_transfers(database)
+    dest = _copy_path(tmp_path)
+    dump_scrubbed_db(database, dest)
+    before = sorted(item.name for item in dest.parent.iterdir())
+
+    list(iter_snapshot_transfers(dest))
+
+    assert sorted(item.name for item in dest.parent.iterdir()) == before
+
+
+def test_iter_snapshot_transfers_refuses_a_newer_schema(database: Database, tmp_path: Path) -> None:
+    """版本比本机新 → **当场拒绝**（与 ``read_snapshot_db`` 同一个判据，不猜着读）。"""
+    _seed_for_transfers(database)
+    dest = _copy_path(tmp_path)
+    dump_scrubbed_db(database, dest)
+    with sqlite3.connect(dest) as conn:
+        conn.execute(
+            "UPDATE schema_metadata SET value = ? WHERE key = 'version'",
+            (str(SCHEMA_VERSION + 1),),
+        )
+
+    with pytest.raises(SnapshotFormatError):
+        list(iter_snapshot_transfers(dest))
+
+
+def test_local_schema_version_is_the_schema_constant_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``local_schema_version`` 报的就是 ``SCHEMA_VERSION`` 那个常量（**不另抄一个数**）。
+
+    判据是"改常量它跟着变"：手抄一个数的那种写法在这里会当场红——而它红得很值，
+    因为"打包时写进 manifest 的版本"与"读快照时判据用的版本"分叉意味着**新库被旧码读**。
+    """
+    assert local_schema_version() == SCHEMA_VERSION
+
+    monkeypatch.setattr(backup_archive, "SCHEMA_VERSION", SCHEMA_VERSION + 7)
+
+    assert local_schema_version() == SCHEMA_VERSION + 7

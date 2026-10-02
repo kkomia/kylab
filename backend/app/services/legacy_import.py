@@ -12,6 +12,24 @@ r"""旧会话一次性导入与本机回滚（M2 阶段 5，方案 §3.1 与 §7
 因此 ``python -m app.services.legacy_import`` 这条 CLI 也**不违反 L6/L2**
 （它不住在 ``app/`` 根、也不直连数据库），与边车那个入口是两码事。
 
+## 来源是**注入**的（M5 阶段 5 抽出的接缝）
+
+这个类原来自己写死了 HTTP 那一条路（``_pull`` / ``_fetch_page``）。M5 阶段 5 的按点恢复
+要的是同一台写入机、同一套幂等键与覆盖规则、同一个台账，**只是来源换成一份解包出来的
+快照库**——于是"来源"被抽成 :class:`TransferSource`（两个实现：
+:class:`HttpExportSource` 与 ``services/backup_restore.SnapshotFileSource``）。
+
+抽法守住三条（既有语义一个字节都没变）：
+
+1. 协议只有一个动作——``transfers(since)`` 逐条吐 ``ConversationTransfer``，
+   外加一个 ``source``（台账里那个来源标识 = 幂等键的第一段）；
+2. ``HttpExportSource`` 的代码是**从本模块原样搬过去的**（分页、截断检查、状态码分档、
+   逐行按字节切——一个字没改），所以既有用例（它们注入 ``transport`` 走真 HTTP 那条链）
+   仍然覆盖着它；
+3. 构造签名向后兼容：``source`` 仍可给一个**字符串基址**（原样，内部建
+   ``HttpExportSource``），给一个对象（满足 :class:`TransferSource`）就是换来源。
+   既有调用点（边车端点、CLI、全部用例）一个字不用改。
+
 ## 三条规则（写在这里，免得实现细节盖过它们）
 
 1. **幂等**：键是 ``(source, conversation_id, source_updated_at_ms)``
@@ -39,7 +57,9 @@ r"""旧会话一次性导入与本机回滚（M2 阶段 5，方案 §3.1 与 §7
 
 逐页拉取（默认一页 200 条会话）、页内**逐行**解析、攒完一条会话就落库：
 内存里最多只有一条会话 + 一页的行缓冲。**页与页之间是顺序的**（不并发拉多页）——
-见 ``_pull`` 的说明：并发拉页会把好几页的正文同时拽进内存，而上限恰恰是最难估的那一项。
+见 ``HttpExportSource`` 的说明：并发拉页会把好几页的正文同时拽进内存，而上限恰恰是
+最难估的那一项。换成快照库那个来源（``SnapshotFileSource``）时同一条上界也成立：
+它是个生成器，一次只留一条会话。
 """
 
 from __future__ import annotations
@@ -53,7 +73,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from app.core.lazy_httpx import httpx
 from app.services.conversation_export import (
@@ -93,11 +113,13 @@ __all__ = [
     "DEFAULT_TIMEOUT",
     "ROLLBACK_DIRNAME",
     "UNFINISHED_STATES",
+    "HttpExportSource",
     "ImportPlan",
     "ImportReport",
     "LegacyImportError",
     "LegacyImporter",
     "SnapshotError",
+    "TransferSource",
     "main",
 ]
 
@@ -341,6 +363,130 @@ def _ms(value: datetime | None) -> int | None:
     return int(value.timestamp() * 1000)
 
 
+@runtime_checkable
+class TransferSource(Protocol):
+    """**来源**：逐条吐出要导入的会话（M5 阶段 5 抽出的接缝）。
+
+    导入器对来源的全部要求就两句话：
+
+    - ``source``：这个来源的身份（写进台账，也是幂等键 ``(source, conversation_id,
+      source_updated_at_ms)`` 的第一段）。**同一次恢复重跑必须给出同一个 source**，
+      否则那批会话会被当成"另一批"，幂等就失效了；
+    - ``transfers(since)``：逐条吐 ``ConversationTransfer``（会话 + 摘要 + 消息 + 事件 +
+      产物）。**生成器**：调用方一条一条写库，来源一次只该在内存里留一条。
+
+    两个实现：:class:`HttpExportSource`（NAS 的 NDJSON 导出流，M2 那一套原样）与
+    ``services/backup_restore.SnapshotFileSource``（一份解包出来的快照库）。
+    写进导入器的东西**一模一样**——覆盖规则 / 台账 / 回滚因此天然共用，不需要第二份。
+    """
+
+    @property
+    def source(self) -> str:
+        """台账里那个来源标识（HTTP 那条是 NAS 基址，快照那条是 ``backup://设备/快照``）。"""
+        ...
+
+    def transfers(self, *, since: datetime | None = None) -> Iterator[ConversationTransfer]:
+        """逐条交出会话；``since`` 给了就只要那之后更新过的（与导出端点同一口径）。"""
+        ...
+
+
+class HttpExportSource:
+    """M2 那条来源：``GET {server}/conversations/export`` 的六型 NDJSON 流。
+
+    **代码是从 ``LegacyImporter`` 里原样搬过来的**（分页、末行检查、状态码分档、
+    按字节切行）——搬的时候一个语义都没改，所以既有那一批用例（注入 ``transport``
+    走真 HTTP 那条链）仍然在钉它。
+
+    两条刻意的口径（搬过来时写在注释里，一并留着）：
+
+    - **页与页之间不并发**（方案 §3.1 的"源端并发 4"没有照做）：并发拉页要么把好几页的
+      正文同时拽进内存，要么得让 HTTP 流按序消费；真正决定吞吐的是本机写的那一侧；
+    - **逐页检查末行**：连接被掐断时流会停在半路，少了末行的半份数据必须当失败处理
+      （见 :class:`_StreamReader`）。
+    """
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        token: str = "",
+        page_size: int = PAGE_SIZE,
+        timeout: float = DEFAULT_TIMEOUT,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._url = url.rstrip("/")
+        self._token = token
+        self._page_size = max(1, min(int(page_size), PAGE_SIZE))
+        self._timeout = timeout
+        #: 假传输的注入点（用例给 ``httpx.MockTransport``；生产这条是 ``None``）。
+        self.transport = transport
+
+    @property
+    def source(self) -> str:
+        return self._url
+
+    def _headers(self) -> dict[str, str]:
+        """鉴权头（**令牌只在内存与请求头上，绝不落库**：R6）。"""
+        return {"Authorization": f"Bearer {self._token}"} if self._token else {}
+
+    def transfers(self, *, since: datetime | None = None) -> Iterator[ConversationTransfer]:
+        """逐页拉导出流、逐条交出会话（顺序拉取，理由见类说明）。"""
+        offset = 0
+        while True:
+            reader = _StreamReader()
+            received = 0
+            for raw in self._fetch_page(offset, since=since):
+                done = reader.feed(raw)
+                if done is not None:
+                    received += 1
+                    yield done
+            final = reader.finish()
+            if final is not None:
+                received += 1
+                yield final
+            if reader.footer is None:
+                raise LegacyImportError(
+                    "导出流没有末行（传输被截断）：这一页不完整，已写入的会话都有台账，可重跑续上"
+                )
+            if received < self._page_size:
+                return
+            offset += received
+
+    def _fetch_page(self, offset: int, *, since: datetime | None) -> Iterator[str]:
+        """拉一页（``limit`` / ``offset`` / ``since``），逐行吐出来。
+
+        用 ``client.stream`` + ``_raw_lines``（按字节切行）：正文可能有几十 MB，
+        整份读进内存再切行会白白翻一倍；而**逐行解码**与"整份读进内存"是两件事。
+        状态码分档与 ``services/remote_clients.py`` 同一口径——
+        "连不上"与"被拒"是两件事（前者重试有用，后者要先解决身份）。
+        """
+        url = f"{self._url}/conversations/export"
+        params: dict[str, Any] = {"limit": self._page_size, "offset": offset}
+        if since is not None:
+            params["since"] = since.astimezone(UTC).isoformat()
+        try:
+            with (
+                httpx.Client(
+                    timeout=self._timeout, transport=self.transport, headers=self._headers()
+                ) as client,
+                client.stream("GET", url, params=params) as response,
+            ):
+                if response.status_code >= 500:
+                    raise LegacyImportError(
+                        f"导出端点出错了（HTTP {response.status_code}）：{self._url}"
+                    )
+                if response.status_code >= 400:
+                    raise LegacyImportError(
+                        f"导出请求被拒（HTTP {response.status_code}）："
+                        f"{response.read()[:200]!r}；请检查 --token 与这个地址"
+                    )
+                yield from _raw_lines(response)
+        except LegacyImportError:
+            raise
+        except Exception as exc:  # httpx 的各路异常 + 连接层
+            raise LegacyImportError(f"连不上导出端点（{url}）：{exc}") from exc
+
+
 def _raw_lines(response: httpx.Response) -> Iterator[str]:
     """把导出流按**行**吐出来：只在 ASCII ``\\n`` 上切，切完一行解一行。
 
@@ -383,7 +529,7 @@ class LegacyImporter:
         stores: StoreBundle,
         *,
         data_dir: Path,
-        source: str,
+        source: str | TransferSource,
         token: str = "",
         since: datetime | None = None,
         page_size: int = PAGE_SIZE,
@@ -398,16 +544,28 @@ class LegacyImporter:
         self._stores = stores
         self._ledger: ImportLedger = stores.ledger
         self._data_dir = Path(data_dir)
-        self._source = source.rstrip("/")
+        # **来源**（M5 阶段 5 的接缝）：给字符串就是 NAS 基址（M2 那条 HTTP 路，原样），
+        # 给一个对象就是换来源（按点恢复给的是 SnapshotFileSource）。对象自己带 source 标签
+        # ——台账里的 ``source`` 与"从哪儿读的"因此永远是同一件事。
+        if isinstance(source, str):
+            self._reader: TransferSource = HttpExportSource(
+                url=source,
+                token=token,
+                page_size=page_size,
+                timeout=timeout,
+                transport=transport,
+            )
+        elif isinstance(source, TransferSource):
+            self._reader = source
+        else:  # pragma: no cover - 类型上就到不了这儿
+            raise LegacyImportError(
+                "来源得是一个基址字符串或一个 TransferSource（逐条吐会话的那个协议）"
+            )
+        self._source = self._reader.source
         self._token = token
         self._since = since
         self._page_size = max(1, min(int(page_size), PAGE_SIZE))
         self._timeout = timeout
-        #: 假传输的注入点（用例给 ``httpx.MockTransport``；生产这条是 ``None``）。
-        #: 做成公开属性是为了让集成用例能在**装配好的 app** 上换掉它（见
-        #: ``tests/integration/api/test_local_import_api.py``）——构造之后就换不了
-        #: 的东西在那种场景里没有别的入口。
-        self.transport = transport
         #: 批次状态的小缓存（判断"这条台账是不是被回滚过"要用它）。
         #: **只在一次操作之内有效**：`plan` / `run` / `rollback` 一开始就清空它——
         #: 见 `_reset_batch_states` 那段（跨操作留着会静默漏数据）。
@@ -417,6 +575,26 @@ class LegacyImporter:
         self._workspaces: dict[str, bool] = {}
 
     # ------------------------------------------------------------------ 状态与身份
+
+    @property
+    def transport(self) -> httpx.BaseTransport | None:
+        """假传输的注入点（用例给 ``httpx.MockTransport``；生产这条是 ``None``）。
+
+        做成**公开属性**是为了让集成用例能在**装配好的 app** 上换掉它（见
+        ``tests/integration/api/test_local_import_api.py``）——构造之后就换不了的东西
+        在那种场景里没有别的入口。阶段 5 把发送那一层挪进了 ``HttpExportSource``，
+        所以这一位现在**透传**给那个对象：写 `importer.transport = …` 与阶段 5 之前
+        是同一个语义（这是接缝抽出来之后最容易悄悄坏掉的一处）。
+        """
+        return getattr(self._reader, "transport", None)
+
+    @transport.setter
+    def transport(self, value: httpx.BaseTransport | None) -> None:
+        if not isinstance(self._reader, HttpExportSource):
+            # 别的来源（``SnapshotFileSource``）本来就不发网络请求：换它没有意义，
+            # 而"悄悄记下一个谁也不会看的字段"会让调用方以为换成功了。
+            raise LegacyImportError("这个来源不走 HTTP（它不从 NAS 拉）：没有可换的传输层")
+        self._reader.transport = value
 
     def _reset_batch_states(self) -> None:
         """开始一次操作：清掉批次状态缓存。
@@ -484,7 +662,7 @@ class LegacyImporter:
         self._reset_batch_states()
         window = self._since if since is None else since
         plan = ImportPlan(source=self._source, since=window)
-        for transfer in self._pull(since=window):
+        for transfer in self._reader.transfers(since=window):
             transfer, unresolved = self._localize(transfer)
             plan.unresolved_workspaces += unresolved
             decision = self._decision(transfer.conversation)
@@ -558,7 +736,7 @@ class LegacyImporter:
             progress(counts)
         started = datetime.now(UTC)
         try:
-            for transfer in self._pull(since=window):
+            for transfer in self._reader.transfers(since=window):
                 transfer, unresolved = self._localize(transfer)
                 counts["unresolved_workspaces"] += unresolved
                 decision = self._decision(transfer.conversation)
@@ -840,80 +1018,6 @@ class LegacyImporter:
                 local_updated_at_ms=_ms(stored.updated_at),
             )
         )
-
-    # ------------------------------------------------------------------ 源端
-
-    def _headers(self) -> dict[str, str]:
-        """鉴权头（**令牌只在内存与请求头上，绝不落库**：R6）。"""
-        return {"Authorization": f"Bearer {self._token}"} if self._token else {}
-
-    def _pull(self, *, since: datetime | None) -> Iterator[ConversationTransfer]:
-        """逐页拉导出流、逐条交出会话（**顺序拉取**，理由见下）。
-
-        为什么页与页之间**不并发**（方案 §3.1 的"源端并发 4"没有照做）：并发拉页
-        要么把好几页的正文同时拽进内存（一条长会话的正文可以很大，而上限恰恰是最难
-        估的那一项），要么得让 HTTP 流按序消费——后者在这个规模上换不来多少吞吐。
-        真正决定吞吐的是**本机写的那一侧**（一个会话一个事务 + ``executemany``），
-        它的实测值见 ``tests/unit/services/test_legacy_import.py`` 里那条
-        "至少 1000 条消息/秒"的断言。
-
-        每一页读完都检查**末行见没见过**：连接被掐断时流会停在半路，而少了末行的
-        半份数据必须当失败处理（见 ``_StreamReader``）。
-        """
-        offset = 0
-        while True:
-            reader = _StreamReader()
-            received = 0
-            for raw in self._fetch_page(offset, since=since):
-                done = reader.feed(raw)
-                if done is not None:
-                    received += 1
-                    yield done
-            final = reader.finish()
-            if final is not None:
-                received += 1
-                yield final
-            if reader.footer is None:
-                raise LegacyImportError(
-                    "导出流没有末行（传输被截断）：这一页不完整，已写入的会话都有台账，可重跑续上"
-                )
-            if received < self._page_size:
-                return
-            offset += received
-
-    def _fetch_page(self, offset: int, *, since: datetime | None) -> Iterator[str]:
-        """拉一页（``limit`` / ``offset`` / ``since``），逐行吐出来。
-
-        用 ``client.stream`` + ``_raw_lines``（按字节切行）：正文可能有几十 MB，
-        整份读进内存再切行会白白翻一倍；而**逐行解码**与"整份读进内存"是两件事。
-        状态码分档与 ``services/remote_clients.py`` 同一口径——
-        "连不上"与"被拒"是两件事（前者重试有用，后者要先解决身份）。
-        """
-        url = f"{self._source}/conversations/export"
-        params: dict[str, Any] = {"limit": self._page_size, "offset": offset}
-        if since is not None:
-            params["since"] = since.astimezone(UTC).isoformat()
-        try:
-            with (
-                httpx.Client(
-                    timeout=self._timeout, transport=self.transport, headers=self._headers()
-                ) as client,
-                client.stream("GET", url, params=params) as response,
-            ):
-                if response.status_code >= 500:
-                    raise LegacyImportError(
-                        f"导出端点出错了（HTTP {response.status_code}）：{self._source}"
-                    )
-                if response.status_code >= 400:
-                    raise LegacyImportError(
-                        f"导出请求被拒（HTTP {response.status_code}）："
-                        f"{response.read()[:200]!r}；请检查 --token 与这个地址"
-                    )
-                yield from _raw_lines(response)
-        except LegacyImportError:
-            raise
-        except Exception as exc:  # httpx 的各路异常 + 连接层
-            raise LegacyImportError(f"连不上导出端点（{url}）：{exc}") from exc
 
 
 # ------------------------------------------------------------------ CLI

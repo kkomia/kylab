@@ -24,7 +24,8 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
 - ``LOCAL_CACHE_METHODS`` —— 知识库元数据快照那六个方法（M4）。同样**不在**
   ``MetaStore`` 上，同样单独登记；它多出来的一句是"为什么它既不属于本机域也不属于
   KB 域"；
-- ``LOCAL_SNAPSHOT_METHODS`` —— 快照打包与读回那两个方法（M5 阶段 2）。第三块
+- ``LOCAL_SNAPSHOT_METHODS`` —— 快照打包与读回那三个方法（M5 阶段 2 两个、阶段 5 加了
+  一个"逐条读全量会话"）。第三块
   "本机独有"（服务器档的库就是它自己，没有"把自己打成一份包"这条动作），
   理由同样写在常量上；
 - ``LOCAL_BACKUP_METHODS`` —— 备份待传队列那五个方法（M5 阶段 3）。第四块"本机独有"
@@ -164,8 +165,12 @@ LOCAL_SNAPSHOT_METHODS: frozenset[str] = frozenset(
     {
         # 写面：在线备份 + 擦洗 + VACUUM + 读数（源库一个字节不动）
         "dump_scrubbed_db",
-        # 读面：从一份快照库里读会话 / 产物 Key / 设置键 / 计数
+        # 读面：从一份快照库里读会话 / 产物 Key / 设置键 / 计数（窄投影）
         "read_snapshot_db",
+        # 读面：逐条读全量会话（阶段 5 的按点恢复要的那种 ConversationTransfer）
+        "iter_snapshot_transfers",
+        # 本机认得的 schema 版本（两份兼容判据要比它，常量住在这一层）
+        "local_schema_version",
     }
 )
 

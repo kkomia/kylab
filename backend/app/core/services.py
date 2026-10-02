@@ -31,6 +31,7 @@ from app.services.auth import AuthService
 from app.services.avatars import AvatarService
 from app.services.backup_provider import BackupProviderClient
 from app.services.backup_queue import BackupQueueService
+from app.services.backup_restore import BackupRestorer
 from app.services.backup_snapshot import BackupSnapshotService
 from app.services.batch import DocumentBatchService
 from app.services.chat import ChatService
@@ -271,6 +272,24 @@ class Services:
     与 worker 线程由组合根拉起的口径一致。
 
     服务器档：``None``（那一档没有"排队往别处传"这条动作）。
+
+    为什么带默认值：同 ``provider``——"没有它"是合法状态。
+    """
+
+    backup_restore: BackupRestorer | None = None
+    """**按点恢复服务**（M5 阶段 5 建）：把 NAS 上一份恢复点落到本机的那条路。
+
+    两个动作、一个对象：``plan()``（dry-run：会新建哪些会话 / 哪些跳过、为什么 /
+    哪些产物不在包里 / 要重配几项凭据）与 ``restore()``（真恢复：打一份本地兜底 →
+    走 M2 导入器写会话 → 记忆 / 设置 / 产物落位 → 报告）。
+
+    **会话那条链一个字都不重写**：它拿一台走 ``SnapshotFileSource`` 的 ``LegacyImporter``
+    干活，所以进度与回滚复用既有两个端点（``GET /local/import/{batch}`` 与
+    ``POST /local/import/{batch}/rollback``），恢复特有的那三段报告并进同一行的
+    ``counts_json``（``counts["restore"]``）。
+
+    服务器档：``None``。那一档的会话就是权威，而"整库替换"是另一件事（方案 §3.4 末尾
+    那条干净路径：停边车 → 挪 ``kylab.db*`` → 再恢复）。
 
     为什么带默认值：同 ``provider``——"没有它"是合法状态。
     """
@@ -617,6 +636,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     backup_snapshot: BackupSnapshotService | None = None
     backup_provider: BackupProviderClient | None = None
     backup_queue: BackupQueueService | None = None
+    backup_restore: BackupRestorer | None = None
     if resolved.deployment == "local":
         # 设备身份从引导级来（壳的 `--device-id` → `KYLAB_DEVICE_ID` → Settings）：
         # **没有就是没有**（R12：`create()` 会如实拒绝打快照，绝不编一个 id）。
@@ -638,6 +658,16 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # `uploading → pending` + 起那一个 `backup-upload` 线程）。放在组合根而不是
         # 放进某个端点：被谁先问到不该决定"这台机器有没有在补传"。
         backup_queue.start()
+        # 按点恢复（阶段 5）：它读的是**同一个** `bundle`（快照读面 + 导入台账），
+        # 打本地兜底用的是上面那一个打包器——三件共用一份对象，不各建各的。
+        # 服务器档是 None：那一档没有台账，`BackupRestorer.__init__` 也会如实拒。
+        backup_restore = BackupRestorer(
+            stores=bundle,
+            data_dir=resolved.data_dir,
+            provider=backup_provider,
+            snapshotter=backup_snapshot,
+            runtime_config=runtime,
+        )
 
     chat_service = ChatService(
         retrieval,
@@ -886,6 +916,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         backup_snapshot=backup_snapshot,
         backup_provider=backup_provider,
         backup_queue=backup_queue,
+        backup_restore=backup_restore,
     )
     # 槽里放进刚装好的这一份：定时任务的执行体从这一刻起可用
     # （`_run_scheduled` 只在 worker 领到 SCHEDULED 任务时被调用，那时这里早已填上）

@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -2260,6 +2260,22 @@ class SqliteMetaStore:
         所以这个方法只借这条转发路径，不碰 ``self._db``。
         """
         return backup_archive.read_snapshot_db(db_path)
+
+    def iter_snapshot_transfers(self, db_path: Path) -> Iterator[ConversationTransfer]:
+        """逐条读一份**快照库**的全量会话（导入器要的那种 ``ConversationTransfer``）。
+
+        同样只借转发路径：参数是路径（staging 里那一份），不碰 ``self._db``。返回值是
+        **生成器**——一次只有一条会话在内存里，与 NAS 那条导出流的上界纪律一致。
+        """
+        return backup_archive.iter_snapshot_transfers(db_path)
+
+    def local_schema_version(self) -> int:
+        """本机库的 schema 版本（打包/恢复那两处兼容判据都要拿它比）。
+
+        转发一行，理由与上面两个一样：常量住在 ``sqlite_impl/``，而调用方在服务层——
+        它只许见 ``base.py`` 的协议。
+        """
+        return backup_archive.local_schema_version()
 
     # ------------------------------------------------------------------ 备份待传队列（M5）
     #

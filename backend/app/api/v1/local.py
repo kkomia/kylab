@@ -118,6 +118,7 @@ from app.core.storage import LOCAL_DB_NAME
 from app.services import backup_provider
 from app.services.backup_provider import BackupProviderClient
 from app.services.backup_queue import EVERY_HOURS_KEY, PENDING_DIR, BackupQueueService
+from app.services.backup_restore import BackupRestoreError, BackupRestorer
 from app.services.backup_snapshot import INCLUDE_WORKSPACE_KEY, BackupSnapshotService
 from app.services.kb_cache import (
     CACHEABLE_RESOURCES,
@@ -1574,6 +1575,159 @@ def delete_local_backup_point(
     if removed == 0:
         raise NotFoundError(f"这条路径上没有恢复点可删：{device_id}/{snapshot_id}")
     return BackupPointDeletedOut(removed=removed)
+
+
+# ------------------------------------------------------------ 按点恢复（M5 阶段 5）
+#
+# **一条端点、两种模式**（与 `POST /local/import` 同一个形状）：
+#
+# - ``dry_run=true``：**同步**回那份报告（会新建哪些会话 / 哪些跳过、为什么 / 哪些产物
+#   不在包里 / 要重配几项凭据）。它要下载并解包（逐会话判定必须读包里的库），但只落
+#   ``restore-staging/`` 暂存区——本机库 / 记忆 / 产物一个字节都不动；
+# - 否则：**后台线程**里跑，这里立刻回批次 id。进度与结论走**既是有的**那两个端点
+#   （``GET /local/import/{batch}`` 与 ``POST /local/import/{batch}/rollback``）——
+#   恢复这件事实质上就是"用快照当来源的一次导入"，台账里只有一条 ``imports`` 行，
+#   恢复特有的那几段报告并进它的 ``counts_json``（``counts["restore"]``）。
+
+
+class RestoreRequestIn(BaseModel):
+    """``POST /local/backup/restore`` 的请求体：**恢复哪一份 + 预演不预演**。
+
+    ``extra="forbid"``（与 ``BackupPatchIn`` 同一条纪律）：这条路上没有"临时填一次 NAS
+    地址 / 令牌"的入口（R3/R14）——地址与令牌仍然只从这一档的引导配置来，要恢复的那一份
+    由 ``device_id`` + ``snapshot_id`` 指定（``GET /local/backup/points`` 里有这两个值）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    device_id: str = Field(min_length=1, description="哪台设备的恢复点（自己那份也在其中）")
+    snapshot_id: str = Field(min_length=1, description="哪一份（<ts>-<hash8>，用 points 看）")
+    dry_run: bool = Field(
+        default=False, description="true = 只预演：不碰本机库 / 记忆 / 产物（只落暂存区）"
+    )
+    overwrite_memory: bool = Field(
+        default=False, description="记忆也覆盖（默认只补本机没有的那几份，保护本机学到的东西）"
+    )
+
+
+class BackupRestoreOut(BaseModel):
+    """``POST /local/backup/restore`` 的回执：**预演的报告**或**开跑的批次 id**。
+
+    ``dry_run=true`` 时：``state="planned"`` + ``plan`` 里那四段（会新建 / 会替换 /
+    会跳过（含原因）/ 包里没有的产物）+ 要重配的凭据，而 ``batch_id`` 是空的
+    ——预演不产批次（它一个字节都不写库）。
+
+    否则：``batch_id`` 立刻可用，轮询 ``GET /local/import/{batch_id}``；那条台账的
+    ``counts["restore"]`` 里就是记忆 / 设置 / 产物 / 凭据那几段（终端与界面看到的是同一份）。
+    """
+
+    batch_id: str = ""
+    state: str = ""
+    source: str = ""
+    dry_run: bool = False
+    plan: dict[str, Any] = Field(
+        default_factory=dict, description="dry_run 时的报告（非预演时是空对象）"
+    )
+
+
+def _restorer(services: Services) -> BackupRestorer:
+    """取**进程级**那个按点恢复服务（组合根建的那一个）。"""
+    restorer = services.backup_restore
+    if restorer is None:
+        raise InvalidRequestError(
+            "按点恢复只有本机档才有：服务器档自己就是备份的目的地，"
+            "换库是它那边的事（本机档才是「把那台机器的包取回来重建」这一档）"
+        )
+    return restorer
+
+
+@router.post(
+    "/backup/restore",
+    response_model=BackupRestoreOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="按点恢复：从一份快照重建本机（dry_run=true 只预演，同步回报告）",
+)
+def restore_local_backup_point(
+    payload: RestoreRequestIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: WriteDep,
+) -> BackupRestoreOut:
+    """**按点恢复**（方案 §3.4）：把 ``device_id``/``snapshot_id`` 那一份取回来重建本机。
+
+    预演与真恢复**走同一套读**，区别只在写不写：
+
+    - ``dry_run=true`` → 同步返回 :class:`RestorePlan`（四段：会新建 / 会替换 / 会跳过
+      （含原因）/ 包里没有的产物 + 要重配的凭据）。它**会**下载并解包到
+      ``<data_dir>/restore-staging/``（"这一条会怎么处理"必须与本机台账逐条比，那要读包里的
+      库），但不碰本机库 / 记忆 / 产物，也不打恢复前那份兜底；
+    - 否则 → 202 + 批次 id。真恢复那一步自己会：打一份 ``pre_restore`` 本地兜底
+      （落 ``<data_dir>/restore-backup/<ts>/``，**不入队**）→ 走 M2 导入器写会话（幂等 /
+      一次会话一个事务 / 台账）→ 记忆（默认只补不覆盖）/ 设置（只补本机没有的键、凭据不写）/
+      产物字节（同 Key 同内容跳过、不同内容**如实报冲突**不覆盖）。失败不抛，写进台账。
+
+    **恢复前的状态先兜一份**（第 3 步）就是要害：这条路上"覆盖"是可能的，而兜底那一份
+    落在本机、不排队上传——它是给"按错了"用的，不是一份要传出去的备份。
+    """
+    restorer = _restorer(services)
+    if payload.dry_run:
+        try:
+            plan = restorer.plan(payload.device_id, payload.snapshot_id)
+        except RemoteRejectedError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        except (RemoteUnavailableError, BackupRestoreError) as exc:
+            # 取不到清单 / 取不到包 / 包读不出来：都是"上游给的东西用不上"
+            # （与删除端点那条 502 同一条判断），不是 500、也不是"你请求写错了"。
+            raise UpstreamError(str(exc)) from exc
+        return BackupRestoreOut(
+            state="planned",
+            source=plan.source,
+            dry_run=True,
+            plan=plan.as_dict(),
+        )
+    # **先同步把批次行写进库**：客户端拿到 id 之后立刻来查必须查得到（查不到只会得到 404，
+    # 而那句话的意思是"这个 id 不存在"，不是"还没开始"）。
+    batch_id = restorer.begin(payload.device_id, payload.snapshot_id)
+    worker = threading.Thread(
+        target=_run_restore,
+        args=(
+            restorer,
+            payload.device_id,
+            payload.snapshot_id,
+            batch_id,
+            payload.overwrite_memory,
+        ),
+        name=f"backup-restore-{batch_id}",
+        daemon=True,
+    )
+    worker.start()
+    return BackupRestoreOut(
+        batch_id=batch_id,
+        state="planned",
+        source=restorer.source_of(payload.device_id, payload.snapshot_id),
+    )
+
+
+def _run_restore(
+    restorer: BackupRestorer,
+    device_id: str,
+    snapshot_id: str,
+    batch_id: str,
+    overwrite_memory: bool,
+) -> None:
+    """后台线程的入口：**失败也不往外抛**（异常只留在那个线程的栈里，没人看得见）。
+
+    ``restore`` 自己会把结论写进台账（``state=done/failed`` + ``counts_json`` + ``error``），
+    所以这里连报告都不用接——轮询的人从库里读到全部（与 ``_run_batch`` 同一手法）。
+    """
+    try:
+        restorer.restore(
+            device_id,
+            snapshot_id,
+            batch_id=batch_id,
+            overwrite_memory=overwrite_memory,
+        )
+    except Exception:  # pragma: no cover - restore 已吞掉失败，这里是最后的兜底
+        logger.exception("按点恢复线程异常退出：%s", batch_id)
 
 
 # ---------------------------------------------------------------- 薄重声明两条

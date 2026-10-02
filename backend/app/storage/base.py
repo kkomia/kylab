@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -3129,13 +3129,17 @@ class SnapshotArtifactRef:
 class SnapshotDbView:
     """一份快照库读出来的全集（``SnapshotSource.read_snapshot_db`` 的返回）。
 
-    四项就是读面能回答的全部问题（方案 §2.1 的内容物清单在库里的那一半）：
+    六项就是读面能回答的全部问题（方案 §2.1 的内容物清单在库里的那一半）：
 
     - ``counts``：库侧事实的行数（与 ``SnapshotDumpReport.counts`` 同一个形状）；
-    - ``conversations``：会话清单（阶段 5 的 dry-run 先据它报"会新建哪些"）；
+    - ``conversations``：会话清单（dry-run 先据它报"会新建哪些"）；
     - ``artifacts``：产物记录（``location`` 就是打包/还原用的 Key 或路径）；
-    - ``settings_keys``：设置有哪些键（**值不在这里**：恢复只补本机没有的键，
-      而且 ``SECRET_KEYS`` 与三个前缀的行已经被擦洗掉了——读得出来就说明它们没进包）。
+    - ``settings_keys`` / ``settings``：设置有哪些键、值是什么（**恢复第 9 步要写进本机**
+      的那一份）。值单独给一份：dry-run 只报"补哪几个键"，恢复要真的写，两处共用这一读。
+      键与值都是**擦洗之后**的（``SECRET_KEYS`` 与三个前缀的行已经不在包里了——
+      读得出来就说明它们没进包）；
+    - ``model_provider_names``：快照里那几个模型供应商的**名字**（恢复报告 R13 要用它说
+      "这几个模型凭据要重配"）。只有名字：``api_key`` 那一列被擦洗清空了，包里没有凭据。
 
     **记忆不在这里**：它在 ``<data_dir>/memory/**`` 是文件，不是库里的行——
     读它的是打包/恢复那一层扫目录，不该让存储层假装它也在库里。
@@ -3146,6 +3150,8 @@ class SnapshotDbView:
     conversations: tuple[SnapshotConversationRef, ...] = ()
     artifacts: tuple[SnapshotArtifactRef, ...] = ()
     settings_keys: tuple[str, ...] = ()
+    settings: dict[str, str] = field(default_factory=dict)
+    model_provider_names: tuple[str, ...] = ()
 
 
 SNAPSHOT_EXCLUDED_SETTING_PREFIXES: tuple[str, ...] = ("provider.", "model.", "backup.")
@@ -3196,8 +3202,17 @@ class LocalSnapshotArchiver(Protocol):
 class SnapshotSource(Protocol):
     """本机档独有的**读面**：从一份快照库里读出"包里有什么"（M5 §3.4 的恢复输入）。
 
-    同样只有一个方法：读面的每一项都在同一份快照上，分几次读只会多几个可能对不上的
-    瞬间（会话与产物是同一个库里的两张表）。
+    三个方法，两个读形状（阶段 5 加的第二个）：
+
+    - :meth:`read_snapshot_db`：**窄投影**——"包里有什么"（计数、标题、Key / 设置键清单），
+      预演那份报告主要靠它；
+    - :meth:`iter_snapshot_transfers`：**逐会话全量**——导入器真正要吃的
+      ``ConversationTransfer``（按点恢复走的就是这一条）；
+    - :meth:`local_schema_version`：取"本机认得哪个版本"的那个数（版本判据要用）。
+
+    读面的每一项都在同一份快照上，分几次读只会多几个可能对不上的瞬间（会话与产物是同一个
+    库里的两张表）。三个方法都在同一个对象上（本机档是那一个 ``SqliteMetaStore``），
+    所以"能读快照"这件事只需要一次 ``isinstance`` 判定。
     """
 
     def read_snapshot_db(self, db_path: Path) -> SnapshotDbView:
@@ -3209,6 +3224,38 @@ class SnapshotSource(Protocol):
         版本不认识就抛 ``SnapshotFormatError``（``schema_version`` 高于本机识别的上限
         → 拒绝，照 ``schema.py`` 那条"不降级"的纪律）：更省事的做法是"只读我认识的那几列"，
         那正是"猜着读"。
+        """
+        ...
+
+    def iter_snapshot_transfers(self, db_path: Path) -> Iterator[ConversationTransfer]:
+        """逐条读一份快照库的**全量会话**（M5 阶段 5：按点恢复的输入）。
+
+        与 :meth:`read_snapshot_db` 的分工：那一个是**窄投影**（计数、标题、Key 清单——
+        "包里有什么"），这一个给的是导入器真正要的 :class:`ConversationTransfer`
+        （会话 + 摘要 + 消息 + 事件 + 产物，与 NAS 那条 NDJSON 导出流产出**同一种东西**）。
+
+        **生成器**：一次只在内存里留一条会话（与 ``HttpExportSource`` 的内存上界同一条
+        纪律）——几千条会话的快照库整份读进内存，是这条链上最容易忽略的那一项。
+
+        字段映射与 ``services/conversation_export`` 那一套**逐字段对齐**（同一批记录类型、
+        同一套 JSON 列解码），列名与顺序照 ``schema.sql``：消息按 ``created_at_ms, rowid``、
+        事件按 ``seq``、产物按 ``created_at_ms, id``——与存储层 ``list_messages`` /
+        ``list_session_events`` / ``list_artifacts`` 三处**逐字一致**（顺序不同会让
+        "恢复出来的会话"与"导出导入的会话"在回放上分岔）。
+
+        版本不认识同样抛 ``SnapshotFormatError``。
+        """
+        ...
+
+    def local_schema_version(self) -> int:
+        """**本机库**的 schema 版本（``sqlite_impl/schema.SCHEMA_VERSION`` 那个数）。
+
+        为什么要经存储层拿：判"这份快照我认不认识"要拿它跟快照自报的 ``schema_version``
+        比，而那个常量住在 ``sqlite_impl/``——``services/`` 不许 import 具体实现（L2）。
+        在服务层重写一个数字就是第二个真相源，所以这里给一个读。
+
+        **只回数字，不做判断**：拒绝的纪律（不认识即拒、不降级）在 :meth:`read_snapshot_db`
+        与 ``services/backup_snapshot.parse_manifest`` 两处执行——这个方法是给它们取数用的。
         """
         ...
 

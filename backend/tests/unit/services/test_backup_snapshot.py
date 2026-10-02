@@ -770,7 +770,13 @@ def test_the_work_directory_is_asserted_to_hold_only_the_copy(
     """
 
     class _StrayWal:
-        """把真实现包一层，dump 之后顺手在副本旁边放一个 ``-wal``。"""
+        """把真实现包一层，dump 之后顺手在副本旁边放一个 ``-wal``。
+
+        **四个方法都要转发**（``SnapshotSource`` 那份读面在 M5 阶段 5 涨到了三个：
+        读一份库 / 逐会话读全量 / 本机 schema 版本）：这一层是"薄包装"，协议涨一个它就得
+        跟一个——不跟的话它当场不再满足那个 ``runtime_checkable`` 协议，而报出来的错
+        会是"这个部署没有快照面"（离真正的原因很远）。
+        """
 
         def __init__(self, inner: object) -> None:
             self._inner = inner
@@ -782,6 +788,12 @@ def test_the_work_directory_is_asserted_to_hold_only_the_copy(
 
         def read_snapshot_db(self, db_path: Path):  # type: ignore[no-untyped-def]
             return self._inner.read_snapshot_db(db_path)  # type: ignore[attr-defined]
+
+        def iter_snapshot_transfers(self, db_path: Path):  # type: ignore[no-untyped-def]
+            return self._inner.iter_snapshot_transfers(db_path)  # type: ignore[attr-defined]
+
+        def local_schema_version(self) -> int:
+            return int(self._inner.local_schema_version())  # type: ignore[attr-defined]
 
     assert stores.snapshot is not None
     wrapped = StoreBundle(

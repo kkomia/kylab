@@ -120,10 +120,11 @@ def test_store_covers_exactly_the_local_method_set() -> None:
 
     那四块**都不在** ``LOCAL_METHODS`` 里，它们单独登记：阶段 5 的八个导入台账方法
     （``LOCAL_LEDGER_METHODS``：那两张表只有本机档有）、M4 的六个快照方法
-    （``LOCAL_CACHE_METHODS``：``kb_meta_cache`` 同样是本机独有的一张表）、M5 阶段 2 的
-    两个打包 / 读回方法（``LOCAL_SNAPSHOT_METHODS``：服务器档的库就是它自己，没有"把自己
-    打成一份便携的包"这条动作）与 M5 阶段 3 的五个队列方法（``LOCAL_BACKUP_METHODS``：
-    服务器档自己就是备份的目的地，没有"排队往别处传"这条动作）。所以这条断言的右边是
+    （``LOCAL_CACHE_METHODS``：``kb_meta_cache`` 同样是本机独有的一张表）、M5 的
+    三个打包 / 读回方法（``LOCAL_SNAPSHOT_METHODS``：服务器档的库就是它自己，没有"把自己
+    打成一份便携的包"这条动作；第三个是阶段 5 加的"逐条读全量会话"）与 M5 阶段 3 的五个
+    队列方法（``LOCAL_BACKUP_METHODS``：服务器档自己就是备份的目的地，没有"排队往别处传"
+    这条动作）。所以这条断言的右边是
     **五块清单**——多一个方法就必须进其中之一，而"哪些算本机域"这条纪律一个字没松。
     """
     public = {
@@ -141,7 +142,7 @@ def test_store_covers_exactly_the_local_method_set() -> None:
     assert len(LOCAL_METHODS) == 81
     assert len(LOCAL_LEDGER_METHODS) == 8
     assert len(LOCAL_CACHE_METHODS) == 6
-    assert len(LOCAL_SNAPSHOT_METHODS) == 2
+    assert len(LOCAL_SNAPSHOT_METHODS) == 4
     assert len(LOCAL_BACKUP_METHODS) == 5
 
 

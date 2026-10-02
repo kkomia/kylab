@@ -321,27 +321,13 @@ SETTING_GROUPS: dict[str, Any] = {
     #
     # **凭据不在这一组里**：token 只从引导级来（壳的 ``--token`` / ``KYLAB_TOKEN``），
     # 落库的键因此永远只有这四个（R3/R14：本机库里存不下凭据）。
-    "backup": {
-        "label": "备份",
-        "fields": [
-            {
-                "key": "provider.backup.base_url",
-                "label": "备份提供者地址（留空 = 用登录的那台 NAS）",
-                "type": "text",
-            },
-            {"key": "provider.backup.enabled", "label": "启用备份提供者", "type": "bool"},
-            {
-                "key": "provider.backup.include_workspace",
-                "label": "快照里带上工作区产物（默认不带）",
-                "type": "bool",
-            },
-            {
-                "key": "provider.backup.every_hours",
-                "label": "每多少小时自动打一份快照（0 = 只手动）",
-                "type": "int",
-            },
-        ],
-    },
+    # **备份那一组不在这里**（M5 阶段 4 落地、阶段 5 收口）：它是**本机档独有**的配置，
+    # 而这份注册表同时是服务器档 `GET /settings` 的渲染来源——加进来会让 NAS 网页端的
+    # 设置页长出一条对它毫无意义的「备份」（那一档**就是**备份的目的地）。
+    # 与「知识库连接」那一节同一条处置：本机档由前端自绘
+    # （`frontend/src/features/misc/settings/KnowledgeConnectionSection.tsx` 那个先例），
+    # 读写走 `/local/backup`（GET 整包 / PATCH 白名单四键）。
+    # 四个键本身照旧有代码默认值（见下面的 `DEFAULTS`），运行期可改。
 }
 
 #: 代码默认值。**只有行为参数**：模型身份来自注册表，没有默认模型这回事。

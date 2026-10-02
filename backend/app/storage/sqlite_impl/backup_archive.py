@@ -51,10 +51,17 @@ import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from app.storage.base import (
     SNAPSHOT_EXCLUDED_SETTING_PREFIXES,
+    ChatMessageRecord,
+    ConversationArtifactRecord,
+    ConversationRecord,
+    ConversationTransfer,
+    SessionEventRecord,
     SnapshotArtifactRef,
     SnapshotConversationRef,
     SnapshotDbView,
@@ -68,6 +75,8 @@ from app.storage.sqlite_impl.schema import SCHEMA_VERSION, current_version
 
 __all__ = [
     "dump_scrubbed_db",
+    "iter_snapshot_transfers",
+    "local_schema_version",
     "read_snapshot_db",
 ]
 
@@ -322,6 +331,16 @@ def dump_scrubbed_db(db: Database, dest: str | Path) -> SnapshotDumpReport:
     return report
 
 
+def local_schema_version() -> int:
+    """本机库的 schema 版本（``schema.SCHEMA_VERSION`` 本身，**不另抄一个数**）。
+
+    给的是"这一层认得的版本"：打包时写进 manifest、读一份快照时用来判"认不认识"。
+    两处判据（``read_snapshot_db`` / ``iter_snapshot_transfers``）用的也是这一个常量，
+    所以"拒绝更新的快照"这条纪律不会因为谁少改了一处而失效。
+    """
+    return SCHEMA_VERSION
+
+
 def _read_only(db_path: Path) -> sqlite3.Connection:
     """只读打开一份快照库（``mode=ro``）。
 
@@ -381,8 +400,12 @@ def read_snapshot_db(db_path: str | Path) -> SnapshotDbView:
                 " ORDER BY created_at_ms, id"
             )
         )
-        settings_keys = tuple(
-            str(row["key"]) for row in conn.execute("SELECT key FROM app_settings ORDER BY key")
+        settings = {
+            str(row["key"]): str(row["value"])
+            for row in conn.execute("SELECT key, value FROM app_settings ORDER BY key")
+        }
+        model_provider_names = tuple(
+            str(row["name"]) for row in conn.execute("SELECT name FROM model_providers ORDER BY id")
         )
     finally:
         conn.close()
@@ -392,5 +415,183 @@ def read_snapshot_db(db_path: str | Path) -> SnapshotDbView:
         counts=counts,
         conversations=conversations,
         artifacts=artifacts,
-        settings_keys=settings_keys,
+        settings_keys=tuple(settings),
+        settings=settings,
+        model_provider_names=model_provider_names,
     )
+
+
+# ---------------------------------------------------------------- 按会话读全量（恢复用）
+
+
+def _load(ms: int | None) -> datetime | None:
+    """列里的 UTC 毫秒 → aware ``datetime``（与 ``meta_store._load`` 同一个口径）。
+
+    在这一层重写一遍是刻意的：``meta_store`` 的那个 helper 是私有的，而"存储层去
+    import 服务层"（``conversation_export._load_ms``）是**反向依赖**——两行换算不值得
+    把依赖方向反过来。
+    """
+    if ms is None:
+        return None
+    return datetime.fromtimestamp(int(ms) / 1000, tz=UTC)
+
+
+def _json_list(raw: Any) -> tuple[dict[str, Any], ...]:
+    """JSON 数组列 → 记录里的元组（解不出来就当空——**形状坏了不该让恢复整条崩**）。
+
+    与 ``conversation_export`` 里那几处 ``tuple(dict(item) for item in ...)`` 同一口径：
+    快照库里的这几列是本应用自己写进去的，坏了说明库被改过；那时"少几段引用"比
+    "整条会话恢复不了"好，而且它不会静默——会话正文与其余字段照旧完整。
+    """
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(value, list):
+        return ()
+    return tuple(dict(item) for item in value if isinstance(item, dict))
+
+
+def _conversation_from_row(row: sqlite3.Row) -> tuple[ConversationRecord, str, str | None]:
+    """``conversations`` 一行 → ``(记录, 摘要, 摘要上界)``。
+
+    字段映射与 ``conversation_export.conversation_from_data`` **逐字段对齐**（同一批
+    记录类型、同一套三态 / JSON 列解码）：两条来源（NAS 的 NDJSON 流与快照库）产出
+    同一种 ``ConversationTransfer``，导入器才只需要认一件事。
+    """
+    kb_ids: tuple[str, ...] = ()
+    try:
+        parsed = json.loads(row["kb_ids"] or "[]")
+    except (TypeError, ValueError):
+        parsed = []
+    if isinstance(parsed, list):
+        kb_ids = tuple(str(item) for item in parsed)
+    record = ConversationRecord(
+        id=str(row["id"]),
+        title=str(row["title"] or ""),
+        kb_ids=kb_ids,
+        owner_id=row["owner_id"],
+        model_pk=row["model_pk"],
+        # 三态列：NULL 保持 None（"跟随全局默认"是一个真实状态，不折成 False）
+        thinking=None if row["thinking"] is None else bool(row["thinking"]),
+        thinking_effort=row["thinking_effort"],
+        pinned=bool(row["pinned"]),
+        workspace_id=row["workspace_id"],
+        archived_at=_load(row["archived_at_ms"]),
+        created_at=_load(row["created_at_ms"]),
+        updated_at=_load(row["updated_at_ms"]),
+    )
+    return record, str(row["context_summary"] or ""), row["summary_upto"]
+
+
+def _messages_of(conn: sqlite3.Connection, conversation_id: str) -> list[ChatMessageRecord]:
+    """``created_at_ms, rowid`` 升序——与 ``SqliteMetaStore.list_messages`` 逐字一致。"""
+    return [
+        ChatMessageRecord(
+            id=str(row["id"]),
+            conversation_id=conversation_id,
+            role=str(row["role"]),
+            content=str(row["content"] or ""),
+            sources=_json_list(row["sources"]),
+            steps=_json_list(row["steps"]),
+            thinking=str(row["thinking"] or ""),
+            attachments=_json_list(row["attachments"]),
+            created_at=_load(row["created_at_ms"]),
+        )
+        for row in conn.execute(
+            "SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY created_at_ms, rowid",
+            (conversation_id,),
+        )
+    ]
+
+
+def _events_of(conn: sqlite3.Connection, conversation_id: str) -> list[SessionEventRecord]:
+    """``ORDER BY seq``——**不按时间戳**，与 ``list_session_events`` 同一条理由：
+    同一毫秒里的一批并发工具调用，只有 seq 分得出先后。
+    """
+    return [
+        SessionEventRecord(
+            conversation_id=conversation_id,
+            kind=str(row["kind"]),
+            payload=dict(json.loads(row["payload"] or "{}")),
+            seq=int(row["seq"]),
+            id=int(row["id"]) if row["id"] is not None else None,
+            created_at=_load(row["created_at_ms"]),
+        )
+        for row in conn.execute(
+            "SELECT * FROM session_events WHERE conversation_id = ? ORDER BY seq",
+            (conversation_id,),
+        )
+    ]
+
+
+def _artifacts_of(
+    conn: sqlite3.Connection, conversation_id: str
+) -> list[ConversationArtifactRecord]:
+    """``created_at_ms, id`` 升序——与 ``list_artifacts`` 逐字一致。"""
+    return [
+        ConversationArtifactRecord(
+            id=str(row["id"]),
+            conversation_id=conversation_id,
+            name=str(row["name"] or ""),
+            format=str(row["format"] or ""),
+            size_bytes=int(row["size_bytes"] or 0),
+            storage=str(row["storage"]),
+            # location **保原样**：对象档是 data_dir 下的 Key，工作区档是那台机器上的
+            # 绝对路径（恢复报告据此说"哪几份的字节没跟过来"）
+            location=str(row["location"] or ""),
+            workspace_id=row["workspace_id"],
+            owner_id=row["owner_id"],
+            knowledge_base_id=row["knowledge_base_id"],
+            document_id=row["document_id"],
+            created_at=_load(row["created_at_ms"]),
+        )
+        for row in conn.execute(
+            "SELECT * FROM conversation_artifacts WHERE conversation_id = ?"
+            " ORDER BY created_at_ms, id",
+            (conversation_id,),
+        )
+    ]
+
+
+def iter_snapshot_transfers(db_path: str | Path) -> Iterator[ConversationTransfer]:
+    """逐条读一份快照库的全量会话（M5 阶段 5：按点恢复的输入）。
+
+    实现与纪律：
+
+    - **只读打开**（``_read_only``，与 ``read_snapshot_db`` 同一个口子）——快照是观察
+      对象，读它不产生 ``-journal`` / ``-wal``；
+    - **生成器**：会话一条一条读、消息/事件/产物各一次查询，内存里最多一条会话
+      （与 ``HttpExportSource`` 的生产者同一条上界纪律）；
+    - **顺序**：会话按 ``updated_at_ms DESC, id``（与 ``read_snapshot_db`` 的会话清单
+      一致）；三张子表按上面的 helper 各自对齐存储层那三条 ``ORDER BY``；
+    - 版本不认识（比本机新 / 没有版本号）→ ``SnapshotFormatError``，**不猜着读**。
+
+    调用方（``services/backup_restore.SnapshotFileSource``）把它当"另一个导出流"用：
+    导入器对来源的唯一要求就是"逐条吐 ``ConversationTransfer``"。
+    """
+    path = Path(db_path)
+    conn = _read_only(path)
+    try:
+        _refuse_newer_schema(current_version(_ConnectionAsDatabase(conn)) or 0, path)
+        ids = [
+            str(row["id"])
+            for row in conn.execute("SELECT id FROM conversations ORDER BY updated_at_ms DESC, id")
+        ]
+        for conversation_id in ids:
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+            if row is None:  # pragma: no cover - 刚列出来就没了，说明库在被改
+                continue
+            record, summary, summary_upto = _conversation_from_row(row)
+            yield ConversationTransfer(
+                conversation=record,
+                summary=summary,
+                summary_upto=summary_upto,
+                messages=_messages_of(conn, conversation_id),
+                events=_events_of(conn, conversation_id),
+                artifacts=_artifacts_of(conn, conversation_id),
+            )
+    finally:
+        conn.close()

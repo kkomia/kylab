@@ -1,4 +1,4 @@
-"""``/local/backup`` 那一族的整条链（M5 阶段 4A，方案 §7 A 的前两行 + R12）。
+"""``/local/backup`` 那一族的整条链（M5 阶段 4A / 5，方案 §7 A 的前两行 + R12）。
 
 这条用例回答的是"**界面上按一下「立即备份」会得到什么**"：本机档的真 app
 （``app.main.create_app``，本机档挂的就是 ``local_router`` 那张白名单）+ 假 NAS
@@ -17,7 +17,13 @@
 ④ **五个端点的错误映射**：没有设备身份 → 400 + 那句人话（R12）；PATCH 白名单四键
    （凭据类键与未知键 422）；恢复点 404 如实回；删不掉（连不上）→ 503 而不是 500；
 ⑤ **恢复点清单是透传**：ready 时 ``items`` / ``total`` / ``quota`` 原样给，且**30s 缓存**
-   （两次 GET 只打一次 NAS）。
+   （两次 GET 只打一次 NAS）；
+⑥ **这一族只挂在本机档**（服务器档那一档自己就是备份的目的地）；
+⑦ **按点恢复那一端**（阶段 5）：dry-run 同步回报告且一个字节不写、真恢复 202 + 批次 id
+   并能用**既有**的 ``GET /local/import/{id}`` 轮询、``extra="forbid"``、连不上 → 502。
+
+逐格的恢复判据（会话合并规则、记忆 / 设置 / 产物落位、五条安全栏）在
+``tests/unit/services/test_backup_restore.py``；这一份只在"界面上按一下"那一层钉一遍。
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -77,6 +84,10 @@ class FakeNas:
         self.seen: list[httpx.Request] = []
         self.fail: Exception | None = None
         self.delete_status = 200
+        self.package: bytes | None = None
+        """那一份恢复点的**包体**（阶段 5 的按点恢复下它；没给就是"这条路径上没有"。）"""
+        self.manifest_doc: dict[str, Any] | None = None
+        """那一份恢复点的**清单**（同上）。"""
         self.list_payload: dict[str, Any] = {
             "items": [_snapshot_item()],
             "total": 1,
@@ -125,6 +136,21 @@ class FakeNas:
             )
         if path.endswith("/manifest") and request.method == "PUT":
             return httpx.Response(201, json={"snapshot_id": SEGMENT, "bytes": 1, "sha256": "x"})
+        if path.endswith("/blob") and request.method == "GET":
+            # 按点恢复取包体（``download_snapshot`` 会核对这个头；不符就中止）
+            if self.package is None:
+                return httpx.Response(404, text="这条路径上没有快照体")
+            return httpx.Response(
+                200,
+                content=self.package,
+                headers={"X-Kylab-Sha256": hashlib.sha256(self.package).hexdigest()},
+            )
+        if request.method == "GET" and "/backup/snapshots/" in path:
+            # 按点恢复先取清单（几 KB）：格式 / 版本判据与"包里有什么"都靠它。
+            # 这一支匹配的是**明细路径**（列表那条在上面已经答过了）。
+            if self.manifest_doc is None:
+                return httpx.Response(404, text="这条路径上没有清单")
+            return httpx.Response(200, json=self.manifest_doc)
         if request.method == "DELETE":
             if self.delete_status >= 400:
                 return httpx.Response(self.delete_status, text="这条路径上没有恢复点可删")
@@ -528,4 +554,291 @@ def test_the_backup_family_lives_only_on_the_local_router() -> None:
     local_paths = paths_of(local_router)
     assert {f"{BASE}", f"{BASE}/points", f"{BASE}/snapshots"} <= local_paths
     assert f"{BASE}/points/{{device_id}}/{{snapshot_id}}" in local_paths
+    assert f"{BASE}/restore" in local_paths, "按点恢复（阶段 5）也只挂在本机档那张白名单上"
     assert {path for path in paths_of(api_router) if path.startswith("/api/v1/local/")} == set()
+
+
+# ------------------------------------------------------------------ ⑦ 按点恢复（阶段 5）
+#
+# 这一节走**端到端**那条路：真包（app 自己的打包器打的）→ 假 NAS 当"那台机器" →
+# 端点 → 后台线程 → 既有的 `GET /local/import/{batch}` 轮询。它要证明的是**接线对了**：
+# 请求形状、dry-run 那份报告、202 + 批次 id、"失败也有一份记录"。
+#
+# 逐格的判据（会话怎么合并、记忆/设置/产物怎么落位、五条安全栏）在
+# `tests/unit/services/test_backup_restore.py`；这里只在"界面上按一下"那一层钉一遍。
+
+
+RESTORE = f"{BASE}/restore"
+
+
+def _serve_the_local_package(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    nas: FakeNas,
+    *,
+    extra_setting: str = "llm.temperature",
+) -> dict[str, Any]:
+    """造一份"**那台机器上的**恢复点"：本机先有一条会话 / 一个设置 + 一份记忆文件，
+    打一份真包交给假 NAS，再把本机那三样**删掉**——于是它看起来就像"另一台机器"。
+
+    这样造现场的好处：包与清单都是**产品自己的**路径产出的（真打包器 + 真清单），
+    不手写形状；而"本机没有、包里有一份"正是恢复最该被验的那一档。
+    """
+    from app.services.backup_snapshot import read_archive_manifest
+    from app.storage.sqlite_impl.backup_archive import local_schema_version
+
+    stores = get_stores()
+    assert stores.ledger is not None
+    transfer = _restore_transfer()
+    stores.ledger.write_imported_conversation(transfer)
+    stores.meta.set_setting(extra_setting, "0.3")
+    memory = Path(get_settings().data_dir) / "memory" / "usr_owner"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "MEMORY.md").write_text("# 记忆\n要跟着恢复回来的东西。\n", encoding="utf-8")
+
+    # 打这份包的时候**让传输断着**：这一份要留在 ``backup/pending/`` 当"那台机器上的那一份"，
+    # 传出去就被删了（队列传成之后会删本地包，那条判据在 ①）。
+    nas.fail = httpx.ConnectError("先不上传（这一份要留在盘上）")
+    try:
+        row = _take_snapshot(client)["snapshot"]
+    finally:
+        nas.fail = None
+    package = Path(get_settings().data_dir) / "backup" / "pending" / f"{row['id']}.tar.gz"
+    manifest = read_archive_manifest(package, local_schema_version=local_schema_version())
+    nas.package = package.read_bytes()
+    nas.manifest_doc = json.loads(manifest.to_bytes())
+
+    stores.meta.delete_conversation(transfer.conversation.id)
+    stores.meta.delete_setting(extra_setting)
+    (memory / "MEMORY.md").unlink()
+    return {
+        "snapshot_id": row["id"],
+        "conversation_id": transfer.conversation.id,
+        "setting": extra_setting,
+        "memory": "usr_owner/MEMORY.md",
+    }
+
+
+def _restore_transfer() -> Any:
+    """包里那一条会话（形状照 `ConversationTransfer`，只挑恢复该保住的字段）。"""
+    from datetime import UTC, datetime
+
+    from app.storage.base import (
+        ChatMessageRecord,
+        ConversationRecord,
+        ConversationTransfer,
+        SessionEventRecord,
+    )
+
+    moment = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
+    return ConversationTransfer(
+        conversation=ConversationRecord(
+            id="conv_restore_1",
+            title="要恢复回来的会话",
+            kb_ids=(),
+            created_at=moment,
+            updated_at=moment,
+        ),
+        summary="压缩过的上下文",
+        summary_upto=None,
+        messages=[
+            ChatMessageRecord(
+                id="msg_restore_1",
+                conversation_id="conv_restore_1",
+                role="assistant",
+                content="这句正文要原样回来",
+                created_at=moment,
+            )
+        ],
+        events=[
+            SessionEventRecord(
+                conversation_id="conv_restore_1",
+                seq=1,
+                kind="turn/complete",
+                payload={"status": "ok"},
+                created_at=moment,
+            )
+        ],
+    )
+
+
+def _await_restore(client: TestClient, batch_id: str, *, seconds: float = 20.0) -> dict[str, Any]:
+    """等后台那一批**真的**跑完（轮询既有的那个端点——这本身就是"复用"的证据）。
+
+    "跑完"的判据是 ``done`` **且**报告里有 ``restore`` 那一段：恢复这一批有两位写者
+    （M2 的导入器写"会话那一段完了"，恢复器补完记忆 / 设置 / 产物再写终态），所以
+    只看到 ``done`` 就返回会读到"少了恢复那一段"的中间态。
+    """
+    deadline = time.monotonic() + seconds
+    body: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/v1/local/import/{batch_id}").json()
+        if body["state"] == "failed" or (body["state"] == "done" and "restore" in body["counts"]):
+            return body
+        time.sleep(0.02)
+    raise AssertionError(f"这批没在 {seconds} 秒内跑完：{body}")
+
+
+def test_restore_dry_run_returns_the_report_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """``dry_run=true``：**同步**回那份报告（四段 + 要重配的凭据），本机一个字节不写。
+
+    "不写"的判据落在三件事上：那条会话仍然不在、那个设置仍然没有、台账里没有批次行。
+    """
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+        scene = _serve_the_local_package(client, monkeypatch, nas)
+        stores = get_stores()
+
+        response = client.post(
+            RESTORE,
+            json={
+                "device_id": DEVICE,
+                "snapshot_id": scene["snapshot_id"],
+                "dry_run": True,
+            },
+        )
+
+        assert response.status_code == 202, response.text
+        body = response.json()
+        assert body["dry_run"] is True and body["batch_id"] == ""
+        plan = body["plan"]
+        assert [item["conversation_id"] for item in plan["created"]] == [scene["conversation_id"]]
+        assert plan["skipped"] == [] and plan["replaced"] == []
+        assert plan["counts"] == {"created": 1, "replaced": 0, "skipped": 0}
+        assert plan["package"]["counts"]["conversations"] == 1
+        assert scene["setting"] in plan["settings"]["will_fill"]
+        assert plan["memory"]["will_copy"] == 1, "只补回被删掉的那一份（模板那几份本机已经有了）"
+        assert scene["memory"] not in plan["memory"]["already_here_files"]
+        assert plan["artifacts"]["in_package"] == 0, "这条会话没有产物"
+        assert any("NAS" in line for line in plan["credentials_to_configure"])
+
+        assert stores.meta.get_conversation(scene["conversation_id"]) is None, "预演不写库"
+        assert stores.meta.get_setting(scene["setting"]) is None
+        data_dir = Path(get_settings().data_dir)
+        assert not (data_dir / "memory" / "usr_owner" / "MEMORY.md").exists(), "预演不落记忆"
+        assert stores.ledger.list_import_batches(limit=10) == [], "预演不产批次"
+        assert any(
+            request.method == "GET" and request.url.path.endswith("/blob") for request in nas.seen
+        ), "包体是从 NAS 读回来的"
+
+
+def test_restore_starts_a_batch_that_the_existing_endpoints_can_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """真恢复：**202 + 批次 id** → 轮询既有的 ``GET /local/import/{id}`` → 状态与报告。
+
+    这条用例同时是"**不新开端点**"那句话的证据：进度与报告都在 M2 那张台账上
+    （恢复特有的那几段并进 ``counts["restore"]``）。
+    """
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+        scene = _serve_the_local_package(client, monkeypatch, nas)
+        stores = get_stores()
+
+        response = client.post(
+            RESTORE, json={"device_id": DEVICE, "snapshot_id": scene["snapshot_id"]}
+        )
+
+        assert response.status_code == 202, response.text
+        body = response.json()
+        assert body["state"] == "planned" and body["batch_id"].startswith("rst_")
+        assert body["source"] == f"backup://{DEVICE}/{scene['snapshot_id']}"
+        # **拿到 id 立刻就能查**（端点先同步建行再去后台跑）
+        first = client.get(f"/api/v1/local/import/{body['batch_id']}")
+        assert first.status_code == 200, first.text
+
+        done = _await_restore(client, body["batch_id"])
+
+        assert done["state"] == "done", done
+        assert done["counts"]["created"] == 1
+        assert done["counts"]["restore"]["memory"]["copied"] == 1
+        assert scene["setting"] in done["counts"]["restore"]["settings"]["filled"]
+        assert stores.meta.get_conversation(scene["conversation_id"]) is not None, "会话回来了"
+        assert stores.meta.get_setting(scene["setting"]) == "0.3"
+        data_dir = Path(get_settings().data_dir)
+        assert (data_dir / "memory" / "usr_owner" / "MEMORY.md").is_file()
+        # 恢复前那份本地兜底：只落本机、**不在队列里**
+        assert list((data_dir / "restore-backup").glob("*/*.tar.gz"))
+        kinds = [row.kind for row in stores.backup_queue.list_backup_snapshots(limit=50)]
+        assert "pre_restore" not in kinds, "兜底那份不入队（队列那边也有一条显式的拒绝）"
+
+
+def test_restore_refuses_unknown_keys_and_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """``extra="forbid"``：凭据类键与未知键都不收（R3/R14），缺哪一段也说得出是哪个字段。"""
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+
+        for payload in (
+            {"device_id": DEVICE, "snapshot_id": SEGMENT, "token": "kylab_sk_x"},
+            {"device_id": DEVICE, "snapshot_id": SEGMENT, "server": NAS},
+            {"device_id": "", "snapshot_id": SEGMENT},
+            {"snapshot_id": SEGMENT},
+        ):
+            response = client.post(RESTORE, json=payload)
+            assert response.status_code == 422, f"{payload} 该被 422 挡住"
+
+
+def test_restore_reports_a_broken_provider_the_way_the_family_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """连不上 NAS：预演 → **502 + 原因**（外部依赖出错）；真恢复 → **202 + 一条 failed 台账**。
+
+    两档的差别是有意的：预演那条路要"当场告诉用户为什么看不到"，而真恢复那条路
+    （后台线程 / CLI）要的是**失败也是一份记录**——轮询的人从台账里读到原因。
+    """
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+        scene = _serve_the_local_package(client, monkeypatch, nas)
+        nas.fail = httpx.ConnectError("NAS 连不上（用例）")
+
+        dry = client.post(
+            RESTORE,
+            json={"device_id": DEVICE, "snapshot_id": scene["snapshot_id"], "dry_run": True},
+        )
+        assert dry.status_code == 502, dry.text
+        assert "连不上" in dry.json()["message"]
+
+        response = client.post(
+            RESTORE, json={"device_id": DEVICE, "snapshot_id": scene["snapshot_id"]}
+        )
+        assert response.status_code == 202, response.text
+
+        failed = _await_restore(client, response.json()["batch_id"])
+
+        assert failed["state"] == "failed" and "连不上" in failed["error"]
+        assert get_stores().meta.get_conversation(scene["conversation_id"]) is None
+
+
+# ------------------------------------------------- 收口：备份那四个键的登记口径（阶段 4A 收口 1）
+
+
+def test_the_backup_keys_live_in_defaults_but_not_in_setting_groups() -> None:
+    """四个备份运行期键在 ``DEFAULTS`` 里、**不在** ``SETTING_GROUPS`` 里。
+
+    口径与"知识库连接"那一节（``frontend/.../KnowledgeConnectionSection.tsx``）一致：
+    ``SETTING_GROUPS`` 是一份**服务器档也会渲染**的注册表，而备份这一族（含 ``pre_restore``
+    兜底、待传队列）是本机档独有的——它的界面是**本机档前端自绘**的，不进那份注册表。
+
+    键本身必须留在 ``DEFAULTS`` 里：``/local/backup`` 的 PATCH 白名单元数据从这儿取回落值，
+    ``resolve_backup_target`` 也靠它读"用户改过没有"。所以这条用例钉的是**两件事同时成立**：
+    运行期键还在（功能不回退），而登记表里没有它（不再骗服务器档的设置页）。
+    """
+    from app.services.runtime_config import DEFAULTS, SETTING_GROUPS
+
+    registered = {
+        field["key"] for group in SETTING_GROUPS.values() for field in group.get("fields", ())
+    }
+    for key in (
+        "provider.backup.every_hours",
+        "provider.backup.include_workspace",
+    ):
+        assert key in DEFAULTS, f"{key} 要在 DEFAULTS 里（PATCH 白名单与回落链靠它）"
+        assert key not in registered, f"{key} 不该进 SETTING_GROUPS（那一节由本机档前端自绘）"
+    assert "backup" not in SETTING_GROUPS, "整个分组都不该在（本机档独有的那一节）"
+    # ``base_url`` / ``enabled`` 与知识库那一对同一口径：本来就没有 DEFAULTS 条目
+    assert "provider.backup.base_url" not in DEFAULTS
+    assert "provider.backup.enabled" not in DEFAULTS
