@@ -925,7 +925,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
           {section === 'storage' && <StorageSection />}
           {section === 'knowledge' && <KnowledgeConnectionSection />}
-          {section === 'backup' && <BackupSection />}
+          {/* 「备份」这一节尾部那条入口要能把浮层关掉再跳（R5：它是 `/backup` 唯一入口） */}
+          {section === 'backup' && (
+            <BackupSection
+              onOpenPage={() => {
+                onClose()
+                void navigate('/backup')
+              }}
+            />
+          )}
           {section === 'credentials' && <CredentialsSection />}
           {section === 'appearance' && <AppearanceSection />}
           {section === 'shortcuts' && <ShortcutsSection />}

@@ -9,6 +9,7 @@
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/settings', () => ({
@@ -277,6 +278,12 @@ function asAdmin(): void {
     authStatus: null,
     reloginCount: 0,
   })
+}
+
+/** 把当前地址画出来：用来断言"点了那颗按钮真的跳到 `/backup`"（R5 那条唯一入口）。 */
+function LocationProbe() {
+  const location = useLocation()
+  return <span data-testid="probe-path">{location.pathname}</span>
 }
 
 beforeEach(() => {
@@ -882,6 +889,27 @@ describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
     ).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByLabelText('每多少小时自动打一份')).toHaveValue('24')
     expect(screen.getByRole('button', { name: '保存间隔' })).toBeDisabled() // 没改过就不发
+  })
+
+  it('尾部那颗按钮是去 `/backup` 的入口，跳之前先把设置关掉（R5：它是唯一入口）', async () => {
+    const user = userEvent.setup()
+    setBackupStatusForTest(backupPayload())
+    stubBackupNetwork()
+
+    const onClose = vi.fn()
+    renderMisc(
+      <>
+        <SettingsModal open onClose={onClose} />
+        <LocationProbe />
+      </>,
+    )
+    await user.click(await screen.findByRole('button', { name: '备份' }))
+    await user.click(screen.getByRole('button', { name: /备份与恢复（明细与恢复点）/ }))
+
+    // 侧栏那一组与顶栏那条状态条（连同它们的入口）都删了，所以这一条必须真的能跳
+    expect(screen.getByTestId('probe-path').textContent).toBe('/backup')
+    // 设置是浮层：跳走之前得先关掉它（否则新页面被它盖住）
+    expect(onClose).toHaveBeenCalled()
   })
 
   it('改开关走 PATCH，只发那一个键（凭据类键一个都不带）', async () => {

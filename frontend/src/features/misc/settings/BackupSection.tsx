@@ -9,8 +9,14 @@
  *
  * ## 与备份页的分工（不让两处各长一套）
  *
- * - 这一节：四项配置 + 队列摘要 + 「立即备份」；
+ * - 这一节：四项配置 + 队列摘要 + 「立即备份」+ **去备份页的入口**（R5）；
  * - 备份页：状态、能力集、队列明细、恢复点、恢复向导。
+ *
+ * ## 那一条入口是**唯一入口**（R5）
+ *
+ * 侧栏那一组「备份」与顶栏那条状态条（连同它的入口）都在 R5 删掉了，所以这一节
+ * 尾部那颗按钮是 `/backup` 唯一的入口。动作由宿主给（`onOpenPage`）：设置是浮层，
+ * 跳走之前得先关掉它——`SettingsModal` 里那一下 `onClose()` + `navigate('/backup')`。
  *
  * 措辞全部从 `features/backup/copy.ts` 出（那一份是这条界面的唯一文案出口）。
  *
@@ -45,7 +51,7 @@ import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
 import { Switch } from '@/ui/switch'
 
-export function BackupSection() {
+export function BackupSection({ onOpenPage }: { onOpenPage: () => void }) {
   const backup = useBackupStatus()
   const provider = backup.provider
   /** 地址那一格：`null` = 还没动过（保存后回到这个状态）。 */
@@ -263,7 +269,16 @@ export function BackupSection() {
               {busy ? '正在打…' : '立即备份'}
             </Button>
           </div>
-          <p className="m-row-note">明细与恢复点在「备份」那一页。</p>
+          {/*
+            去备份页的入口（R5）：侧栏那一组「备份」删掉之后，**这里是唯一入口**
+            （顶栏那条状态条也连同它的入口一起删了）。动作由宿主给：
+            设置是浮层，跳走之前得先把它关掉（`SettingsModal` 里那一下 onClose + navigate）。
+          */}
+          <div className="m-edit-actions">
+            <Button variant="outline" onClick={onOpenPage}>
+              备份与恢复（明细与恢复点）→
+            </Button>
+          </div>
         </>
       )}
     </>

@@ -6,25 +6,31 @@
  * ```
  * 品牌位（环行星标 + 折叠开关）
  * 新建会话（`/chat?new=1`，带快捷键提示）
- * 主导航：笔记 / 记忆 / 能力 / 概览 / 任务中心 / 知识库▸（所有知识库）
+ * 主导航：笔记 / 记忆 / 能力 / 知识库▸（所有知识库 / 概览 / 任务中心）
  * 项目节：标题右侧「新增项目」（打开新建弹窗）+ 项目行（带条数，悬停时右端出现「+」= 在这个项目里新开会话，以及「⋯」= 重命名 / 归档 / 删除）+ 各自的项目内会话（超过 5 条先收起）+ 清单底部的「已归档」入口（v0.55）
  * 对话节：没归项目的会话（前 8 条）+ 查看全部会话
  * 页脚：账号（头像 + 名字 → 向上展开的菜单）
  * ```
  *
- * ## M3 阶段 6：知识库这一组按提供者状态显隐（D1 + D3）
+ * ## 知识库组：固定三条子项、**无条件渲染**（R5 拍板，回到推送前的结构）
  *
- * 从 M3 起，本机档的知识库**在别处**（NAS 上），"现在连不连得上"由本机后端给的
- * 提供者状态说了算（`@/api/provider`，判定只有那一处）。于是这一栏有两处按它动：
+ * 这一组曾经按提供者状态整组显隐（M3 阶段 6），并把「概览」「任务中心」搬去主导航，
+ * 理由是"知识库连不上不该把概览与任务中心一起带走"。**R5 起回到推送前的结构**：
  *
- * 1. **「知识库」整组只在 `state == ready` 时渲染**：不可用 / 还没探过时导航里
- *    没有这一项（**不闪一个点进去报错的入口**），页面也在路由守卫那一层被挡住
- *    （`features/knowledge/ProviderRoute.tsx`）。服务器档（浏览器 / NAS 网页端）
- *    不受这条影响——那一档知识库就是它自己，组一直在（`gate = false`）；
- * 2. **「概览」「任务中心」从这一组里搬出来**（决策点 D1）：它们不是知识库页面，
- *    整组隐藏时不该被一起带走——原先"知识库连不上"等于"概览与任务中心也没了"。
- *    搬进下面的 `NAV_ITEMS`（主导航）之后这一组的归属也更干净：
- *    组里只剩「所有知识库」一条真属于知识库的入口。
+ * 1. **组无条件渲染**（不再看 `state == ready`，也不看有没有探过）：连不上时
+ *    由各页面自己处理断连状态（路由守卫仍在 `features/knowledge/ProviderRoute.tsx`）；
+ * 2. **三条子项、顺序照旧**：所有知识库 / 概览（`/`，exact）/ 任务中心（`/tasks`）；
+ *    组头的归属因此重新覆盖 `/` 与 `/tasks`（站在概览或任务中心时组头点亮，
+ *    正是"用户看得出自己在哪一节里"要的那件事）；
+ * 3. 顶层主导航只剩 笔记 / 记忆 / 能力（+ 这一组的组头）。
+ *
+ * ## 备份入口搬进设置（R5）
+ *
+ * 侧栏原先还有一组「备份」（M5 阶段 7，只在有本机后端的那一档渲染）。
+ * **R5 起整组删掉**：入口改在设置 →「备份」一节尾部那一颗去 `/backup` 的按钮
+ * （`features/misc/settings/BackupSection.tsx`），`/backup` 路由保留。
+ * 理由：侧栏的位置留给高频入口，而"备份与恢复"是低频的运维动作，
+ * 与它旁边那四项配置本来就住在同一节里。
  *
  * ## 图标：Remix Icon（与旧版同一套）
  *
@@ -100,7 +106,6 @@ import { prefetchConversationDetail } from '@/features/chat/runtime/useChatData'
 import { useLiveTurn } from '@/features/chat/model/liveTurn'
 import {
   RiAddLine,
-  RiArchiveLine,
   RiArrowDownSLine,
   RiArrowRightSLine,
   RiBook2Line,
@@ -124,7 +129,6 @@ import {
 import { WorkspaceCreateDialog } from '@/features/misc/workspaces/WorkspaceCreateDialog'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
-import { useBackupStatus } from '@/api/backup'
 import { useKnowledgeProviderStatus } from '@/api/provider'
 import { warmKnowledgeBases } from '@/features/knowledge/store'
 import { formatCount, formatRelativeTime } from '@/lib/format'
@@ -242,13 +246,10 @@ const SIDE_ROW_ADD =
  * 导航项顺序 = 使用频率（《界面信息架构草案》§1）。
  *
  * **「知识库」不在这里**：它是一个可折叠的子菜单（见 `KNOWLEDGE_GROUP`），
- * 而且**按提供者状态显隐**（M3 阶段 6，见文件头）。
+ * 「概览」「任务中心」也**在那一组里**（R5 拍板回到推送前的结构——它们曾在
+ * M3 阶段 6 被搬到这里）。
  * **「对话」也不在这里**：它与下面的会话列表、以及最上面的「新对话」是同一件事的三个入口，
  * 并排时用户会犹豫该点哪个——**会话列表本身就是那个入口**（Kimi / ChatGPT / Claude 同款）。
- *
- * 「概览」「任务中心」**在这里**（M3 阶段 6 从知识库组里搬出来的，决策点 D1）：
- * 它们不是知识库页面，原先挂在那一组下面，于是"知识库连不上"会把概览与任务中心
- * 一起带走——那是两件毫不相干的事。
  *
  * `motion` 是这个条目的**悬停动效族**（v0.18）：一项一个动作，取的是"这个图标画的是什么"
  * 该有的动作（便签自下放上 / 记忆歪一头再正过来 / 能力上电弹一下 / 书脊滑进来）。
@@ -275,25 +276,17 @@ const NAV_ITEMS = [
     motion: 'spring',
     page: 'capabilities',
   },
-  // 「概览」= 驾驶舱，住 `/`（与旧前端一致：落地页就是概览，书签不用改）。
-  // `/dashboard` 只是同一页的旧入口，在新路由表里是一条重定向。
-  { to: '/', label: '概览', icon: RiDashboardLine, exact: true, motion: 'drop', page: 'dashboard' },
-  {
-    to: '/tasks',
-    label: '任务中心',
-    icon: RiTaskLine,
-    exact: false,
-    motion: 'spring',
-    page: 'tasks',
-  },
 ] as const
 
 /**
- * 知识库组：**M3 阶段 6 起只剩「所有知识库」一条**，而且整组按提供者状态显隐。
+ * 知识库组：**三条固定子项**（所有知识库 / 概览 / 任务中心），**无条件渲染**。
  *
- * 子项不列每个库的名字（见文件头第 2 条）；「概览」「任务中心」已搬进 `NAV_ITEMS`
- * （D1，见那里的说明）。这一项照抄 Kimi 的原样动作（右侧滑入 + 放大落定）：
- * 它是这一栏里唯一的分组头，动作与"把一叠东西从右边推上来"的语义对得上。
+ * R5 拍板回到推送前的结构：概览与任务中心回到这一组里（M3 阶段 6 曾把它们搬去主导航），
+ * 组也不再按提供者状态显隐——连不上的处置在各页面自己身上（路由守卫照旧）。
+ * 子项不列每个库的名字（见文件头第 2 条）。
+ *
+ * 这一项照抄 Kimi 的原样动作（右侧滑入 + 放大落定）：它是这一栏里唯一的分组头，
+ * 动作与"把一叠东西从右边推上来"的语义对得上。
  */
 const KNOWLEDGE_GROUP = {
   label: '知识库',
@@ -307,30 +300,23 @@ const KNOWLEDGE_GROUP = {
       exact: true,
       page: 'knowledgeBases',
     },
-  ],
-} as const
-
-/**
- * 备份组（M5 阶段 7）：一个可折叠的子菜单，里面一条「备份与恢复」。
- *
- * **显隐的判据与知识库那一组刻意不同**：知识库那一组按提供者状态显隐（连不上就摘掉，
- * 因为那一档知识库内容全在 NAS 上，点进去是空页面）；这一组判的是**这一档有没有本机后端**
- * （`backupApplies`）——提供者连不上时**照样要在导航里**，那正是用户要看
- * "还有几份没备上去、为什么没成"的时刻（备份是本地动作，队列那半的账与远端无关）。
- *
- * 形状照 `KNOWLEDGE_GROUP`：折叠头 + 一条子项（不铺队列行、不铺恢复点——那是页面里的事）。
- */
-const BACKUP_GROUP = {
-  label: '备份',
-  icon: RiArchiveLine,
-  motion: 'slide',
-  children: [
+    // 「概览」= 驾驶舱，住 `/`（与旧前端一致：落地页就是概览，书签不用改）。
+    // `/dashboard` 只是同一页的旧入口，在新路由表里是一条重定向。
     {
-      to: '/backup',
-      label: '备份与恢复',
-      icon: RiArchiveLine,
+      to: '/',
+      label: '概览',
+      icon: RiDashboardLine,
       exact: true,
-      page: 'backup',
+      motion: 'drop',
+      page: 'dashboard',
+    },
+    {
+      to: '/tasks',
+      label: '任务中心',
+      icon: RiTaskLine,
+      exact: false,
+      motion: 'spring',
+      page: 'tasks',
     },
   ],
 } as const
@@ -435,23 +421,12 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const workspaceError = useWorkspaceStore((state) => state.error)
   const loadWorkspaces = useWorkspaceStore((state) => state.load)
   /**
-   * 知识库提供者的状态（M3 阶段 6）：**这一组显不显示只看它**。
+   * 知识库提供者的状态：R5 起**只用来做预取**（第 ② 条在下面 `preloadKnowledgeBases` 里）。
    *
-   * `blocked` = 本机档且没连上/还没探过 → 整组不渲染（文件头第 1 条）。
-   * 服务器档（浏览器 / NAS 网页端）里 `gate` 是假，组照旧一直在。
+   * 它**不再决定那一组显不显示**——组无条件渲染（R5 拍板回到推送前的结构），
+   * 连不上的处置由各页面自己负责（路由守卫照旧在 `features/knowledge/ProviderRoute.tsx`）。
    */
   const provider = useKnowledgeProviderStatus()
-  const showKnowledge = !provider.blocked
-
-  /**
-   * 备份那一组的显隐（M5 阶段 7）：**只看这一档有没有本机后端**（`backup.gate`）。
-   *
-   * 与上面那条刻意不同：提供者连不上时**照样要能进去**——那是"还有几份没备上去"的
-   * 主场景。服务器档（浏览器 / NAS 网页端）里 `gate` 是假，这一组不渲染。
-   * 订阅放这里还有一个作用：结论一回来（`status !== null`）就广播，组当场长出来。
-   */
-  const backup = useBackupStatus()
-  const showBackup = backup.gate
 
   /**
    * 知识库那一项被划过/聚焦时顺手做的两件事（M4 阶段 5，照开发计划 12.55 的预取先例）：
@@ -480,8 +455,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
   const [knowledgeOpen, setKnowledgeOpen] = useState(false)
-  /** 备份那一组的开合（与知识库那一组同一个形态，注释在 `BACKUP_GROUP` 上）。 */
-  const [backupOpen, setBackupOpen] = useState(false)
   /** 手动展开了哪几个项目。 */
   const [expandedProjects, setExpandedProjects] = useState<string[]>([])
   /** 「新增项目」弹窗开着吗（按钮在「项目」标题右边）。 */
@@ -569,22 +542,16 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   /**
    * 「知识库」这一组里的当前项。
    *
-   * **按组里那些子项自己算**（`isActive`），外加库详情 / Wiki（`/kb/:id`，它们不在
+   * **按组里那三个子项自己算**（`isActive`），外加库详情 / Wiki（`/kb/:id`，它们不在
    * 侧栏里单列）——手写一条条前缀的那一版漏了 `/` 与 `/tasks`：站在概览或任务中心时
    * 整组一声不响（默认又是收起的），用户看不出自己在哪一节里。
    *
-   * M3 阶段 6：概览与任务中心搬出这一组（D1），所以它们不再把组头点亮——
-   * 组头的归属现在只剩"所有知识库"与库详情/Wiki 那几条真属于知识库的地址。
+   * R5：概览与任务中心回到这一组里，所以它们**又把组头点亮**了——与上面那条理由一致
+   * （"站在组里的哪一页，组头就该说着我在这一节里"）。
    */
   const knowledgeActive =
     KNOWLEDGE_GROUP.children.some((item) => isActive(item.to, item.exact)) ||
     location.pathname.startsWith('/kb/')
-
-  /**
-   * 「备份」这一组里有没有当前项（M5 阶段 7）——它只有一条子项，所以这一行同时也是
-   * "组头要不要点亮"的判据（收起时用得上，与知识库那一组同一处置）。
-   */
-  const backupActive = BACKUP_GROUP.children.some((item) => isActive(item.to, item.exact))
 
   // 会话只有**一份**平铺清单，分组在这里做（两处各存一份的话，
   // "把某条会话挪进工作区"就得同时改两个地方）。
@@ -723,126 +690,64 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
           </Link>
         ))}
 
-        {/* 知识库组（v0.17）：只剩「所有知识库」一条子项，**不列库名**；
-            整组按提供者状态显隐（M3 阶段 6，见文件头第 1 条）。
+        {/* 知识库组（v0.17）：**三条固定子项**（所有知识库 / 概览 / 任务中心），**不列库名**；
+            **无条件渲染**（R5：不再按提供者状态整组显隐，见文件头那一节）。
             选中态只在收起时亮：展开之后"当前在这一组里"由子项自己说。 */}
-        {showKnowledge && (
-          <div className="flex flex-col" data-testid="nav-knowledge-group">
-            <button
-              type="button"
-              className={cn(
-                NAV_ROW,
-                collapsed && NAV_ROW_COLLAPSED,
-                'w-full cursor-pointer border-0 text-left',
-                knowledgeActive && !knowledgeOpen ? 'bg-[var(--bg-selected)]' : 'bg-transparent',
-              )}
-              aria-expanded={knowledgeOpen}
-              title={collapsed ? KNOWLEDGE_GROUP.label : undefined}
-              onClick={() => setKnowledgeOpen((open) => !open)}
-            >
-              <KNOWLEDGE_GROUP.icon
-                size={18}
-                className={`ly-nav-motion-${KNOWLEDGE_GROUP.motion} shrink-0`}
-                aria-hidden="true"
-              />
-              <span className="ly-collapsible">{KNOWLEDGE_GROUP.label}</span>
-              {!collapsed && (
-                <RiArrowRightSLine
-                  size={13}
-                  aria-hidden="true"
-                  className={
-                    knowledgeOpen
-                      ? 'shrink-0 rotate-90 text-text-tertiary transition-transform'
-                      : 'shrink-0 text-text-tertiary transition-transform'
-                  }
-                />
-              )}
-            </button>
-            {knowledgeOpen && !collapsed && (
-              <ul className="mt-0 mb-1 list-none p-0 pl-6">
-                {KNOWLEDGE_GROUP.children.map((item) => (
-                  <li key={item.to}>
-                    <Link
-                      to={item.to}
-                      /* 划过就先把那一页的代码与"上次看到的那份"一起拿回来（M4 阶段 5） */
-                      onMouseEnter={() => preloadKnowledgeBases()}
-                      onFocus={() => preloadKnowledgeBases()}
-                      aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
-                      className={
-                        isActive(item.to, item.exact)
-                          ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-selected)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
-                          : 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control px-2 text-[length:var(--text-meta-size)] text-text-secondary no-underline transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
-                      }
-                    >
-                      <item.icon size={14} aria-hidden="true" />
-                      <span className="truncate">{item.label}</span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
+        <div className="flex flex-col" data-testid="nav-knowledge-group">
+          <button
+            type="button"
+            className={cn(
+              NAV_ROW,
+              collapsed && NAV_ROW_COLLAPSED,
+              'w-full cursor-pointer border-0 text-left',
+              knowledgeActive && !knowledgeOpen ? 'bg-[var(--bg-selected)]' : 'bg-transparent',
             )}
-          </div>
-        )}
-
-        {/* 备份组（M5 阶段 7）：**判据是本机档，不是提供者 ready**（见 `BACKUP_GROUP` 的说明）。
-            提供者不可用时这一项照旧在——那正是要看"还有几份没备上去"的时刻。 */}
-        {showBackup && (
-          <div className="flex flex-col" data-testid="nav-backup-group">
-            <button
-              type="button"
-              className={cn(
-                NAV_ROW,
-                collapsed && NAV_ROW_COLLAPSED,
-                'w-full cursor-pointer border-0 text-left',
-                backupActive && !backupOpen ? 'bg-[var(--bg-selected)]' : 'bg-transparent',
-              )}
-              aria-expanded={backupOpen}
-              title={collapsed ? BACKUP_GROUP.label : undefined}
-              onClick={() => setBackupOpen((open) => !open)}
-            >
-              <BACKUP_GROUP.icon
-                size={18}
-                className={`ly-nav-motion-${BACKUP_GROUP.motion} shrink-0`}
+            aria-expanded={knowledgeOpen}
+            title={collapsed ? KNOWLEDGE_GROUP.label : undefined}
+            onClick={() => setKnowledgeOpen((open) => !open)}
+          >
+            <KNOWLEDGE_GROUP.icon
+              size={18}
+              className={`ly-nav-motion-${KNOWLEDGE_GROUP.motion} shrink-0`}
+              aria-hidden="true"
+            />
+            <span className="ly-collapsible">{KNOWLEDGE_GROUP.label}</span>
+            {!collapsed && (
+              <RiArrowRightSLine
+                size={13}
                 aria-hidden="true"
+                className={
+                  knowledgeOpen
+                    ? 'shrink-0 rotate-90 text-text-tertiary transition-transform'
+                    : 'shrink-0 text-text-tertiary transition-transform'
+                }
               />
-              <span className="ly-collapsible">{BACKUP_GROUP.label}</span>
-              {!collapsed && (
-                <RiArrowRightSLine
-                  size={13}
-                  aria-hidden="true"
-                  className={
-                    backupOpen
-                      ? 'shrink-0 rotate-90 text-text-tertiary transition-transform'
-                      : 'shrink-0 text-text-tertiary transition-transform'
-                  }
-                />
-              )}
-            </button>
-            {backupOpen && !collapsed && (
-              <ul className="mt-0 mb-1 list-none p-0 pl-6">
-                {BACKUP_GROUP.children.map((item) => (
-                  <li key={item.to}>
-                    <Link
-                      to={item.to}
-                      /* 划过先把那一页的代码拉下来（与其余导航项同一条做法） */
-                      onMouseEnter={() => preloadPage(item.page as PageName)}
-                      onFocus={() => preloadPage(item.page as PageName)}
-                      aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
-                      className={
-                        isActive(item.to, item.exact)
-                          ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-selected)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
-                          : 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control px-2 text-[length:var(--text-meta-size)] text-text-secondary no-underline transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
-                      }
-                    >
-                      <item.icon size={14} aria-hidden="true" />
-                      <span className="truncate">{item.label}</span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
             )}
-          </div>
-        )}
+          </button>
+          {knowledgeOpen && !collapsed && (
+            <ul className="mt-0 mb-1 list-none p-0 pl-6">
+              {KNOWLEDGE_GROUP.children.map((item) => (
+                <li key={item.to}>
+                  <Link
+                    to={item.to}
+                    /* 划过就先把知识库那一页的代码、以及"上次看到的那份"一起拿回来（M4 阶段 5） */
+                    onMouseEnter={() => preloadKnowledgeBases()}
+                    onFocus={() => preloadKnowledgeBases()}
+                    aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
+                    className={
+                      isActive(item.to, item.exact)
+                        ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-selected)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
+                        : 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control px-2 text-[length:var(--text-meta-size)] text-text-secondary no-underline transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
+                    }
+                  >
+                    <item.icon size={14} aria-hidden="true" />
+                    <span className="truncate">{item.label}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </nav>
 
       {/* 下半栏（v0.22，照 Kimi Work 的实际形态）：**两节，默认都展开**。

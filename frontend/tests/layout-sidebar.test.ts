@@ -145,7 +145,7 @@ function renderNav() {
   )
 }
 
-describe('知识库组的三态（M3 阶段 6，决策点 D1 + D3）', () => {
+describe('知识库组：无条件渲染，固定三条子项（R5 拍板，回到推送前的结构）', () => {
   beforeEach(() => {
     window.localStorage.clear()
     useSidebarStore.setState({ collapsed: false })
@@ -164,54 +164,57 @@ describe('知识库组的三态（M3 阶段 6，决策点 D1 + D3）', () => {
     )
   })
 
-  it('`ready`：组在，组里只剩「所有知识库」；概览与任务中心在主导航（D1）', async () => {
+  it('`ready`：组里是**三条**子项，顺序照旧（所有知识库 / 概览 / 任务中心）', async () => {
     const user = userEvent.setup()
     setProviderStatusForTest(providerStatus())
 
     renderNav()
 
     const group = await screen.findByRole('button', { name: '知识库' })
+    // 默认收起：三条子项一条都不在
+    expect(screen.queryByRole('link', { name: '所有知识库' })).not.toBeInTheDocument()
     await user.click(group)
+
     const nav = screen.getByRole('navigation', { name: '主导航' })
-    // 组里那条唯一真属于知识库的入口
-    expect(screen.getByRole('link', { name: '所有知识库' })).toBeInTheDocument()
-    // 概览与任务中心**不在这组里**（原先整组隐藏会把它们一起带走：D1 的由来）
-    expect(within(nav).getByRole('link', { name: '概览' })).toBeInTheDocument()
-    expect(within(nav).getByRole('link', { name: '任务中心' })).toBeInTheDocument()
+    const links = within(nav)
+      .getAllByRole('link')
+      .filter((link) => ['所有知识库', '概览', '任务中心'].includes(link.textContent ?? ''))
+    expect(links.map((link) => link.textContent)).toEqual(['所有知识库', '概览', '任务中心'])
+    expect(within(nav).getByRole('link', { name: '所有知识库' })).toHaveAttribute(
+      'href',
+      '/knowledge-bases',
+    )
     expect(within(nav).getByRole('link', { name: '概览' })).toHaveAttribute('href', '/')
     expect(within(nav).getByRole('link', { name: '任务中心' })).toHaveAttribute('href', '/tasks')
   })
 
-  it('`unavailable`：导航里**没有**「知识库」这一项（概览与任务中心照旧在）', async () => {
+  it('`unavailable`：组**照旧在**（R5：整组不再按提供者状态显隐）', async () => {
     setProviderStatusForTest(
       providerStatus({ state: 'unavailable', available: false, reason: '连不上这台 NAS' }),
     )
 
     renderNav()
 
-    const nav = await screen.findByRole('navigation', { name: '主导航' })
-    expect(within(nav).queryByText('知识库')).toBeNull()
-    expect(within(nav).getByRole('link', { name: '概览' })).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: '所有知识库' })).not.toBeInTheDocument()
+    // 连不上的处置在页面自己身上（`ProviderRoute` 那道守卫），导航里这一项不再消失
+    expect(await screen.findByTestId('nav-knowledge-group')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '知识库' })).toBeInTheDocument()
   })
 
-  it('`unconfigured`：同样不摆那一组（下一步是"去设置里填地址"，不是点进去）', async () => {
+  it('`unconfigured`：同样在（下一步是"去设置里填地址"，那条路要走导航/设置，不该连门都没有）', async () => {
     setProviderStatusForTest(
       providerStatus({ state: 'unconfigured', available: false, reason: '还没接提供者' }),
     )
 
     renderNav()
 
-    const nav = await screen.findByRole('navigation', { name: '主导航' })
-    expect(within(nav).queryByText('知识库')).toBeNull()
+    expect(await screen.findByTestId('nav-knowledge-group')).toBeInTheDocument()
   })
 
-  it('**还没探过**：按缺席渲染（首屏不闪一个点进去报错的入口）', async () => {
+  it('**还没探过**：也在（不再"按缺席渲染"——R5 起它不参与显隐判定）', async () => {
     // 模块初始态就是"还没探过"：结论一个都没有
     renderNav()
 
-    const nav = await screen.findByRole('navigation', { name: '主导航' })
-    expect(within(nav).queryByText('知识库')).toBeNull()
+    expect(await screen.findByTestId('nav-knowledge-group')).toBeInTheDocument()
   })
 
   it('服务器档（这一档没有 /local/provider）：这一组**一直在**（知识库就是它自己）', async () => {

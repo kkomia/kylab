@@ -3,17 +3,15 @@
  *
  * ```
  * ┌──────────┬───────────────────────────────┐
- * │ SideNav  │ 顶栏状态条（我的数据在哪）     │
- * │          ├───────────────────────────────┤
- * │          │ 内容区（路由页面）             │
+ * │ SideNav  │ 内容区（路由页面）             │
  * └──────────┴───────────────────────────────┘
  *             历史会话面板（盖住内容区，侧栏留在左边）
  * ```
  *
- * 顶上那条状态是 M2 阶段 4 加的（`LocalDataStrip`）：会话 / 笔记 / 设置 这些从 M2 起
- * 落**本机**（边车进程里的 SQLite），"我的数据在哪"必须一直看得见（方案 §4.3 的
- * "回退不许静默"）。它摆在那条 6px 的画布带上、**不进卡片**——卡片里的每一页都可能是
- * `h-full` 的一屏，多一行会把它们挤出一条滚动条。
+ * 顶上原本还有一条「我的数据在哪」的状态带（M2 阶段 4 的 `LocalDataStrip`）：会话 /
+ * 笔记 / 设置从 M2 起落**本机**（边车进程里的 SQLite），"我的数据在哪"要一直看得见
+ * （方案 §4.3 的"回退不许静默"）。**R5 起整条删掉**（用户拍板）：那一行要回答的事
+ * 在「设置 → 备份」那一节里读得到，顶栏不必常驻一条状态带。
  *
  * ## 四条职责
  *
@@ -59,7 +57,6 @@ import { useSessionStore } from '@/lib/session'
 
 import { ConversationHistoryPanel } from './ConversationHistoryPanel'
 import { onIdle, prewarmMisc } from '@/features/misc/prewarm'
-import { LocalDataStrip } from './LocalDataStrip'
 import { SideNav } from './SideNav'
 import { resolveSidebarWidth, useSidebar } from './useSidebar'
 
@@ -139,14 +136,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   return (
     <div className="flex h-full">
       {!bare && <SideNav onOpenHistory={() => setHistoryOpen(true)} />}
-      {/* 内容区那一列 = **顶栏状态条** + 抬起来的卡片（M2 阶段 4）。
-          卡片本身是 Kimi 的层级方向（§8）：上/右/下留 6px 露出画布底，左侧与侧栏相接
+      {/* 内容区那一列 = 抬起来的卡片（M2 阶段 4）。
+          卡片是 Kimi 的层级方向（§8）：上/右/下留 6px 露出画布底，左侧与侧栏相接
           —— 边界就是"两块不同颜色的面"，没有分隔线（Kimi 实测无 border-right）。
-          状态条摆在这条 6px 的画布带上（**不在卡片里**）：卡片里的每一页都可能是
-          `h-full` 的一屏，多一行会把它们挤出一条滚动条；而它要一直看得见（见
-          `LocalDataStrip` 的产品理由）。登录页（bare）没有侧栏，也就没有这条状态条。 */}
+          顶上原本摆着那条 6px 画布带上的状态带（`LocalDataStrip`，R5 删掉），
+          卡片因此升到最上面；登录页（bare）没有侧栏，卡片四边都留 6px。 */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {!bare && <LocalDataStrip />}
         <main
           className={`${bare ? 'm-[6px]' : 'mb-[6px] mr-[6px]'} min-h-0 min-w-0 flex-1 overflow-y-auto rounded-[var(--radius-panel)] bg-[var(--bg-surface)]`}
         >

@@ -16,8 +16,7 @@
 import { createElement } from 'react'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -27,7 +26,7 @@ import {
   type BackupBacklog,
   type LocalBackup,
 } from '@/api/backup'
-import { resetProviderStore, setProviderStatusForTest } from '@/api/provider'
+import { resetProviderStore } from '@/api/provider'
 import { resetSidecarProbe } from '@/api/sidecar'
 import { BackupRoute } from '@/features/backup/BackupRoute'
 import { SideNav } from '@/features/layout/SideNav'
@@ -179,7 +178,13 @@ describe('① 路由守卫：提供者不可用也进得去', () => {
   })
 })
 
-describe('② 侧栏那一组：判据是本机档，不是提供者 ready', () => {
+/*
+  R5：侧栏那一组「备份」**整组删掉了**（用户拍板）——入口搬进「设置 → 备份」那一节
+  尾部那颗去 `/backup` 的按钮（用例在 `misc-settings.test.tsx`，那里也钉了"跳之前先关
+  设置"）。所以这一节不再有"组在不在 / 组头亮不亮"的用例，只留一条**反向**的：
+  侧栏里不该再出现「备份」这一项——本机档也一样。
+*/
+describe('② 侧栏不再有「备份」这一项（R5：入口搬进设置）', () => {
   /** 侧栏要 QueryClient（悬停预取会话正文那一条用它）。 */
   function renderNav(route = '/notes'): void {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -192,53 +197,15 @@ describe('② 侧栏那一组：判据是本机档，不是提供者 ready', () 
     )
   }
 
-  it('本机档：组在，展开后一条「备份与恢复」指向 `/backup`', async () => {
-    const user = userEvent.setup()
+  it('本机档：侧栏里没有「备份」组、也没有「备份与恢复」那条链接', async () => {
     setBackupStatusForTest(payload())
-    // 知识库那条链照旧是"连不上"（与本组互不影响）
-    setProviderStatusForTest({
-      state: 'unavailable',
-      available: false,
-      reason: '连不上这台 NAS',
-    })
 
     renderNav()
 
-    const group = await screen.findByRole('button', { name: '备份' })
-    // 默认收起：子项不在
+    // 先等侧栏立起来（导航区在），再断言"没有"——否则可能只是还没渲染完
+    await screen.findByRole('navigation', { name: '主导航' })
+    expect(screen.queryByTestId('nav-backup-group')).toBeNull()
+    expect(screen.queryByRole('button', { name: '备份' })).toBeNull()
     expect(screen.queryByRole('link', { name: '备份与恢复' })).toBeNull()
-    await user.click(group)
-    const entry = screen.getByRole('link', { name: '备份与恢复' })
-    expect(entry).toHaveAttribute('href', '/backup')
-    expect(
-      within(screen.getByTestId('nav-backup-group')).getByText('备份与恢复'),
-    ).toBeInTheDocument()
-  })
-
-  it('备份提供者连不上（state=unavailable）：这一组**照样在**', async () => {
-    setBackupStatusForTest(payload())
-
-    renderNav()
-
-    expect(await screen.findByTestId('nav-backup-group')).toBeInTheDocument()
-  })
-
-  it('不是本机档（404）→ 侧栏里没有这一组', async () => {
-    setBackupStatusForTest(null, { unsupported: true })
-    // 没有壳、也没读到过结论 = 浏览器档
-    delete (globalThis as { __TAURI__?: unknown }).__TAURI__
-
-    renderNav()
-
-    await waitFor(() => expect(screen.queryByRole('button', { name: '备份' })).toBeNull())
-  })
-
-  it('当前就在 `/backup`：组头点亮（收起时也看得出"我在这一节里"）', async () => {
-    setBackupStatusForTest(payload())
-
-    renderNav('/backup')
-
-    const group = await screen.findByRole('button', { name: '备份' })
-    expect(group.className).toContain('bg-[var(--bg-selected)]')
   })
 })
