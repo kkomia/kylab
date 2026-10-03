@@ -380,10 +380,10 @@ describe('ui 原语（第二批）', () => {
  *    jsdom 不应用样式表，这类契约只能在源码上量——与 `notes*.test.tsx` 读 `notes.css`
  *    是同一条路。
  *
- * 2. **搜索框的两种容器**。`.m-toolbar-search` 在 row 工具栏、column 侧栏、块级弹窗
- *    三处复用，宽度只能写成 `flex-basis`（`flex-basis` 的轴向跟容器走，到了 column 里
- *    会变成"240px 高"，还压掉 `height`），块级那处又会因为多一个 `width` 缩成 240px。
- *    两处各自的解都钉住，免得下次"统一一下"又把这版修回去。
+ * 2. **搜索框的宽度口径**。`.m-toolbar-search` 在 row 工具栏与块级弹窗（技能市场）复用，
+ *    宽度只能写成 `flex-basis`：多一个 `width`，块级那处就会被缩成 240px。
+ *    记忆页侧栏那一处（column 容器，另有一条容器规则）随页面下线一起删了（§6.3），
+ *    所以这里只剩 base 那一半——顺带钉住 `.m-side-col` 真的不在了。
  */
 function styleSource(relative: string): string {
   return readFileSync(fileURLToPath(new NodeURL(relative, import.meta.url)), 'utf8')
@@ -442,15 +442,15 @@ describe('基础层：分层与搜索框结构护栏', () => {
     expect(topLevel[1]).toBe('@layer components')
   })
 
-  it('.m-toolbar-search：宽度只在 flex-basis 上，column 里另由容器规则说清楚', () => {
+  it('.m-toolbar-search：宽度只在 flex-basis 上，不加 width', () => {
     const source = styleSource('../src/features/misc/shared/misc.css')
     const base = ruleBody(source, '.m-toolbar-search')
     expect(base).toContain('flex: 0 1 240px')
     // 多一个 `width` 就会把块级那处（技能市场弹窗的搜索框）缩成 240px
     expect(base).not.toMatch(/(?:^|[;\s])width:/)
-    const column = ruleBody(source, '.m-side-col > .m-toolbar-search')
-    expect(column).toContain('flex: 0 0 auto')
-    expect(column).toContain('align-self: stretch')
+    // 记忆页侧栏那一处随页面下线（§6.3）一起删掉了，`.m-side-col` 的容器规则
+    // 不再有使用者；这一条只保 row 工具栏与块级弹窗两处的口径。
+    expect(withoutComments(source)).not.toContain('.m-side-col')
   })
 
   it('两套主题的三级灰/四级灰都指向达标档，而不是 Kimi 原值', () => {

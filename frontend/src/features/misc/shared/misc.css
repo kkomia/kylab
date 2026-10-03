@@ -261,17 +261,16 @@
   }
 
   /**
-   * 搜索框：同一个类在**三种上下文**里复用，所以这里只说"水平工具栏里它多大"：
+   * 搜索框：同一个类在**两种上下文**里复用，所以这里只说"水平工具栏里它多大"：
    * `.m-toolbar`（row）里是 240 宽、可压缩；技能市场弹窗里它是块级元素（父级不是 flex），
-   * `flex-basis` 在那里不起作用，靠 `display: flex` 自己铺满一行；
-   * 记忆页侧栏（column）那处由下面的 `.m-side-col > .m-toolbar-search` 单独交代。
+   * `flex-basis` 在那里不起作用，靠 `display: flex` 自己铺满一行。
    *
    * **宽度只能写成 flex-basis，不能顺手加一个 `width`**：加了 `width: 240px` 之后，
    * 块级那处（市场弹窗的搜索框）会从"铺满一行"缩成 240px —— 2026-09-24 重拍时实测到，
    * 已回退。而 flex-basis 的轴向跟着容器走，到了 column 容器里它落到竖轴，
-   * 于是 `flex: 0 1 240px` 变成"240px 高"、还压掉 `height: var(--control-height)`——
-   * 记忆页左侧那个 240px 的空白盒子就是这么来的（12-memory.png）。两件事的解法不一致，
-   * 所以这里保持原样、由容器那一侧说清楚。
+   * 于是 `flex: 0 1 240px` 变成"240px 高"、还压掉 `height: var(--control-height)`。
+   * 记忆页侧栏（column）曾踩过这一条，随页面下沉一起删掉了（§6.3）；
+   * 留下这个说明，是因为"统一一下加个 width"是个反复会回来的改法。
    */
   .m-toolbar-search {
     position: relative;
@@ -689,41 +688,33 @@
 
   /* ---------------------------------------------------------------- 记忆页 */
 
-  .m-split {
+  /**
+   * 这一页现在只有两块：**档案卡**（主视图）与**变更流**。
+   *
+   * 旧的文件列表 / 整份文件编辑 / 图谱 / 召回试验那一批样式随页面上线一起删掉了
+   * （§6.3）——留着空的类名比留着入口更容易让人以为功能还在。
+   */
+
+  .m-archive-layout {
     display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
     gap: var(--space-5);
     align-items: start;
   }
 
-  .m-split-files {
-    grid-template-columns: 280px minmax(0, 1fr);
-  }
-
-  .m-side-col {
+  .m-archive-main,
+  .m-archive-side {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
-    position: sticky;
-    top: var(--space-4);
+    gap: var(--space-4);
+    min-width: 0;
   }
 
-  /**
-   * 侧栏里的搜索框**填满栏宽**，与它下面的文件列表左右对齐。
-   *
-   * 这是"同一个类、两种容器"里的那一半职责：类里那句 `flex: 0 1 240px` 是**按 row 写的**，
-   * 到了 column 容器里 flex-basis 落到竖轴、还压掉 `height`，于是它变成 240px 高的空白盒子
-   * （12-memory.png 里那个白块）。这里把它改回"由高度决定大小、宽度随栏"：
-   * `flex: 0 0 auto` 让 basis 回到 auto（高度重新由 `height: var(--control-height)` 说了算），
-   * `align-self: stretch` 让它在交叉轴上跟列表共用同一条左右基准。
-   *
-   * 2026-09-24 试过另一条路——把类里的 `flex-basis` 换成 `width: 240px`，一行同时治好两处——
-   * **不成立**：技能市场弹窗里的搜索框是块级元素（父级不是 flex），`width` 会把它缩成 240px、
-   * 丢掉"铺满一行"。两处的正确解不同，就只能各自说清楚。
-   */
-  .m-side-col > .m-toolbar-search {
-    flex: 0 0 auto;
-    width: auto;
-    align-self: stretch;
+  .m-archive-side {
+    position: sticky;
+    top: var(--space-4);
+    max-height: calc(100vh - var(--space-8));
+    overflow-y: auto;
   }
 
   .m-group-label {
@@ -732,145 +723,343 @@
     color: var(--text-secondary);
   }
 
-  .m-file-item {
+  .m-archive {
     display: flex;
     flex-direction: column;
-    gap: var(--space-0-5);
-    width: 100%;
-    padding: var(--space-2) var(--space-2-5);
-    border: none;
-    border-radius: var(--radius-row);
-    background: none;
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: var(--transition-ui);
+    gap: var(--space-4);
   }
 
-  .m-file-item:hover {
-    background: var(--bg-hover);
-  }
-
-  .m-file-item-on {
-    background: var(--bg-selected);
-  }
-
-  /* 第一行：标题与改动时间各占一端（时间右对齐、等宽数字，扫起来是一列） */
-  .m-file-head {
+  .m-archive-head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
-    gap: var(--space-2);
-    min-width: 0;
+    gap: var(--space-3);
   }
 
-  .m-file-title {
-    overflow: hidden;
+  /* 读数：条数 / 字数。接近上限换色（§5.2、§6.1），平时是次级字色。 */
+  .m-readout {
+    font-size: var(--text-micro-size);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .m-readout-global {
     font-size: var(--text-meta-size);
     color: var(--text-primary);
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
-  .m-file-time {
-    flex: 0 0 auto;
+  .m-readout[data-tone='warn'] {
+    color: var(--status-warning);
+  }
+
+  .m-readout[data-tone='over'] {
+    color: var(--status-danger);
+  }
+
+  .m-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-panel);
+    background: var(--bg-subtle);
+  }
+
+  .m-section-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+
+  .m-section-title {
+    margin: 0;
+    font-size: var(--text-section-size);
+    font-weight: 600;
+  }
+
+  .m-section-head .m-readout {
+    margin-left: auto;
+  }
+
+  .m-section-empty {
+    margin: 0;
     font-size: var(--text-c2-size);
     color: var(--text-tertiary);
   }
 
-  /* 第二行：摘要（没有摘要时这一行是路径，标题即路径时不渲染） */
-  .m-file-summary {
-    display: -webkit-box;
-    overflow: hidden;
-    font-size: var(--text-c2-size);
-    color: var(--text-secondary);
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+  .m-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
   }
 
-  .m-file-path {
+  .m-group-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .m-group-title {
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font-size: var(--text-meta-size);
+    font-weight: 600;
+    cursor: text;
+  }
+
+  .m-group-title:hover {
+    color: var(--accent-text);
+  }
+
+  .m-group-rename {
+    max-width: 260px;
+  }
+
+  .m-entries {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-0-5);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* 一条：正文占满、动作与来源靠右。整行不换行，长条目由正文自己省略。 */
+  .m-entry {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .m-entry-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: var(--space-1) 0;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font-size: var(--text-meta-size);
+    line-height: var(--line-prose);
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: text;
+  }
+
+  .m-entry-text:hover {
+    color: var(--accent-text);
+  }
+
+  .m-entry-input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .m-entry-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-1);
+    padding-top: var(--space-1);
+  }
+
+  /* 来源小字：它是数据（这条从哪来、什么时候来的），点一下跳到变更流那一条。 */
+  .m-entry-source {
+    border: none;
+    background: none;
+    color: var(--text-tertiary);
+    font-size: var(--text-c2-size);
+    cursor: pointer;
+  }
+
+  .m-entry-source:hover:not(:disabled) {
+    color: var(--accent-text);
+  }
+
+  .m-entry-source:disabled {
+    cursor: default;
+  }
+
+  .m-add-box {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .m-add-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  .m-archive-foot {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /* 迁移入口：检测到可折叠的旧数据时出现的一条（§8）。 */
+  .m-migrate,
+  .m-draft {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-panel);
+    background: var(--bg-subtle);
+    font-size: var(--text-meta-size);
+  }
+
+  .m-draft {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .m-draft > span:first-child {
+    flex: 1 1 auto;
+  }
+
+  .m-old {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-panel);
+    background: var(--bg-subtle);
+  }
+
+  .m-report {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin: 0;
+  }
+
+  .m-report > div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .m-report dt {
+    color: var(--text-secondary);
+  }
+
+  .m-report dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .m-original-path {
+    margin: 0 0 var(--space-2);
     font-family: var(--font-mono);
     font-size: var(--text-c2-size);
     color: var(--text-tertiary);
     overflow-wrap: anywhere;
   }
 
-  .m-file-meta {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-c2-size);
-    color: var(--text-tertiary);
+  /* 原文/草稿/旧记忆的只读正文：与编辑态同形（只有内容是变量，框不跳） */
+  .m-original-body {
+    max-height: 420px;
+    margin: 0;
+    padding: var(--space-4);
+    overflow: auto;
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-panel);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-meta-size);
+    line-height: var(--line-prose);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
-  /**
-   * 右栏（读与改都在这一栏里）。
-   *
-   * `max-width: var(--measure)` 是项目的**阅读线宽纪律**（66ch，见 tokens.css）：
-   * 原先这一栏跟着 grid 撑到 828px（≈99ch），一段话要横着扫两三行才换行；
-   * 记忆是"读一遍并改一处"的长文，与对话页正文同一条口径。
-   */
-  .m-editor {
+  /* ---------------------------------------------------------------- 变更流 */
+
+  .m-timeline {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    max-width: var(--measure);
-    min-width: 0;
   }
 
-  .m-editor-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-4);
-  }
-
-  .m-editor-title {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    min-width: 0;
-  }
-
-  .m-editor-title h2 {
+  .m-timeline-title {
     margin: 0;
     font-size: var(--text-section-size);
     font-weight: 600;
   }
 
-  /* 阅读态：渲染后的正文。底色与圆角与编辑态同形——切换时只有内容变，框不跳 */
-  .m-editor-read {
-    padding: var(--space-4);
+  .m-changes {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .m-change {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1-5);
+    padding: var(--space-3) var(--space-4);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
     background: var(--bg-subtle);
   }
 
-  .m-editor-body {
-    width: 100%;
-    min-height: 420px;
-    padding: var(--space-4);
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-panel);
-    background: var(--bg-subtle);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: var(--text-meta-size);
-    line-height: var(--line-prose);
-    resize: vertical;
+  .m-change[data-highlight='true'] {
+    border-color: var(--accent);
   }
 
-  .m-editor-foot {
+  .m-change-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-4);
+    gap: var(--space-2);
     flex-wrap: wrap;
+  }
+
+  .m-change-meta {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    font-size: var(--text-c2-size);
     color: var(--text-tertiary);
   }
 
-  .m-warn-text {
-    color: var(--status-danger);
+  .m-change-action {
+    color: var(--text-primary);
+  }
+
+  .m-change-values {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+  }
+
+  .m-change-line {
+    display: flex;
+    gap: var(--space-2);
+    font-size: var(--text-meta-size);
+    line-height: var(--line-prose);
+  }
+
+  .m-change-line dt {
+    flex: 0 0 auto;
+    color: var(--text-tertiary);
+  }
+
+  .m-change-line dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   /* ---------------------------------------------------------------- 工作区 */
@@ -2675,113 +2864,6 @@
     color: var(--text-tertiary);
   }
 
-  /* ---------------------------------------------------------------- 记忆图谱 */
-
-  .m-graph {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-
-  .m-graph-canvas {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 300px;
-    padding: var(--space-4);
-    background: var(--bg-subtle);
-    border-radius: var(--radius-panel);
-  }
-
-  .m-graph-canvas svg {
-    display: block;
-    max-width: 100%;
-    height: auto;
-  }
-
-  .m-graph-link {
-    stroke: var(--separator);
-    stroke-width: 1;
-  }
-
-  .m-graph-node circle {
-    fill: var(--bg-group);
-    stroke: var(--separator);
-    stroke-width: 1;
-    cursor: pointer;
-    transition: var(--transition-ui);
-  }
-
-  .m-graph-node-core circle {
-    fill: var(--text-primary);
-  }
-
-  .m-graph-node-digest circle {
-    fill: var(--heat-2);
-  }
-
-  .m-graph-node:hover circle,
-  .m-graph-node-on circle {
-    stroke: var(--accent);
-    stroke-width: 2;
-  }
-
-  .m-graph-node text {
-    fill: var(--text-secondary);
-    font-size: var(--text-micro-size);
-    text-anchor: middle;
-    pointer-events: none;
-  }
-
-  .m-graph-foot {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-    flex-wrap: wrap;
-  }
-
-  .m-graph-legend {
-    display: flex;
-    gap: var(--space-4);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    font-size: var(--text-micro-size);
-    color: var(--text-secondary);
-  }
-
-  .m-graph-legend li {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1-5);
-  }
-
-  .m-legend-dot {
-    width: 8px;
-    height: 8px;
-    border: 1px solid var(--separator);
-    border-radius: var(--radius-pill);
-    background: var(--bg-group);
-  }
-
-  .m-legend-dot-core {
-    background: var(--text-primary);
-  }
-
-  .m-legend-dot-digest {
-    background: var(--heat-2);
-  }
-
-  .m-graph-dangling {
-    display: flex;
-    gap: var(--space-2);
-    flex-wrap: wrap;
-    margin: 0;
-    font-size: var(--text-micro-size);
-    color: var(--text-secondary);
-  }
-
   /* ---------------------------------------------------------------- 窄屏 */
 
   @media (max-width: 960px) {
@@ -2794,12 +2876,21 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .m-split-files,
     .m-ws-layout,
     .m-search-layout,
     .m-settings-layout,
     .m-chart-grid {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .m-archive-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .m-archive-side {
+      position: static;
+      max-height: none;
+      overflow: visible;
     }
 
     .m-settings-nav {
