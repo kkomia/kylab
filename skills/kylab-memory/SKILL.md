@@ -1,66 +1,91 @@
 ---
 name: kylab-memory
-description: Keep what is durable and recall what was said before — the user's standing preferences, decisions that were settled, constraints that keep coming up, or "上次说到哪了", "我之前说过", "记一下". Use `recall` before asking the user to repeat themselves, and `remember` when something is worth still knowing next week. Not for documents (that is the knowledge base) and not for one-off facts from this conversation.
-summary: 记住跨会话的偏好与结论，需要时想起之前说过的内容
+description: Keep the user's standing facts in one profile, correct them in place, and check what changed — their name and how to address them, stable preferences, project goals and constraints, and "上次那条不是这么说的", "记一下", "忘掉那条". Use `remember` when something is worth still knowing next week, `remember(..., replaces=...)` to correct an entry, `forget` to drop one, and `recall` only to see what a past entry said. Not for documents (that is the knowledge base) and not for one-off details from this conversation.
+summary: 维护一份用户档案：记一条、就地更正、忘掉一条、查以前是怎么写的
 ---
 
-# Remember, and recall
+# 一份档案，三种动作
 
-Two different pools, and mixing them is the main way to get this wrong:
+This is not a log and not a pile of files. It is **one profile** (`PROFILE.md`) with four
+fixed sections — who the user is, what they care about, what they are working on, and the
+tools around them. It is injected into **every turn**, in full, so anything you write there
+is a permanent tax on every future message. Write accordingly.
 
-| | Memory (`recall` / `remember`) | Knowledge base (`search`) |
+Two pools, and mixing them is the main way to get this wrong:
+
+| | User profile (`remember` / `forget` / `recall`) | Knowledge base (`search`) |
 | --- | --- | --- |
-| What it holds | what the **user told you** — preferences, decisions, constraints | what **documents say** — with sources, pages, headings |
-| Can it be wrong? | yes, and it goes stale | it is what the file says |
-| Do you edit it | yes, freely | no — it is evidence |
+| What it holds | what the **user told you** — who they are, preferences, decisions, constraints | what **documents say** — with sources, pages, headings |
+| Can it be wrong? | yes, and it gets corrected | it is what the file says |
+| Do you edit it | yes — that is the point | no — it is evidence |
 
 If a claim needs to be checkable, it belongs in the knowledge base. If it is a working
-agreement ("他喜欢先看结论", "这个项目用 PG 不用 MySQL"), it belongs in memory.
+agreement ("他喜欢先看结论", "这个项目用 PG 不用 MySQL"), it belongs in the profile.
 
-## `recall` — before you ask
+## `remember` — one fact, in the user's own words
 
-Call it when the user references something you should already know:
+Write **one reusable fact, one line**, in the user's own language:
 
-- "上次那个方案", "我之前说过", "接着上次", "还是按老规矩" → `recall` first.
-- Before asking a question the user may have already answered in an earlier session.
-- Before `remember` — so you do not write the same thing twice.
-
-If it returns nothing, that is information: say you do not have it, and ask. Do not
-reconstruct a plausible past.
-
-## `remember` — one fact per call
-
-Write **one reusable fact**, in one line, in the user's own language:
-
-- Standings: how they like answers, what they always want excluded, working hours.
-- Settled decisions and their reason: "用 pgvector 而不是 FAISS，因为要跟元数据同库查".
-- Tool/environment facts they stated: hosts, paths, aliases, accounts they use.
+- How they are addressed, and anything they call themselves.
+- How they like answers: what to lead with, what to leave out.
+- Settled decisions with the reason: "用 pgvector 而不是 FAISS，因为要跟元数据同库查".
+- Tools and environment they stated: hosts, paths, versions.
 - Lessons that cost time: "这份数据每月 5 号才更新，别提前拉".
 
 **Do not** write: today's task details, conversation summaries, anything you inferred
-rather than were told, or a fact that will be irrelevant next week. Anything longer than a
-sentence belongs in a note (`create_note`) — memory is injected into every turn, so a long
-one is a tax on every future message.
+rather than were told, or a fact that will be stale next week. Anything longer than a
+sentence belongs in `AGENTS.md` or a note.
 
-**Never** write passwords, tokens, keys, or private identifiers, even if the user pastes
-them. Say you are not keeping that.
+**Never** write passwords, tokens, keys, or identity numbers — even if the user pastes
+them. The profile is inside every turn's context. Say you are not keeping that.
+
+## Correcting: `replaces`, not delete-then-write
+
+The user says "不是 A，是 B". Do it in **one call**:
+
+```
+remember(content="用户要求先给结论再列依据", replaces="用户要求尽量简短")
+```
+
+The old line goes to a change log and stays recoverable, so a misfire costs the user one
+click. Two calls (forget, then remember) leave a window where the profile says **nothing**
+about it at all — and if they ask in that window, the answer is wrong.
+
+**There is no "keep both".** The old version is not kept next to the new one for the user
+to prune later; it is *replaced*. Writing the new line without `replaces` leaves both, and
+then the profile contradicts itself forever.
+
+## `forget` — and hand the undo to the user
+
+`forget(topic)` drops one entry, keeping the old value in the change log. **You cannot
+restore it yourself** — if the user changes their mind, tell them it can be restored from
+the memory page and let them click it. Do not write the old line back by hand.
+
+If `topic` matches several entries, the tool refuses and lists them: ask which one instead
+of guessing. Deleting the wrong fact is not worth saving a question.
+
+## `recall` — what did it used to say
+
+The profile is already in front of you; `recall` does **not** search it. What it searches
+is the **change log**: what was changed, when, and what the previous wording was.
+
+Call it when the user says something like "上次不是这么说的", "我什么时候改的", or when you
+need the exact earlier text before correcting it.
+
+If it returns nothing, that means the change log genuinely has nothing on it — say so, and
+ask. Do not reconstruct a plausible past.
 
 ## When you write it
 
-Say so, in one short line: "记下了：……". The user should be able to correct a memory the
-moment it is created — that is the only cheap moment to fix it.
+Say so, in one short line, quoting the tool's receipt: "记下了：……" / "改成：……". The user
+should be able to catch a wrong entry the moment it is created — that is the cheapest
+moment to fix it.
 
 ## Pitfalls
 
-- **Memory is not evidence.** It means "this is what was said", not "this is true now".
-  If the user contradicts it, the user wins — say so rather than arguing from memory.
-- **Do not recall to fill space.** A `recall` that returns unrelated fragments, quoted as
-  if relevant, is worse than no recall.
-- **Do not silently overwrite a habit.** If the user changes their mind ("以后别给我列
-  那么多选项"), write the new one; the old and new will both be there for them to prune.
-
-## Verification
-
-Before answering from memory, check the recall actually came back with something about
-**this** question. Before writing, check it is one sentence, durable, and something the
-user would expect you to still know next week.
+- **The profile is not evidence.** It means "this is what was said", not "this is true
+  now". If the user contradicts it, the user wins — say so rather than arguing from it.
+- **Do not recall to fill space.** The change log is not an answer to "what do you know
+  about me" — that is the profile, which you already have.
+- **One line at a time.** If you need two lines to say it, it is two facts or it is not a
+  fact.

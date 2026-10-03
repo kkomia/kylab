@@ -75,15 +75,21 @@ def test_memory_keys_can_be_preset_from_env(bundle) -> None:  # type: ignore[no-
 
 
 def test_memory_defaults_stay_when_the_env_says_nothing(bundle) -> None:  # type: ignore[no-untyped-def]
-    """没给引导值时**沿用代码默认**：开关仍是关。
+    """没给引导值时**沿用代码默认**：开关是**开**（v0.56 改，§7.3）。
 
-    这一条是"别把默认开关改了"的守门：默认开等于部署升级之后，
-    每 N 个回合就多一次模型调用去沉淀记忆（而省 token 是这个项目的硬要求）。
+    旧口径默认关，理由是"打开它会启动定期捕获"——一次捕获就是一次模型调用。
+    档案制把"注入"与"捕获"拆成两个开关之后，这个理由失效了：注入本身
+    **一次模型调用都不产生**（只是把档案拼进这一轮的上下文），所以"默认关"
+    只等于"这个功能默认不存在"。而捕获那条路已经在链路上废掉（§4.1），
+    默认值怎么设都不会让它开始花钱。
     """
     runtime = RuntimeConfigService(bundle, Settings())  # type: ignore[call-arg]
 
-    assert runtime.get("memory.enabled") == DEFAULTS["memory.enabled"] == "false"
+    assert runtime.get("memory.enabled") == DEFAULTS["memory.enabled"] == "true"
     assert runtime.get("memory.workspace") == DEFAULTS["memory.workspace"]
+    # 人设清单只剩两份（§7.2）：档案不在里面——它走自己的开关
+    assert runtime.get("memory.persona_files") == DEFAULTS["memory.persona_files"]
+    assert runtime.get("memory.persona_files") == "SOUL.md,AGENTS.md"
 
 
 def test_empty_value_falls_back_to_the_default(runtime: RuntimeConfigService) -> None:

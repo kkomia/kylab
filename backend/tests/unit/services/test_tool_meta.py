@@ -97,7 +97,7 @@ def test_reading_tools_are_the_ones_that_parallelize() -> None:
         "upload_document",
         "run_command",
         "remember",
-        "write_memory",
+        "forget",
     ):
         assert name not in parallel, f"{name} 会改东西，不该并发"
     # 联网那两个**影响面是 network 而不是 none**，但它们是只读的：

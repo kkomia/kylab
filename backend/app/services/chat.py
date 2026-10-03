@@ -26,7 +26,7 @@ from app.services import modes, plan_gate
 from app.services import subagent as subagent_service
 from app.services.approvals import ApprovalRegistry
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
-from app.services.prompt import PromptContext, build_system_prompt
+from app.services.prompt import PromptContext, build_system_prompt, setting_blocks
 from app.services.retrieval import RetrievalQuery, RetrievalService
 from app.services.runtime_config import RuntimeConfigService
 from app.services.thinking import normalize_effort
@@ -279,6 +279,7 @@ def build_agent_messages(
     summary: str = "",
     system_prompt: str = "",
     persona: tuple[tuple[str, str], ...] = (),
+    archive: str = "",
     memory_guidance: str = "",
     bootstrap: str = "",
     skills: str = "",
@@ -291,8 +292,9 @@ def build_agent_messages(
     这是"知识库从框架降级成工具"在提示词这一层的落点——不预先给，它才需要动手要。
 
     拼装交给 `services/prompt.py` 的贡献者表（P1）：顺序是数据，加一个来源不必
-    回头读整段。人设四份文件（人格 / 身份 / 规程 / 长期记忆）走 `persona` 那一条——
-    **`MEMORY.md` 就在里面**，所以这里不再单独收一个 memory 块（收两次会注入两遍）。
+    回头读整段。人设两份（人格 / 规程）走 `persona` 那一条，**档案走 `archive`**——
+    它也是每轮在场的设定，但它有**自己的开关**（`memory.enabled`），所以是独立的
+    一个贡献者（§5.1）；收两次会注入两遍，收错地方会被一次编辑静默关掉。
     """
     messages: list[ChatMessage] = [
         ChatMessage(
@@ -301,6 +303,7 @@ def build_agent_messages(
                 PromptContext(
                     base=system_prompt or AGENT_SYSTEM_PROMPT,
                     persona=persona,
+                    archive=archive,
                     memory_guidance=memory_guidance,
                     bootstrap=bootstrap,
                     kb_prompt=kb_prompt,
@@ -713,22 +716,45 @@ class ChatService:
         return f"{catalog}{_SKILL_SEPARATOR}{loaded}" if catalog else loaded
 
     def _memory_block(self, owner_id: str | None = None) -> str:
-        """要注入 system prompt 的记忆块（人设 + 记忆指导）；没接入时是空串。
+        """要注入 system prompt 的设定块（人设 + 档案 + 记忆指导 + 首次引导）。
 
-        **按账号取**（v0.15）：甲用户的人格与记忆不该出现在乙用户的提示词里——
+        **按账号取**（v0.15）：甲用户的人格与档案不该出现在乙用户的提示词里——
         注入是记忆里最容易"串号"的一环，因为它是每轮都静默发生的。
+
+        拼装交给 `prompt.setting_blocks`（与工具循环那条**同一批贡献者、同一个顺序**）：
+        同一次对话换个链路（`chat.agent_enabled` 一关），模型对"我是谁、对方是谁"
+        的认知不该跟着变。
+
+        三块的归属与开关各不相同（§7.3）：
+
+        - 档案块：``memory.enabled`` 管（服务层判，见 `MemoryService.archive_block`）；
+        - 人设两份：**不看**那道闸（它们由 ``memory.persona_files`` 取舍）；
+        - 记忆指导：跟 `recall` 一样看那道闸——关了还教它怎么查，只会换来一次无效调用。
         """
         if self._memory is None:
             return ""
-        # 记忆指导**两条链路都给**：它是"你有记忆、什么时候去查"，与这一轮
-        # 注入了哪几份人设文件无关。只给工具循环那条而漏掉这条，会在
-        # `chat.agent_enabled=false` 时表现成"记忆又消失了"。
-        parts = [
-            self._memory.prompt_block(owner_id),
-            self._memory_guidance(),
-            self._bootstrap_note(owner_id),
-        ]
-        return "\n\n".join(item for item in parts if item)
+        # 记忆指导**两条链路都给**：它是"档案怎么用"，与这一轮注入了哪几份人设文件无关。
+        # 只给工具循环那条而漏掉这条，会在 `chat.agent_enabled=false` 时表现成
+        # "记忆又消失了"。
+        return setting_blocks(
+            PromptContext(
+                persona=self._persona_texts(owner_id),
+                archive=self._archive_block(owner_id),
+                memory_guidance=self._memory_guidance(),
+                bootstrap=self._bootstrap_note(owner_id),
+            )
+        )
+
+    def _archive_block(self, owner_id: str | None = None) -> str:
+        """**用户档案**块的文本；没接记忆服务、或服务说"没有"时是空串。
+
+        **判在服务层**（``MemoryService.archive_block``）：它每轮现读现拼、
+        带边界说明、超限自己声明——这一层只负责把它放到人设那一档后面。
+        **不要在这里拼它**：拼一次就要在工具循环那条链路上再拼一次，两处迟早会漂。
+        """
+        if self._memory is None:
+            return ""
+        return self._memory.archive_block(owner_id)
 
     def _bootstrap_note(self, owner_id: str | None = None) -> str:
         """「还没认识对方」那一段；人设已经被填过、或没接记忆服务时是空串。
@@ -1223,9 +1249,13 @@ class ChatService:
         skill_text = [self._skill_block()]
         tool_text = [_tool_spec_text(item) for item in tools]
         memory_text = [text for _, text in self._persona_texts(owner_id)]
-        # 记忆指导与首次引导算进「记忆与人设」这一项：它们确实是提示词里为记忆
-        # 付的那部分预算，不计的话仪表会少报一段每轮都发出去的字数。
-        for extra in (self._memory_guidance(), self._bootstrap_note(owner_id)):
+        # 档案、记忆指导与首次引导算进「记忆与人设」这一项：它们确实是提示词里
+        # 为这一层付的那部分预算，不计的话仪表会少报一段每轮都发出去的字数。
+        for extra in (
+            self._archive_block(owner_id),
+            self._memory_guidance(),
+            self._bootstrap_note(owner_id),
+        ):
             if extra:
                 memory_text.append(extra)
 
@@ -1290,9 +1320,12 @@ class ChatService:
             history=history,
             summary=summary,
             system_prompt=base,
-            # 人设四份文件（含 MEMORY.md）统一由 persona 提供：
-            # 它们住在同一个目录（`data/memory/<账号>/`），也是用户能编辑的那份"人格"
+            # 人设两份（SOUL / AGENTS）由 persona 提供：它们住在同一个目录
+            # （`data/memory/<账号>/`），也是用户能编辑的那份"人格"
             persona=self._persona_texts(owner_id),
+            # **档案是独立的一块**（§5.1）：它也是每轮在场的设定，但开关不同
+            # （memory.enabled），所以不并进 persona 那一份
+            archive=self._archive_block(owner_id),
             # 记忆指导挂在 AGENTS.md 那一份的末尾（见 services/prompt.py 的 _persona_block）；
             # 「还没认识对方」那一段跟着它——两者都是"这类活怎么干"，不是待读的资料
             memory_guidance=self._memory_guidance(),

@@ -227,3 +227,122 @@ def test_empty_text_is_rejected_by_the_api(tmp_path: Path) -> None:
     service = _service(tmp_path)
     with pytest.raises(InvalidRequestError):
         service.add("   ", SECTION_PREFERENCES)
+
+
+# ----------------------------------------------------------------- 变更流查证
+#
+# §5.3：`recall` 的池子只剩变更流，排序是**纯字面**判据（子串命中数 + 二元组覆盖率）。
+# 这一组钉三件：该命中的命中并带回行号、不该命中的返回空、以及"没搜到"只有一个含义。
+
+
+def _seed_changes(tmp_path: Path, service: ArchiveService) -> None:
+    service.add("用户要求回答简短", SECTION_PREFERENCES)
+    service.add("用户要求回答先给结论、再列依据", SECTION_PREFERENCES, replaces="用户要求回答简短")
+    service.add("项目代号叫 kylab", SECTION_PROJECTS, group="内网部署")
+
+
+def test_search_changes_finds_the_replacement_with_its_line_range(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    _seed_changes(tmp_path, service)
+
+    hits = service.changes_hits("先给结论")
+
+    assert hits, "那条替换就在变更流里"
+    top = hits[0]
+    assert top.path == af.CHANGES_FILENAME
+    assert top.start_line >= 1 and top.end_line >= top.start_line
+    assert "用户要求回答简短" in top.text, "旧值也要在结果里（它回答的是'以前是什么'）"
+    assert top.coverage > 0
+
+
+def test_search_changes_returns_nothing_for_a_noise_query(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    _seed_changes(tmp_path, service)
+
+    assert service.changes_hits("合唱团的排练时间安排") == []
+
+
+def test_search_changes_does_not_tokenize(tmp_path: Path) -> None:
+    """**不依赖分词**：判据只看字符二元组，所以半句话也能命中。
+
+    这条是闭包约束的落点（``jieba`` 不在发行包里）：旧检索那一整套（BM25、AST 切块、
+    标题加权）是为几百 KB 的流水准备的，池子变小之后它是纯粹的复杂度。
+    """
+    service = _service(tmp_path)
+    _seed_changes(tmp_path, service)
+
+    hits = service.changes_hits("回答先给")  # 切得出词才怪，但字对重合够
+
+    assert hits
+
+
+def test_search_changes_ranks_the_more_recent_record_first_on_a_tie(
+    tmp_path: Path,
+) -> None:
+    """同分时**近的排前面**："我刚改了什么"比"半年前改了什么"更常是问话的意图。"""
+    service = _service(tmp_path)
+    service.add("用户要求回答简短", SECTION_PREFERENCES)
+    service.add("用户要求回答简短一些", SECTION_PREFERENCES)
+
+    hits = service.changes_hits("用户要求回答简短")
+
+    assert len(hits) >= 2
+    assert hits[0].start_line > hits[-1].start_line
+
+
+def test_forget_accepts_a_topic_and_refuses_to_guess(tmp_path: Path) -> None:
+    """`forget` 的入参是**话题**：原样找不到时按唯一子串兜一次，对得上多条就列候选。"""
+    service = _service(tmp_path)
+    service.add("项目代号叫 kylab", SECTION_PROJECTS, group="内网部署")
+    service.add("项目目标是 11 月交付", SECTION_PROJECTS, group="内网部署")
+
+    ambiguous = service.forget("项目")
+
+    assert ambiguous.action == "rejected"
+    assert ambiguous.reason == "ambiguous"
+    assert "kylab" in ambiguous.receipt and "11 月交付" in ambiguous.receipt
+
+    unique = service.forget("代号叫 kylab")
+
+    assert unique.action == "forgotten"
+    assert unique.text == "项目代号叫 kylab"
+
+
+def test_group_rename_rewrites_entries_and_logs_one_change(tmp_path: Path) -> None:
+    """组改名 = 一次顶替（§3.1 第 2 条）：改的是分组名，正文不动，变更流只有一条。
+
+    它不是"每条各顶替一次"——组标题本身就是一个可顶替的对象，所以两条同组条目
+    只该留下**一条**旧名 → 新名的记录。
+    """
+    service = _service(tmp_path)
+    service.add("项目目标是不出公网。", SECTION_PROJECTS, group="内网部署")
+    service.add("项目已决定用 PostgreSQL。", SECTION_PROJECTS, group="内网部署")
+
+    result = service.rename_group(SECTION_PROJECTS, "内网部署", "内网知识库")
+
+    assert result.action == "replaced"
+    assert [(entry.text, entry.group) for entry in service.read().entries] == [
+        ("项目目标是不出公网。", "内网知识库"),
+        ("项目已决定用 PostgreSQL。", "内网知识库"),
+    ]
+    replaced = [item for item in service.changes() if item.action == af.ACTION_REPLACED]
+    assert len(replaced) == 1
+    assert replaced[0].old == "内网部署"
+    assert replaced[0].new == "内网知识库"
+
+
+def test_group_rename_round_trips_through_restore(tmp_path: Path) -> None:
+    """组改名也走「还原」（§6.2）：旧组名写回，新组名作为一次新的顶替进流。
+
+    它钉的是 ``restore`` 的第三个分支：组改名记录的旧值/新值是**组名**而不是条目
+    正文，按"档案里有没有这条条目"找不到它，得按 `group` 字段回溯。
+    """
+    service = _service(tmp_path)
+    service.add("项目目标是不出公网。", SECTION_PROJECTS, group="内网部署")
+    before = (tmp_path / PROFILE).read_bytes().decode("utf-8")
+
+    service.rename_group(SECTION_PROJECTS, "内网部署", "内网知识库")
+    restored = service.restore("内网部署")
+
+    assert restored.action == "restored"
+    assert (tmp_path / PROFILE).read_bytes().decode("utf-8") == before

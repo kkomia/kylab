@@ -1,58 +1,72 @@
-"""记忆端点（v0.14 三期，设计见 ``docs/设计/记忆层设计-v0.1.md``）。
+"""记忆端点（v0.14 三期；v0.56 起是**一份档案**，设计见 ``docs/设计/记忆档案-设计-v0.1.md``）。
 
-三件事：看状态、用记忆（召回/记住）、改记忆（浏览/编辑文件、看图谱）。
+四件事：看状态、用档案（查变更 / 记住 / 忘掉 / 还原 / 组改名）、跑迁移、读文件（名单与原文）。
 
 **记忆与知识库是两个池子**（设计文档 §2.1），这里的一切都只碰记忆那一侧：
 没有任何一个端点会去读文档、片段或向量。``GET /memory`` 列的是工作区里的
 Markdown 文件，不是知识库文档。
 
+**文件级写入端点与图谱端点已经删掉**（档案制 §6.3、§7.4）：
+
+- ``PUT`` / ``DELETE /memory/files/{path}``：留在这里就是一个**绕过预算与变更流的
+  后门**——整份覆盖能一次撑爆预算，也能删掉一条而不留痕；档案的写入只有
+  ``POST /memory/remember``（外加界面上按条目编辑：删一条走 ``POST /memory/forget``，
+  还原走 ``POST /memory/restore``）；
+- ``GET /memory/graph``：图谱退场（wikilink 那一层随 ``daily/``/``digest/`` 一起清理）。
+
+只读的 ``GET /memory/files/{path}`` **保留**：档案卡右下角那个「原文」要展示磁盘上
+那份 Markdown，迁移草稿也要能看。
+
 **鉴权档位与 MCP 那份保持一致**（读用 ``ReadDep``、写用 ``WriteDep``）：
-MCP 上 ``recall`` / ``remember`` 对 API Key 是开放的（外部 agent 得能用记忆），
+MCP 上 ``recall`` / ``remember`` / ``forget`` 对 API Key 是开放的（外部 agent 得能用记忆），
 REST 这边如果收紧成管理员专属，同一串 API Key 从两个入口进来就会得到两种答案
 ——那正是 ``api/auth.py`` 里说的"两处各写一份就不会有测试同时看到"的不一致。
-**记忆目前是整个部署共用的一份**（设计文档 §5 的已知边界），这件事由界面明说，
-不在这里用一道假的门禁来暗示它已经被隔离好了。
-
-**没有"测试连接"这个端点**（v0.46 删）：记忆跑在我们自己的进程里，
-没有第二个进程可连。原先那个 ``POST /memory/probe`` 打的是 ``memory.base_url``
-——一个由管理员填的地址，所以它当时是管理员专属；现在这件事整个不存在了。
 
 **浏览与编辑走本地目录**，因此 ``memory.enabled`` 关着也能用（理由见
-``services/memory_files.py`` 的模块头）。只有召回与自动沉淀看那个开关。
+``services/memory_files.py`` 的模块头）。只有**注入与 recall** 看那个开关。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends
 
 from app.api.auth import require_read, require_write
 from app.api.v1.schemas import (
+    MemoryArchiveOut,
+    MemoryBudgetOut,
+    MemoryChangeOut,
+    MemoryChangesOut,
+    MemoryDraftOut,
+    MemoryEntryOut,
     MemoryFileDetailOut,
     MemoryFileOut,
-    MemoryFileWriteIn,
-    MemoryGraphNodeOut,
-    MemoryGraphOut,
+    MemoryForgetIn,
+    MemoryGroupOut,
+    MemoryGroupRenameIn,
     MemoryHitOut,
     MemoryLinkOut,
+    MemoryMigrationOut,
     MemoryOverviewOut,
     MemoryRecallIn,
     MemoryRecallOut,
     MemoryRememberIn,
     MemoryRememberOut,
+    MemoryRestoreIn,
+    MemorySectionOut,
     MemoryStatusOut,
 )
 from app.core.services import Services, get_services
-from app.services import memory_files
+from app.services import archive_files as af
+from app.services import tools as tools_service
 from app.services.api_key import Caller
+from app.services.archive import WriteResult
+from app.services.memory import INJECTED_FILES
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
-#: 召回结果里那条提醒，**与 MCP 工具的 ``note`` 同一句**。
+#: 查证结果里那条提醒，**与工具那份是同一句**（共用同一个常量，不重写一遍）。
 #: 写两份的话，模型从 MCP 听到的和人在界面上看到的就是两种说法。
-RECALL_NOTE = (
-    "这是**记忆**（过去对话里沉淀下来的结论与偏好），不是知识库原文。"
-    "需要可引用的原文依据时用知识库检索。"
-)
+RECALL_NOTE = tools_service.RECALL_NOTE
 
 
 def _scope(caller: Caller) -> str | None:
@@ -83,9 +97,10 @@ def _file_out(record) -> MemoryFileOut:  # type: ignore[no-untyped-def]
         modified_at=record.modified_at,
         links=list(record.links),
         retrievable=record.retrievable,
-        # "会被注入"是**核心文件**的专属性质（每轮进 system prompt，见 §2.5），
-        # 由 kind 推出来而不是让存储层再多记一个字段——两处记同一件事迟早不一致。
-        injected=record.is_core,
+        # "会被注入"是**那几份设定文件**的专属性质（每轮进 system prompt，见 §5.1），
+        # 名字清单由记忆层给（`INJECTED_FILES`）：v0.56 起 `MEMORY.md` **不在里面**
+        # ——它已经退场（§7.2），界面上它显示成"旧记忆（只读）"。
+        injected=record.path in INJECTED_FILES,
         consolidated=record.consolidated,
     )
 
@@ -164,74 +179,21 @@ def read_memory_file(
     )
 
 
-@router.put(
-    "/files/{path:path}",
-    response_model=MemoryFileDetailOut,
-    summary="写入（覆盖）一个记忆文件",
-)
-def write_memory_file(
-    path: str,
-    payload: MemoryFileWriteIn,
-    services: Services = Depends(get_services),
-    caller: Caller = Depends(require_write),
-) -> MemoryFileDetailOut:
-    """整份覆盖。文件不存在就**新建**（要能新建整合笔记，见服务层 ``write_file``）。
-
-    **保存路径上没有任何索引动作**，而且这次连"要不要等索引"都不用解释：
-    召回是每次按需扫工作区，改完就已经生效。
-    """
-    services.memory.write_file(path, payload.content, _scope(caller))
-    return read_memory_file(path, services=services, caller=caller)
-
-
-@router.delete(
-    "/files/{path:path}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="删除一个记忆文件",
-)
-def delete_memory_file(
-    path: str,
-    services: Services = Depends(get_services),
-    caller: Caller = Depends(require_write),
-) -> None:
-    services.memory.delete_file(path, _scope(caller))
-
-
-@router.get("/graph", response_model=MemoryGraphOut, summary="记忆的 wikilink 图谱")
-def get_memory_graph(
-    services: Services = Depends(get_services),
-    caller: Caller = Depends(require_read),
-) -> MemoryGraphOut:
-    """本地从正文里的 ``[[…]]`` 算出来（纯函数，见 ``memory_files.graph_of``）。
-
-    只画连上边的节点，孤立文件不进图——它们已经在文件列表里了，
-    图要回答的是"结构"而不是"清单"。
-    """
-    graph = services.memory.graph(_scope(caller))
-    return MemoryGraphOut(
-        nodes=[
-            MemoryGraphNodeOut(
-                path=node.path, title=node.title, kind=node.kind, degree=node.degree
-            )
-            for node in graph.nodes
-        ],
-        edges=graph.edges,
-        dangling=graph.dangling,
-    )
-
-
-@router.post("/recall", response_model=MemoryRecallOut, summary="在记忆里召回")
+@router.post("/recall", response_model=MemoryRecallOut, summary="在档案的变更流里查证")
 def recall_memory(
     payload: MemoryRecallIn,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> MemoryRecallOut:
-    """与知识库检索**两条路、永不合并**（设计文档 §2.1）——连索引都不共用：
-    这一路是在本工作区的 Markdown 上现扫现算（见 ``memory_files.search``）。
+    """与知识库检索**两条路、永不合并**（设计文档 §2.1）——连索引都不共用。
+
+    **池子只有 ``changes.md``**（档案制 §5.3）：用户档案每轮已经全量注入，
+    再召回一次就是把同一段内容进两次上下文。所以这里回答的是"这条以前是什么、
+    什么时候改的"，``path`` 恒为 ``changes.md``，排序是纯字面判据（无分词、无索引）。
 
     **没启用时明确报错**，不返回空结果（§2.3）——返回空会让模型（和用户）
-    以为"没有相关记忆"，然后基于错误前提继续。启用着而真的没有相关记忆时，
-    返回空的列表才是诚实的答案（那时检索确实跑过了）。
+    以为"没有相关记忆"，然后基于错误前提继续。启用着而真的没有相关记录时，
+    返回空列表才是诚实的答案（那时检索确实跑过了）。
     """
     hits, links = services.memory.recall(
         payload.query, limit=payload.limit, user_id=_scope(caller)
@@ -254,37 +216,226 @@ def recall_memory(
             MemoryLinkOut(path=item.path, direction=item.direction, name=item.name)
             for item in links
         ],
-        note=_recall_note(),
+        note=RECALL_NOTE,
     )
 
 
-def _recall_note() -> str:
-    """召回结果里那句提醒——**分词通道不可用时如实加一句**（与工具那条同一口径）。
-
-    本机运行时里没有 jieba，召回会降级到"相邻字对"那条通道（见
-    `memory_files._requirement_terms`）。界面该知道这件事：不然"这台机器上召回
-    就是差一点"会是一条没人能解释的现象。
-    """
-    if memory_files.segmentation_unavailable():
-        return f"{RECALL_NOTE}（{memory_files.SEGMENTATION_UNAVAILABLE_NOTE}）"
-    return RECALL_NOTE
-
-
-@router.post("/remember", response_model=MemoryRememberOut, summary="记一条长期事实")
+@router.post("/remember", response_model=MemoryRememberOut, summary="记一条（新增或顶替）")
 def remember(
     payload: MemoryRememberIn,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
 ) -> MemoryRememberOut:
-    """写进 ``MEMORY.md``，**不经过任何外部东西**（那条路径没有开关也能工作）。
+    """写进 ``PROFILE.md``（档案）的一个分区，**不经过任何外部东西**。
 
-    重复的一条返回 ``saved=false``，不是错误：那是"本来就有"，调用方据此不必再记一遍。
+    三件事与工具那一侧**同源**：
+
+    - **不看 ``memory.enabled``**：档案关着时照样可写（写进去下一轮就注入）；
+    - **``replaces`` 让"更正"一次完成**（§4.3）：填要顶替的那条原文；
+    - **返回体带 ``action`` 与 ``receipt``**（§4.4）：``action`` 是
+      ``added`` / ``replaced`` / ``existing`` / ``rejected``，``receipt`` 是
+      给人看的那一句——**界面与模型用的是同一句**，谁也不该自己另编。
+
+    ``existing`` 与 ``rejected`` 都**不是错误**（一个是"本来就有"，一个是"越线了、
+    回执里给了两条出路"），所以它们照样 200：调用方按 ``action`` 分派。
     """
     result = services.memory.remember(
-        payload.content, tags=payload.tags, user_id=_scope(caller)
+        payload.content,
+        section=payload.section,
+        replaces=payload.replaces or None,
+        user_id=_scope(caller),
     )
+    return _write_out(result, services, caller)
+
+
+@router.get("/archive", response_model=MemoryArchiveOut, summary="档案卡（分区、条目、读数）")
+def get_memory_archive(
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+) -> MemoryArchiveOut:
+    """档案卡首屏要的一切：四个分区（含未知分区）的条目与读数、草稿计数、迁移入口显隐。
+
+    **未知分区照常返回**（§3.5 第 4 条）：用户拿外部编辑器加的 ``## 某区`` 也算进来，
+    只是 ``known=false``，界面标"分区不认识"。
+
+    条目的来源小字取自变更流（最近一条把它写进来的记录）：`显式/隐式` 来自会话、
+    `界面` 来自这一页、`迁移` 来自旧记忆折叠；对不上记录的就是空（外部编辑器直接改的）。
+    """
+    scope = _scope(caller)
+    archive = services.memory.archive(scope)
+    parsed = archive.read()
+    budget = archive.budget(parsed)
+    origin: dict[str, tuple[str, str, int]] = {}
+    for index, record in enumerate(archive.changes()):
+        if (
+            record.action in (af.ACTION_ADDED, af.ACTION_REPLACED, af.ACTION_RESTORED)
+            and record.new
+        ):
+            origin[af.normalize(record.new)] = (record.source, record.at, index)
+
+    sections: list[MemorySectionOut] = []
+    for item in budget.sections:
+        items: list[MemoryEntryOut] = []
+        for entry in parsed.entries:
+            if entry.section != item.name:
+                continue
+            source, at, index = origin.get(af.normalize(entry.text), ("", "", -1))
+            items.append(
+                MemoryEntryOut(
+                    text=entry.text,
+                    group=entry.group,
+                    source=source,
+                    change_at=at,
+                    change_index=index,
+                )
+            )
+        sections.append(
+            MemorySectionOut(
+                name=item.name,
+                known=item.known,
+                entries=item.entries,
+                chars=item.chars,
+                limit=item.limit,
+                suggested_chars=item.suggested_chars,
+                group_limit=item.group_limit,
+                groups=[
+                    MemoryGroupOut(name=name, entries=count)
+                    for name, count in item.group_entries
+                ],
+                items=items,
+            )
+        )
+
+    workspace = services.memory.workspace_for(scope)
+    draft_entries = services.memory.draft_entries(scope)
+    return MemoryArchiveOut(
+        path=af.ARCHIVE_FILENAME,
+        updated=parsed.updated,
+        budget=MemoryBudgetOut(
+            entries=budget.entries,
+            chars=budget.chars,
+            entry_limit=budget.entry_limit,
+            char_limit=budget.char_limit,
+        ),
+        sections=sections,
+        draft=MemoryDraftOut(
+            exists=(workspace / af.IMPORT_DRAFT_FILENAME).exists(),
+            path=af.IMPORT_DRAFT_FILENAME,
+            entries=draft_entries,
+        ),
+        migration_available=services.memory.migration_available(scope),
+    )
+
+
+@router.get("/changes", response_model=MemoryChangesOut, summary="变更流（倒序）")
+def get_memory_changes(
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+) -> MemoryChangesOut:
+    """变更流时间线，**最新的在前**（§6.2）。
+
+    ``index`` 是它在这份文件里的位置（**文件顺序，最旧为 0**）——档案卡上那条来源小字
+    靠它指回来，所以这里的排序与 ``index`` 是两件事：显示倒序，索引按文件顺序。
+    """
+    records = services.memory.archive(_scope(caller)).changes()
+    changes = [
+        MemoryChangeOut(
+            index=index,
+            at=record.at,
+            action=record.action,
+            section=record.section,
+            source=record.source,
+            old=record.old,
+            new=record.new,
+            restorable=record.action in (af.ACTION_REPLACED, af.ACTION_FORGOTTEN)
+            and bool(record.old),
+        )
+        for index, record in reversed(list(enumerate(records)))
+    ]
+    return MemoryChangesOut(changes=changes)
+
+
+@router.post("/forget", response_model=MemoryRememberOut, summary="忘掉一条")
+def forget_memory(
+    payload: MemoryForgetIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> MemoryRememberOut:
+    """从档案删除 + 变更流留痕 + 可还原（§9.2 第 6 条）。**不看 ``memory.enabled``**。
+
+    对得上不止一条时**不猜**：``action`` 是 ``rejected``，回执列出候选让它说清。
+    """
+    result = services.memory.forget(payload.topic, user_id=_scope(caller))
+    return _write_out(result, services, caller)
+
+
+@router.post("/restore", response_model=MemoryRememberOut, summary="还原一条旧值")
+def restore_memory(
+    payload: MemoryRestoreIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> MemoryRememberOut:
+    """把一条旧值写回档案，新值作为一次新的顶替进流（§3.4、§6.2）。
+
+    ``text`` 是**要还原的那条旧值原文**（变更流里 ``旧：`` 后面那一行）。
+    """
+    result = services.memory.restore(payload.text, user_id=_scope(caller))
+    return _write_out(result, services, caller)
+
+
+@router.post("/group", response_model=MemoryRememberOut, summary="项目组改名")
+def rename_memory_group(
+    payload: MemoryGroupRenameIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> MemoryRememberOut:
+    """项目段的组标题改名（§3.1 第 2 条：改名 = 一次顶替，旧名进变更流）。
+
+    改的是这一组全部条目的分组名，正文不动；变更流只留一条记录。
+    """
+    result = services.memory.rename_group(
+        payload.section, payload.old, payload.new, user_id=_scope(caller)
+    )
+    return _write_out(result, services, caller)
+
+
+@router.post("/migrate", response_model=MemoryMigrationOut, summary="折叠旧记忆（零模型调用）")
+def migrate_memory(
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> MemoryMigrationOut:
+    """跑一遍机械折叠迁移（§8）：把旧文件折成档案初稿，返回迁移报告。
+
+    **只读旧文件、只写新文件**（§8.4）：``MEMORY.md`` / ``digest/**`` / ``daily/**``
+    一字不动；可重跑、幂等（源文件指纹没变且档案已存在时 ``skipped=true``，净改动为零）。
+    **零模型调用**——模型整理初稿那一步不在这里。
+    """
+    report = services.memory.migrate(_scope(caller))
+    return MemoryMigrationOut(
+        added=report.added,
+        replaced=report.replaced,
+        existing=report.existing,
+        dropped_sensitive=report.dropped_sensitive,
+        downgraded=report.downgraded,
+        trimmed=report.trimmed,
+        skipped=report.skipped,
+        archive_changed=report.archive_changed,
+        draft_entries=report.draft_entries,
+        per_source=list(report.per_source),
+    )
+
+
+def _write_out(result: WriteResult, services: Services, caller: Caller) -> MemoryRememberOut:
+    """一次写入的结果 → 响应（``remember`` / ``forget`` / ``restore`` / 改名共用）。
+
+    ``entries`` 是写完之后档案里一共几条（界面读数），**写后现读**：被拒时档案没变，
+    这个数照旧是当前值，不给它就没法在这一条上继续显示预算。
+    """
     return MemoryRememberOut(
-        saved=bool(result.get("saved")),
-        entries=int(result.get("entries") or 0),
-        reason=str(result.get("reason") or ""),
+        action=result.action,
+        receipt=result.receipt,
+        text=result.text,
+        section=result.section,
+        replaced=result.replaced,
+        entries=len(services.memory.archive_entries(_scope(caller))),
     )

@@ -66,7 +66,7 @@ def test_core_tools_are_always_resident() -> None:
     """① 核心工具**一定**在交给模型的注入里（一个都不能少）。"""
     resident = _names(_table().resident())
 
-    for name in ("recall", "remember", "read_memory", "write_memory"):
+    for name in ("recall", "remember", "forget", "read_memory"):
         assert name in resident, f"记忆工具必须常驻：{name}"
     for name in ("read_skill", "list_skills"):
         assert name in resident, f"技能工具必须常驻：{name}"

@@ -1324,10 +1324,10 @@ def test_export_lands_in_the_local_file_area(tmp_path, monkeypatch) -> None:  # 
 
 
 def test_sidecar_exposes_the_export_family_but_not_the_server_only_ones() -> None:
-    """导出三件、笔记两件、记忆两件 **在**表里；服务端专属那几件**不在**（2026-10-01）。"""
+    """导出三件、笔记两件、记忆三件 **在**表里；服务端专属那几件**不在**（2026-10-01）。"""
     assert {"export_document", "export_table", "export_deck"} <= sidecar.SIDECAR_TOOL_NAMES
     assert {"create_note", "attach_note_to_kb"} <= sidecar.SIDECAR_TOOL_NAMES
-    assert {"recall", "remember"} <= sidecar.SIDECAR_TOOL_NAMES
+    assert {"recall", "remember", "forget"} <= sidecar.SIDECAR_TOOL_NAMES
     assert not {"ingest_artifact", "read_memory", "write_memory"} & sidecar.SIDECAR_TOOL_NAMES
 
 
@@ -1500,13 +1500,16 @@ def test_attach_note_reports_an_unreachable_provider(tmp_path, monkeypatch) -> N
 def test_remember_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """**记忆写在本机**（M2 阶段 3）：`remember` → `MemoryService.remember` ✓。
 
-    "记住我喜欢 X"这条链的落点是 `data_dir/memory/MEMORY.md` —— **本机那份**
+    "记住我喜欢 X"这条链的落点是 `data_dir/memory/PROFILE.md`（档案）——**本机那份**
     （记忆本体本来就在数据目录下，边车现在读写的正是自己这一份）✓，
     而且**一次网都不出** ✓。
+
+    期二改了两处口径：``tags`` 这个参数没了（档案没有标签这一层），
+    落点从 ``MEMORY.md`` 换成了四区档案，回执也改成 §4.4 那一句。
     """
     model = _ToolCallingModel(
         "remember",
-        json.dumps({"content": "用户偏好深色模式", "tags": ["偏好"]}),
+        json.dumps({"content": "用户偏好深色模式"}),
         "记住了",
     )
     client = _client(tmp_path, monkeypatch, model)
@@ -1514,17 +1517,17 @@ def test_remember_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # 
 
     payload = client.post("/turn", json={"message": "记住我偏好深色模式"}).json()
 
-    # ① 工具结果就是那句"已写入核心长期记忆"，模型据此作答
+    # ① 工具结果带着回执（§4.4），模型据此作答
     done = [
         step
         for step in payload["steps"]
         if step.get("tool") == "remember" and step.get("status") == "done"
     ]
     assert done, payload["steps"]
-    assert "已写入核心长期记忆" in done[0]["result"], done[0]["result"]
+    assert "记下了" in done[0]["result"], done[0]["result"]
     assert payload["answer"] == "记住了"
-    # ② 内容真的写进了本机那份 MEMORY.md
-    memory_file = tmp_path / "data" / "memory" / "MEMORY.md"
+    # ② 内容真的写进了本机那份档案
+    memory_file = tmp_path / "data" / "memory" / "PROFILE.md"
     assert memory_file.is_file(), memory_file
     assert "用户偏好深色模式" in memory_file.read_text(encoding="utf-8")
 
@@ -1534,21 +1537,12 @@ def test_recall_reads_the_local_memory(tmp_path, monkeypatch) -> None:  # type: 
 
     三件事一起钉住：
 
-    1. **开关的权威在本机了** ✗：`recall` 受 `memory.enabled` 门控（默认关），
-       关着时它**明确报错**而不是回空 —— 所以先用本机后端那页设置把它打开
+    1. **开关的权威在本机了** ✗：`recall` 受 `memory.enabled` 门控，关着时它**明确报错**
+       而不是回空 —— 所以先用本机后端那页设置把它打开
        （`PATCH /api/v1/settings`），证明"改的是同一个库、对边车立刻生效" ✓；
     2. 命中真的从 `data_dir/memory/` 出来（本轮不联网 ✓，靠 `_no_network` + 假模型）；
-    3. **召回池是 `daily/` 与 `digest/`**（`memory_files._INDEXED_KINDS`）：
-       `MEMORY.md` 走**注入**不进召回（同一段内容进上下文两次是设计上要避免的），
-       所以这一条把内容放进 `daily/`。
-
-    ⚠️ 现场事实（阶段 3 发现，未修）：这份用例跑的是**开发 venv**（装了 jieba ✓），
-    而打出来的客户端运行时里**没有 jieba**（`requirements-sidecar.txt` 明写不打包，
-    实测 `build/sidecar-runtime/Lib/site-packages` 里没有它）—— 也就是"打包后的桌面端"
-    调 `recall` 会在**调用那一刻**抛 `ModuleNotFoundError`（惰性导入，见
-    `services/retrieval/coverage._jieba`）。阶段 3 之前这条路走 NAS（那边有 jieba），
-    收编到本机之后才露出来。两条出路留给架构师定：往客户端运行时加 jieba（+约 41 MB），
-    或让记忆召回在缺 jieba 时只用"相邻字对"那条通道（`_word_pairs` 不依赖分词）。
+    3. **召回池是 `changes.md`**（§5.3，v0.56 改）：档案本身走**注入**不进召回
+       （同一段内容进上下文两次是设计上要避免的），所以这一条把内容放进变更流。
     """
     model = _ToolCallingModel("recall", json.dumps({"query": "深色模式"}), "你偏好深色模式")
     client = _client(tmp_path, monkeypatch, model)
@@ -1557,10 +1551,14 @@ def test_recall_reads_the_local_memory(tmp_path, monkeypatch) -> None:  # type: 
         "/api/v1/settings", json={"values": [{"key": "memory.enabled", "value": "true"}]}
     )
     assert opened.status_code == 200 and opened.json()["updated"] == 1, opened.text
-    # 往召回池里放一条（`daily/`，不是 `MEMORY.md` —— 那两份走注入，见 docstring 第 3 条）
-    daily = tmp_path / "data" / "memory" / "daily" / "2026-10-01.md"
-    daily.parent.mkdir(parents=True, exist_ok=True)
-    daily.write_text("# 2026-10-01\n\n- 用户偏好深色模式 #偏好\n", encoding="utf-8")
+    # 往召回池里放一条（`changes.md`，不是 `PROFILE.md` —— 档案走注入，见 docstring 第 3 条）
+    changes = tmp_path / "data" / "memory" / "changes.md"
+    changes.parent.mkdir(parents=True, exist_ok=True)
+    changes.write_text(
+        "- 2026-10-01 09:20 · 新增 · 长期偏好与风格 · 来源：显式\n"
+        "  - 新：用户偏好深色模式 #偏好\n",
+        encoding="utf-8",
+    )
 
     payload = client.post("/turn", json={"message": "我之前说过什么偏好？"}).json()
 
@@ -1572,15 +1570,23 @@ def test_recall_reads_the_local_memory(tmp_path, monkeypatch) -> None:  # type: 
     assert done, payload["steps"]
     # 命中的正文与来源路径都在（`tools.py::_recall` 那份读法 ✓）
     assert "深色模式" in done[0]["result"], done[0]["result"]
-    assert "daily/2026-10-01.md" in done[0]["result"], done[0]["result"]
+    assert "changes.md" in done[0]["result"], done[0]["result"]
     assert payload["answer"] == "你偏好深色模式"
 
 
 def test_recall_says_so_when_the_memory_switch_is_off(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**默认关着 → 如实报错** ✗（不是回空结果："它不记得"与"记忆没开"是两件事 ✓）。"""
+    """**关着时如实报错** ✗（不是回空结果："它不记得"与"记忆没开"是两件事 ✓）。
+
+    v0.56 起这个开关**默认是开的**（§7.3），所以这一条先把本机那一页设置改掉
+    ——顺便证明"改的是同一个库、对边车立刻生效"。
+    """
     model = _ToolCallingModel("recall", json.dumps({"query": "深色模式"}), "记忆没开着")
     client = _client(tmp_path, monkeypatch, model)
     _no_network(monkeypatch)
+    closed = client.patch(
+        "/api/v1/settings", json={"values": [{"key": "memory.enabled", "value": "false"}]}
+    )
+    assert closed.status_code == 200, closed.text
 
     payload = client.post("/turn", json={"message": "我之前说过什么偏好？"}).json()
 

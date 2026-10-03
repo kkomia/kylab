@@ -28,6 +28,7 @@ __all__ = [
     "build_system_prompt",
     "converge_note",
     "default_contributors",
+    "setting_blocks",
 ]
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,20 @@ logger = logging.getLogger(__name__)
 #: 语义上：越靠前越像"我是谁"，越靠后越像"这一轮的上下文"。
 PRIORITY_BASE = 10
 PRIORITY_PERSONA = 20
+PRIORITY_ARCHIVE = 21
+"""**用户档案**那一档（§5.1，2026-10-03 档案制）。
+
+"挂在人设那一档"这条口径有两个半的含义，三条都刻意：
+
+- **位置紧挨人设**（21，就在人设之后）：它与 `SOUL.md`/`AGENTS.md` 是**同一类东西**
+  ——每轮都该在场的设定，而不是这一轮才取的资料；
+- **但是独立的一个贡献者**：它有自己的配置项（`memory.enabled`）与自己的开关语义，
+  不与人设共用一份配置。挂进 `memory.persona_files` 的后果是：用户从那一行里
+  删掉一个文件名，档案就**静默停止注入**（§7.2）；
+- **跟着人设那一档之后**（而不是之前）：先"我是谁、这类活怎么干"，再"对方是谁、
+  他在意什么"——后者是数据，越靠后越像数据，这一条与这份文件里其它优先级的
+  语义一致。
+"""
 PRIORITY_KB_PROMPT = 30
 PRIORITY_MEMORY = 40
 PRIORITY_SKILLS = 50
@@ -78,18 +93,28 @@ class PromptContext:
     """基础提示词。工具循环与检索链路各有一份默认，由调用方给。"""
 
     persona: tuple[tuple[str, str], ...] = ()
-    """``[(文件名, 正文)]``，来自 `MemoryService.persona_texts`（按人设顺序）。"""
+    """``[(文件名, 正文)]``，来自 `MemoryService.persona_texts`（按人设顺序）。
+
+    v0.56 起只有 ``SOUL.md`` 与 ``AGENTS.md`` 走这条路——``PROFILE.md``（档案）
+    是下面那个独立的 ``archive`` 贡献者，``MEMORY.md`` 已退场。"""
+
+    archive: str = ""
+    """**用户档案**那一段（已含边界说明），来自 `MemoryService.archive_block`。
+
+    **未启用记忆、或档案还是空的时是空串**（由服务层判，这里不重复判）。
+    它是独立的贡献者而不是拼进 ``persona``（§5.1）：那份配置只管人设的取舍与顺序，
+    档案挂上去就会被一次编辑静默关掉。"""
 
     memory_guidance: str = ""
-    """「长期记忆怎么用」那一段，来自 `MemoryService.guidance`。
+    """「用户档案怎么用」那一段，来自 `MemoryService.guidance`。
 
-    **未启用长期记忆时是空串**（由服务层判，这里不重复判）：关着时 ``recall``
-    会明确报错，再告诉模型"什么时候该去查记忆"只会换来每轮一次无效调用。"""
+    **未启用记忆时是空串**（由服务层判，这里不重复判）：关着时 ``recall``
+    会明确报错，再告诉模型"什么时候该去查"只会换来每轮一次无效调用。"""
 
     bootstrap: str = ""
     """「还没认识对方：这一轮该做一次开场」那一段，来自 `MemoryService.bootstrap_block`。
 
-    **只在对方的资料还是空模板时非空**（由服务层判）：Agent 一写进去它自己就没了，
+    **只在档案还是空模板时非空**（由服务层判）：Agent 一写进去它自己就没了，
     所以这一段不需要"用过就删"的簿记。
 
     **它是独立一块、而且排在整份提示词的最后**（``PRIORITY_BOOTSTRAP``，v0.52）：
@@ -111,6 +136,7 @@ def default_contributors() -> list[PromptContributor]:
     return [
         (PRIORITY_BASE, "base", lambda ctx: ctx.base),
         (PRIORITY_PERSONA, "persona", _persona_block),
+        (PRIORITY_ARCHIVE, "archive", lambda ctx: ctx.archive),
         (PRIORITY_KB_PROMPT, "kb_prompt", lambda ctx: ctx.kb_prompt),
         (PRIORITY_MEMORY, "memory", lambda ctx: ctx.memory),
         (PRIORITY_SKILLS, "skills", lambda ctx: ctx.skills),
@@ -142,9 +168,9 @@ def build_system_prompt(
     return "\n\n".join(parts)
 
 
-#: 人设四份文件的总起句。
+#: **人设文件**的总起句（``SOUL.md`` + ``AGENTS.md``，v0.56 起只有这两份）。
 #:
-#: 为什么必须有它：这四份原先只有**来源标签**（"这是你的人格"），而"所以要照着做"
+#: 为什么必须有它：这几份原先只有**来源标签**（"这是你的人格"），而"所以要照着做"
 #: 从来没有任何一句说过——要求散在通用 base 提示词里，模型完全可以读完当资料。
 #: 实测的后果就是用户说的"全程没有生效"：文件确实每轮都进去了（占 system 提示词
 #: 三成多），但提示词里没有一句"这是你的设定"。标签回答"它是什么"，
@@ -152,42 +178,39 @@ def build_system_prompt(
 #:
 #: 三条约束都是刻意的：
 #: - **不复述原文**：否则模型会把注入当成"需要转述的内容"，回答里出现文件腔；
-#: - **冲突以对方当下为准**：文件是过去写的快照（这句不复述 MEMORY.md 里那句
-#:   "可能已经过时"，那句留在原地由 `test_memory_is_marked_as_possibly_stale` 盯着）；
-#: - **它可能过时**：不写的话，模型会拿几天前的偏好去反驳对方今天刚说的。
+#: - **冲突以对方当下为准**：文件是过去写的快照；不写的话，模型会拿几天前的偏好
+#:   去反驳对方今天刚说的；
+#: - **它可能过时**：所以读的时候要有分寸，而不是把它当成事实基准。
 #:
-#: D26（2026-09-28 走查）又加了最后那句「占位词」的规则。那一份 `PROFILE.md` 的
-#: 用户资料三行写着「待确认」（模型自己早先这么填的），于是**每一轮**注入之后，
-#: 模型都把它当成"还没做完的事"，见面就问"怎么称呼你"；而记忆 bootstrap 那条路
-#: 实测根本不再注入（`bootstrap_block` 长度 0），所以病灶就在这几行字里。
-#: 实测那天 17 条新会话里 14 条都出现了这种追问。
-#: 两处一起改：这句规则挡住"照着占位词去追问"，`memory._PROFILE_TEMPLATE` 那句提示
-#: 挡住"下一份文件又被写成待确认"。
+#: 占位词那条规则（D26，2026-09-28 走查：17 条新会话里 14 条在问"怎么称呼你"）
+#: **v0.56 起搬进了档案块**（`memory._ARCHIVE_LEAD`）：病灶那几行字原先在
+#: `PROFILE.md` 里，现在它是档案，规则跟着它走——写在这里会让"人设"这一段
+#: 去讲一份它已经不管的文件。
 _PERSONA_LEAD = (
     "【你的身份与长期设定：请始终照此说话做事】\n"
-    "下面几份文件是你的身份、对方的资料、你做事要守的规程，以及你记得的事——"
+    "下面几份文件是你的身份与你做事要守的规程——"
     "它们是设定，不是待读的资料：说话风格、判断口径、做事顺序都按它们来。\n"
     "不要向对方复述文件原文，直接照它行事；需要引用时用自己的话说。\n"
     "它们是过去某个时刻写下的快照，未必每句都还成立；"
-    "与对方此刻所说的冲突时，以他此刻说的为准，并把这当成本轮的新事实。\n"
-    "文件里**没填的字段就当没填**：不要为了填满它们去追问对方；也不要因为某个字段"
-    "写着「待确认」「待补」「未知」这类占位词，就每一轮都问一遍——那不是待办，只是还没写。"
+    "与对方此刻所说的冲突时，以他此刻说的为准，并把这当成本轮的新事实。"
 )
 
 
 def _persona_block(context: PromptContext) -> str:
     """人设文件块：**总起句 + 每份前面标出它是什么**。
 
-    标名字不是为了好看：模型得知道哪句是"我该怎么说话"（人格）、哪句是"已知的事实"
-    （记忆）。少了这层区分，它会把记忆当成对方这一轮说的话——而记忆是可能过时的。
+    标名字不是为了好看：模型得知道哪句是"该怎么说话"（人格）、哪句是"这类活怎么干"
+    （规程）。少了这层区分，它会把两份文件读成一整段没有分工的资料。
 
     总起句只在**真有文件进来**时才给（一份都没有时这一块整体为空）：
     空挂着一段"请遵守以下设定"而没有下文，比不写更糟。
 
-    「长期记忆怎么用」（``memory_guidance``）挂在**操作规程那一份的末尾**，
+    「用户档案怎么用」（``memory_guidance``）挂在**操作规程那一份的末尾**，
     照 QwenPaw 把记忆指导拼进 ``AGENTS.md`` 那一段的做法：这是"这类活怎么干"的
     一部分，单列成一块会让它读起来像另一份待读的资料。没有 ``AGENTS.md`` 时
     退化成独立一块——总比把整段指导丢掉好。
+
+    **档案不在这一块里**：它是独立的贡献者（``PRIORITY_ARCHIVE``），理由见那里的说明。
     """
     blocks: list[str] = []
     agents_at: int | None = None
@@ -198,14 +221,7 @@ def _persona_block(context: PromptContext) -> str:
         label = _PERSONA_LABELS.get(name, name)
         if name == "AGENTS.md":
             agents_at = len(blocks)
-        if name == "MEMORY.md":
-            # 只有记忆这份要带"可能过时"的声明，见 `MemoryService.prompt_block` 里的理由
-            blocks.append(
-                f"【{label}（{name}，来自过去的对话，可能已经过时；"
-                f"与对方当前所说冲突时以他当下的为准）】\n{body}"
-            )
-        else:
-            blocks.append(f"【{label}（{name}）】\n{body}")
+        blocks.append(f"【{label}（{name}）】\n{body}")
     guidance = context.memory_guidance.strip()
     if guidance:
         # 「长期记忆怎么用」挂在**操作规程那一份的末尾**（照 QwenPaw 把记忆指导拼进
@@ -222,10 +238,32 @@ def _persona_block(context: PromptContext) -> str:
 
 _PERSONA_LABELS = {
     "SOUL.md": "你的人格",
-    "PROFILE.md": "身份与对方",
     "AGENTS.md": "操作规程",
-    "MEMORY.md": "长期记忆",
+    # ``PROFILE.md`` 从 v0.56 起是**档案**、走独立贡献者，正常不会再出现在这里；
+    # 留着这个标签只是兜底（真出现时至少标对它是"对方的资料"，而不是裸文件名）。
+    "PROFILE.md": "身份与对方",
 }
+
+
+#: 检索链路那几块的（优先级, 名字, 产出）表：**人设 + 档案 + 首次引导**。
+#:
+#: 检索链路（`chat.agent_enabled=false`）不走总表——它只有一条 system 消息，
+#: 资料块要并进同一条（见 ``chat.build_messages``），顺序由那条链路自己定。
+#: 但这三块的**样子与相对顺序**必须与工具循环那条**同一口径**：同一次对话换个链路，
+#: 模型对"我是谁、对方是谁"的认知不该跟着变。所以这里复用同一批贡献者与同一个
+#: 拼接器（`build_system_prompt`），只是把表缩到这三块。
+#:
+#: **它必须定义在 `_persona_block` 之后**（那份贡献者是它的一部分）。
+_SETTING_CONTRIBUTORS: tuple[PromptContributor, ...] = (
+    (PRIORITY_PERSONA, "persona", _persona_block),
+    (PRIORITY_ARCHIVE, "archive", lambda ctx: ctx.archive),
+    (PRIORITY_BOOTSTRAP, "bootstrap", lambda ctx: ctx.bootstrap),
+)
+
+
+def setting_blocks(context: PromptContext) -> str:
+    """**人设 + 用户档案 + 首次引导**这三块（检索链路用它拼 "memory" 那一块）。"""
+    return build_system_prompt(context, _SETTING_CONTRIBUTORS)
 
 
 def _summary_block(context: PromptContext) -> str:

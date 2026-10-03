@@ -739,10 +739,10 @@ def test_every_tool_has_a_parameter_whitelist() -> None:
 def test_recall_says_disabled_instead_of_returning_nothing(
     services: Services, admin: Caller
 ) -> None:
-    """**默认关**，而且关着时必须明说。
+    """关着时必须明说（它关的正是注入与 recall 这一对，§7.3）。
 
     MCP 这一层是"模型读到一段文本"的界面：如果这里返回空列表，
-    模型会当成"记忆里没有"，然后基于错误前提继续推理——比报错坏得多。
+    模型会当成"变更流里没有"，然后基于错误前提继续推理——比报错坏得多。
     """
     services.runtime.set({"memory.enabled": "false"})
 
@@ -752,32 +752,53 @@ def test_recall_says_disabled_instead_of_returning_nothing(
     assert "未启用" in str(excinfo.value)
 
 
-def test_remember_writes_the_core_memory_file(services: Services, admin: Caller) -> None:
-    """打开开关后，``remember`` 写的是 ``MEMORY.md``——**不经过 ReMe**。
+def test_remember_reports_the_action_and_the_receipt(services: Services, admin: Caller) -> None:
+    """``remember`` 写的是**用户档案**，并把 `action` 与 `receipt` 交给模型（§4.4）。
 
-    所以"记住东西"这件事不依赖那个额外进程；依赖它的只有召回。
+    四种动作在工具这一层也要走通（模型据此才知道"到底记上了没有"）：
+    added → existing → replaced（带 ``replaces``）→ rejected（超单条上限）。
     """
     services.runtime.set({"memory.enabled": "true"})
     try:
-        first = call_tool(
-            services, "remember", {"content": "用户偏好简短回答", "tags": ["偏好"]}, caller=admin
-        )
+        first = call_tool(services, "remember", {"content": "用户偏好简短回答"}, caller=admin)
         second = call_tool(services, "remember", {"content": "用户偏好简短回答"}, caller=admin)
+        third = call_tool(
+            services,
+            "remember",
+            {"content": "用户偏好简短回答，先给结论", "replaces": "用户偏好简短回答"},
+            caller=admin,
+        )
+        fourth = call_tool(services, "remember", {"content": "长" * 121}, caller=admin)
 
-        assert first["saved"] is True
+        assert first["action"] == "added" and "记下了" in first["receipt"]
         # 同一件事记第二遍不写第二条
-        assert second["saved"] is False
+        assert second["action"] == "existing" and "已经有了" in second["receipt"]
+        assert third["action"] == "replaced" and third["replaced"] == "用户偏好简短回答"
+        assert fourth["action"] == "rejected" and "拆成两条" in fourth["receipt"]
 
-        core = services.memory.core_file
-        assert core.exists()
-        body = core.read_text(encoding="utf-8")
-        assert body.count("用户偏好简短回答") == 1
-        # 关掉那个开关之后，注入路径**照旧带上它**（这条原先断言的是相反的行为）：
-        # `MEMORY.md` 是磁盘上的普通文件，开关管的是"过去的对话会不会被召回、
-        # 会不会自动沉淀"，不是"这份文件要不要读"。实测逼出来的——用户的实例上
-        # 记忆服务是关的，于是人设与核心记忆既不播种也不注入，功能整个是死的。
+        body = services.memory.archive_text()
+        assert body.count("先给结论") == 1
+        assert "## 长期偏好与风格" in body
+    finally:
         services.runtime.set({"memory.enabled": "false"})
-        assert "用户偏好简短回答" in services.memory.core_text()
+
+
+def test_forget_removes_the_entry_and_keeps_it_restorable(
+    services: Services, admin: Caller
+) -> None:
+    """``forget`` 删一条（§7.4）：档案里没了、变更流里有、回执说得出删了哪条。"""
+    services.runtime.set({"memory.enabled": "true"})
+    try:
+        call_tool(services, "remember", {"content": "项目代号叫 kylab"}, caller=admin)
+
+        outcome = call_tool(services, "forget", {"topic": "kylab"}, caller=admin)
+
+        assert outcome["action"] == "forgotten"
+        assert "忘掉了" in outcome["receipt"]
+        assert "项目代号叫 kylab" not in services.memory.archive_text()
+        # 留痕可还原（服务层那一侧的方法，界面的「还原」用它）
+        assert services.memory.restore("项目代号叫 kylab").action == "restored"
+        assert "项目代号叫 kylab" in services.memory.archive_text()
     finally:
         services.runtime.set({"memory.enabled": "false"})
 

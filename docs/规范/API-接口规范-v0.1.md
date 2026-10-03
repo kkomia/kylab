@@ -306,7 +306,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **206** 条端点。
+共 **209** 条端点。
 
 ### `api-keys`
 
@@ -495,12 +495,15 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/memory` | 记忆状态与文件列表 |
-| `DELETE` | `/api/v1/memory/files/{path}` | 删除一个记忆文件 |
+| `GET` | `/api/v1/memory/archive` | 档案卡（分区、条目、读数） |
+| `GET` | `/api/v1/memory/changes` | 变更流（倒序） |
 | `GET` | `/api/v1/memory/files/{path}` | 读一个记忆文件 |
-| `PUT` | `/api/v1/memory/files/{path}` | 写入（覆盖）一个记忆文件 |
-| `GET` | `/api/v1/memory/graph` | 记忆的 wikilink 图谱 |
-| `POST` | `/api/v1/memory/recall` | 在记忆里召回 |
-| `POST` | `/api/v1/memory/remember` | 记一条长期事实 |
+| `POST` | `/api/v1/memory/forget` | 忘掉一条 |
+| `POST` | `/api/v1/memory/group` | 项目组改名 |
+| `POST` | `/api/v1/memory/migrate` | 折叠旧记忆（零模型调用） |
+| `POST` | `/api/v1/memory/recall` | 在档案的变更流里查证 |
+| `POST` | `/api/v1/memory/remember` | 记一条（新增或顶替） |
+| `POST` | `/api/v1/memory/restore` | 还原一条旧值 |
 
 ### `model-proxy`
 

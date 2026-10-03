@@ -69,8 +69,10 @@ EXPOSURE_PERIPHERAL = "peripheral"
 #:
 #: 三条理由各不一样，但结论都是"不能延迟"：
 #:
-#: - **记忆四件**（``recall`` / ``remember`` / ``read_memory`` / ``write_memory``）：
-#:   "被延迟发现就等于没有记忆"——用户原话；
+#: - **记忆四件**（``recall`` / ``remember`` / ``forget`` / ``read_memory``）：
+#:   "被延迟发现就等于没有记忆"——用户原话。``write_memory`` 原先在这个名单里，
+#:   v0.56 随档案制退场（§7.4：整份覆盖与条目级预算/变更流不相容），
+#:   接替它的是 ``forget``；
 #: - **技能两件**（``read_skill`` / ``list_skills``）：技能是"索引常驻 + 正文按需"，
 #:   取正文的入口要是也延迟，那套设计就断了；
 #: - **发现通道自身**（``find_tools`` / ``call_tool``）：**这是死锁约束**——
@@ -79,8 +81,8 @@ CORE_ALWAYS: frozenset[str] = frozenset(
     {
         "recall",
         "remember",
+        "forget",
         "read_memory",
-        "write_memory",
         "read_skill",
         "list_skills",
         "find_tools",
@@ -266,14 +268,17 @@ TOOL_META: dict[str, ToolMeta] = {
     "attach_note_to_kb": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     "list_notes": _READ,
     "recall": _READ,
-    # 读记忆正文（把 recall 给的片段展开）：与 recall / read_file 同一档——
+    # 读用户档案原文（自驾/自查它写进去的是什么）：与 recall / read_file 同一档——
     # 只读、无副作用，最该和同批里别的读并发
     "read_memory": _READ,
-    # 整份改写人设文件（SOUL / PROFILE / AGENTS）：写的是长期数据，
-    # 与 remember 同一档。**不是只读**，所以 plan 档会把它拦下（见 modes.is_write）
-    "write_memory": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
-    # 写的是人设文件（MEMORY.md 那一层），长期数据
+    # 写的是用户档案（四个分区），长期数据；与 remember 同一档。
+    # **不是只读**，所以 plan 档会把它拦下（见 modes.is_write）
     "remember": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
+    # 删档案里的一条（变更流留痕、可还原）：长期数据上的删除动作，
+    # 与 delete_document 同一档（high）——判错的代价要靠"还原"补回来
+    "forget": ToolMeta(
+        destructive=True, side_effect_scope="workspace", risk_level="high"
+    ),
     # 产物落在**这一轮的会话**里（artifacts），不是用户的工作区
     "export_document": ToolMeta(side_effect_scope="session", risk_level="low"),
     "export_table": ToolMeta(side_effect_scope="session", risk_level="low"),

@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
-from app.services import agent_tools, memory_files
+from app.services import agent_tools
 from app.services.agent_files import Roots
 from app.services.api_key import Caller
 from app.services.memory import MemoryService
@@ -312,29 +312,30 @@ def test_the_machine_tools_are_wired_into_the_runner(tmp_path, monkeypatch) -> N
 
 
 def test_memory_tools_follow_the_memory_switch() -> None:
-    """记忆关着时 **``recall`` 与 ``read_memory`` 一起消失**，``remember`` 留着。
+    """记忆关着时**只有 ``recall`` 消失**，其余三件留着。
 
-    关着时 ``recall`` 会明确报"未启用长期记忆"，而"给了又拒"正是知识库那一侧
-    已经修过的坑（模型先试一次、再拿一句错误，白花一个来回——见 ``_KB_TOOLS``）。
+    关着时 ``recall`` 会明确报"未启用长期记忆"（关的正是注入与 recall 这一对），
+    而"给了又拒"正是知识库那一侧已经修过的坑（模型先试一次、再拿一句错误，
+    白花一个来回——见 ``_KB_TOOLS``）。
 
-    ``remember`` **必须留着**：它写的是 ``MEMORY.md``，那份文件不看开关也会注入，
-    所以关着时它照样有效（与 ``MemoryService.remember`` 同一口径）。
+    **``remember`` / ``forget`` / ``read_memory`` 不看那个开关**（§7.3：它管的是
+    注入与 recall，档案的读写不看它）——"关了也能改自己的东西"这条纪律保留。
     """
     on = _names_with_memory(True, ["kb_x"])
     off = _names_with_memory(False, ["kb_x"])
 
-    assert {"recall", "read_memory"} <= on
-    assert not ({"recall", "read_memory"} & off)
-    # 写人设与 `remember` 一样**不看开关**：人设文件不看开关也会注入，
-    # 所以关着记忆时它们照样有效（见 `MemoryService.remember` 的说明）
-    assert {"remember", "write_memory"} <= off
+    assert "recall" in on
+    assert "recall" not in off
+    assert {"remember", "forget", "read_memory"} <= off
+    # `write_memory` 退场（§7.4）：工具表里不再有它，开关开着也没有
+    assert "write_memory" not in on
 
 
-def test_read_memory_description_says_when_to_use_it() -> None:
-    """描述要写清"**片段不够时**用它"。
+def test_read_memory_description_says_what_it_reads() -> None:
+    """描述要写清**它读的是整份档案**、以及为什么还要读它（档案每轮已经注入）。
 
-    缺了这一句，模型看到的是"有个读记忆的工具"，而它并不觉得自己需要——
-    它以为自己手上的片段就是全文。那正是原先那个缺口的样子。
+    缺了这一句，模型会问"我不是已经看到了吗"——或者更糟：把注入块里那几条
+    （渲染过的形状）当成文件里的原文，于是 `replaces` 给的字对不上。
     """
     specs = {
         spec.name: spec for spec in agent_tools.tool_specs(
@@ -343,7 +344,8 @@ def test_read_memory_description_says_when_to_use_it() -> None:
     }
     description = specs["read_memory"].description
 
-    assert "recall" in description and "展开" in description
+    assert "档案" in description
+    assert "原文" in description
 
 
 # ------------------------------------------------------------------ 会话文件区（v0.55）
@@ -537,124 +539,57 @@ def test_ingest_file_says_where_to_find_paths_when_missing() -> None:
     assert "list_files" in outcome.content
 
 
-def test_read_memory_expands_a_hit_by_line_window(tmp_path: Path) -> None:
-    """按行窗口给正文，并说清"这是第几行到第几行、**共几行**"。
+def test_read_memory_returns_the_whole_archive(tmp_path: Path) -> None:
+    """``read_memory`` 给的是**整份档案的原文**（含 frontmatter 与四个分区）。
 
-    行号是模型接着往下读的依据：不说总行数，它不知道还有没有下文，
-    就会把这一窗当成全文——于是又回到"以为自己看到了全部"。
+    它服务的是"自查"与"更正要逐字准确"两件事（§7.4）：注入块里那几条是渲染过的，
+    而 `replaces` 要求原文对得上，所以模型需要一个能拿到文件原样的入口。
     """
     service = _memory_service(tmp_path)
-    relative = "daily/2026-09-27/某会话.md"
-    memory_files.write_file(
-        service.workspace, relative, "\n".join(f"第 {index} 行" for index in range(1, 21))
-    )
+    service.remember("用户要求先给结论", section="长期偏好与风格")
 
     outcome = agent_tools._read_memory(
-        SimpleNamespace(memory=service),
-        Caller(is_admin=True),
-        {"path": relative, "start_line": 5, "limit": 3},
+        SimpleNamespace(memory=service), Caller(is_admin=True), {}
     )
 
-    assert "第 5 行" in outcome.content and "第 7 行" in outcome.content
-    assert "第 4 行" not in outcome.content and "第 8 行" not in outcome.content
-    assert "共 20 行" in outcome.content
+    assert "## 长期偏好与风格" in outcome.content
+    assert "- 用户要求先给结论" in outcome.content
+    # 原文（含 frontmatter）而不是渲染过的注入块
+    assert outcome.content.startswith("---")
 
 
-def test_read_memory_refuses_to_escape_the_workspace(tmp_path: Path) -> None:
-    """路径越界一律拒——**不因为"path 是从 recall 结果里抄来的"就放行**。
-
-    走的是记忆那一侧的同一套安全解析（``safe_path``），所以这里只需确认
-    它没被绕过、并且把原因如实回了模型（它据此才该改路）。
-    """
+def test_read_memory_says_when_the_archive_is_empty(tmp_path: Path) -> None:
+    """空档案要说清"还没有一条"并指出该用什么，而不是回一段空白。"""
     service = _memory_service(tmp_path)
 
     outcome = agent_tools._read_memory(
-        SimpleNamespace(memory=service),
-        Caller(is_admin=True),
-        {"path": "../../backend/.env"},
+        SimpleNamespace(memory=service), Caller(is_admin=True), {}
     )
 
-    assert "读不了这份记忆" in outcome.content
-
-
-def test_read_memory_without_a_path_says_so() -> None:
-    outcome = agent_tools._read_memory(
-        SimpleNamespace(memory=None), Caller(is_admin=True), {}
-    )
-
-    assert "缺少参数" in outcome.content
-
-
-def test_write_memory_updates_a_persona_file(tmp_path: Path) -> None:
-    """整份改写 ``PROFILE.md``——**首次引导靠它才落得下来**（Agent 自己写对方是谁）。
-
-    回应里必须带上"告诉对方"：那是他的设定（设计文档 §2.5 的两条约定之一：
-    **改动要告知用户**）。
-    """
-    service = _memory_service(tmp_path)
-
-    outcome = agent_tools._write_memory(
-        SimpleNamespace(memory=service),
-        Caller(is_admin=True),
-        {"name": "PROFILE.md", "content": "# 我是 KYLAB\n\n- 名字：小又\n"},
-    )
-
-    assert "PROFILE.md" in outcome.content
-    assert "告诉对方" in outcome.content
-    assert memory_files.read_file(service.workspace, "PROFILE.md").content.startswith("# 我是")
-
-
-def test_write_memory_refuses_memory_md(tmp_path: Path) -> None:
-    """``MEMORY.md`` **不在白名单里**：它的条目由 `remember` 一条条维护
-    （管去重、只替换「核心长期记忆」那一节），允许整份覆盖等于把"逐条维护"
-    换成"一把梭"——而它每轮整份进上下文，写坏了影响面最大。
-
-    拒绝时要把**该用什么**说清楚：只说"不行"，模型会换个名字再试。
-    """
-    service = _memory_service(tmp_path)
-
-    outcome = agent_tools._write_memory(
-        SimpleNamespace(memory=service),
-        Caller(is_admin=True),
-        {"name": "MEMORY.md", "content": "- 覆盖整份"},
-    )
-
-    assert "只能改" in outcome.content
+    assert "空" in outcome.content
     assert "remember" in outcome.content
-    assert not (service.workspace / "MEMORY.md").exists()
 
 
-def test_write_memory_refuses_the_agents_own_persona(tmp_path: Path) -> None:
-    """``SOUL.md`` / ``AGENTS.md`` **也不在白名单里**（v0.52，用户口径）。
+def test_write_memory_is_retired_and_says_what_to_use_instead(tmp_path: Path) -> None:
+    """``write_memory`` **退场**（§7.4）：一律拒绝，并给出现在的四条路。
 
-    白名单里只留 ``PROFILE.md``（关于"对方是谁"的事实）。这两份是**用户自己的东西**
-    ——Agent 改自己的人格与规程，既难回滚、也难让用户察觉，而它们每轮整份进上下文。
-    拒绝时要告诉它**该怎么做**（说出来让对方决定），而不是只回一句"不行"：
-    只说不行，模型会换个说法再试一次。
+    整份覆盖与条目级预算/变更流不相容——它一次能撑爆预算，也能删掉一条不留痕。
+    拒绝时把该用的工具点出来：只说"不行"，模型会换个说法再试（老客户端里
+    ``write_memory`` 这个名字可能还在，这一句就是给那种情况准备的）。
     """
-    service = _memory_service(tmp_path)
-
-    for name in ("SOUL.md", "AGENTS.md"):
-        outcome = agent_tools._write_memory(
-            SimpleNamespace(memory=service),
-            Caller(is_admin=True),
-            {"name": name, "content": "我自己改的"},
-        )
-        assert "PROFILE.md" in outcome.content
-        assert "说给他听" in outcome.content or "说给" in outcome.content
-        assert not (service.workspace / name).exists()
-
-
-def test_write_memory_needs_content(tmp_path: Path) -> None:
     service = _memory_service(tmp_path)
 
     outcome = agent_tools._write_memory(
         SimpleNamespace(memory=service),
         Caller(is_admin=True),
-        {"name": "PROFILE.md", "content": "   "},
+        {"name": "PROFILE.md", "content": "# 我自己写一份"},
     )
 
-    assert "缺少参数" in outcome.content
+    assert "remember" in outcome.content
+    assert "forget" in outcome.content
+    assert "replaces" in outcome.content
+    # **一个字都没写进去**：PROFILE.md 连文件都不该被建出来
+    assert not (service.workspace / "PROFILE.md").exists()
 
 
 # ------------------------------------------------------- D34：列表要自解释

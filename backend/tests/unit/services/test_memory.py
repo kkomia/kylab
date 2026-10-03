@@ -137,34 +137,44 @@ def test_disabled_recall_raises_instead_of_returning_empty(tmp_path: Path) -> No
 
 
 def test_remember_works_even_when_the_switch_is_off(tmp_path: Path) -> None:
-    """``remember`` 不看那道闸（v0.22 起）：它写的是 ``MEMORY.md``，
-    那份文件无论开关如何都会注入提示词——写进去立即有效。
+    """``remember`` 不看那道闸（§7.3）：它写的是档案，而**档案编辑不看开关**
+    ——"关了也能改自己的东西"这条纪律保留。
 
-    对照：``recall`` 在关着时仍然明确报错（它代表"过去的对话会不会被召回"）。
+    对照：``recall`` 在关着时仍然明确报错（它代表"档案进不进这一轮的上下文"）。
     """
     service = _service(tmp_path, **{"memory.enabled": "false"})
 
-    assert service.remember("关着也能记住")["saved"] is True
+    result = service.remember("用户偏好先给结论")
+    assert result.action == "added"
     with pytest.raises(InvalidRequestError, match="未启用"):
         service.recall("偏好")
 
 
-def test_core_text_is_empty_when_disabled_instead_of_raising(tmp_path: Path) -> None:
-    """注入是"有就带上"：文件不在或没启用时返回空串，不让对话失败。"""
-    assert _service(tmp_path, **{"memory.enabled": "false"}).core_text() == ""
+def test_archive_block_is_empty_when_disabled_instead_of_raising(tmp_path: Path) -> None:
+    """注入是"有就带上"：没启用（或档案还空着）时返回空串，不让对话失败。"""
+    service = _service(tmp_path, **{"memory.enabled": "false"})
+    service.remember("用户偏好先给结论")
+
+    assert service.archive_block() == ""
+    assert service.archive_text(), "档案本身照旧可读可写——那道闸只管注入与 recall"
 
 
 # --------------------------------------------------------------------- 记住
+#
+# 写入走 `archive.ArchiveService`（分区、预算、顶替、变更流），本层只做
+# "门面"那部分：开关、归区、把回执原样交出去。这一组钉的是**门面这一侧**的行为。
 
 
-def test_remember_creates_memory_file_with_template(tmp_path: Path) -> None:
+def test_remember_creates_the_archive_with_four_fixed_sections(tmp_path: Path) -> None:
     service = _service(tmp_path)
 
     result = service.remember("用户偏好先给结论")
 
-    assert result["saved"] is True
-    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
-    assert "## 核心长期记忆" in body
+    assert result.action == "added"
+    assert result.section == "长期偏好与风格", "归区按内容走（词表与迁移共用一处）"
+    body = (tmp_path / "memory" / PROFILE_FILE).read_text(encoding="utf-8")
+    for title in ("身份与称呼", "长期偏好与风格", "进行中的项目", "工具与环境"):
+        assert f"## {title}" in body
     assert "- 用户偏好先给结论" in body
 
 
@@ -174,52 +184,79 @@ def test_remember_is_idempotent(tmp_path: Path) -> None:
 
     again = service.remember("用户偏好先给结论")
 
-    assert again["saved"] is False
-    assert "已经存在" in again["reason"]
-    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
+    assert again.action == "existing"
+    assert "已经有了" in again.receipt
+    body = (tmp_path / "memory" / PROFILE_FILE).read_text(encoding="utf-8")
     assert body.count("用户偏好先给结论") == 1
 
 
-def test_remember_dedupe_ignores_added_tags(tmp_path: Path) -> None:
+def test_remember_honours_an_explicit_section(tmp_path: Path) -> None:
+    """模型看得见整份档案，所以它可以指定分区；**分区名不认识时按内容归区**
+    而不是拒掉这一笔（分区名不该成为一次写入失败的原因）。"""
     service = _service(tmp_path)
-    service.remember("设备名是 nas")
 
-    assert service.remember("设备名是 nas", tags=["工具"])["saved"] is False
+    tool = service.remember("用户的内网有一台 L20", section="工具与环境")
+    assert tool.section == "工具与环境"
+
+    fallback = service.remember("用户叫小又", section="身份")  # 是旧叫法，不是分区名
+    assert fallback.section == "身份与称呼"
+
+
+def test_remember_replaces_in_one_call(tmp_path: Path) -> None:
+    """`replaces` 让"更正"**一次调用**完成（§4.3）：旧值进变更流、档案里是新值。
+
+    这条对整个设计很关键：没有它就退化成"先忘掉、再记住"两次，而中间那一刻
+    档案里是**没有这条**的——用户如果刚好在那时问一句，答案是错的。
+    """
+    service = _service(tmp_path)
+    service.remember("用户要求回答简短", section="长期偏好与风格")
+
+    result = service.remember(
+        "用户要求回答先给结论、再列依据",
+        section="长期偏好与风格",
+        replaces="用户要求回答简短",
+    )
+
+    assert result.action == "replaced"
+    assert result.replaced == "用户要求回答简短"
+    body = service.archive_text()
+    assert "用户要求回答先给结论" in body
+    assert "用户要求回答简短" not in body, "被顶替的那条不该同时留着"
+    # 旧值逐字留在变更流里（可还原）
+    assert "用户要求回答简短" in (tmp_path / "memory" / "changes.md").read_text(encoding="utf-8")
 
 
 def test_remember_appends_after_existing_entries(tmp_path: Path) -> None:
     service = _service(tmp_path)
-    service.remember("第一条")
+    service.remember("第一条", section="长期偏好与风格")
 
-    result = service.remember("第二条")
+    service.remember("第二条", section="长期偏好与风格")
 
-    assert result["entries"] == 2
-    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
+    assert len(service.archive_entries()) == 2
+    body = service.archive_text()
     assert body.index("- 第一条") < body.index("- 第二条")
 
 
-def test_remember_preserves_hand_written_sections(tmp_path: Path) -> None:
-    """只重建「核心长期记忆」那一节：别的小节里可能有人手写的内容。"""
-    service = _service(tmp_path)
-    service.remember("第一条")
-    core = tmp_path / "memory" / CORE_MEMORY_FILE
-    core.write_text(
-        core.read_text(encoding="utf-8").replace(
-            "<!-- 在这里记录长期有效、与当前工作区相关的工具设置。 -->", "- 设备名是 nas"
-        ),
-        encoding="utf-8",
-    )
+def test_remember_rejects_content_that_is_too_long(tmp_path: Path) -> None:
+    """超长**由服务层以回执拒绝**（不是抛错）：回执里要给两条出路。
 
-    service.remember("第二条")
+    它与协议层那道 500 字的粗护栏不是一回事——那个是"别白读一遍"，这个是设计本身
+    （§3.3：档案每轮进上下文，一条必须是一句话）。
+    """
+    result = _service(tmp_path).remember("字" * 121)
 
-    body = core.read_text(encoding="utf-8")
-    assert "- 设备名是 nas" in body
-    assert "- 第一条" in body and "- 第二条" in body
+    assert result.action == "rejected"
+    assert "最多 120 字" in result.receipt
+    assert "AGENTS.md" in result.receipt, "要给出路"
 
 
-def test_remember_rejects_overlong_content(tmp_path: Path) -> None:
-    with pytest.raises(InvalidRequestError, match="最多 500 字"):
-        _service(tmp_path).remember("字" * 501)
+def test_remember_rejects_sensitive_content_without_leaving_a_trace(tmp_path: Path) -> None:
+    """敏感信息**连变更流都不进**：留痕本身就是泄漏（§4.2 的否决项）。"""
+    result = _service(tmp_path).remember("用户的 api key 是 sk-abcdefghijklmno")
+
+    assert result.action == "rejected"
+    changes = tmp_path / "memory" / "changes.md"
+    assert not changes.exists() or "sk-abc" not in changes.read_text(encoding="utf-8")
 
 
 def test_remember_rejects_blank_content(tmp_path: Path) -> None:
@@ -227,10 +264,55 @@ def test_remember_rejects_blank_content(tmp_path: Path) -> None:
         _service(tmp_path).remember("   ")
 
 
+def test_forget_removes_the_entry_and_keeps_a_restorable_trace(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.remember("用户偏好先给结论", section="长期偏好与风格")
+
+    result = service.forget("用户偏好先给结论")
+
+    assert result.action == "forgotten"
+    assert "忘掉了" in result.receipt
+    assert service.archive_entries() == ()
+    assert "用户偏好先给结论" in (
+        tmp_path / "memory" / "changes.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_forget_accepts_a_topic_and_refuses_to_guess(tmp_path: Path) -> None:
+    """``forget`` 的入参是**话题**，所以先按原样找、再按唯一子串兜一次；
+    对得上不止一条时**不猜**，把候选列回来。"""
+    service = _service(tmp_path)
+    service.remember("用户要求先给结论", section="长期偏好与风格")
+    service.remember("项目代号叫 kylab", section="进行中的项目")
+
+    unique = service.forget("先给结论")
+    assert unique.action == "forgotten"
+    assert unique.text == "用户要求先给结论"
+
+    missing = service.forget("合唱团的排练安排")
+    assert missing.action == "rejected"
+    assert missing.reason == "missing"
+
+
+def test_forget_refuses_an_ambiguous_topic(tmp_path: Path) -> None:
+    """一句话对得上两条时列候选——删错的代价与多问一句完全不对等。"""
+    service = _service(tmp_path)
+    service.remember("项目代号叫 kylab", section="进行中的项目")
+    service.remember("项目目标是 11 月交付", section="进行中的项目")
+
+    result = service.forget("项目")
+
+    assert result.action == "rejected"
+    assert result.reason == "ambiguous"
+    assert "kylab" in result.receipt and "11 月交付" in result.receipt
+    assert len(service.archive_entries()) == 2, "一条都不许删"
+
+
 # --------------------------------------------------------------------- 召回
 #
-# 本地召回（v0.46）。这一组要同时钉住两件相反的事：
-# **该命中的要命中，并带回文件与行号**；**不该命中的要返回空**（而不是凑数）。
+# **池子只有变更流**（§5.3）：档案本身每轮已经全量注入，再召回一次就是把同一段
+# 内容进两次上下文。所以这一组钉两件相反的事：**改过的事要查得到（带行号）**、
+# **没改过的事与档案条目一律查不到**。
 
 _SEED_DIGEST = """---
 summary: 锂价敏感性分析
@@ -252,102 +334,21 @@ _SEED_DAILY = """# 2026-09-24
 - 发布前必须先跑一遍后端门禁脚本
 """
 
-
-def _seed(service: MemoryService) -> Path:
-    """铺一个像样的工作区：一份 digest、一份 daily、一份核心记忆。"""
-    workspace = service.workspace
-    _write(workspace, "digest/personal/锂价.md", _SEED_DIGEST)
-    _write(workspace, "daily/2026-09-24.md", _SEED_DAILY)
-    _write(
-        workspace,
-        CORE_MEMORY_FILE,
-        "---\nsummary: 核心\n---\n\n## 核心长期记忆\n\n- 项目代号叫 kylab\n",
-    )
-    return workspace
-
-
-def test_recall_finds_a_seeded_entry_with_a_real_line_range(tmp_path: Path) -> None:
-    """命中的证据是**文件 + 行号区间**：用户拿着它就能去改那一条。
-
-    行号必须是**文件里的真实行号**（不是"正文里的第几行"）：frontmatter 占了三行，
-    少算它就会把人带到错误的位置。
-    """
-    service = _service(tmp_path)
-    _seed(service)
-
-    hits, _links = service.recall("锂价下跌对毛利的影响")
-
-    assert hits, "这条是手写进去的记忆，必须能召回"
-    top = hits[0]
-    assert top.path == "digest/personal/锂价.md"
-    # 8 是**文件里的行号**（frontmatter 占了前 4 行、标题与空行各占 1）：正文里的
-    # 第 4 行是同一个位置，但对用户没用——他要拿这个号去编辑器里找那一行
-    assert (top.start_line, top.end_line) == (8, 8)
-    assert "毛利" in top.text
-    assert top.score > 0
-    # 判据是覆盖率（归一化量），不是分数：见 memory_files.MIN_TERM_COVERAGE
-    assert top.coverage >= 1 / 3
-
-
-def test_recall_hits_a_daily_entry_and_refuses_noise(tmp_path: Path) -> None:
-    """一正一反两条，钉住"命中 vs 不命中"的判据。
-
-    不命中的那条**必须返回空**：本地检索没有"连不上"这种中间态，
-    所以空只有一个含义——这几份记忆里确实没有相关的话。
-    """
-    service = _service(tmp_path)
-    _seed(service)
-
-    hits, _links = service.recall("用户偏好什么样的回答风格")
-    assert [hit.path for hit in hits] == ["daily/2026-09-24.md"]
-    assert hits[0].start_line == 3
-
-    assert service.recall("合唱团的排练时间安排")[0] == []
-    assert service.recall("今天天气怎么样")[0] == []
-
-
-def test_recall_ignores_question_words(tmp_path: Path) -> None:
-    """疑问词不算检索证据：它们描述"我要问什么"，不是"这段记忆在说什么"。
-
-    实测两种坏法各一例：剔掉之前，「复盘什么时候做」在写着「复盘固定每周五下午做」
-    的记忆上被判成不相关（"什么时候"没命中）；而「用户的时间安排」会靠蹭上「用户」
-    更像命中。剔掉之后，"命中"更接近用户的直觉。
-    """
-    service = _service(tmp_path)
-    _seed(service)
-    _write(service.workspace, "daily/2026-09-25.md", "# 2026-09-25\n\n- 复盘固定每周五下午做\n")
-
-    hits, _links = service.recall("复盘什么时候做")
-
-    assert [hit.path for hit in hits] == ["daily/2026-09-25.md"]
-    assert service.recall("用户的时间安排")[0] == []
-
-
-def test_recall_survives_a_segmentation_mismatch(tmp_path: Path) -> None:
-    """分词切法与正文不一致的查询**也要能命中**（字对那条证据通道）。
-
-    实测：「发布前要先跑什么」被 jieba 切成 `发布 / 前要 / 什么`，而正文里写的是
-    「发布前必须先跑一遍后端门禁脚本」——"前要"这个词在正文里永远找不到，
-    只靠实词那条通道，三个词只中一个，于是**明明记过这句话却搜不出来**。
-    字对（`发布 / 布前 / 先跑`）不依赖分词，正是为这类情况留的。
-    """
-    service = _service(tmp_path)
-    _seed(service)
-
-    hits, _links = service.recall("发布前要先跑什么")
-
-    assert [hit.path for hit in hits] == ["daily/2026-09-24.md"]
-    assert "门禁" in hits[0].text
+_SEED_CHANGES = """- 2026-10-01 09:20 · 新增 · 长期偏好与风格 · 来源：显式
+  - 新：用户要求回答先给结论，再列依据。
+- 2026-10-02 14:05 · 顶替 · 进行中的项目 · 来源：显式
+  - 旧：项目代号叫 kylab。
+  - 新：项目代号叫 kylab2，11 月交付。
+- 2026-10-03 08:00 · 忘掉 · 工具与环境 · 来源：界面
+  - 旧：用户的内网有一台 L20。
+"""
 
 
 def _no_jieba(monkeypatch: pytest.MonkeyPatch) -> None:
     """让 ``import jieba`` 真的失败（抛的是**真** ``ModuleNotFoundError``）。
 
-    比 monkeypatch 掉 ``coverage._jieba`` 更接近现场：那台机器上就是"这个包不在"，
-    而产品代码要挡的正是 import 那一刻。两件事都得做：
-
-    1. 拦住 import（``sys.meta_path`` 里插一个只拒 jieba 的 finder）；
-    2. **清掉分词器缓存**（`coverage._JIEBA`）——上一个用例可能已经把它导进来了。
+    两件事都得做：拦住 import（``sys.meta_path`` 里插一个只拒 jieba 的 finder），
+    以及**清掉分词器缓存**（``coverage._JIEBA``）——上一个用例可能已经把它导进来了。
     """
     import sys
 
@@ -363,128 +364,155 @@ def _no_jieba(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "meta_path", [_NoJieba(), *sys.meta_path])
 
 
-@pytest.mark.local
-def test_recall_still_works_when_jieba_is_missing(
+def test_recall_works_when_jieba_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """**缺 jieba 的运行时里，召回不许整条炸掉**（打包后的桌面端就是这种运行时）。
+    """**缺 jieba 的运行时里 recall 照常工作**（打包后的桌面端就是那种运行时）。
 
-    现场事实（阶段 3 发现、阶段 5 修）：客户端运行时里**没有 jieba**（约 41 MB，
-    `requirements-sidecar.txt` 明写不打包），而记忆召回自 M2 阶段 3 起在**本机**跑——
-    于是第一次调用分词器时抛 ``ModuleNotFoundError``，而它抛在一轮对话中间：
-    表现是"召回整个失败"，不是"少了一条证据"。
+    这条用例的口径在期二随池子换过一次，理由要说清：它原先钉的是
+    "``memory_files.search`` 的分词通道失败时降级到字对通道"——而 recall 现在
+    **根本不走那条路**（池子只剩变更流，排序是纯字面的二元组覆盖率，见 §5.3）。
+    留着的意义因此变成**回归护栏**：谁哪天把分词（或向量、或 ``memory_files``）
+    再接回 recall，这条就会红——那种接法会让桌面端重新出现"一召回就炸"。
 
-    修法：分词那条通道失败时**降级**（`memory_files._requirement_terms`），
-    由不依赖分词的"相邻字对"通道把人救回来。这条用例同时钉两件事：
-
-    1. **召回仍然返回**（命中同一个文件——字对通道给出的证据指着同一处）；
-    2. **"降级了"这件事看得见**：界面与工具两处的说明都如实加上那句话
-       （`memory_files.SEGMENTATION_UNAVAILABLE_NOTE`）。
-
-    标 ``local``：这条要证明的恰恰是**没有 PostgreSQL（也没有 jieba）的那台机器**
-    上的行为，而它只用临时目录与假 runtime——在缺 PG 的机器上跳过它，
-    等于把 M2 阶段 5 修的这件事整条跳过。
+    标 ``local``：它证明的恰恰是**没有 jieba 的那台机器**上的行为，
+    而它只用临时目录与假 runtime，不该因为缺 PG 被跳过。
     """
     service = _service(tmp_path)
     _seed(service)
     _no_jieba(monkeypatch)
-    # 那个标记是**进程级**的（一台机器上"有没有 jieba"不会变），用例自己擦干净：
-    # 留着它会让后面的用例看到一句本不该出现的说明
+    # 那个标记是**进程级**的（一台机器上"有没有 jieba"不会变），用例自己擦干净
     monkeypatch.setattr(memory_files, "_SEGMENTATION_MISSING", False)
 
-    hits, _links = service.recall("锂价下跌对毛利的影响")
+    hits, _links = service.recall("项目代号叫什么")
 
-    assert hits, "缺 jieba 不该把召回整条打掉"
-    assert hits[0].path == "digest/personal/锂价.md"
-    assert memory_files.segmentation_unavailable() is True
-    # 走的是字对那条通道：实词一个都没有（分词不可用），字对是有的
-    assert memory_files._requirement_terms("锂价下跌对毛利的影响") == []
-    assert memory_files._word_pairs("锂价下跌对毛利的影响")
+    assert hits, "缺 jieba 不该把 recall 整条打掉"
+    assert hits[0].path == "changes.md"
+    # 连分词器都没被问过：`_SEGMENTATION_MISSING` 是"试过一次、它不在"的标记，
+    # 而 recall 现在根本不走那条通道（这正是这条用例的意义）
+    assert memory_files.segmentation_unavailable() is False
 
-    from app.api.v1.memory import _recall_note as api_note
+    from app.api.v1.memory import RECALL_NOTE as api_note
     from app.services.tools import _recall_note as tool_note
 
-    note = memory_files.SEGMENTATION_UNAVAILABLE_NOTE
-    assert note in api_note(), "界面那句说明没有如实说降级"
-    assert note in tool_note(), "模型听到的那句说明没有如实说降级"
+    # **两处的说明都不再提分词**：池子只有几十到几百条记录，谁也没走分词那条通道，
+    # 再挂一句"召回质量受影响"就是描述一个不存在的机制
+    assert memory_files.SEGMENTATION_UNAVAILABLE_NOTE not in api_note
+    assert memory_files.SEGMENTATION_UNAVAILABLE_NOTE not in tool_note()
 
 
-def test_recall_never_returns_core_files(tmp_path: Path) -> None:
-    """``MEMORY.md`` 不进召回池：它每轮整份注入，再召回一遍就是同一段内容进两次上下文。
+def _seed(service: MemoryService) -> Path:
+    """铺一个像样的工作区：一份档案 + 一份变更流（外加 daily/digest 各一份）。
 
-    这条是界面 ``retrievable`` 标记的依据（"搜不到是位置决定的，不是检索坏了"）。
+    daily 与 digest 那两份**故意留着**：它们曾经是召回池，现在不是了——
+    下面有用例钉"它们不再被 recall 返回"（池子换了，不是全都招不到）。
+    """
+    workspace = service.workspace
+    _write(workspace, "digest/personal/锂价.md", _SEED_DIGEST)
+    _write(workspace, "daily/2026-09-24.md", _SEED_DAILY)
+    _write(
+        workspace,
+        PROFILE_FILE,
+        "---\nupdated: 2026-10-03\n---\n\n# 用户档案\n\n## 身份与称呼\n\n"
+        "- 用户叫小又，称呼「小又」即可。\n\n## 长期偏好与风格\n\n"
+        "- 用户要求回答先给结论，再列依据。\n",
+    )
+    _write(workspace, "changes.md", _SEED_CHANGES)
+    return workspace
+
+
+def test_recall_finds_a_changed_entry_with_a_real_line_range(tmp_path: Path) -> None:
+    """命中的证据是**文件 + 行号区间**：用户拿着它就能去看那次改动。
+
+    行号必须是**文件里的真实行号**（这一条记录的头一行），不是"记录里的第几行"。
     """
     service = _service(tmp_path)
     _seed(service)
 
     hits, _links = service.recall("项目代号叫什么")
 
-    assert hits == []
+    assert hits, "这条改动就在变更流里，必须能查到"
+    top = hits[0]
+    assert top.path == "changes.md"
+    # 第二条记录：第一条占 2 行（头 + 「新：」），所以它从第 3 行开始、到第 5 行结束
+    assert (top.start_line, top.end_line) == (3, 5)
+    assert "kylab2" in top.text and "11 月交付" in top.text
+    assert top.score > 0
 
 
-def test_recall_returns_links_that_resolve(tmp_path: Path) -> None:
-    """命中之后顺链给出的邻接边：wikilink 就在正文里，不需要第二次检索。
+def test_recall_refuses_a_noise_query(tmp_path: Path) -> None:
+    """查不到就返回空——只有一个含义：**变更流里确实没有相关的话**。"""
+    service = _service(tmp_path)
+    _seed(service)
 
-    链接只在**解析得到真实文件**时给（``[[碳酸锂]]`` 没有对应文件，
-    那条留在图谱的悬空链接里，不该混进召回结果）。
+    assert service.recall("合唱团的排练时间安排")[0] == []
+    assert service.recall("今天天气怎么样")[0] == []
+
+
+def test_recall_pool_excludes_archive_entries_already_injected(tmp_path: Path) -> None:
+    """§9.2 第 7 条：**已经注入的档案条目不再被召回返回**。
+
+    档案每轮整份进上下文，再召回一遍等于同一段内容进两次——而且它会让模型
+    以为"这是查出来的证据"，而不是"我本来就知道的设定"。
     """
     service = _service(tmp_path)
     _seed(service)
-    _write(service.workspace, "digest/personal/碳酸锂.md", "# 碳酸锂\n\n电池上游。\n")
 
-    _hits, links = service.recall("锂价下跌对毛利的影响")
+    hits, _links = service.recall("用户叫小又，称呼「小又」即可")
+    assert hits == [], "档案里的条目不在召回池里"
 
-    assert [(item.path, item.direction) for item in links] == [
-        ("digest/personal/碳酸锂.md", "out")
-    ]
-    assert links[0].name == "碳酸锂"
+    # 反向确认：变更流里那条**确实**能查到（池子不是空的，是换了个池子）
+    assert service.recall("先给结论，再列依据")[0]
+
+
+def test_recall_pool_is_not_the_daily_or_digest_layer(tmp_path: Path) -> None:
+    """daily / digest 那一层**不再进召回池**（§5.3）。
+
+    它们仍在工作区里（期五才清理），但 recall 已经不吃它们了——
+    这条与上一条一起把"池子换了"钉死：不是检索坏了，是换了池子。
+    """
+    service = _service(tmp_path)
+    _seed(service)
+
+    assert service.recall("锂价下跌对毛利的影响")[0] == []
+    assert service.recall("发布前必须先跑一遍后端门禁脚本")[0] == []
+
+
+def test_recall_never_returns_document_pool_content(tmp_path: Path) -> None:
+    """两池红线（§9.2 第 8 条）：``recall`` 的池子是**这个工作区的变更流**，
+    它不 import 检索服务、不碰 pgvector、也看不到任何文档片段。"""
+    service = _service(tmp_path)
+    _seed(service)
+
+    hits, _links = service.recall("知识库原文里的那段话")
+
+    assert hits == []
+    assert all(hit.path == "changes.md" for hit in service.recall("项目代号")[0])
 
 
 def test_recall_clamps_the_limit(tmp_path: Path) -> None:
     """上限生效，否则会把上下文塞爆（与检索工具同一口径）。"""
     service = _service(tmp_path)
     workspace = service.workspace
-    for index in range(30):
-        _write(workspace, f"daily/2026-09-{index + 1:02d}.md", f"- 偏好记录 {index} 号\n")
+    _write(
+        workspace,
+        "changes.md",
+        "".join(
+            f"- 2026-10-01 09:0{index} · 新增 · 长期偏好与风格 · 来源：显式\n"
+            f"  - 新：偏好记录 {index} 号\n"
+            for index in range(30)
+        ),
+    )
 
     hits, _links = service.recall("偏好记录", limit=9999)
 
     assert len(hits) == 20
 
 
-def test_recall_caps_hits_per_file(tmp_path: Path) -> None:
-    """同一个文件最多贡献几条：没有这条限制，一次召回会被一份长日笔记占满，
-    而召回的价值恰恰在于从多个文件里凑线索。"""
+def test_recall_is_empty_when_there_is_no_changelog(tmp_path: Path) -> None:
+    """没有变更流时返回空——那是"还没有改过什么"，不是出错。"""
     service = _service(tmp_path)
-    workspace = service.workspace
-    _write(
-        workspace,
-        "daily/2026-09-24.md",
-        "\n".join(f"- 偏好记录第 {index} 条" for index in range(10)) + "\n",
-    )
-
-    hits, _links = service.recall("偏好记录", limit=10)
-
-    assert len(hits) == 3
-
-
-def test_recall_prefers_a_file_whose_name_matches(tmp_path: Path) -> None:
-    """标题/文件名加权：命中标题意味着"这份文件就是讲这个的"，
-    命中正文只说明"这里提了一句"——两者不该同分。"""
-    service = _service(tmp_path)
-    workspace = service.workspace
-    _write(workspace, "digest/wiki/锂价敏感性.md", "# 锂价敏感性\n\n见下文。\n")
-    _write(workspace, "daily/2026-09-24.md", "- 今天聊到了锂价敏感性的问题\n")
-
-    hits, _links = service.recall("锂价敏感性")
-
-    assert hits[0].path == "digest/wiki/锂价敏感性.md"
-
-
-def test_recall_is_empty_when_the_pool_is_empty(tmp_path: Path) -> None:
-    """只有核心文件时召回到空——那是"这里没有可召回的东西"，不是出错。"""
-    service = _service(tmp_path)
-    _write(service.workspace, CORE_MEMORY_FILE, "- 项目代号叫 kylab\n")
+    _write(service.workspace, PROFILE_FILE, "---\nupdated: 2026-10-03\n---\n\n- 项目代号叫 kylab\n")
 
     hits, links = service.recall("项目代号")
 
@@ -494,6 +522,36 @@ def test_recall_is_empty_when_the_pool_is_empty(tmp_path: Path) -> None:
 def test_recall_raises_when_the_query_is_empty(tmp_path: Path) -> None:
     with pytest.raises(InvalidRequestError, match="query"):
         _service(tmp_path).recall("   ")
+
+
+def test_recall_does_not_use_the_vector_route(tmp_path: Path) -> None:
+    """**向量那一路不参与 recall**（§5.3）：池子只有几十到几百条记录，
+    排序是纯字面判据——不建索引、不嵌任何东西。
+
+    这条同时挡住"顺手把 recall 又接回记忆索引"：那样每次查询都要赌一次
+    嵌入延迟，而换来的精度在一个几十条的池子上没有意义。
+    """
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("recall 不该去碰嵌入/向量那一路")
+
+    service = MemoryService(  # type: ignore[arg-type]
+        _FakeRuntime(
+            {
+                "memory.enabled": "true",
+                "memory.workspace": "memory",
+                # 开关打开也没用：recall 那一侧根本不问它（下面那个 embed 会炸）
+                "memory.vector_enabled": "true",
+            }
+        ),
+        tmp_path,
+        embed=_boom,
+    )
+    _seed(service)
+
+    hits, _links = service.recall("项目代号叫什么")
+
+    assert hits, "关掉向量那一路不影响查变更流"
 
 
 # --------------------------------------------------- 召回结果与工作区的形状
@@ -524,13 +582,15 @@ def test_status_is_local_and_counts_the_pool(tmp_path: Path) -> None:
     status = service.status()
 
     assert status.enabled is True
-    assert status.file_count == 3
+    # 档案 + 变更流 + digest + daily = 4 份（`PROFILE.md` 与 `changes.md` 是期二
+    # 新写进来的两份；`daily`/`digest` 那一层还在盘上，等期五清理）
+    assert status.file_count == 4
     assert status.retrievable_count == 2
-    # 召回池切出来的块数：digest 那份 2 块（一段正文 + 一条条目，标题进了面包屑）、
-    # daily 那份 2 块（两条 bullet 各自成块）——P1 的 AST 分块把标题从"空块"改成了
-    # 面包屑，所以这里从 7 掉到 4：**少的全是答不上话的空块**。
+    # 那个数字数的仍是**旧召回池**（daily/digest）的切块数：digest 2 块 + daily 2 块。
+    # 期二没有改它的口径——它随整个统计一起等期五（那时 daily/digest 退场，
+    # 界面上这个数字也跟着换）。
     assert status.entry_count == 4
-    assert status.core_file_exists is True
+    assert status.core_file_exists is False, "MEMORY.md 退场：新部署不再有这份文件"
     assert status.last_changed_at, "有文件就该有'上次更新'时间"
     assert status.detail == ""
 
@@ -832,21 +892,36 @@ def _service_with_stores(tmp_path: Path, **values: str) -> tuple[MemoryService, 
     return service, stores
 
 
-def test_capture_is_throttled_to_every_n_turns(tmp_path: Path) -> None:
-    """节流是"每 N 个用户回合沉淀一次"。一次沉淀就是一次模型调用，不能每轮都来。"""
-    service, stores = _service_with_stores(tmp_path, **{"memory.capture_every": "3"})
+def test_implicit_capture_never_fires_from_the_turn_flow(tmp_path: Path) -> None:
+    """§9.2 第 9 条：**捕获路径一次模型都不调**（旧定时捕获已废）。
 
-    for turn in (1, 2):
+    期二把"每 N 个用户回合判一次"整条退场了（§4.1：它花的是固定节奏的钱），
+    所以 `enqueue_capture` 恒 False、一个任务都不入队——哪怕
+    ``memory.capture_every`` 设成 1、存储也接上了。
+
+    留下的自动写入只有**期四的信号捕获**（默认关）；在那之前
+    "默认配置下每轮零额外模型调用"是**结构上**成立的。
+    """
+    service, stores = _service_with_stores(tmp_path, **{"memory.capture_every": "1"})
+
+    for turn in (1, 2, 3, 4, 5):
         assert service.enqueue_capture(_TURN, session_id="c1", turn_count=turn) is False
-    assert service.enqueue_capture(_TURN, session_id="c1", turn_count=3) is True
-    assert len(stores.meta.tasks) == 1
+
+    assert stores.meta.tasks == []
 
 
-def test_capture_every_one_means_every_turn(tmp_path: Path) -> None:
-    service, _stores = _service_with_stores(tmp_path, **{"memory.capture_every": "1"})
+def test_capture_turn_is_retired(tmp_path: Path) -> None:
+    """一轮问答收尾时不再有"沉淀"这一步：`capture_turn` 恒 False，**含 ``force``**。
 
-    assert service.enqueue_capture(_TURN, session_id="c1", turn_count=1) is True
-    assert service.enqueue_capture(_TURN, session_id="c1", turn_count=2) is True
+    ``force`` 原先服务上下文压缩那一刻（被折进摘要的内容再不记就没人记得住了）。
+    它一起退场的理由：自动写入只剩期四那一条路，留一个"能绕过一切的开关"
+    就等于把定时捕获又接回来——而那正是这一次要废掉的东西。
+    """
+    service, stores = _service_with_stores(tmp_path, **{"memory.capture_every": "1"})
+
+    assert service.capture_turn("c1", turn_count=5) is False
+    assert service.capture_turn("c1", turn_count=5, force=True) is False
+    assert stores.meta.tasks == []
 
 
 def test_capture_is_off_when_memory_is_disabled(tmp_path: Path) -> None:
@@ -866,119 +941,195 @@ def test_capture_without_stores_is_a_noop(tmp_path: Path) -> None:
     assert service.enqueue_capture(_TURN, session_id="c1", turn_count=5) is False
 
 
-def test_capture_every_falls_back_when_the_setting_is_garbage(tmp_path: Path) -> None:
-    service, _stores = _service_with_stores(tmp_path, **{"memory.capture_every": "abc"})
+def test_capture_due_is_always_false_now(tmp_path: Path) -> None:
+    """`capture_due` 是界面那一步（「交给长期记忆」）问的判据：**恒 False**。
 
-    assert service.enqueue_capture(_TURN, session_id="c1", turn_count=5) is True
-
-
-def test_capture_due_is_false_without_a_store(tmp_path: Path) -> None:
-    """没接存储时是**假**：不能只判开关与节流。
-
-    ``capture_turn`` 第一件事就是查 ``_stores``（没有它入不了队），所以
-    "会不会真的入队"必须把存储一起算进去——否则界面那条「交给长期记忆」
-    会说会沉淀，而实际什么也不会发生（见 `api/v1/chat._memory_handoff_step`）。
+    它必须与写侧同源（`api/v1/chat._memory_handoff_step`）：写侧不入队而它说"会"，
+    界面就会报一件不会发生的事——那比不报更糟。现在两边都是 False，
+    于是那一步也不会出现（期四把两边一起改回真判据）。
     """
-    with_store, _meta = _capturing_service(tmp_path)
+    with_store, _meta = _capturing_service(tmp_path, **{"memory.capture_every": "1"})
     bare = _service(tmp_path)
 
-    assert with_store.capture_due(5) is True
+    assert with_store.capture_due(5) is False
     assert bare.capture_due(5) is False
 
 
-def test_capture_due_follows_the_throttle(tmp_path: Path) -> None:
-    service, _meta = _capturing_service(tmp_path, **{"memory.capture_every": "3"})
+def test_default_config_makes_zero_extra_model_calls_per_turn(tmp_path: Path) -> None:
+    """§9.2 第 1 条：**默认配置下，一轮对话的模型调用次数与记忆无关**。
 
-    assert service.capture_due(2) is False
-    assert service.capture_due(3) is True
+    注入、显式写入（``remember``/``forget``）、``recall`` 都不新增调用——
+    它们要么是纯本地读写，要么本来就在当轮的工具循环里。
+
+    这一条**按产品默认值构造**（从 ``DEFAULTS`` 取 memory.* 那几个键），
+    而不是自己发明一份配置：默认值一改，这条就会跟着改口径；要是手抄一份，
+    测的就是测试自己写的配置了。
+
+    顺带钉住 v0.56 的默认值变更（§7.3 的行为变更）：``memory.enabled`` 默认 **true**、
+    ``memory.persona_files`` 只剩两份人设（档案不在那份清单里）。
+    """
+    from app.services.runtime_config import DEFAULTS
+
+    assert DEFAULTS["memory.enabled"] == "true"
+    assert DEFAULTS["memory.persona_files"] == "SOUL.md,AGENTS.md"
+
+    defaults = {key: value for key, value in DEFAULTS.items() if key.startswith("memory")}
+    chat = _FakeChat()  # 每被调用一次就往 `prompts` 里记一笔
+    stores = _FakeStores()
+    service = MemoryService(  # type: ignore[arg-type]
+        _FakeRuntime(defaults), tmp_path, stores=stores, ask=chat
+    )
+
+    # 一轮对话里与记忆有关的那几件事，一件不落
+    service.seed_persona()
+    service.archive_block()
+    service.guidance()
+    service.bootstrap_block()
+    service.remember("用户要求先给结论", section="长期偏好与风格")
+    service.recall("先给结论")
+    service.archive_block()
+    service.forget("先给结论")
+
+    assert chat.prompts == [], "这几件事一件都不该问模型"
+
+    # 自动捕获那两条路也不许产生调用（定时捕获已废）
+    assert service.capture_turn("c1", turn_count=5) is False
+    assert service.capture_turn("c1", turn_count=5, force=True) is False
+    assert service.enqueue_capture(_TURN, session_id="c1", turn_count=5) is False
+    assert chat.prompts == []
+    assert stores.meta.tasks == [], "一个记忆任务都不该入队"
 
 
 # --------------------------------------------------------------------- 注入
 
 
-def test_prompt_block_frames_soul_and_memory_separately(tmp_path: Path) -> None:
-    """人格与记忆分开写，且**标明记忆来自过去的对话**。
+def test_archive_block_carries_every_entry_verbatim(tmp_path: Path) -> None:
+    """§9.2 第 2 条：**档案每个条目都出现在注入块里**（逐条比对，不做抽样）。
 
-    不标注来源的话模型会把记忆当成"用户这一轮说的话"——而记忆可能已经过时，
-    用户当下说的才是准的。所以块里带一句"冲突时以用户当下为准"。
+    注入是"全量、不挑选、不摘要、不排序"（§5.1）——挑一条漏一条的表现是
+    "我写进去了它却不知道"，而那是最难查的一类。
     """
     service = _service(tmp_path)
-    service.remember("用户偏好简短回答")
-    _write(service.workspace, SOUL_FILE, "你说话直接，不寒暄。")
+    entries = [
+        service.remember("用户叫小又，称呼「小又」即可。", section="身份与称呼").text,
+        service.remember("用户要求回答先给结论，再列依据。", section="长期偏好与风格").text,
+        service.remember("项目目标是把知识库放进内网。", section="进行中的项目").text,
+        service.remember("用户的内网有一台 L20。", section="工具与环境").text,
+    ]
 
-    block = service.prompt_block()
+    block = service.archive_block()
 
-    assert "SOUL.md" in block and "你说话直接" in block
-    assert "MEMORY.md" in block and "用户偏好简短回答" in block
-    assert "以用户当下为准" in block, "没有出处说明，模型会把它当成用户刚说的话"
+    for item in entries:
+        assert f"- {item}" in block, item
+    # 四个分区按 §3.1 的固定顺序出现
+    titles = ("身份与称呼", "长期偏好与风格", "进行中的项目", "工具与环境")
+    positions = [block.index(f"## {title}") for title in titles]
+    assert positions == sorted(positions)
+    # 边界说明也在（§5.1）：少了它，模型会把档案当文献引用或当任务逐条念
+    assert "不是文献依据" in block
 
 
-def test_prompt_block_is_empty_without_files(tmp_path: Path) -> None:
-    assert _service(tmp_path).prompt_block() == ""
+def test_archive_block_is_empty_for_an_empty_archive(tmp_path: Path) -> None:
+    """一条都没有时不注入空壳：四行标题加一句"这是你的档案"只占上下文。"""
+    assert _service(tmp_path).archive_block() == ""
 
 
-def test_prompt_block_still_works_when_disabled(tmp_path: Path) -> None:
-    """**关掉记忆，文件照旧注入**（这条原先断言的是相反的行为）。
+def test_archive_block_declares_truncation_instead_of_truncating_silently(
+    tmp_path: Path,
+) -> None:
+    """§5.2：超限**必须在提示词里说出来**，而且只给前 N 条。
 
-    那个开关管的是"过去的对话会不会被召回、会不会自动沉淀"，而
-    `MEMORY.md` / `SOUL.md` 是磁盘上的普通文件——`memory_files` 的模块头
-    自己就写着"看自己的文本文件不该先要求另一个进程活着"。
-
-    实测逼出来的：用户的实例上记忆是关的，于是人设既不播种也不注入，
-    整个功能是死的，界面上还写着"没启用"。
+    正常路径碰不到它（写入侧 4000 字就拒了）——它兜的是"用户拿外部编辑器把档案
+    改超了"这一态。**静默截断不可接受**：用户会以为助手看到了整份档案。
     """
+    service = _service(tmp_path)
+    body = "\n".join(f"- 第 {index} 条记录" + "字" * 100 for index in range(80))
+    _write(
+        service.workspace,
+        PROFILE_FILE,
+        f"---\nupdated: 2026-10-03\n---\n\n## 身份与称呼\n\n{body}\n",
+    )
+
+    block = service.archive_block()
+
+    assert "超出上限" in block
+    assert "请到记忆页整理" in block
+    # 声明里报的条数要与实际给出的条数一致（不然它是一句假话）
+    kept = block.count("- 第 ")
+    assert f"前 {kept} 条" in block
+
+
+def test_archive_block_does_not_depend_on_the_persona_list(tmp_path: Path) -> None:
+    """**档案的注入不挂在 ``memory.persona_files`` 上**（§7.2）。
+
+    挂在那一行上的后果很具体：用户从人设清单里删掉一个文件名，档案就静默停止注入
+    ——而那条清单管的是"人设的取舍与顺序"。
+    """
+    service = _service(tmp_path, **{"memory.persona_files": "AGENTS.md"})
+    service.remember("用户叫小又", section="身份与称呼")
+
+    assert "用户叫小又" in service.archive_block()
+    assert PROFILE_FILE not in service.persona_order()
+
+
+def test_archive_block_is_empty_when_disabled_but_the_archive_stays_writable(
+    tmp_path: Path,
+) -> None:
+    """关掉开关就**不注入**（§7.3）——而档案本身照旧可读可写（口径要分清）。"""
     service = _service(tmp_path, **{"memory.enabled": "false"})
-    _write(service.workspace, CORE_MEMORY_FILE, "- 有内容")
+    service.remember("用户叫小又", section="身份与称呼")
 
-    block = service.prompt_block()
+    assert service.archive_block() == ""
+    assert "用户叫小又" in service.archive_text()
 
-    assert "有内容" in block
-    assert "长期记忆" in block
+    service_on = _service(tmp_path, **{"memory.enabled": "true"})
+    assert "用户叫小又" in service_on.archive_block()
 
 
 # ------------------------------------------------- 铺模板并且不被记忆挤掉
 
 
-def test_remember_keeps_the_sections_own_prose(tmp_path: Path) -> None:
-    """那条"记什么、别记什么"的说明**不能被第一条记忆挤掉**。
+def test_the_archive_is_written_as_the_four_section_skeleton(tmp_path: Path) -> None:
+    """第一条写进来时，档案要有**四个固定分区的骨架**（§3.1）。
 
-    它是从 QwenPaw 的 MEMORY.md 照抄来的，里面有一条安全约定：
-    「除非明确要求，不要记录密码、令牌或其他敏感信息」。这条规矩写在**文件里**
-    才起作用（模型每轮都读到它），而第一版的重写逻辑只保留 `- ` 条目行——
-    第一条记忆落盘的那一刻，这段话就被静默删掉了，且**没人会再去重新发现它**。
+    为什么这条重要：用户拿编辑器打开这份文件时，看到的是四个标题而不是一份
+    需要猜结构的散文；模型看到的顺序与用户看到的顺序因此是同一个。
     """
     service = _service(tmp_path)
 
-    service.remember("对方偏好简短的答复")
+    service.remember("对方偏好简短的答复", section="长期偏好与风格")
 
-    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
-    assert "不要记录密码、令牌或其他敏感信息" in body
-    assert "不要把每日流水或整段会话记录复制到这里" in body
-    # 条目本身也在，且没被当成"散文"留在上面
+    body = (tmp_path / "memory" / PROFILE_FILE).read_text(encoding="utf-8")
+    for title in ("身份与称呼", "长期偏好与风格", "进行中的项目", "工具与环境"):
+        assert f"## {title}" in body
     assert "- 对方偏好简短的答复" in body
-    # 再记一条：说明还在，条目累加
-    service.remember("项目代号叫 kylab")
-    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
-    assert "不要记录密码、令牌或其他敏感信息" in body
-    assert "- 对方偏好简短的答复" in body and "- 项目代号叫 kylab" in body
+    # frontmatter 只放 `updated`（§3.5 第 1 条）
+    assert body.startswith("---\nupdated: ")
+    assert "summary:" not in body
 
 
 def test_remember_does_not_rewrite_line_endings(tmp_path: Path) -> None:
-    """整份重写要**按字节写**：`write_text` 在 Windows 上会把换行改成 CRLF。
+    """写档案要**按字节写**：`write_text` 在 Windows 上会把换行改成 CRLF。
 
-    后果不只是"文件变脏"：这份文件每次都在被 read/compare（去重、注入），
-    换行在多轮之间来回翻会让 diff 与哈希都不稳定。
+    后果不只是"文件变脏"：这份文件每次都在被读、被比对（顶替判据、注入），
+    换行在多轮之间来回翻会让逐字节比较与哈希都不稳定——而"顶替"的判据正是
+    逐字节的。
     """
     service = _service(tmp_path)
-    service.remember("第一条")
+    service.remember("第一条", section="长期偏好与风格")
 
-    raw = (tmp_path / "memory" / CORE_MEMORY_FILE).read_bytes()
+    raw = (tmp_path / "memory" / PROFILE_FILE).read_bytes()
 
     assert b"\r\n" not in raw
+    changes = (tmp_path / "memory" / "changes.md").read_bytes()
+    assert b"\r\n" not in changes
 
 
 def test_capture_does_not_rewrite_line_endings(tmp_path: Path) -> None:
-    """捕获写的是当天的现场文件，同一条纪律：按字节写。"""
+    """捕获写的是当天的现场文件，同一条纪律：按字节写。
+
+    （捕获这条链路期二已从请求流程里退场，机制本身还在，等期五清理。）
+    """
     service = _service(tmp_path, ask=_FakeChat("- 甲"))
 
     service.capture(_TURN, session_id="conv_1")
@@ -991,7 +1142,8 @@ def test_untouched_legacy_templates_are_upgraded(tmp_path: Path) -> None:
 
     v0.21 把三份模板换成了 QwenPaw 那套有内容的写法，而 `seed_persona` 的原则是
     "已存在的一律不动"——照字面执行的话，已经在跑的部署永远看不到新模板，
-    除非用户自己去删文件（而他并不知道该删）。
+    除非用户自己去删文件（而他并不知道该删）。v0.56 的 `PROFILE.md` 又是一次
+    换形状（散文 → 四区骨架），同一个问题再来一遍。
 
     判据是**逐字节相同**：那才是"我们写下去之后没人动过"。所以第三条断言
     （只改了一个标题的文件）与第二条（真正的旧模板）必须表现不同——
@@ -1001,10 +1153,12 @@ def test_untouched_legacy_templates_are_upgraded(tmp_path: Path) -> None:
 
     workspace = tmp_path / "memory"
     workspace.mkdir(parents=True)
-    (workspace / SOUL_FILE).write_bytes(_LEGACY_TEMPLATES[SOUL_FILE].encode("utf-8"))
+    (workspace / SOUL_FILE).write_bytes(_LEGACY_TEMPLATES[SOUL_FILE][0].encode("utf-8"))
     (workspace / AGENTS_FILE).write_bytes(
-        _LEGACY_TEMPLATES[AGENTS_FILE].replace("## 工作方式", "## 我自己的工作方式").encode()
+        _LEGACY_TEMPLATES[AGENTS_FILE][0].replace("## 工作方式", "## 我自己的工作方式").encode()
     )
+    # 散文体的 PROFILE.md（v0.21–v0.55 的模板）也要被换成四区骨架
+    (workspace / PROFILE_FILE).write_bytes(_LEGACY_TEMPLATES[PROFILE_FILE][1].encode("utf-8"))
     service = _service(tmp_path)
 
     service.seed_persona()
@@ -1013,71 +1167,73 @@ def test_untouched_legacy_templates_are_upgraded(tmp_path: Path) -> None:
     assert "真心帮忙" in (workspace / SOUL_FILE).read_text(encoding="utf-8")
     # 动过一个字的 → 原样不动
     assert "我自己的工作方式" in (workspace / AGENTS_FILE).read_text(encoding="utf-8")
-    # 缺的那份照旧补上
-    assert (workspace / PROFILE_FILE).exists()
+    # 散文体资料 → 换成档案骨架（用户一个字都没动过）
+    assert "## 身份与称呼" in (workspace / PROFILE_FILE).read_text(encoding="utf-8")
     # 幂等：第二次没有可升级的
     assert service.seed_persona() == []
 
 
-# ------------------------------------------------- 铺模板（v0.1.1，§12.224 第 12 条）
+# ------------------------------------------------- 铺模板（v0.56：三份，不含 MEMORY.md）
 #
 # 容器里"长期记忆不生效"里属于**文件那一半**的验收是：新实例起来后
-# 「记忆」页就可写、重启后内容还在。所以模板要一次性铺全（含 MEMORY.md）、
-# 幂等、且**不看 memory.enabled**——那开关管的是召回与自动沉淀，不是这几个文件。
+# 「记忆」页就可写、重启后内容还在。所以模板要一次性铺全、幂等、
+# 且**不看 memory.enabled**——那开关管的是注入与 recall，不是这几个文件。
 
 
-def test_seed_persona_lays_down_all_four_files(tmp_path: Path) -> None:
-    """四份都铺：SOUL / PROFILE / AGENTS / **MEMORY.md**（最后一份是 v0.1.1 加的）。
+def test_seed_persona_lays_down_the_three_files(tmp_path: Path) -> None:
+    """三份都铺：SOUL / AGENTS / **PROFILE.md（= 档案）**。
 
-    没有 MEMORY.md 的话，新部署的「记忆」页上看不到核心记忆文件——而它恰恰是
-    这一层最该被用户看见、拿去改的那份（原先它只在第一次 ``remember`` 时才出现）。
+    ``MEMORY.md`` **不再铺**（§7.2 退场：它不再注入、不再写入、也不再被播种）——
+    新部署的「记忆」页上看的是这份四区档案，而不是一份"已知事实"的旧文件。
     """
     service = _service(tmp_path)
 
     created = service.seed_persona()
 
-    assert sorted(created) == sorted([SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE])
+    assert sorted(created) == sorted([SOUL_FILE, PROFILE_FILE, AGENTS_FILE])
+    assert not (tmp_path / "memory" / CORE_MEMORY_FILE).exists()
     # 幂等：第二次一个都不新建
     assert service.seed_persona() == []
-    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
-    assert "## 核心长期记忆" in body
-    assert "## 工具设置" in body and "## 重要决策与经验" in body
+    body = (tmp_path / "memory" / PROFILE_FILE).read_text(encoding="utf-8")
+    for title in ("身份与称呼", "长期偏好与风格", "进行中的项目", "工具与环境"):
+        assert f"## {title}" in body
 
 
-def test_the_memory_file_is_seeded_even_when_the_switch_is_off(tmp_path: Path) -> None:
+def test_the_archive_is_seeded_even_when_the_switch_is_off(tmp_path: Path) -> None:
     """**关着也铺**：容器里"记忆页可写"不该依赖用户先去设置页把开关打开
     （浏览与编辑那几个文件本来就不走那道闸，见 ``services/memory.py`` 的说明）。"""
     service = _service(tmp_path, **{"memory.enabled": "false"})
 
     created = service.seed_persona()
 
-    assert CORE_MEMORY_FILE in created
-    assert (tmp_path / "memory" / CORE_MEMORY_FILE).exists()
+    assert PROFILE_FILE in created
+    assert (tmp_path / "memory" / PROFILE_FILE).exists()
 
 
-def test_remember_writes_into_the_seeded_memory_file(tmp_path: Path) -> None:
-    """先铺模板、再记住：第一条记忆要落进那一节，模板的说明与其余小节都还在。
+def test_remember_writes_into_the_seeded_archive(tmp_path: Path) -> None:
+    """先铺骨架、再记住：第一条落进对应分区，四个标题一个不少。
 
-    这条钉的是"新加的铺模板"与既有的重写逻辑**接得上**——铺下去的那份必须与
-    ``_write_entries`` 在"文件不存在"时的兜底一致，否则第一条记忆落盘会走另一条
-    分支，很容易把那段"别记密码/令牌"的说明或「工具设置」那几节弄丢。
+    （旧版本这条钉的是"``_write_entries`` 的兜底与模板逐字一致"；期二
+    ``MEMORY.md`` 与那套重写逻辑一起退场，剩下的性质是"播种的骨架与之后
+    写入的档案是同一个形状"——由 ``archive_files.render_archive`` 一个渲染器保证。）
     """
     service = _service(tmp_path)
     service.seed_persona()
 
-    service.remember("设备名是 nas")
+    service.remember("设备名是 nas", section="工具与环境")
 
-    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
+    body = (tmp_path / "memory" / PROFILE_FILE).read_text(encoding="utf-8")
     assert "- 设备名是 nas" in body
-    assert "不要记录密码、令牌或其他敏感信息" in body
-    assert "## 工具设置" in body and "## 重要决策与经验" in body
+    assert "## 工具与环境" in body and "## 身份与称呼" in body
+    # 写完之后骨架不再是"没人动过"（首次引导据此自己消失）
+    assert service.profile_is_untouched() is False
 
 
 # ------------------------------------------------------------------ 记忆指导
 
 
 def test_guidance_is_empty_when_the_switch_is_off(tmp_path: Path) -> None:
-    """**关着时不给指导**：那时 `recall` 会明确报错，把"什么时候该去查记忆"
+    """**关着时不给指导**：那时 `recall` 会明确报错，把"什么时候该去查"
     讲给模型听，只会换来每轮一次无效调用加一句错误。
 
     这与知识库那一侧是同一个形状（见 `agent_tools._KB_TOOLS` 的说明：给了又拒，
@@ -1090,52 +1246,50 @@ def test_guidance_is_empty_when_the_switch_is_off(tmp_path: Path) -> None:
     assert on.guidance() != ""
 
 
-def test_guidance_names_the_directories_we_actually_use(tmp_path: Path) -> None:
-    """目录名**从 `memory_files` 取**，不在这里写死。
+def test_guidance_says_the_archive_is_already_injected(tmp_path: Path) -> None:
+    """指导里必须有一句"**档案已经全量注入了，不必再去检索它**"（§5.3）。
 
-    写死两处的坏法很具体：改了目录而提示词没跟上，模型就会去翻一个不存在的
-    地方——而这个仓库对"给模型描述一个不存在的机制"是零容忍的。
-    所以这里断言的是常量本身，不是字面量。
-    """
-    from app.services import memory_files
-
-    text = _service(tmp_path).guidance()
-
-    assert f"{memory_files.DAILY_DIR}/YYYY-MM-DD.md" in text
-    assert f"{memory_files.DIGEST_DIR}/" in text
-    assert "recall" in text and "remember" in text
-
-
-def test_guidance_expands_with_read_memory_not_read_file(tmp_path: Path) -> None:
-    """片段不够时要指向 `read_memory`，**不能指向 `read_file`**。
-
-    `read_file` 的根只有 workspace / sandbox（见 `agent_files.Roots.pick`），
-    够不到 `data/memory/`——指过去，模型会去读一个它读不到的地方，然后把失败
-    当成"记忆里没有"。`read_memory` 才是记忆那一侧的入口。
+    旧文案教的是"问偏好时先 `recall`"——那句话让模型白花一次调用，还会把
+    同一段内容读两遍；而它现在也**查不到**档案（池子只剩变更流）。
     """
     text = _service(tmp_path).guidance()
 
-    assert "read_memory" in text
-    assert "read_file" not in text
+    assert "全量" in text
+    assert "变更流" in text
+    assert "recall" in text and "remember" in text and "forget" in text
+    # 字数与条数从 archive 的常量取，不写死第二份
+    assert "120" in text and "60" in text and "4000" in text
+
+
+def test_guidance_points_at_replaces_instead_of_delete_then_write(tmp_path: Path) -> None:
+    """更正要**一次调用**（`replaces`），指导里必须这么说。
+
+    不写的话，"不是 A，是 B"会退化成两次调用：先忘掉、再记住——中间那一刻
+    档案里是没有这条的（用户刚好在那时问一句，答案就是错的）。
+    """
+    text = _service(tmp_path).guidance()
+
+    assert "replaces" in text
+    assert "不要先删再记" in text
 
 
 # ------------------------------------------------------------------ 首次引导
 
 
-def test_bootstrap_shows_while_the_profile_is_still_the_template(tmp_path: Path) -> None:
-    """人设还是空模板时给引导，**填上之后它自己就没了**。
+def test_bootstrap_shows_while_the_archive_is_still_the_skeleton(tmp_path: Path) -> None:
+    """档案还是空骨架时给引导，**写进第一条之后它自己就没了**。
 
-    这是"感觉不到人设"的正面解法：``PROFILE.md`` 模板里"名字："后面是空的，
-    而**没有任何机制会让它被填上**——用户不会主动去改一个人设文件（他甚至不知道
-    有这回事），Agent 也不会问。QwenPaw 用一份"用完就删"的 BOOTSTRAP.md 解决；
-    我们用**没有这个问题的等价信号**（"资料还空着"），于是不需要"用过就删"的簿记。
+    这是"感觉不到人设"的正面解法：新装的档案是空的，而**没有任何机制会让它被填上**
+    ——用户不会主动去改一份档案文件（他甚至不知道有这回事），Agent 也不会问。
+    QwenPaw 用一份"用完就删"的 BOOTSTRAP.md 解决；我们用**没有这个问题的等价信号**
+    （"档案还没被写过"），于是不需要"用过就删"的簿记。
     """
     service = _service(tmp_path)
     service.seed_persona()
 
     assert service.bootstrap_block() != ""
 
-    service.write_file(PROFILE_FILE, "---\nsummary: 资料\n---\n\n- 名字：小又\n")
+    service.remember("用户叫小又", section="身份与称呼")
 
     assert service.bootstrap_block() == ""
 
@@ -1143,21 +1297,23 @@ def test_bootstrap_shows_while_the_profile_is_still_the_template(tmp_path: Path)
 def test_bootstrap_tells_the_agent_how_to_write_it_down(tmp_path: Path) -> None:
     """引导里必须写清"答案往哪儿放"——不然模型问完就忘了。
 
-    只写 `PROFILE.md` 不够：Agent **没有**碰记忆文件的现成工具（``read_file``
-    够不到 ``data/memory/``），所以指令里得点名 `write_memory` 与 `read_memory`，
-    否则它会去试一个做不到的动作。
+    期二把落点从 `write_memory`（整份覆盖，已退场）换成了 **`remember` 一条一条写**
+    （§7.4），而这条用例跟着换口径：点名 `remember` 与三个分区名，
+    并**明确不许写 `write_memory`**——老提示词里那个名字已经不管用了。
     """
     service = _service(tmp_path)
     service.seed_persona()
 
     text = service.bootstrap_block()
 
-    assert "write_memory" in text and "read_memory" in text
+    assert "remember" in text
+    assert "身份与称呼" in text and "进行中的项目" in text and "长期偏好与风格" in text
+    assert "write_memory" not in text
     assert "PROFILE.md" in text and "SOUL.md" in text
 
 
 def test_bootstrap_does_not_depend_on_the_memory_switch(tmp_path: Path) -> None:
-    """关着长期记忆也要引导：人设的注入与编辑本来就不受那道闸管
+    """关着长期记忆也要引导：档案的编辑本来就不受那道闸管
     （挂在开关上的话，关着记忆的实例永远不做引导）。"""
     service = _service(tmp_path, **{"memory.enabled": "false"})
     service.seed_persona()
@@ -1236,30 +1392,37 @@ def _bodies(meta: _MetaWithMessages, index: int = 0) -> list[str]:
     return [item["content"] for item in payload["messages"]]
 
 
-def test_capture_turn_sends_everything_since_the_last_capture(tmp_path: Path) -> None:
-    """**这是本轮修的那个漏**：拍 10 轮，每一轮都要进过记忆。
+def _backlog(service: MemoryService, meta: _MetaWithMessages, cid: str = "c1"):  # type: ignore[no-untyped-def]
+    """直接问服务层的"_backlog"（"上次捕获以来该送哪一段"）。
 
-    原先每次只把**当轮**那两条交给队列，而节流是"每 5 个用户回合一次"——
+    **为什么要绕开 ``capture_turn``**：期二把定时捕获整条退场了（见
+    ``test_capture_turn_is_retired``），但"该送哪一段"这段逻辑本身留着——
+    期四的信号捕获要复用它，期五才随 ``daily/`` 一起清理。所以这一组改成
+    直接钉那个纯计算，口径不变而入口换掉了。
+    """
+    return service._backlog(_StoresWithMessages(meta), cid)
+
+
+def test_capture_backlog_sends_everything_since_the_last_capture(tmp_path: Path) -> None:
+    """**拍 10 轮，每一轮都要进得了那一段**（这是当年修过的那个漏）。
+
+    原先每次只把**当轮**那两条交出去，而节流是"每 5 个用户回合一次"——
     两者相乘的结果是每 5 轮里只有 1 轮被看过一眼，其余 4 轮永远不进入记忆。
     用户那边的现象就是"我明明说过，它就是不记得"。
-
-    照 QwenPaw 的 Auto-Memory：它处理的也是"上次以来累积的对话"。
     """
     service, meta = _capturing_service(tmp_path)
     every_turn = _turns(10)
-    for turn in range(1, 11):
-        # 真实时序：这一轮的消息先落库，收尾时才谈沉淀
-        meta.messages = [item for item in every_turn if every_turn.index(item) < turn * 2]
-        service.capture_turn("c1", turn_count=turn)
+    meta.messages = list(every_turn)
 
-    assert len(meta.tasks) == 2
-    assert _bodies(meta, 0)[0] == "t1 问"
-    assert _bodies(meta, 1)[0] == "t6 问"
-    covered = {text for index in range(len(meta.tasks)) for text in _bodies(meta, index)}
-    assert len(covered) == 20, "10 轮 = 20 条消息，两次沉淀合起来必须全覆盖"
+    backlog, upto = _backlog(service, meta)
+
+    assert backlog[0]["content"] == "t1 问"
+    assert len(backlog) == 20 and upto == "m20"
 
 
-def test_capture_turn_caps_one_payload_and_catches_up_next_time(tmp_path: Path) -> None:
+def test_capture_backlog_caps_one_payload_and_catches_up_next_time(
+    tmp_path: Path,
+) -> None:
     """一次 payload 有上限；超出的**下一轮接着补**，不是静默丢掉。
 
     没有上限的话，一个中间一直没沉淀的会话会把几百条消息塞进 ``tasks`` 表的
@@ -1270,28 +1433,15 @@ def test_capture_turn_caps_one_payload_and_catches_up_next_time(tmp_path: Path) 
     service, meta = _capturing_service(tmp_path)
     meta.messages = _turns(CAPTURE_BATCH_TURNS + 10)
 
-    service.capture_turn("c1", force=True)
-    first = len(_bodies(meta, 0))
-    service.capture_turn("c1", force=True)
-
-    assert first == CAPTURE_BATCH_TURNS * 2
-    assert first + len(_bodies(meta, 1)) == len(meta.messages)
-
-
-def test_capture_turn_force_bypasses_the_throttle(tmp_path: Path) -> None:
-    """压缩那一刻要能**立刻**沉淀（照 QwenPaw 把 compact 当第三个触发源）。
-
-    被折进摘要的消息从此不再进模型视野；记忆要是还没记过它们，用户下一轮问
-    "刚才说的那个"就两头都查不到——原文成了摘要、``recall`` 里也还没有。
-    """
-    service, meta = _capturing_service(tmp_path)
-    meta.messages = _turns(1)
-
-    assert service.capture_turn("c1", turn_count=1) is False
-    assert service.capture_turn("c1", turn_count=1, force=True) is True
+    first, upto = _backlog(service, meta)
+    assert len(first) == CAPTURE_BATCH_TURNS * 2
+    # 水位线推进到"真正送出去的那一条"，所以下一轮接着补
+    meta.settings["memory.captured.c1"] = upto
+    rest, _ = _backlog(service, meta)
+    assert len(first) + len(rest) == len(meta.messages)
 
 
-def test_capture_turn_takes_a_recent_window_when_the_watermark_is_gone(
+def test_capture_backlog_takes_a_recent_window_when_the_watermark_is_gone(
     tmp_path: Path,
 ) -> None:
     """水位线那条消息被 ``/rewind`` 删掉时，取**最近**一段而不是从头。
@@ -1305,12 +1455,12 @@ def test_capture_turn_takes_a_recent_window_when_the_watermark_is_gone(
     meta.messages = _turns(30)
     meta.settings["memory.captured.c1"] = "rewind 删掉的那条"
 
-    service.capture_turn("c1", force=True)
+    backlog, _upto = _backlog(service, meta)
 
-    assert _bodies(meta, 0)[0] == f"t{30 - CAPTURE_BATCH_TURNS + 1} 问"
+    assert backlog[0]["content"] == f"t{30 - CAPTURE_BATCH_TURNS + 1} 问"
 
 
-def test_capture_turn_advances_the_watermark_past_an_empty_message(
+def test_capture_backlog_advances_the_watermark_past_an_empty_message(
     tmp_path: Path,
 ) -> None:
     """最后一条正文是空的，水位线**照样要往前推**。
@@ -1324,10 +1474,10 @@ def test_capture_turn_advances_the_watermark_past_an_empty_message(
         _Msg("y2", "assistant", ""),
     ]
 
-    service.capture_turn("c1", force=True)
+    backlog, upto = _backlog(service, meta)
 
-    assert _bodies(meta, 0) == ["真问题"]
-    assert meta.settings["memory.captured.c1"] == "y2"
+    assert [item["content"] for item in backlog] == ["真问题"]
+    assert upto == "y2"
 
 
 # --------------------------------------------------------------------- 整理
@@ -1670,10 +1820,12 @@ _FLOOR = {"memory.vector_min_score": "0.45"}
 
 
 def test_recall_stays_lexical_when_the_vector_route_is_off(tmp_path: Path) -> None:
-    """开关关着时**一次嵌入都不发**，检索完全走词面那一路。
+    """开关关着时**一次嵌入都不发**——而且 recall 现在压根不看这个开关。
 
-    这条是"默认关"那个决定的兑现方式：默认配置下，记忆层不该因为多了一条路而开始花钱。
-    同时它如实记着那句词面那一路的边界——同义写法**搜不到**。
+    这条是"默认关"那个决定的兑现方式：默认配置下，记忆层不该因为多了一条路而
+    开始花钱。期二之后这句话更硬了：**recall 的池子只有变更流**，向量那一路
+    （``memory.vector_enabled``）已经不参与它了（§5.3）——下面两条用例
+    （开着时的同义命中）一起被这条性质取代，它们测的是旧检索路径。
     """
     fake = _FakeEmbed()
     service = _service(tmp_path, **{"memory.vector_enabled": "false"}, embed=fake)
@@ -1682,43 +1834,25 @@ def test_recall_stays_lexical_when_the_vector_route_is_off(tmp_path: Path) -> No
     hits, _links = service.recall("我之前的回答是什么风格")
 
     assert fake.calls == [], "关着时不该有任何嵌入调用"
-    assert hits == [], "词面那一路搜不到它——这正是向量那一路存在的理由"
+    assert hits == [], "那一层已经不在池子里了"
 
 
-def test_recall_finds_a_synonym_when_the_vector_route_is_on(tmp_path: Path) -> None:
-    """开着时**同义写法也能找到**，并且如实标成"按意思找到的"。"""
-    fake = _FakeEmbed()
-    service = _service(tmp_path, **{"memory.vector_enabled": "true", **_FLOOR}, embed=fake)
-    _write(service.workspace, "digest/偏好.md", "# 偏好\n\n沟通风格是开门见山。\n")
-    chunk = memory_files.chunks_for_index(service.workspace)[0][3]
-    fake.table[chunk] = [1.0, 0.0]
-    fake.table["我之前的回答是什么风格"] = [1.0, 0.0]
-    service.sync_index(force=True)
+def test_recall_ignores_the_vector_route_even_when_it_is_on(tmp_path: Path) -> None:
+    """把向量那一路打开也**一次嵌入都不发**（§5.3）。
 
-    hits, _links = service.recall("我之前的回答是什么风格")
-
-    assert [hit.path for hit in hits] == ["digest/偏好.md"]
-    assert hits[0].source == "vector"
-    assert hits[0].coverage == 0.0, "语义那一路没有覆盖率这个概念（界面靠 source 说清）"
-
-
-def test_recall_keeps_noise_empty_with_the_vector_route_on(tmp_path: Path) -> None:
-    """**噪声查询仍然返回空**：余弦下限是这一路唯一的判据。
-
-    没有下限的话，任何查询都会返回"最像的几条"，而"没召回任何东西 = 这几份记忆里
-    确实没有相关的话"这条性质就毁了。
+    这条替代了原来的两条"同义命中"用例：它们钉的是 `memory_files.search` +
+    `memory_index.search_hybrid` 那条检索链，而 recall 已经不吃它了。
+    向量那一层本身还留在代码里（期五清理），但"把嵌入挪进查询路径就等于
+    每次查询赌一次上游延迟"这条纪律，从今往后由**没有调用点**来保证。
     """
     fake = _FakeEmbed()
     service = _service(tmp_path, **{"memory.vector_enabled": "true", **_FLOOR}, embed=fake)
-    _write(service.workspace, "digest/偏好.md", "# 偏好\n\n沟通风格是开门见山。\n")
-    chunk = memory_files.chunks_for_index(service.workspace)[0][3]
-    fake.table[chunk] = [1.0, 0.0]
-    fake.table["合唱团的排练时间安排"] = [0.0, 1.0]  # 正交 → 余弦 0
-    service.sync_index(force=True)
+    _seed(service)
 
-    hits, _links = service.recall("合唱团的排练时间安排")
+    hits, _links = service.recall("项目代号叫什么")
 
-    assert hits == []
+    assert fake.calls == [], "开着也不该有嵌入调用"
+    assert [hit.path for hit in hits] == ["changes.md"]
 
 
 def test_sync_index_is_a_no_op_without_an_embedder(tmp_path: Path) -> None:
@@ -1744,22 +1878,20 @@ def test_sync_index_is_a_no_op_when_the_switch_is_off(tmp_path: Path) -> None:
 
 
 def test_persona_order_defaults_to_the_documented_order(tmp_path: Path) -> None:
-    """没配就是那张默认表：身份 → 资料 → 规程 → 记忆（越靠后越像"数据"）。"""
+    """没配就是那份默认表：**人格 → 规程**（§7.2 起只有这两份）。
+
+    ``PROFILE.md``（= 档案）走独立贡献者，``MEMORY.md`` 已退场——
+    它们都不在这份清单里，用户也就不可能"从清单里删掉一个名字，档案静默停止注入"。
+    """
     service = _service(tmp_path)
 
-    assert service.persona_order() == (SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE)
+    assert service.persona_order() == (SOUL_FILE, AGENTS_FILE)
 
 
 def test_persona_order_follows_the_setting(tmp_path: Path) -> None:
-    """用户能决定哪几份、按什么顺序进提示词；``persona_texts`` 跟着这个顺序读。
-
-    最实际的用法是**把 ``MEMORY.md`` 去掉**——QwenPaw 的默认形态就是不去注入它
-    （它那侧那份是很大的索引页）；我们默认注入（我们的是 ``remember`` 逐条维护的
-    小文件），现在这个差异由用户自己决定。
-    """
+    """用户能决定哪两份、按什么顺序进提示词；``persona_texts`` 跟着这个顺序读。"""
     service = _service(tmp_path, **{"memory.persona_files": "AGENTS.md, SOUL.md"})
     _write(service.workspace, SOUL_FILE, "我的人格")
-    _write(service.workspace, CORE_MEMORY_FILE, "记过的事")
     _write(service.workspace, AGENTS_FILE, "操作规程")
 
     assert service.persona_order() == (AGENTS_FILE, SOUL_FILE)
@@ -1774,8 +1906,8 @@ def test_persona_order_takes_a_full_width_comma_too(tmp_path: Path) -> None:
 
 
 def test_persona_order_drops_names_it_does_not_know(tmp_path: Path) -> None:
-    """只认那四份核心文件，其余丢掉：**让任意路径进 system prompt 等于绕过分界**
-    （哪些是"设定"、哪些是"被召回的现场"）。想去掉重复的名字也在这里收掉。"""
+    """只认那几份核心文件，其余丢掉：**让任意路径进 system prompt 等于绕过分界**
+    （哪些是"设定"）。想去掉重复的名字也在这里收掉。"""
     service = _service(
         tmp_path, **{"memory.persona_files": "SOUL.md, daily/x.md, SOUL.md, 笔记.md"}
     )
@@ -1783,14 +1915,29 @@ def test_persona_order_drops_names_it_does_not_know(tmp_path: Path) -> None:
     assert service.persona_order() == (SOUL_FILE,)
 
 
+def test_persona_order_drops_profile_and_memory(tmp_path: Path) -> None:
+    """**``PROFILE.md`` 与 ``MEMORY.md`` 从清单里被丢掉**（§7.2、v0.56）。
+
+    老配置里这一行八成还写着四个名字（默认值改之前就是那样）：
+    - 档案挂上去的后果是**用户删一个名字、档案就静默停止注入**；
+    - ``MEMORY.md`` 已经退场，再注入一遍就是把同一件事说两次。
+    两者都是"名字写了但不生效"，所以**记一条日志**——静默忽略会让那一行看起来生效了。
+    """
+    service = _service(
+        tmp_path, **{"memory.persona_files": "SOUL.md,PROFILE.md,AGENTS.md,MEMORY.md"}
+    )
+
+    assert service.persona_order() == (SOUL_FILE, AGENTS_FILE)
+
+
 def test_persona_order_falls_back_when_nothing_is_recognised(tmp_path: Path) -> None:
     """全不认识 → 回到默认顺序：**"配错了"不该变成"一份都不注入"**。
 
-    一份都不注入等于让 agent 突然失忆、还失了人格——而用户只是打错了一个文件名。
+    一份都不注入等于让 agent 突然失了人格——而用户只是打错了一个文件名。
     """
     service = _service(tmp_path, **{"memory.persona_files": "不存在的文件.md"})
 
-    assert service.persona_order() == (SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE)
+    assert service.persona_order() == (SOUL_FILE, AGENTS_FILE)
 
 
 def test_capture_takes_the_title_and_summary_the_model_gave(tmp_path: Path) -> None:
@@ -2029,16 +2176,29 @@ def test_dream_slug_flattens_names_into_a_filename() -> None:
     assert _dream_slug("///") == "未命名"
 
 
-def test_the_profile_template_warns_against_placeholder_words() -> None:
-    """D26 的另一半：模板要拦住"下一份又被写成待确认"。
+def test_the_archive_block_warns_against_placeholder_words(tmp_path: Path) -> None:
+    """D26 的另一半：**注入的那一段**要拦住"照着占位词去追问"。
 
-    字段**留空**（空值不会被当成待办），提示语才点名那几个词——两件事都要在，
-    少一半都会重新长出那种"每轮追问"的文件。
+    D26（2026-09-28 走查）：那份 `PROFILE.md` 里三行写着「待确认」，于是**每一轮**
+    注入之后模型都把它当成"还没做完的事"，见面就问"怎么称呼你"——那天 17 条新会话
+    里 14 条都出现了这种追问。
+
+    规则在期二搬进了**档案块**：病灶那几行字现在住在档案里，规则就该跟着它走
+    （写在人设总起句里会让那一段去讲一份它已经不管的文件）。模板本身不再带提示语
+    ——它是四区骨架，用户要填的是自己的话，不是我们的说明。
     """
-    template = memory_service._PROFILE_TEMPLATE
+    service = _service(tmp_path)
+    _write(
+        service.workspace,
+        PROFILE_FILE,
+        "---\nupdated: 2026-10-03\n---\n\n## 身份与称呼\n\n- **怎么称呼他：** 待确认\n",
+    )
 
-    assert "没填的就留空" in template
-    assert "待确认" in template  # 只出现在提示语里
-    # 字段值必须是空的：`- **名字：**` 后面直接换行
-    assert "- **名字：**\n" in template
-    assert "- **怎么称呼他：**\n" in template
+    block = service.archive_block()
+
+    assert "没填的字段就当没填" in block
+    assert "追问" in block
+    # 点名那几个占位词：不点名的话，模型未必把「待补」也当成同一类
+    assert "待确认" in block and "待补" in block
+    # 骨架里只有四个标题与 frontmatter，没有我们的提示语混进去
+    assert "待确认" not in memory_service._PROFILE_TEMPLATE

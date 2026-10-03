@@ -17,6 +17,11 @@
 4. **回执**（§4.4）：新增 / 顶替 / 已存在 / 被拒四种文案只有一个来源——模型从工具听到的
    与人在界面上看到的必须是同一种说法。
 
+**变更流还是 recall 的唯一池子**（§5.3）：档案本身已经全量注入，再召回一次就是把同一段
+内容进两次上下文；于是 `recall` 的池子只剩 `changes.md`，它回答的是"这条以前是什么、
+什么时候改的"。排序用**纯字面判据**（归一化子串命中数 + 二元组覆盖率，不依赖分词，
+见 :func:`search_changes`）。
+
 **这一期不接旧模块**：``memory.py`` 的对外行为一个字不改，档案服务是独立可测的新模块
 （接线是期二、界面是期三）。所以这里不 import ``memory.py``，也就没有循环。
 """
@@ -36,6 +41,7 @@ from app.services.archive_files import (
     ACTION_REPLACED,
     ACTION_RESTORED,
     ACTION_REVERTED,
+    CHANGES_FILENAME,
     KNOWN_SECTIONS,
     SECTION_IDENTITY,
     SECTION_PREFERENCES,
@@ -49,8 +55,11 @@ from app.services.archive_files import (
     fingerprint,
     normalize,
     normalize_entry,
+    parse_changes,
     read_archive,
     read_changes,
+    read_text,
+    render_change,
     write_archive,
 )
 
@@ -80,6 +89,7 @@ __all__ = [
     "TOTAL_ENTRIES",
     "ArchiveService",
     "BudgetReport",
+    "ChangeHit",
     "Match",
     "Overrun",
     "SectionBudget",
@@ -89,6 +99,7 @@ __all__ = [
     "display_counts",
     "is_sensitive",
     "overrun",
+    "search_changes",
 ]
 
 # --------------------------------------------------------------------- 预算
@@ -155,6 +166,13 @@ RECEIPT_UNKNOWN_SECTION = (
 RECEIPT_FORGOTTEN = "忘掉了：{text}（旧的已留档，可还原）"
 RECEIPT_RESTORED = "还原成：{text}"
 RECEIPT_MISSING = "档案里没有这一条：{text}"
+RECEIPT_AMBIGUOUS = "档案里有 {count} 条对得上「{topic}」的：{items}。请把要忘掉的那条原样给我。"
+
+#: 变更流查证的命中判据：查询的**二元组**有多少比例在记录里出现过（§5.3）。
+#:
+#: 与旧召回的 ``MIN_TERM_COVERAGE`` 同一量级（1/3），但**不依赖分词**——池子只有
+#: 几十到几百条记录，"字面重合够多"就够用了，而分词（``jieba``）本来就不在闭包里。
+MIN_CHANGE_COVERAGE = 1 / 3
 
 # ----------------------------------------------------------------- 机械判据
 #
@@ -477,6 +495,109 @@ def _reject_receipt(over: Overrun) -> str:
     return RECEIPT_REJECTED.format(scope=scope, current=current, limit=limit, unit=unit)
 
 
+# --------------------------------------------------------------------- 变更流查证
+#
+# §5.3：``recall`` 保留但降级为"查证"——池子只剩变更流，而档案本身**不进召回池**
+# （它已经全量注入）。这一节只做一件事：在 ``changes.md`` 上按**纯字面**判据排序。
+#
+# 三条刻意的选择：
+#
+# 1. **不依赖分词**（``jieba`` 不在闭包里）：判据是"归一化子串命中数 + 二元组覆盖率"，
+#    两个都只看字符本身；
+# 2. **不建索引、不缓存**：池子只有几十到几百条，每次现读现算比维护索引便宜；
+# 3. **"没搜到"只有一个含义**：变更流里确实没有相关的话——没有"索引没建好"这种
+#    中间态可供误读（这条性质比排序精度更重要）。
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeHit:
+    """变更流里的一条命中（形状与召回命中对齐：文本 + 出处 + 行号 + 分数）。"""
+
+    text: str
+    """这条记录的原样渲染（``时间 · 动作 · 分区`` + 旧值/新值两行）。"""
+
+    path: str = CHANGES_FILENAME
+    start_line: int = 1
+    end_line: int = 1
+    score: float = 0.0
+    coverage: float = 0.0
+    source: str = "text"
+
+
+def _change_terms(query: str) -> list[str]:
+    """查询的**相邻字对**（归一化后去重、保序）；单字查询退化成它自己。"""
+    flat = normalize(query)
+    if len(flat) < 2:
+        return [flat] if flat else []
+    terms: list[str] = []
+    for index in range(len(flat) - 1):
+        gram = flat[index : index + 2]
+        if gram not in terms:
+            terms.append(gram)
+    return terms
+
+
+def _bigram_coverage(query: str, text: str) -> float:
+    """查询的二元组有多少比例在记录里出现过（0–1，归一化后比）。"""
+    flat_query, flat_text = normalize(query), normalize(text)
+    if not flat_query or not flat_text:
+        return 0.0
+    if len(flat_query) < 2:
+        return 1.0 if flat_query in flat_text else 0.0
+    wanted = {flat_query[index : index + 2] for index in range(len(flat_query) - 1)}
+    found = {flat_text[index : index + 2] for index in range(len(flat_text) - 1)}
+    return len(wanted & found) / len(wanted) if wanted else 0.0
+
+
+def _records_with_lines(text: str) -> list[tuple[ChangeRecord, int, int]]:
+    """解析变更流并补上每条记录**在文件里的行号区间**（界面/模型都要能指过去）。
+
+    ``parse_changes`` 已经定下了记录边界（顶格 ``- `` 开一条），这里只是把
+    那些行号按出现顺序数出来——两边判据同源，不会漂。
+    """
+    records = parse_changes(text)
+    lines = text.splitlines()
+    heads = [index for index, line in enumerate(lines, start=1) if line.startswith("- ")]
+    out: list[tuple[ChangeRecord, int, int]] = []
+    for position, record in enumerate(records):
+        start = heads[position] if position < len(heads) else 1
+        end = heads[position + 1] - 1 if position + 1 < len(heads) else max(start, len(lines))
+        out.append((record, start, end))
+    return out
+
+
+def search_changes(text: str, query: str, *, limit: int = 20) -> list[ChangeHit]:
+    """在变更流文本里查证（§5.3）。排序：``归一化子串命中数 + 二元组覆盖率``。
+
+    命中判据两条，满足任意一条就算：
+    **整条查询原样出现**，或**字对覆盖率 ≥** :data:`MIN_CHANGE_COVERAGE`。
+    同分时**近的排前面**——"我刚改了什么"比"半年前改了什么"更常是问话的意图。
+    """
+    flat_query = normalize(query)
+    terms = _change_terms(query)
+    hits: list[ChangeHit] = []
+    for record, start, end in _records_with_lines(text or ""):
+        body = render_change(record)
+        flat_body = normalize(body)
+        matched = sum(1 for term in terms if term in flat_body)
+        coverage = _bigram_coverage(query, body)
+        if flat_query not in flat_body and (
+            not terms or matched / len(terms) < MIN_CHANGE_COVERAGE
+        ):
+            continue
+        hits.append(
+            ChangeHit(
+                text=body,
+                start_line=start,
+                end_line=end,
+                score=float(matched) + coverage,
+                coverage=coverage,
+            )
+        )
+    hits.sort(key=lambda hit: (-hit.score, -hit.start_line))
+    return hits[: max(1, limit)]
+
+
 # --------------------------------------------------------------------- 结果
 
 
@@ -542,6 +663,12 @@ class ArchiveService:
     def changes(self) -> list[ChangeRecord]:
         """读变更流（最旧在前）。"""
         return read_changes(self._workspace)
+
+    def changes_hits(self, query: str, *, limit: int = 20) -> list[ChangeHit]:
+        """在变更流里查证（§5.3 的 ``recall`` 新池子）：现读现算，无缓存、无索引。"""
+        return search_changes(
+            read_text(self._workspace / CHANGES_FILENAME), query, limit=limit
+        )
 
     def budget(self, archive: Archive | None = None) -> BudgetReport:
         """预算读数。"""
@@ -659,14 +786,35 @@ class ArchiveService:
             group=group,
         )
 
-    def forget(self, text: str, *, source: str = SOURCE_EXPLICIT) -> WriteResult:
-        """忘掉一条：从档案删除 + 变更流留痕 + 可还原（§9.2 第 6 条）。"""
-        clean = normalize_entry(text)
+    def forget(self, topic: str, *, source: str = SOURCE_EXPLICIT) -> WriteResult:
+        """忘掉一条：从档案删除 + 变更流留痕 + 可还原（§9.2 第 6 条）。
+
+        ``topic`` 先按**原样**找（指纹/归一化相等），找不到再按**唯一子串**兜一次：
+        调这个工具的模型手里有整份档案，多数时候能原样抄出那一条；但用户说"忘掉
+        那条关于 NAS 的"时，模型给的多半是半句话。
+
+        **对得上不止一条时不猜**：宁可回执列出候选让它说清，也不删错一条——
+        删错的代价（一条真事实没了）与多问一句完全不对等。
+        """
+        clean = normalize_entry(topic)
         if not clean:
-            raise InvalidRequestError("缺少参数：text")
+            raise InvalidRequestError("缺少参数：topic")
         archive = self.read()
         entries = list(archive.entries)
         index = _locate(entries, clean)
+        if index is None:
+            candidates = _locate_candidates(entries, clean)
+            if len(candidates) > 1:
+                listed = "、".join(f"「{entries[item].text}」" for item in candidates[:5])
+                return WriteResult(
+                    action=ACTION_REJECTED_OUT,
+                    receipt=RECEIPT_AMBIGUOUS.format(
+                        count=len(candidates), topic=clean, items=listed
+                    ),
+                    text=clean,
+                    reason="ambiguous",
+                )
+            index = candidates[0] if candidates else None
         if index is None:
             return WriteResult(
                 action=ACTION_REJECTED_OUT,
@@ -726,6 +874,8 @@ class ArchiveService:
                 text=record.old,
                 section=record.section,
             )
+        elif self._revert_group(entries, record):
+            pass
         else:
             entries.append(ArchiveEntry(text=record.old, section=record.section))
 
@@ -753,7 +903,118 @@ class ArchiveService:
             replaced=record.new,
         )
 
+    def rename_group(
+        self,
+        section: str,
+        old: str,
+        new: str,
+        *,
+        source: str = SOURCE_UI,
+    ) -> WriteResult:
+        """项目段的组改名（§3.1 第 2 条：改名 = 一次顶替，旧名进变更流）。
+
+        组标题本身也是可顶替的对象。改的是**这一组全部条目的 ``group`` 字段**，而
+        变更流只留一条记录（旧名 → 新名）——所以它不是"每条各顶替一次"，
+        也与条目正文无关（正文一个字不改）。
+        """
+        section = (section or "").strip() or SECTION_PROJECTS
+        old_clean = normalize_entry(old)
+        new_clean = normalize_entry(new)
+        if not old_clean or not new_clean:
+            raise InvalidRequestError("缺少参数：old / new")
+        if section not in KNOWN_SECTIONS:
+            return WriteResult(
+                action=ACTION_REJECTED_OUT,
+                receipt=RECEIPT_UNKNOWN_SECTION.format(section=section),
+                text=new_clean,
+                section=section,
+                reason="section-unknown",
+            )
+        if is_sensitive(new_clean):
+            return WriteResult(
+                action=ACTION_REJECTED_OUT,
+                receipt=RECEIPT_SENSITIVE,
+                text=new_clean,
+                section=section,
+                reason="sensitive",
+            )
+        if len(new_clean) > SINGLE_ENTRY_CHARS:
+            return self._reject(
+                WriteResult(
+                    action=ACTION_REJECTED_OUT,
+                    receipt=RECEIPT_TOO_LONG.format(
+                        limit=SINGLE_ENTRY_CHARS, current=len(new_clean)
+                    ),
+                    text=new_clean,
+                    section=section,
+                    reason="single",
+                    current=len(new_clean),
+                    limit=SINGLE_ENTRY_CHARS,
+                ),
+                source=source,
+            )
+
+        archive = self.read()
+        entries = list(archive.entries)
+        targets = [
+            index
+            for index, entry in enumerate(entries)
+            if entry.section == section
+            and entry.group
+            and normalize(entry.group) == normalize(old_clean)
+        ]
+        if not targets:
+            return WriteResult(
+                action=ACTION_REJECTED_OUT,
+                receipt=RECEIPT_MISSING.format(text=old_clean),
+                text=old_clean,
+                section=section,
+                reason="missing",
+            )
+        for index in targets:
+            entries[index] = ArchiveEntry(
+                text=entries[index].text,
+                section=entries[index].section,
+                group=new_clean,
+            )
+        self._save(archive, entries)
+        self._log(ACTION_REPLACED, section, old=old_clean, new=new_clean, source=source)
+        return WriteResult(
+            action=ACTION_REPLACED_OUT,
+            receipt=RECEIPT_REPLACED.format(text=new_clean),
+            text=new_clean,
+            section=section,
+            group=new_clean,
+            replaced=old_clean,
+        )
+
     # ---------------------------------------------------------------- 内部
+
+    def _revert_group(self, entries: list[ArchiveEntry], record: ChangeRecord) -> bool:
+        """把一条**组改名**记录还原回去（``restore`` 的第三个分支）。
+
+        组改名记录的 ``old`` / ``new`` 是**组名**而不是条目正文，所以在档案里按
+        "有没有这条条目"是找不到的。这里换一个判据：当前还有没有条目的 ``group``
+        等于记录的新名——有就把它们改回旧名。不是组改名就返回 ``False``，
+        让 ``restore`` 走原来的兜底（把旧值当一条新条目放回）。
+        """
+        if not record.new:
+            return False
+        wanted = normalize(record.new)
+        targets = [
+            index
+            for index, entry in enumerate(entries)
+            if entry.group and normalize(entry.group) == wanted
+        ]
+        if not targets:
+            return False
+        for index in targets:
+            entries[index] = ArchiveEntry(
+                text=entries[index].text,
+                section=entries[index].section,
+                group=record.old,
+            )
+        return True
 
     def _match(self, clean: str, entries: list[ArchiveEntry], replaces: str | None) -> Match:
         """定位要顶替的那条：模型显式指认优先，机械判据兜底（§4.3）。"""
@@ -813,3 +1074,15 @@ def _locate(entries: Sequence[ArchiveEntry], text: str) -> int | None:
             if normalize(entry.text) == loose:
                 return index
     return None
+
+
+def _locate_candidates(entries: Sequence[ArchiveEntry], text: str) -> list[int]:
+    """按**唯一子串**兜一次：哪些条目的归一化文本包含这段话题（``forget`` 用）。
+
+    只给 ``forget`` 一个人用，因为"忘掉"的入参是**话题**而不是条目原文；
+    ``remember``/``replaces`` 不该走这条——那里指错目标会静默顶替错一条。
+    """
+    loose = normalize(text)
+    if not loose:
+        return []
+    return [index for index, entry in enumerate(entries) if loose in normalize(entry.text)]

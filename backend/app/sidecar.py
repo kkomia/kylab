@@ -485,6 +485,7 @@ SIDECAR_TOOL_NAMES = frozenset(
         "list_notes",
         "recall",
         "remember",
+        "forget",
         "ingest_file",
     }
 )

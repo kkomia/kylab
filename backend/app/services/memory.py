@@ -1,25 +1,29 @@
-"""长期记忆（v0.14，设计见 ``docs/设计/记忆层设计-v0.1.md``）。
+"""长期记忆：**一份四区档案**（v0.14 起；档案制见 ``docs/设计/记忆档案-设计-v0.1.md``）。
 
 **两个池子不能混**（这是本模块存在的第一条理由）：记忆是"你说的"（无出处、可改、
 高频写），文档知识库是"文献说的"（有出处、不该被改、原文为王）。混进同一次检索，
 引用会脏、溯源会断。所以记忆召回是独立的一路（MCP 上是 `recall`，与 `search` 分开），
-结果永不合并——而且**两条路连索引都不共用**：文档走 pgvector + 全文，
-记忆走 `memory_files.search` 对本工作区 Markdown 的一次扫描。
+结果永不合并——而且**两条路连索引都不共用**。
 
-**记忆在我们自己的进程里**（v0.46 起）。原先这一层是 ReMe 的 HTTP 门面
-（`base_url` + `POST /search`、`/auto_memory`、`/health_check`），得先有第二个进程
-活着——而它并进同一个进程又做不到：`reme-ai[as]` 会带来 agentscope，后者钉
-`mcp<2.0.0`，与我们的 `mcp>=2` 互斥（实测见设计文档 §3.5）。于是三件事都改成 native：
+**这一层现在的形状**（期二把档案接进了对话链路）：
 
-- ``recall`` → :func:`memory_files.search`（本地按块打分，带文件与行号）；
-- ``capture`` → 我们自己的捕获：让对话模型挑出值得长期留下的条目，
-  去重后追加到当天的 ``daily/`` 文件（**沿用队列与重试语义**，见 ``enqueue_capture``）；
-- ``status`` → 纯本地状态（几份文件、可召回几条、上次更新时间），**不探测任何东西**。
+- **档案**（``PROFILE.md``，四个固定分区）= 这一层的本体，落在
+  ``data/memory/<账号>/``。它由 :class:`~app.services.archive.ArchiveService`
+  读写（分区、预算、机械顶替、变更流都在那里），**本模块是门面**：开关、注入块、
+  工具接线；
+- **注入**（§5.1–5.2）：每轮**现读现拼**整份档案（不挑选、不摘要、不排序），
+  挂在人设那一档、但**是独立的一个贡献者**（自己的开关 ``memory.enabled``、
+  不与人设共用配置）。硬顶 6000 字，超限在提示词里说出来；
+- **recall**（§5.3）：池子只剩 ``changes.md``（变更流）——档案已经全量注入，
+  再召回一次就是把同一段内容进两次上下文。它回答"这条以前是什么、什么时候改的"，
+  排序是纯字面判据（:func:`app.services.archive.search_changes`）；
+- **写入**（§4.1）：`remember` / `forget` 是**显式**那条路，判定与落盘都是机械的，
+  **零额外模型调用**；``memory.enabled`` 关着也能写（编辑不看开关）。
 
-**这一层现在**（P0–P3 都落了地）：检索是**两路**——词面（BM25 + 标题加权，
-``memory_files.search``）与可选的语义（本地小索引 + RRF 融合，``memory_index``，
-默认关见 ``memory.vector_enabled``）；整理是 ``dream`` / ``dream_all``，
-写完之后还会补链（``_autolink``）。逐项的取舍与实测散在设计文档 §3.5。
+**默认零额外模型调用**（§7.3）：``memory.enabled`` 默认 **true**（行为变更——旧设计
+默认关是因为打开它会启动定时捕获，现在注入与捕获已经拆成两个开关），而**旧的定时
+捕获在链路上已废**（§4.1：它是"固定节奏的花钱"，期四换成只在信号出现的那一轮判定）。
+所以默认配置下，注入、显式写入、recall **一次模型调用都不新增**。
 
 **关着时一律明确报错，不返回空**：返回空会让模型以为"没有相关记忆"，
 然后基于错误前提继续推理——那是比报错更坏的一种失败。（**开着时**返回空才是
@@ -32,7 +36,7 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,16 +44,30 @@ from typing import Any
 
 from app.core.exceptions import InvalidRequestError
 from app.models.enums import TaskKind, TaskState
-from app.services import memory_files, memory_index
+from app.services import archive_files as af
+from app.services import archive_migration, memory_files, memory_index
+from app.services.archive import (
+    INJECTION_LIMIT_CHARS,
+    SECTION_PREFERENCES,
+    SINGLE_ENTRY_CHARS,
+    TOTAL_CHARS,
+    TOTAL_ENTRIES,
+    ArchiveEntry,
+    ArchiveService,
+    WriteResult,
+)
+from app.services.archive_migration import MigrationReport, classify_text
 from app.services.llm import ChatMessage, OpenAICompatChat
 from app.services.memory_files import MemoryFile, MemoryFileDetail, MemoryGraph
 from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import StoreBundle, TaskRecord
 
 __all__ = [
+    "ARCHIVE_FILE",
     "CORE_MEMORY_FILE",
     "MAX_ENTRY_CHARS",
     "MAX_RECALL",
+    "PERSONA_FILES",
     "SOUL_FILE",
     "WRITABLE_PERSONA_FILES",
     "MemoryFile",
@@ -72,28 +90,36 @@ SOUL_FILE = "SOUL.md"
 AGENTS_FILE = "AGENTS.md"
 
 #: 身份与用户资料。QwenPaw 里叫 PROFILE.md，语义一致：**我是谁 + 对方是谁**。
+#: **v0.56（档案制）起它就是档案本体**（§7.2 的建议口径）：正文从散文改成四个固定分区，
+#: 由 :class:`~app.services.archive.ArchiveService` 读写，注入走**档案块**那条路
+#: （``memory.enabled`` 管），**不挂在 ``memory.persona_files`` 上**。
 PROFILE_FILE = "PROFILE.md"
 
-#: 注入 system prompt 的人设文件与**固定顺序**。
+#: 档案文件名（与 ``archive_files.ARCHIVE_FILENAME`` 同源，这里只是给本模块一个好读的名字）。
+ARCHIVE_FILE = af.ARCHIVE_FILENAME
+
+#: **每轮进 system prompt 的那几份文件**（`GET /memory` 的 ``injected`` 标记就报它）。
 #:
-#: 顺序不是随手排的，它决定模型读到它们的先后：先"我是谁"（人格）→ 再"对方是谁"（资料）
-#: → 再"这类活怎么干"（规程）→ 最后是"已知的事实"（长期记忆）。越靠前越像"身份"，
-#: 越靠后越像"数据"。QwenPaw 用同样的分法（只是它的默认顺序是 AGENTS/SOUL/PROFILE）。
+#: 三份：两份人设（不看开关）+ 档案（``memory.enabled`` 关着时不进，但它的**位置**
+#: 仍然是"每轮在场的设定"）。``MEMORY.md`` **不在里面**——它已经退场（§7.2），
+#: 界面上它显示成"旧记忆（只读）"。
+INJECTED_FILES: tuple[str, ...] = (SOUL_FILE, ARCHIVE_FILE, AGENTS_FILE)
+
+#: 注入 system prompt 的**人设**文件与固定顺序。
 #:
-#: `MEMORY.md` 放在最后：它是**会过时的**那类，紧挨着它那句"与用户当前所说冲突时
-#: 以用户当下为准"一起读，才不会被当成事实基准。
+#: v0.56 起只剩两份：``PROFILE.md``（档案）改由**独立的贡献者**注入（§5.1），
+#: ``MEMORY.md`` 退场（§7.2：内容是画像的另一半，已经折进档案；文件留盘但不再注入、
+#: 不再写入）。留下的两份是纯粹的"设定"：先"我是谁"（人格）→ 再"这类活怎么干"（规程）。
 PERSONA_FILES: tuple[tuple[str, str], ...] = (
     (SOUL_FILE, "人格"),
-    (PROFILE_FILE, "身份与对方"),
     (AGENTS_FILE, "操作规程"),
-    (CORE_MEMORY_FILE, "长期记忆"),
 )
 
 #: 默认注入的那几份、以及它们的顺序（= 上面那张表的顺序）。
 #:
 #: **它是可配的**（``memory.persona_files``，v0.51，照 QwenPaw 的
 #: ``system_prompt_files``）：那几份文件每轮整份进 system prompt，而"哪几份、
-#: 按什么顺序"是用户的设定，不该由代码钉死。
+#: 按什么顺序"是用户的设定，不该由代码钉死。**档案不在这里**（理由见 §7.2）。
 PERSONA_ORDER_DEFAULT = ",".join(name for name, _label in PERSONA_FILES)
 
 #: 新建 `SOUL.md` 时的模板。**正文照抄 QwenPaw 的 SOUL.md**（它的 `md_files/zh/`），
@@ -153,10 +179,20 @@ _你不是聊天机器人。你在成为某个人。_
 _这份文件随你进化。了解自己是谁之后，就更新它。_
 """
 
-#: 新建 `PROFILE.md` 时的模板。正文照抄 QwenPaw 的 PROFILE.md。
-#: 留白的写法（`（挑个你喜欢的）`）是有意的：这是一份**要人去填**的文件，
-#: 预填一个"名字：小助手"会让所有部署长得一模一样，而那正好丢掉了这一层的意义。
-_PROFILE_TEMPLATE = """---
+#: 新建 ``PROFILE.md``（= 档案）时的骨架。**四个固定分区**，空的（§3.1、§3.5）。
+#:
+#: 由 ``render_archive`` 现算而不是手抄一份：那四行标题的顺序、空行与 frontmatter
+#: 只要有一处对不上，"这份档案还是骨架没动过"（``profile_is_untouched``，首次引导的
+#: 信号）与"第一条写进去之后骨架就变了"这两件事就会漂。**同一个渲染器**是唯一
+#: 不会漂的写法。
+_PROFILE_TEMPLATE = af.render_archive(af.Archive(entries=(), updated=""))
+
+#: **v0.21–v0.55 的 ``PROFILE.md`` 模板**（散文体：名字/定位/用户资料）。
+#:
+#: 留在这里有两个用处：``_upgrade_untouched_template`` 要认出"这份文件还是我们当初
+#: 写下去的那一份"（换成档案骨架），``profile_is_untouched`` 要认出"用户从没填过它"
+#: （于是首次引导照常出现）。差一个字节就不算——那是他的东西。
+_PROFILE_PROSE_TEMPLATE = """---
 summary: "身份与对方：我叫什么、对方是谁、偏好与习惯"
 read_when:
   - 需要称呼对方、或想确认他的偏好与工作习惯
@@ -230,9 +266,10 @@ read_when:
   **不知道某类事该怎么做时先看一眼那份目录**，要用哪条就 `read_skill` 读它的正文。
   （v0.43 起目录每轮都注入，所以不必先 `list_skills`——那是给"想看全部字段"用的。）
 - 资料在知识库里，用 `search` 取。取回来的原文带编号，引用时用那个编号。
-- 值得长期记住的事实用 `remember` 写进 `MEMORY.md` 的「核心长期记忆」一节
-  （稳定偏好、长期约定、重要决定这类）；关于「我是谁、对方是谁」的写进
-  `PROFILE.md`（整份改写用 `write_memory`，**先 `read_memory` 读一遍**）。
+- 值得长期记住的事实用 `remember` 记进**用户档案**（`PROFILE.md` 的四个分区：
+  身份与称呼 / 长期偏好与风格 / 进行中的项目 / 工具与环境）——**一条一句**；
+  更正旧条目就在同一次调用里带上 `replaces`，要忘掉某条用 `forget`。
+  **档案每轮都在你的提示词里**，不必先去读它。
 - 需要啃一批资料才能得到一句话结论时，用 `spawn_subagent` 派一个子 Agent，
   而不是自己一轮轮翻。
 
@@ -241,12 +278,15 @@ read_when:
 以上只是起点。摸索出什么管用之后，加上你自己的习惯与规矩，更新这份 `AGENTS.md`。
 """
 
-#: **v0.20 及以前的那三份模板**（空骨架），只给 :meth:`_upgrade_untouched_template`
-#: 做"这份文件是不是从来没被改过"的比对用。新装的实例不会写到它们，
-#: 升级完也就再也用不到了——留着是为了那些**已经在跑**的实例：
+#: **v0.20 及以前的那三份模板**（空骨架），以及 **v0.21–v0.55 的散文体 `PROFILE.md`**，
+#: 只给 :meth:`_upgrade_untouched_template` 做"这份文件是不是从来没被改过"的比对用。
+#: 新装的实例不会写到它们，升级完也就再也用不到了——留着是为了那些**已经在跑**的实例：
 #: 它们的文件是当时写下去的，改模板的这一步必须能认得出来。
-_LEGACY_TEMPLATES: dict[str, str] = {
-    SOUL_FILE: """---
+#:
+#: **一份文件可以有多个历史模板**（``PROFILE.md`` 就换过两次形状），所以值是元组。
+_LEGACY_TEMPLATES: dict[str, tuple[str, ...]] = {
+    SOUL_FILE: (
+        """---
 summary: "Agent 的人格：身份、准则与说话方式"
 read_when:
   - 需要确认自己是谁、该怎么说话、哪些事不做
@@ -258,7 +298,9 @@ read_when:
 
 ## 说话方式
 """,
-    PROFILE_FILE: """---
+    ),
+    PROFILE_FILE: (
+        """---
 summary: "身份与对方：我叫什么、对方是谁、偏好与习惯"
 read_when:
   - 需要称呼对方、或想确认他的偏好与工作习惯
@@ -270,7 +312,10 @@ read_when:
 
 ## 偏好与习惯
 """,
-    AGENTS_FILE: """---
+        _PROFILE_PROSE_TEMPLATE,
+    ),
+    AGENTS_FILE: (
+        """---
 summary: "操作规程：这类活怎么干、哪些要先问、成果放哪"
 read_when:
   - 开始一项任务前，想确认有没有既定做法
@@ -284,6 +329,7 @@ read_when:
 
 ## 不要做的事
 """,
+    ),
 }
 
 #: 一次召回最多取几条。与检索工具同一口径：给模型"够用"的几条，
@@ -295,12 +341,20 @@ DEFAULT_RECALL = memory_files.DEFAULT_RECALL
 #: 捕获节流的默认值：每几个用户回合沉淀一次。
 #: 5 是 ReMe/QwenPaw 的默认（见设计文档 §2.4），这里保持一致——
 #: 换成别的数没有依据，而它有：那条默认值来自它们的实际使用经验。
-#: **理由现在更硬了**：一次捕获就是一次模型调用，而省 token 是这个项目反复强调的事。
+#:
+#: **期二起没有任何地方读它**（§4.1：定时轮询退场，见 ``_capture_due``）。
+#: 常量与 ``memory.capture_every`` 那个设置键一起留到**期五**删除——留着是因为
+#: 界面上的设置项还在（删键要连界面一起改），而"读了它却没有效果"比"看得见一个
+#: 尚待清理的键"更糟。
 DEFAULT_CAPTURE_EVERY = 5
 
-#: 一条记忆的字数上限。**协议层与这里同源**（``api/v1/schemas.py`` 的
-#: ``MemoryRememberIn`` 直接引这个常量）：写死两份的话，界面会先放行再被服务层拒，
-#: 用户看到的是一句"请求不合法"，而不是"这条太长了，请存成笔记"。
+#: ``remember`` 这条通道的**传输上限**（协议层与这里同源：``api/v1/schemas.py`` 的
+#: ``MemoryRememberIn`` 直接引这个常量）。
+#:
+#: **它不是档案的单条上限**——那个是 120 字（``archive.SINGLE_ENTRY_CHARS``），
+#: 由服务层以**回执**的形式拒绝（"一条最多 120 字……请拆成两条，或写进 AGENTS.md"）。
+#: 这里是 JSON 体本身的一道粗护栏：比它更长的内容属于笔记或知识库，
+#: 让它在协议层就 422，别白读一遍再拒。
 MAX_ENTRY_CHARS = 500
 
 #: 一次捕获最多写几条。一轮对话能沉淀出的"长期事实"通常一到两条，
@@ -466,84 +520,106 @@ _ILLEGAL_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 #: 现场文件在 ``digest/`` 那一侧的落点（照 QwenPaw 的目录名）。
 _DIGEST_DIR_NAME = memory_files.DIGEST_DIR
 
-#: **记忆指导**：告诉模型"你有长期记忆、什么样的问题该先去查"。
+#: **档案块的两句边界话**（§5.1）。
 #:
-#: 为什么必须有这一段（照 QwenPaw 的 ``MEMORY_GUIDANCE`` / ``MEMORY_SEARCH_GUIDANCE``
-#: 抄，它是这一层最容易被漏掉的一块）：工具表里列着 ``recall``，而内置提示词只在
-#: "问的是对方自己的东西（…长期记忆）→ 查这边"那一句里顺带提到它。模型据此完全
-#: 可以整场对话一次都不查记忆——用户看到的现象就是「它有记忆，但从不使用」。
-#: 把"什么时候先查记忆"单列成一段注入，缺的正是这一段。
+#: 为什么必须有：档案**每轮整份进上下文**，而模型对"一整块关于对方的话"有两种典型
+#: 误读——把它当**文献依据**引用（"根据档案记载…"），或者把它当**这一轮的任务**
+#: 逐条念出来。第一句挡住前者（它不是文献），第二句挡住后者（无关时不要主动提）。
 #:
-#: **三处刻意**：
-#: 1. **只在启用时给出**（见 :meth:`MemoryService.guidance`）。关着时 ``recall``
-#:    会明确报"未启用长期记忆"，还把它摆给模型看就是"每轮先查一次、再拿一句错误"
-#:    ——与知识库那条 ``_KB_TOOLS`` 的教训同一个形状；
-#: 2. **目录名从 ``memory_files`` 取**，不在这里写死：改了目录而提示词没跟上，
-#:    模型就会去翻一个不存在的地方（这个仓库对"描述一个不存在的机制"零容忍）；
-#: 3. **明说 ``recall`` 搜不到那四份核心文件**：它们每轮已经整份注入，再搜一遍
-#:    既是白花一次调用，也容易让模型把同一段内容读两遍。
-#:    片段可能被截断这件事也如实说——不写的话模型会把截断处当成"就记到这里"。
+#: 后两句守住"过时"与"占位词"这两件实测踩过的事：
+#:
+#: - **冲突以对方当下为准**：档案是过去写下的记录（旧设计里这条挂在 `MEMORY.md`
+#:   那句"可能已经过时"上，现在档案每轮都在场，这条比那时更需要）；
+#: - **占位词不是待办**（D26，2026-09-28 走查）：那份 `PROFILE.md` 的用户资料三行
+#:   写着「待确认」，于是每轮注入之后模型都当成"还没做完的事"，见面就问"怎么称呼你"
+#:   ——那天 17 条新会话里 14 条出现了这种追问。
+_ARCHIVE_LEAD = (
+    "以下是用户档案：说的是用户是谁、他在意什么，不是文献依据；"
+    "与当前问题无关时不要主动提它。\n"
+    "档案是过去写下的记录，与对方此刻所说的冲突时，以他此刻说的为准。\n"
+    "档案里没填的字段就当没填：不要为了填满它去追问对方，"
+    "也不要因为某个字段写着「待确认」「待补」这类占位词，就每一轮都问一遍。"
+)
+
+#: 超限声明（§5.2）：**必须在提示词里说出来**。
+#:
+#: 静默截断是不可接受的：用户会以为助手看到了整份档案。正常路径永远碰不到它——
+#: 写入侧在 4000 字就开始拒绝了，它只兜"用户在外部编辑器里把档案改超了"这一态。
+_ARCHIVE_TRUNCATED = "（档案超出上限，以下为前 {count} 条；请到记忆页整理）"
+
+#: **记忆指导**：告诉模型"这一层现在长什么样、什么时候用哪个工具"。
+#:
+#: 三件事必须说清（每一件都是"不说模型就会做错"的那种）：
+#:
+#: 1. **档案已经全量注入**了，不要再试图去"检索档案"——旧文案教的是"问偏好时先
+#:    `recall`"，现在那句话会让它白花一次调用，还会把同一段内容读两遍；
+#: 2. **`recall` 的池子只剩变更流**（§5.3）：它回答"这条以前是什么、什么时候改的"，
+#:    而且"没搜到"只有一个含义——变更流里确实没有相关的话；
+#: 3. **更正是一次调用**（`replaces`），不是"先删再记"两次；**一条只记一句**，
+#:    写不下的是 `AGENTS.md` 的内容（§7.2 那条边界要说给用户听，否则他们会在
+#:    档案里写小作文）。
+#:
+#: **只在启用时给出**（见 :meth:`MemoryService.guidance`）：关着时 `recall` 会明确
+#: 报"未启用长期记忆"，还把它摆给模型看就是"每轮先查一次、再拿一句错误"
+#: ——与知识库那条 ``_KB_TOOLS`` 的教训同一个形状。
 _GUIDANCE = (
-    "【长期记忆：怎么用】\n"
-    "- 你有一份长期记忆库：`{daily}/YYYY-MM-DD.md` 是每天从对话里自动沉淀下来的"
-    "现场条目，`{digest}/` 是整理后的长期知识。\n"
-    "- 问的是「我们之前怎么说的」「我的偏好是什么」「上次那个决定」这类事时，"
-    "**先用 `recall` 检索它**；不要凭印象回答，也不要说「我记不住」。\n"
-    "- `recall` 给的是**片段 + 文件路径与行号**，片段可能被截断；不够时用"
-    " `read_memory` 按那个 path 与行号展开上下文，不要凭片段猜、也不要以为"
-    "片段就是全文。\n"
-    "- `recall` 只搜 `{daily}/` 与 `{digest}/`；`MEMORY.md` / `SOUL.md` / `PROFILE.md`"
-    " / `AGENTS.md` **不在召回池里**，搜也搜不到——那四份是设定文件，不是记忆条目。\n"
-    "- 要长期留下一条事实时用 `remember`，它写进 `MEMORY.md` 的「核心长期记忆」一节。"
+    "【用户档案：怎么用】\n"
+    "- 上面那份**用户档案**是**全量**给你的（说的是对方是谁、他在意什么），"
+    "所以不必再去检索它——直接用，与当前问题无关时不必提。\n"
+    "- 要长期留下一条事实时用 `remember`；**更正**旧条目就在同一次调用里带上 "
+    "`replaces`（不要先删再记）；要忘掉某条用 `forget`。\n"
+    "- `recall` 查的是**变更流**：改过什么、以前是什么、什么时候改的。"
+    "它**搜不到档案本身**（档案已经注入了），所以「没搜到」只有一个含义："
+    "变更流里确实没有相关的话。\n"
+    "- **一条只记一句话**（最多 {single} 字；全档 {total} 条 / {chars} 字）："
+    "写不下的长内容属于 `AGENTS.md`，不是档案。\n"
+    "- **绝不记**密码、令牌、密钥、证件号：档案每轮都进上下文。"
 )
 
 #: Agent **可以自己整份改写**的人设文件（``write_memory`` 的白名单）。
 #:
-#: **v0.52 起只留 ``PROFILE.md`` 一份**（用户口径）：它是"**对方是谁**"——Agent 从
-#: 对话里认识到的那些事实本来就该由它写下来，这也是首次引导能落地的前提。
-#: 另外三份都是**用户自己的东西**，Agent 只读不写：
-#:
-#: - ``SOUL.md``（人格）与 ``AGENTS.md``（操作规程）原先也在白名单里（设计文档 §2.5
-#:   写的是"由 Agent 自己进化"）。收掉的代价是"Agent 不能自己改自己的性子"，
-#:   换来的是**这两份文件的内容一定是用户自己认可的**——它们每轮整份进上下文，
-#:   而 Agent 改自己的人格这件事既难回滚、也难让用户察觉；想让它变，让它**说出来**，
-#:   由用户改。
-#: - ``MEMORY.md`` 从来不在名单里：那份的条目由 ``remember`` 增删（管去重、
-#:   只替换「核心长期记忆」那一节、不碰别的段落），整份覆盖等于把"一条一条地维护"
-#:   换成"一把梭"。
-WRITABLE_PERSONA_FILES: tuple[str, ...] = (PROFILE_FILE,)
+#: **v0.56（档案制）起是空的**：``write_memory`` 整个退场（§7.4）——整份覆盖与本层
+#: "条目级预算 + 变更流"不相容，它等于给预算与变更流开一个后门。档案的写入只有
+#: `remember` / `forget` 两条路（外加界面上的行内编辑），三条路共用一个服务、一套预算。
+#: 常量本身留着（而不是删掉调用点就算完），是为了让"哪些文件 Agent 能整份改写"
+#: 有一个**看得出来**的答案：现在一个都没有。
+WRITABLE_PERSONA_FILES: tuple[str, ...] = ()
 
-#: **首次引导**那一段：人设还是空模板时注入，让 Agent 先去认识对方。
+#: **首次引导**那一段：档案还是空模板时注入，让 Agent 先去认识对方。
 #:
-#: 为什么需要它（照 QwenPaw 的 ``BOOTSTRAP.md`` 抄它的做法）：``PROFILE.md`` 的
-#: 模板里"名字："后面是空的，而**没有任何机制会让它被填上**——用户不会主动去改
-#: 一个人设文件（他甚至不知道有这回事），Agent 也不会问。于是启动后提示词里确实
-#: 进来了几千字，全是不认识对方的样板文；用户那边的体感就是"人设没生效"。
-#: QwenPaw 的解法是首次跑一次"共同定义身份"的引导对话，我们照抄。
+#: 为什么需要它（照 QwenPaw 的 ``BOOTSTRAP.md`` 抄它的做法）：新装实例的档案是空的，
+#: 而**没有任何机制会让它被填上**——用户不会主动去改一份档案文件（他甚至不知道有
+#: 这回事），Agent 也不会问。于是启动后提示词里确实进来了几千字，全是不认识对方的
+#: 样板文；用户那边的体感就是"人设没生效"。QwenPaw 的解法是首次跑一次"共同定义
+#: 身份"的引导对话，我们照抄。
+#:
+#: **它问的正好是档案的三区**（§5.1）：怎么称呼（身份与称呼）、最近在忙什么
+#: （进行中的项目）、希望怎么说话（长期偏好与风格）。三件事问完、用户答完，
+#: 档案就有了第一版——而**写进去用的是 `remember`**（期二起 `write_memory` 退场，
+#: 整份覆盖不再是一条路）。
 #:
 #: **信号是"``PROFILE.md`` 还是模板"**（见 ``profile_is_untouched``），
 #: 而不是某个 BOOTSTRAP.md 文件：QwenPaw 那份文件用完要删，而我们是每轮都跑一次
 #: "补缺文件"的，删掉之后会被重新铺出来——引导会无限重启。
-#: 用"对方资料还空着"当信号则**自己就会结束**：Agent 一写进去，下一轮它就不在了。
+#: 用"档案还空着"当信号则**自己就会结束**：Agent 一写进去，下一轮它就不在了。
 _BOOTSTRAP = (
     "【还没认识对方：这一轮该做一次开场】\n"
-    "`PROFILE.md` 还是空的模板——也就是说**「对方是谁」这件事你还没写下来**。\n"
+    "`PROFILE.md`（用户档案）还是空的——也就是说**「对方是谁」这件事你还没写下来**。\n"
     "**这一轮就做这件事**，哪怕对方只是打了个招呼、或者只说了两个字。\n"
     "**不要用「我能做什么」开场**，也不要把你没被问到的能力列一遍"
     "（联网、笔记、工具、知识库这些）——那是自我介绍，不是认识人。\n"
-    "**先看一眼记忆里已经知道的**（`MEMORY.md` 与 `recall`）：已经知道的那几件"
-    "**别再问一遍**，直接写下去就行；剩下的再**在你的回答里自然地问他**"
-    "（不用一次问完，也别像填表）。通常要弄清楚的是：\n"
-    "- 他怎么称呼自己，以及他希望你怎么称呼他；\n"
-    "- 他在做什么、关心什么；\n"
-    "- 他希望你怎么说话（简洁还是详细、要不要先给结论）。\n"
-    "拿到答案之后：**都写进 `PROFILE.md`**（身份、称呼、在做什么、希望你说话的风格；"
-    "用 `write_memory` 整份替换——**先 `read_memory` 读一遍，别把里面已有的"
-    "约定弄丢**）；稳定的偏好再用 `remember` 记一条。"
+    "**先看一眼已经知道的**（档案与变更流就在你的提示词里，`recall` 也可以查）："
+    "已经知道的那几件**别再问一遍**；剩下的再**在你的回答里自然地问他**"
+    "（不用一次问完，也别像填表）。要弄清楚的就是档案那三区的事：\n"
+    "- 他怎么称呼自己，以及他希望你怎么称呼他（→「身份与称呼」）；\n"
+    "- 他在做什么、关心什么（→「进行中的项目」）；\n"
+    "- 他希望你怎么说话（简洁还是详细、要不要先给结论）（→「长期偏好与风格」）。\n"
+    "拿到答案之后：**一条一句用 `remember` 记进档案**（`section` 给上面那个分区名；"
+    "一条最多 {single} 字，**只记他自己说过的**，别写你的推断）。"
     "**`SOUL.md` 与 `AGENTS.md` 是对方自己的东西，你不要去改**——"
     "想让你的性子或规矩变，就说出来让他决定。"
-    "做完**告诉对方你写了什么**——那是他的设定，他该知道。\n"
-    "只要 `PROFILE.md` 还是空的，这一段每轮都会出现；填上之后它自己就没了。"
+    "做完**告诉对方你记下了什么**——那是他的档案，他该知道。\n"
+    "只要档案还是空的，这一段每轮都会出现；写进第一条之后它自己就没了。"
 )
 
 #: 新建**会话笔记**时的骨架。文件名是 ``daily/<日期>/<会话 slug>.md``
@@ -586,10 +662,15 @@ class MemoryStatus:
     """工作区里的记忆文件份数。"""
 
     retrievable_count: int = 0
-    """其中进入召回池的份数（``daily/`` 与 ``digest/``）。"""
+    """其中进入**旧召回池**的份数（``daily/`` 与 ``digest/``）。
+
+    **它已经不是一个有意义的读数**（期二起 ``recall`` 只查变更流，§5.3）：
+    这两个数字随 ``memory_files.stats`` 一起等期五重做（那时 ``daily/``/``digest/``
+    整层退场）。留着它是因为界面还没改（期三），而删一个界面在读的字段比留一个
+    待清理的字段更糟。"""
 
     entry_count: int = 0
-    """可召回的**条数**：召回池那些文件切出来的块数（与召回同源，见 ``memory_files.stats``）。"""
+    """旧召回池切出来的**块数**（``memory_files.stats`` 的口径）——同上，等期五。"""
 
     last_changed_at: str = ""
     """记忆内容最后一次改动的时间（ISO，UTC）。没有索引也就没有"索引时间"，
@@ -612,15 +693,63 @@ class MemoryLink:
     name: str = ""
 
 
+def _ordered_entries(
+    entries: Sequence[ArchiveEntry], unknown_sections: Sequence[str]
+) -> list[ArchiveEntry]:
+    """条目按**注入顺序**排好：四个固定分区在前，未知分区在后（§3.1、§3.5 第 4 条）。"""
+    order = [
+        *af.KNOWN_SECTIONS,
+        *(name for name in unknown_sections if name not in af.KNOWN_SECTIONS),
+    ]
+    return [entry for name in order for entry in entries if entry.section == name]
+
+
+def _body_of(entries: Sequence[ArchiveEntry], unknown_sections: Sequence[str]) -> str:
+    """若干条目 → 注入用的正文（**不带 frontmatter**、不带 H1）。
+
+    ``frontmatter`` 只给界面与备份看（§3.5 第 1 条），不进注入块；H1「# 用户档案」
+    是文件自己的标题，模型看的是"分区标题 + 条目行"这一层。
+    """
+    rendered = af.render_archive(
+        af.Archive(entries=tuple(entries), unknown_sections=tuple(unknown_sections))
+    )
+    return af.parse_frontmatter(rendered)[1].strip()
+
+
+def _fitted_body(
+    entries: Sequence[ArchiveEntry],
+    unknown_sections: Sequence[str],
+    *,
+    limit: int = INJECTION_LIMIT_CHARS,
+) -> tuple[str, int]:
+    """装到**装不下为止**，返回 ``(正文, 装进的条数)``（§5.2）。
+
+    逐条加、每次重算一遍正文：条数最多几十条，而"哪几条装得下"这件事必须与
+    真正的渲染**同一口径**去数——估算字数（比如按行累加）迟早与渲染漂开，
+    漂开的表现是"提示词里说前 N 条，实际给了前 N-3 条"。
+    """
+    ordered = _ordered_entries(entries, unknown_sections)
+    body = ""
+    kept = 0
+    for index in range(1, len(ordered) + 1):
+        candidate = _body_of(ordered[:index], unknown_sections)
+        if len(candidate) > limit:
+            break
+        body, kept = candidate, index
+    return body, kept
+
+
 class MemoryService:
     """记忆的实现。**内容全在本地**：读写的都是 ``data/memory/`` 下的 Markdown。
 
     两个动作会出网，都是**可选的**、都有开关：
 
     - 捕获时问一次对话模型（``capture``）——那不是"记忆服务"，而是我们自己的模型
-      通道，模型没配好时它明确报错（见 ``_ask_model``）；
+      通道，模型没配好时它明确报错（见 ``_ask_model``）。**期二起它在链路上已废**
+      （见 ``_capture_due``），于是默认配置一次调用都不发生；
     - 向量那一路（``memory.vector_enabled``）把记忆块嵌入一次做本地索引
-      （``sync_index`` / ``memory_index``）——默认关，关着时检索完全走词面那一路。
+      （``sync_index`` / ``memory_index``）——默认关，而且 ``recall`` 已经不吃它了
+      （池子只剩变更流）。
     """
 
     def __init__(
@@ -687,32 +816,150 @@ class MemoryService:
         return self.core_file_for(None)
 
     def _require_enabled(self) -> None:
-        """召回与自动沉淀的那道闸。
+        """**注入与 recall** 的那道闸（§7.3）。
 
         报错文案里**不提任何服务**（v0.46）：本地实现没有"要去把某个进程拉起来"
         这回事，能做的动作只有一件——去设置里打开它。
+
+        **档案的读写不看这道闸**：关着时它照样可以被 `remember`/`forget` 改、
+        也可以在记忆页上编辑（"关了也能改自己的东西"这条纪律保留）。这道闸管的
+        只是另一半——它进不进这一轮的上下文、`recall` 能不能用。
         """
         if not self.enabled:
             raise InvalidRequestError(
                 "未启用长期记忆。请在「设置 → 长期记忆」里打开（在记忆页可以直接打开）"
             )
 
-    # ------------------------------------------------------------------ 读取
+    # ------------------------------------------------------------------ 档案
 
-    def core_text(self, user_id: str | None = None) -> str:
-        """``MEMORY.md`` 的正文（供注入 system prompt）。
+    def archive(self, user_id: str | None = None) -> ArchiveService:
+        """这个账号的档案服务（``data/memory/<账号>/PROFILE.md`` + ``changes.md``）。
 
-        未启用或文件还不存在时返回空串——注入是"有就带上"，缺了不该让对话失败。
+        **每次现建**：它自己不缓存任何东西（读文件、算预算都是当场的），
+        于是"改完下一轮生效"是构造出来的性质，不需要失效通知。
         """
-        try:
-            return self.core_file_for(user_id).read_text(encoding="utf-8").strip()
-        except OSError:
+        return ArchiveService(self.workspace_for(user_id))
+
+    def archive_entries(self, user_id: str | None = None) -> tuple[ArchiveEntry, ...]:
+        """档案当前的全部条目（按文件里的顺序）。"""
+        return self.archive(user_id).read().entries
+
+    def archive_budget(self, user_id: str | None = None):  # type: ignore[no-untyped-def]
+        """档案的预算读数（条数/字数/每区，界面与迁移报告共用）。"""
+        return self.archive(user_id).budget()
+
+    def archive_text(self, user_id: str | None = None) -> str:
+        """档案正文的**原样**（含 frontmatter）——`read_memory` 用它自查写了什么。"""
+        return af.read_text(self.workspace_for(user_id) / ARCHIVE_FILE).strip()
+
+    def archive_block(self, user_id: str | None = None) -> str:
+        """要注入 system prompt 的**档案块**（§5.1–5.2）；关着或空档案时是空串。
+
+        五条口径都在这一个函数里：
+
+        1. **每轮现读现拼**（无缓存、无索引）：改完下一轮就生效，先前的注入不留影子；
+        2. **不挑选、不摘要、不排序**：四区顺序照文件（用户看到的顺序 = 模型看到的顺序）。
+           挑选会引入一个"这轮该看哪几条"的判定——那既费模型，又让用户无法预测
+           助手到底知道什么；
+        3. **原文照进**（分区标题 + 条目行），前面加一句边界说明与那句占位词规矩
+           （见 :data:`_ARCHIVE_LEAD`）：少了它，模型会把档案当文献引用或当任务逐条念；
+        4. **硬顶 6000 字**（:data:`~app.services.archive.INJECTION_LIMIT_CHARS`）：
+           超限**在提示词里说出来**并只给能装下的前 N 条——静默截断会让用户以为
+           助手看到了整份档案。正常路径永远碰不到它（写入侧 4000 字就开始拒绝）；
+        5. **不看人设那份配置**：``memory.persona_files`` 只管 SOUL/AGENTS 的取舍，
+           档案的开关是 ``memory.enabled``（§7.2：把它挂上人设清单，用户从那一行里
+           删掉一个名字，档案就静默停止注入了）。
+        """
+        if not self.enabled:
             return ""
+        archive = self.archive(user_id).read()
+        if not archive.entries:
+            return ""
+        body, kept = _fitted_body(archive.entries, archive.unknown_sections)
+        if kept < len(archive.entries):
+            notice = _ARCHIVE_TRUNCATED.format(count=kept)
+            return f"{_ARCHIVE_LEAD}\n{notice}\n\n{body}"
+        return f"{_ARCHIVE_LEAD}\n\n{body}"
+
+    def remember(
+        self,
+        content: str,
+        *,
+        section: str = "",
+        replaces: str | None = None,
+        user_id: str | None = None,
+    ) -> WriteResult:
+        """新增或顶替一条（**显式那条路，零额外模型调用**，§4.1）。
+
+        - ``section`` 留空或不认识时**按内容机械归区**（词表与迁移共用一处，
+          见 ``archive_migration.classify_text``）：分区名不该成为一次写入失败的原因；
+        - ``replaces`` 是"更正一次完成"的入口（§4.3 第 1 条：模型的显式判定优先）：
+          它指哪条就顶替哪条，找不到时退回机械判据——指错了不该让这一轮直接失败；
+        - **不看 ``memory.enabled``**：档案关着时照样可写（写进去下一轮就注入），
+          这道闸只挡住"注入与 recall"（见 :meth:`_require_enabled`）；
+        - 返回 :class:`~app.services.archive.WriteResult`：``action`` 四种
+          （added/replaced/existing/rejected）与 ``receipt`` 就是 §4.4 那份文案，
+          **模型从工具听到的与人在界面上看到的是同一句**。
+        """
+        text = " ".join((content or "").split()).strip()
+        if not text:
+            raise InvalidRequestError("缺少参数：content")
+        target = (section or "").strip()
+        if target not in af.KNOWN_SECTIONS:
+            target = classify_text(text, default=SECTION_PREFERENCES)
+        return self.archive(user_id).add(text, target, replaces=replaces)
+
+    def forget(self, topic: str, *, user_id: str | None = None) -> WriteResult:
+        """忘掉一条：删除 + 变更流留痕 + 可还原（§9.2 第 6 条）。同样不看开关。"""
+        return self.archive(user_id).forget(topic)
+
+    def restore(self, old_text: str, *, user_id: str | None = None) -> WriteResult:
+        """把一条旧值写回档案（界面的「还原」用它，§6.2）。"""
+        return self.archive(user_id).restore(old_text)
+
+    def rename_group(
+        self,
+        section: str,
+        old: str,
+        new: str,
+        *,
+        user_id: str | None = None,
+    ) -> WriteResult:
+        """项目段的组改名（§3.1 第 2 条）。同样不看开关。"""
+        return self.archive(user_id).rename_group(section, old, new)
+
+    # ------------------------------------------------------------------ 迁移
+
+    def migration_available(self, user_id: str | None = None) -> bool:
+        """还有没有可折叠的旧数据（§8 的界面入口显隐判据）。
+
+        与 :func:`run_migration` 的跳过判据互为反面：源文件指纹与水位一致、且档案
+        已经存在时**没有可迁的**（入口不出现）；否则入口出现。旧文件不会被迁移删掉，
+        所以判据必须落在"指纹变没变"上，不能落在"旧文件还在不在"上。
+        """
+        workspace = self.workspace_for(user_id)
+        current = archive_migration.source_fingerprints(workspace)
+        if not current:
+            return False
+        stored = archive_migration.read_watermark(workspace).get("sources")
+        archive_exists = (workspace / ARCHIVE_FILE).exists()
+        return not (isinstance(stored, dict) and stored == current and archive_exists)
+
+    def migrate(self, user_id: str | None = None) -> MigrationReport:
+        """跑一遍机械折叠迁移（**零模型调用**，§8.3）。"""
+        return archive_migration.run_migration(self.workspace_for(user_id))
+
+    def draft_entries(self, user_id: str | None = None) -> int:
+        """``import-draft.md`` 里还有几条旧条目没进档案（§8.2 的界面提示）。"""
+        path = self.workspace_for(user_id) / af.IMPORT_DRAFT_FILENAME
+        return len(af.bullet_lines(af.read_text(path)))
+
+    # ------------------------------------------------------------------ 读取
 
     def soul_text(self, user_id: str | None = None) -> str:
         """``SOUL.md`` 的正文（人格，一句话说就是"你是谁"）。
 
-        与 ``MEMORY.md`` 性质不同：那个记事实与偏好，这个定身份与准则。
+        与档案性质不同：那个记"对方是谁、他在意什么"，这个定"我是谁、我怎么做"。
         两条约定照抄 QwenPaw：**由 Agent 自己进化**，以及**改动要告知用户**
         （"这是你的灵魂，他们该知道"）——后一条是产品约定，写在设计文档里。
         """
@@ -722,30 +969,25 @@ class MemoryService:
             return ""
 
     def seed_persona(self, user_id: str | None = None) -> list[str]:
-        """把缺的人设/记忆文件补上模板，返回**这次新建了哪几个**。
+        """把缺的人设文件补上模板，返回**这次新建了哪几个**。
 
         为什么要落成文件而不是只存在代码里：这几份东西的价值恰恰在于**用户能改**——
-        人格、对方是谁、这类活怎么干、什么值得长期留下，都是他比我清楚的事。
-        文件是唯一一种"他能看见、能编辑、还能用 git 管版本"的形态
-        （QwenPaw 也是这么做的）。
+        人格、对方是谁、这类活怎么干，都是他比我清楚的事。文件是唯一一种
+        "他能看见、能编辑、还能用 git 管版本"的形态（QwenPaw 也是这么做的）。
 
         **只补缺的，绝不覆盖已存在的**：那可能已经是用户写了几天的东西。
         唯一的例外是"还是我们当初写的那份、一个字没动过"的旧模板，
         见 :meth:`_upgrade_untouched_template`。
 
-        ``MEMORY.md`` 也在这四份里（v0.1.1）：它原先只在第一次 ``remember`` 时
-        才被写出来，于是新部署的「记忆」页上看不到它、也没法先去编辑它——
-        而它恰恰是这一层最该被用户看见的那份文件（容器里尤其明显：
-        新实例还没对话过，页面就该有东西可看）。写它用的是 ``_TEMPLATE`` 的
-        空条目版本，与 ``_write_entries`` 在"文件不存在"时的兜底**逐字一致**，
-        所以第一条记忆落盘时不会因为"文件长什么样"而走另一条分支。
+        **v0.56 起只三份**（``SOUL.md`` / ``PROFILE.md`` / ``AGENTS.md``）：
+        ``MEMORY.md`` 退场（§7.2），它不再被播种、也不再被注入或写入——
+        新部署的「记忆」页上看到的将是那份档案，而不是一份"已知事实"的旧文件。
         """
         created: list[str] = []
         for name, template in (
             (SOUL_FILE, _SOUL_TEMPLATE),
             (PROFILE_FILE, _PROFILE_TEMPLATE),
             (AGENTS_FILE, _AGENTS_TEMPLATE),
-            (CORE_MEMORY_FILE, _TEMPLATE.format(entries="")),
         ):
             path = self.workspace_for(user_id) / name
             if path.exists():
@@ -769,16 +1011,18 @@ class MemoryService:
         为什么需要这一步：v0.21 把三份模板换成了 QwenPaw 那套有内容的写法，
         而 ``seed_persona`` 的原则是"已存在的一律不动"——于是**已经在用的部署
         永远看不到新模板**，除非用户自己去删文件（而他并不知道该删）。
+        v0.56 的 ``PROFILE.md`` 又是一次换形状（散文 → 四区档案骨架），同一个问题
+        再来一遍：``_LEGACY_TEMPLATES`` 里一份文件可以对好几个历史模板。
 
         判据是**逐字节相同**：那意味着这份文件还是我们当初写下去的那一份，
         用户一个字都没动（连换行都没动过）。差一个字节就不碰——那是他的东西，
         哪怕他只是把标题改成了自己的话。宁可漏升级，不可误覆盖。
         """
         legacy = _LEGACY_TEMPLATES.get(name)
-        if legacy is None or legacy == template:
+        if not legacy or template in legacy:
             return False
         try:
-            if path.read_text(encoding="utf-8") != legacy:
+            if path.read_text(encoding="utf-8") not in legacy:
                 return False
             path.write_bytes(template.encode("utf-8"))
             memory_files.invalidate(path)
@@ -792,24 +1036,24 @@ class MemoryService:
         """这一轮**注入哪几份人设文件、按什么顺序**（``memory.persona_files``）。
 
         照 QwenPaw 的 ``system_prompt_files``：那几份文件每轮整份进 system prompt，
-        所以"哪几份、什么顺序"是用户的设定。三条口径：
+        所以"哪几份、什么顺序"是用户的设定。四条口径：
 
         - 取值是**逗号分隔的文件名**，按写的顺序注入；
-        - **只认那四份核心文件**（``memory_files.CORE_FILES``）：别的一律丢掉并记日志
-          ——让任意路径进 system prompt 等于绕过"哪些是设定、哪些是被召回的现场"
-          这条分界（想让别的内容每轮都在，写进 ``AGENTS.md`` 就是那条正当的路）；
+        - **只认那几份核心文件**（``memory_files.CORE_FILES``）：别的一律丢掉并记日志
+          ——让任意路径进 system prompt 等于绕过"哪些是设定"这条分界
+          （想让别的内容每轮都在，写进 ``AGENTS.md`` 就是那条正当的路）；
+        - **只认人设那两份**（``SOUL.md`` / ``AGENTS.md``）：``PROFILE.md`` 是档案、
+          走独立的贡献者与独立的开关（§7.2），``MEMORY.md`` 已退场（不再注入）。
+          用户清单里写了这两个名字时照样丢掉并记一条日志——**静默忽略**会让
+          那一行看起来生效了；
         - **空值/全不认识 → 回到默认顺序**（不写就是默认，不是"一份都不注入"）。
           这与"未配置时取 ``DEFAULTS``"那条口径一致，也让测试替身的未配置状态
           （假 runtime 取不到值）落到同一个结果上。
-
-        **一处与 QwenPaw 的默认不同，如实记着**：它默认**不注入** ``MEMORY.md``
-        （那份是它的长期记忆索引页，很大，只靠按需召回）；我们默认注入，因为我们的
-        ``MEMORY.md`` 是 ``remember`` 逐条维护的小文件、而且"最近的约定"靠它才稳定。
-        现在这个差异**由用户自己决定**——把 ``MEMORY.md`` 从这一行删掉就是 QwenPaw 的形态。
         """
         raw = (self._runtime.get("memory.persona_files") or "").strip()
         if not raw:
             return tuple(name for name, _label in PERSONA_FILES)
+        injectable = {name for name, _label in PERSONA_FILES}
         wanted: list[str] = []
         for item in raw.replace("，", ",").split(","):
             name = item.strip()
@@ -817,6 +1061,15 @@ class MemoryService:
                 continue
             if name not in memory_files.CORE_FILES:
                 logger.warning("人设文件清单里有不认识的文件名，已忽略：%s", name)
+                continue
+            if name not in injectable:
+                logger.warning(
+                    "人设文件清单里只有 %s 是可注入的人设（%s 不是：档案走 memory.enabled，"
+                    "MEMORY.md 已退场），已忽略：%s",
+                    "/".join(sorted(injectable)),
+                    name,
+                    name,
+                )
                 continue
             if name not in wanted:
                 wanted.append(name)
@@ -826,7 +1079,8 @@ class MemoryService:
         """``[(文件名, 正文)]``，按 :meth:`persona_order` 的顺序，空的跳过。
 
         **不在这里拼字符串**：拼装交给 `services/prompt.py` 的贡献者——
-        那里才知道"这一轮是工具循环还是检索链路""要不要带摘要"。
+        那里才知道"这一轮是工具循环还是检索链路""要不要带摘要"。档案也不在这里：
+        它是**另一个贡献者**（见 :meth:`archive_block`）。
         """
         found: list[tuple[str, str]] = []
         for name in self.persona_order():
@@ -838,72 +1092,50 @@ class MemoryService:
                 found.append((name, text))
         return found
 
-    def prompt_block(self, user_id: str | None = None) -> str:
-        """拼成注入 system prompt 的**一个块**；两者都空时返回空串。
-
-        为什么要一起给、且各带一句出处说明：
-
-        - 不标注来源的话，模型会把记忆当成**用户这一轮说的话**——那是两回事，
-          记忆可能已经过时，而用户当下说的才是准的；
-        - 人格与记忆分开写，模型才知道哪句是"该怎么说话"、哪句是"已知的事实"。
-        """
-        core = self.core_text(user_id)
-        soul = self.soul_text(user_id)
-        if not core and not soul:
-            return ""
-        parts: list[str] = []
-        if soul:
-            parts.append(f"【你的人格（SOUL.md，由你自己维护）】\n{soul}")
-        if core:
-            parts.append(
-                "【长期记忆（MEMORY.md，来自过去的对话，可能已经过时；"
-                f"与用户当前所说冲突时以用户当下为准）】\n{core}"
-            )
-        return "\n\n".join(parts)
-
     def guidance(self) -> str:
-        """要注入 system prompt 的「长期记忆怎么用」那一段；**未启用时是空串**。
+        """要注入 system prompt 的「用户档案：怎么用」那一段；**未启用时是空串**。
 
         空串而不是"关着时也说明一下"：关着时 ``recall`` 会明确报错，把"什么时候
-        该去查记忆"讲给模型听，只会换来每轮一次无效调用加一句错误——与知识库
+        该去查"讲给模型听，只会换来每轮一次无效调用加一句错误——与知识库
         那一侧的教训同源（见 ``agent_tools._KB_TOOLS``：给了又拒，白花两个来回）。
 
-        而 ``MEMORY.md`` 的写入指导不受这道闸影响：它走 ``remember``，不看开关，
-        也已经写在 ``AGENTS.md`` 模板的工具那一节里了。
+        字数从 ``archive`` 那几个常量取：文案里写死的数字迟早与预算漂开，
+        而"写不进去"时用户看到的正是这句话。
         """
         if not self.enabled:
             return ""
         return _GUIDANCE.format(
-            daily=memory_files.DAILY_DIR, digest=memory_files.DIGEST_DIR
+            single=SINGLE_ENTRY_CHARS, total=TOTAL_ENTRIES, chars=TOTAL_CHARS
         )
 
     def profile_is_untouched(self, user_id: str | None = None) -> bool:
-        """对方的资料是不是**一个字都没动过**（还是我们当初写下去的模板）。
+        """档案是不是**一个字都没动过**（还是我们当初写下去的骨架）。
 
         判据是**逐字节相同**，与 ``_upgrade_untouched_template`` 同一套口径：
         差一个字节就不算"没填过"。它是"要不要做首次引导"的信号，所以宁可漏判
-        （用户已经动过一点就不再引导）也不要误判——对着一个写了半天资料的人
+        （用户已经动过一点就不再引导）也不要误判——对着一个写了半天档案的人
         问"你是谁"是很糟的体验。
 
-        旧版模板也认（那些实例还没被 ``seed_persona`` 升级过），否则它们的
-        引导会一直不出现。
+        旧版模板也认（v0.20 的空骨架、v0.21–v0.55 的散文体；那些实例还没被
+        ``seed_persona`` 升级过），否则它们的引导会一直不出现。
         """
-        known = {_PROFILE_TEMPLATE, _LEGACY_TEMPLATES.get(PROFILE_FILE, "")}
-        known.discard("")
+        known = {_PROFILE_TEMPLATE, *_LEGACY_TEMPLATES.get(PROFILE_FILE, ())}
         try:
-            text = (self.workspace_for(user_id) / PROFILE_FILE).read_text(encoding="utf-8")
+            text = (self.workspace_for(user_id) / ARCHIVE_FILE).read_text(encoding="utf-8")
         except OSError:
             return False
         return text in known
 
     def bootstrap_block(self, user_id: str | None = None) -> str:
-        """首次引导那一段；对方资料已经被填过时是空串。
+        """首次引导那一段；档案已经被写过时是空串。
 
-        **不看 ``memory.enabled``**：人设文件的注入与编辑本来就不受那道闸管
-        （见模块头与 ``remember`` 的说明）——"你还不认识对方"与"过去的对话会不会
-        被召回"是两回事，把它挂在记忆开关上会让关着记忆的实例永远不做引导。
+        **不看 ``memory.enabled``**：档案的编辑本来就不受那道闸管
+        （见模块头与 ``remember`` 的说明）——"你还不认识对方"与"档案进不进
+        这一轮的上下文"是两回事，把它挂在开关上会让关着记忆的实例永远不做引导。
         """
-        return _BOOTSTRAP if self.profile_is_untouched(user_id) else ""
+        return _BOOTSTRAP.format(single=SINGLE_ENTRY_CHARS) if self.profile_is_untouched(
+            user_id
+        ) else ""
 
     def status(self, user_id: str | None = None) -> MemoryStatus:
         """当前状态：**数一遍工作区，不连任何东西**。
@@ -912,7 +1144,7 @@ class MemoryService:
         "召回池是哪几个目录""什么算一条"这些判断上，而它们只在这一层知道。
         界面只该显示数字。
 
-        成本：一次目录遍历 + 读召回池那几个文件。这是"个人长期记忆"的量级
+        成本：一次目录遍历 + 读那几个文件。这是"个人长期记忆"的量级
         （几份到几百份、几百 KB），所以不另做缓存——不缓存就没有"缓存过期"
         这个新问题。
         """
@@ -926,7 +1158,9 @@ class MemoryService:
             retrievable_count=stats.retrievable_count,
             entry_count=stats.entry_count,
             last_changed_at=stats.last_changed_at,
-            detail="" if self.enabled else "未启用：过去的对话不会被召回，也不会自动沉淀",
+            detail=""
+            if self.enabled
+            else "未启用：用户档案不进提示词，recall 也停着（档案本身照旧可以编辑）",
         )
 
     # ------------------------------------------------------------------ 召回
@@ -934,39 +1168,38 @@ class MemoryService:
     def recall(
         self, query: str, *, limit: int | None = None, user_id: str | None = None
     ) -> tuple[list[MemoryHit], list[MemoryLink]]:
-        """在记忆里找回相关片段。**与文档检索是两条路**（见模块头）。
+        """在**变更流**里查证（§5.3）：这条以前是什么、什么时候改的。
 
-        打分与命中判据都在 ``memory_files.search``（读那一处的说明）；
-        **向量那一路开着时**再走 ``memory_index.search_hybrid``（词面 + 语义，
-        RRF 融合）——两条路各自完整，关掉向量就是纯词面，不是"降级"。
-        顺链给出的邻接边是**免费附带的**：wikilink 就在正文里，
-        命中文件一出链就顺出来了，不需要第二次检索。
+        三条口径：
+
+        - **档案不进召回池**：它每轮已经全量注入，再召回一次就是把同一段内容
+          进两次上下文；
+        - **排序是纯字面的**（:func:`app.services.archive.search_changes`）：
+          归一化子串命中数 + 二元组覆盖率，不依赖分词、不建索引、不走向量；
+        - **"没搜到"只有一个含义**：变更流里确实没有相关的话。
+
+        返回 ``(命中, 链接)`` 与旧形状一致（调用的 REST 与工具都按它读），
+        但**链接永远是空的**：wikilink 图谱属于 ``daily/``/``digest/`` 那一层，
+        本期的池子里没有它（期五随那些目录一起退场）。
         """
         self._require_enabled()
         text = query.strip()
         if not text:
             raise InvalidRequestError("缺少参数：query")
         count = max(1, min(int(limit or DEFAULT_RECALL), MAX_RECALL))
-
-        space = self.workspace_for(user_id)
-        embed = self._embed if self._vector_on() else None
-        if embed is None:
-            hits = memory_files.search(space, text, limit=count)
-        else:
-            hits = memory_index.search_hybrid(
-                space,
-                text,
-                source=embed,
-                limit=count,
-                min_score=self._runtime.get_float("memory.vector_min_score"),
+        hits = [
+            MemoryHit(
+                text=hit.text,
+                path=hit.path,
+                start_line=hit.start_line,
+                end_line=hit.end_line,
+                score=hit.score,
+                coverage=hit.coverage,
+                source=hit.source,
             )
-        links = [
-            MemoryLink(path=path, direction=direction, name=name)
-            for path, direction, name in memory_files.links_of(
-                self.files(user_id), [item.path for item in hits]
-            )
+            for hit in self.archive(user_id).changes_hits(text, limit=count)
         ]
-        return hits, links
+        return hits, []
 
     def _vector_on(self) -> bool:
         """向量那一路开着吗：**开关 + 有没有嵌入能力**，两样都要。
@@ -1499,49 +1732,9 @@ class MemoryService:
         return None
 
     # ------------------------------------------------------------------ 记住
-
-    def remember(
-        self, content: str, *, tags: list[str] | None = None, user_id: str | None = None
-    ) -> dict[str, Any]:
-        """把一条长期事实写进 ``MEMORY.md``。
-
-        **合并去重**是这个文件的约定（QwenPaw/ReMe 那份说明里写着"更新前先读一遍
-        现有内容，保留别人写进来的有效信息，并合并去重"）：不这么做的话，
-        同一件事会被记很多遍，而记忆越长越不像记忆、越像日志。
-
-        返回 ``added`` 让调用方知道是真写进去了还是本来就有——模型据此不必重复记。
-
-        **不看 ``memory.enabled`` 那道闸**（v0.22 起，与那四份人设文件同一理由）：
-        它写的是 ``MEMORY.md``，而那份文件由我们直接读写、并且**无论开关如何都会注入
-        提示词**——也就是说写进去立即就有效。闸管的是另一半：过去的对话会不会被
-        召回（``recall``）、会不会自动沉淀（``capture``）。
-        """
-        text = " ".join(content.split()).strip()
-        if not text:
-            raise InvalidRequestError("缺少参数：content")
-        if len(text) > MAX_ENTRY_CHARS:
-            # 一条记忆该是一句可复用的事实，不是一篇文档。超长的应该存成笔记
-            # （notes + 知识库那条路），否则 MEMORY.md 会被一篇长文撑爆，
-            # 而它每轮都要注入上下文。
-            raise InvalidRequestError(
-                f"一条记忆最多 {MAX_ENTRY_CHARS} 字（收到 {len(text)} 字）。"
-                "更长的内容请用笔记：存成笔记再决定要不要加入知识库"
-            )
-
-        tag_text = "".join(f" #{tag.strip()}" for tag in (tags or []) if tag.strip())
-        line = f"- {text}{tag_text}"
-
-        entries = self._read_entries(user_id)
-        if any(_normalize(item) == _normalize(line) for item in entries):
-            return {
-                "saved": False,
-                "reason": "这条记忆已经存在，未重复写入",
-                "entries": len(entries),
-            }
-
-        entries.append(line)
-        self._write_entries(entries, user_id)
-        return {"saved": True, "entries": len(entries)}
+    #
+    # 显式写入（`remember` / `forget`）在「档案」那一节（见上面 `remember` / `forget`），
+    # 它写的是 `PROFILE.md` 四个分区，走 `archive.ArchiveService` 的同一套预算与变更流。
 
     def enqueue_capture(
         self,
@@ -1551,46 +1744,37 @@ class MemoryService:
         turn_count: int,
         user_id: str | None = None,
     ) -> bool:
-        """按节流规则把一次沉淀排进队列；返回**是否真的入了队**。
+        """**已废**：把一次"对话沉淀"排进队列（§4.1）。这一支恒返回 False。
 
-        为什么必须有节流：一次捕获就是**一次模型调用**（见 ``capture``），
-        每轮都沉淀等于每轮多花一次调用，而省 token 是这个项目反复强调的事。
-        节流值默认 5（``DEFAULT_CAPTURE_EVERY``，与 ReMe/QwenPaw 的默认一致）。
+        旧口径是"每 ``memory.capture_every`` 个用户回合沉淀一次"：它花的是**固定
+        节奏的钱**（一次捕获就是一次模型调用），换来的是一堆"值得记但不该进档案"的
+        东西。设计 §4.1 把它整个退场，改成"只在**信号出现的那一轮**判定"——
+        而那条路是期四的活。
 
-        为什么放在服务层而不是调用方：它是"记忆怎么工作"的一部分。
-        调用方只该提供"这是第几轮"，不该知道"每几轮一次"这个规则——
-        规则散到调用方，界面入口和自动化入口就会各有一个阈值。
-
-        节流不通过时**返回 False 而不是报错**：这不是失败，是设计如此。
-
-        它只负责"把**给定的这些**消息排进队列"，不负责挑消息——一轮问答收尾时
-        该走的是 :meth:`capture_turn`（它知道该送哪一段）。
+        于是本期这一支**一次模型都不调**：这是"默认配置下每轮零额外模型调用"
+        （§9.2 第 1、9 条）在服务层的落点。方法本身留到与 ``daily/`` 一起清理（期五）。
         """
-        stores = self._stores
-        if stores is None or not self._capture_due(turn_count):
-            return False
-        self._enqueue(stores, messages, session_id=session_id, user_id=user_id)
-        return True
+        del messages, session_id, turn_count, user_id
+        return False
 
     def _capture_due(self, turn_count: int) -> bool:
-        """这一轮该不该沉淀（开关 + 节流）。**规则只在这一处判。**
+        """这一轮该不该沉淀——**期二起一律不该**（§4.1：定时轮询退场）。
 
-        存储那一条不在里面：它是"能不能写"、不是"该不该做"，由调用方各自
-        先取 ``self._stores`` 再判（那样才不用 ``assert`` 去收窄类型，
-        而 ``S101`` 在本仓只对测试放行）。
+        期四会把它换成"``memory.capture`` 开着 + 用户消息里有强信号词"的判定，
+        算法与词表都在那一步；在那之前，**这一支恒为 False** 是有意的：
+        拦截点留在服务层（而不是把调用方删干净），是因为"要不要花钱"这件事
+        只该有一处答案——期四把那处答案改掉，链路自然就通了。
         """
-        if not self.enabled:
-            return False
-        every = self._runtime.get_int("memory.capture_every") or DEFAULT_CAPTURE_EVERY
-        every = max(1, every)
-        return turn_count > 0 and turn_count % every == 0
+        del turn_count
+        return False
 
     def capture_due(self, turn_count: int) -> bool:
-        """这一轮**会不会真的入队**（开关 + 存储 + 节流）。
+        """这一轮**会不会真的入队**（此刻恒 False，见 :meth:`_capture_due`）。
 
         与 ``_capture_due`` 分开，是为了让"要不要给用户看那一步"能问**同一处判据**
         （见 ``api/v1/chat._memory_handoff_step``）：两处各算一遍的话，迟早会漂成
-        "界面上说会沉淀、其实不会"——而那种不一致不会报错，只会让人不再信它。
+        "界面上说会沉淀、其实不会"。现在它恒 False，于是那一步也不会出现——
+        **这一次两边是同一个答案**。
         """
         return self._stores is not None and self._capture_due(turn_count)
 
@@ -1625,41 +1809,22 @@ class MemoryService:
         user_id: str | None = None,
         force: bool = False,
     ) -> bool:
-        """一轮问答收尾时该做的事：凑够节流就把**上次以来累积的**对话排进队列。
+        """一轮问答收尾时该做的事——**期二起什么也不做**（一律返回 False）。
 
-        **为什么不再只送当轮那两条**（这是本轮修的漏）：节流是"每 N 个用户回合
-        沉淀一次"，而原先每次只把**当轮**交出去——两者相乘的结果是**每 N 轮里
-        只有 1 轮被看过一眼，其余 N-1 轮永远不进入记忆**。用户那边看到的现象
-        就是"我明明说过，它就是不记得"。
-        改法照 QwenPaw 的 Auto-Memory：它处理的也是"上次以来累积的对话"，
-        而不是当前这一轮。
+        它原先承担"每 N 个用户回合把累积的对话排进队列"（含 ``force``：上下文压缩
+        那一刻绕过节的流）。设计 §4.1 把这条定时路径整个退场了：
 
-        水位线**在入队成功之后**才推进。payload 自带那一整段对话，队列失败会按
-        重试语义把同一份 payload 再跑一遍（``capture`` 抛的是
-        ``InvalidRequestError``，它不在 ``NON_RETRYABLE`` 里），所以推进了也不会丢。
+        > 旧设计的"每 5 个用户回合判一次"退场（它花的是固定节奏的钱，换来的是一堆
+        > "值得记但不该进档案"的东西）。
 
-        ``force`` 绕过节流，用于**上下文压缩**那一刻（照 QwenPaw 把 ``compact``
-        当第三个触发源）：被折进摘要的消息从此不再进模型视野，而记忆要是还没记过
-        它们，用户在下一轮问"刚才说的那个"就会两头都查不到——原文已经成了摘要、
-        ``recall`` 里也还没有。这一步就是为那个窗口做的。
+        现在的自动写入只有一条路：**信号出现的那一轮**（期四，默认关）。
+        在那之前，自动捕获在链路上不存在——于是"默认配置下每轮零额外模型调用"
+        （§9.2 第 1、9 条）不是靠默认配置，而是**结构上**成立：这条路径没有调用点，
+        方法本身也恒返回 False。方法与 ``capture``（队列消费端）一起留到期五，
+        随 ``daily/`` 那一层清理。
         """
-        stores = self._stores
-        if stores is None or not self.enabled:
-            return False
-        if not force and not self.capture_due(turn_count):
-            return False
-        backlog, upto = self._backlog(stores, conversation_id)
-        if not backlog:
-            return False
-        self._enqueue(stores, backlog, session_id=conversation_id, user_id=user_id)
-        if upto:
-            try:
-                stores.meta.set_setting(f"{_CAPTURED_KEY}{conversation_id}", upto)
-            except Exception:
-                # 水位线记不上只是下一轮多送一次（捕获自身的去重会兜住），
-                # 不该反过来让"这一次已经排进队列"变成失败。
-                logger.warning("记忆水位线写不进去：%s", conversation_id, exc_info=True)
-        return True
+        del conversation_id, turn_count, user_id, force
+        return False
 
     def _backlog(
         self, stores: StoreBundle, conversation_id: str
@@ -1736,67 +1901,12 @@ class MemoryService:
         memory_files.delete_file(self.workspace_for(user_id), path)
 
     def graph(self, user_id: str | None = None) -> MemoryGraph:
-        """wikilink 图谱（本地算，见 ``memory_files.graph_of`` 的说明）。"""
-        return memory_files.graph_of(self.files(user_id))
+        """wikilink 图谱（本地算，见 ``memory_files.graph_of`` 的说明）。
 
-    # ------------------------------------------------------ 核心记忆的条目
-
-    def _read_entries(self, user_id: str | None = None) -> list[str]:
-        """读回「核心长期记忆」那一节里的条目（保持顺序与原文）。"""
-        try:
-            body = self.core_file_for(user_id).read_text(encoding="utf-8")
-        except OSError:
-            return []
-        lines: list[str] = []
-        inside = False
-        for raw in body.splitlines():
-            if raw.startswith("## "):
-                inside = raw.strip() == "## 核心长期记忆"
-                continue
-            if inside and raw.strip().startswith("- "):
-                lines.append(raw.strip())
-        return lines
-
-    def _write_entries(self, entries: list[str], user_id: str | None = None) -> None:
-        """整份重写。
-
-        **只重建「核心长期记忆」那一节**：其余小节（工具设置、重要决策与经验）
-        原样保留——它们可能有人手写的内容，重写整份文件会把它们抹掉。
-
-        **那一节里的散文也保留**（模板上半段那段"记什么、别记什么"的说明就是散文）：
-        只替换 `- ` 开头的条目行。不这么做的话，第一条记忆落盘时那几句说明
-        会被静默删掉——而它教的正是"不要记密码/令牌"这类**事后没人会重新发现**的规矩。
+        **REST 上的 ``GET /memory/graph`` 期二已删**（§6.3：图谱退场）。方法本身留到
+        期五——它算的是 ``daily/``/``digest/`` 那一层的结构，那一层还没清理。
         """
-        try:
-            body = self.core_file_for(user_id).read_text(encoding="utf-8")
-        except OSError:
-            body = _TEMPLATE.format(entries="")
-
-        block = "\n".join(entries)
-        if "## 核心长期记忆" in body:
-            head, _, rest = body.partition("## 核心长期记忆")
-            # 找到该节之后的下一个二级标题，中间那一块整体重建
-            marker = "\n## "
-            index = rest.find(marker)
-            tail_after = rest[index:] if index >= 0 else ""
-            region = rest[:index] if index >= 0 else rest
-            prose = [line for line in region.splitlines() if not line.strip().startswith("- ")]
-            keep = "\n".join(prose).strip()
-            middle = f"{keep}\n\n{block}\n" if keep else f"{block}\n"
-            body = f"{head}## 核心长期记忆\n\n{middle}{tail_after}"
-            if not rest[1:].startswith("\n"):
-                body = f"{head}## 核心长期记忆\n\n{middle}"
-        else:
-            body = body.rstrip() + f"\n\n## 核心长期记忆\n\n{block}\n"
-
-        space = self.workspace_for(user_id)
-        space.mkdir(parents=True, exist_ok=True)
-        # 按字节写：`write_text` 在 Windows 上会把换行改成 CRLF，
-        # 每次 remember 都把整份文件的换行翻一遍（与 seed_persona 同一处坑）
-        core = self.core_file_for(user_id)
-        core.write_bytes(body.encode("utf-8"))
-        # 显式失效：`remember` 写的是核心记忆，而它可能刚被读过（见 `invalidate`）
-        memory_files.invalidate(core)
+        return memory_files.graph_of(self.files(user_id))
 
 
 # --------------------------------------------------------------- 捕获的纯函数
@@ -2278,44 +2388,3 @@ def _append_see_also(existing: str, names: list[str]) -> str:
     # ``sep`` 那一节连着它自己的空行与正文一起原样接回去：**来源那节的位置与格式
     # 不该因为补了一条链接而变**（它是机器维护的，用户也可能手改过）
     return f"{rebuilt}\n\n## Sources{tail}" if sep else f"{rebuilt}\n"
-
-
-#: 新建 MEMORY.md 时的模板。frontmatter 里的 ``summary`` / ``read_when``
-#: 是 ReMe 那一族的约定（给检索与注入用），照抄以免以后要迁移。
-#:
-#: 正文照抄 QwenPaw 的 MEMORY.md（`md_files/zh/`），**只改了一处**：它那四条例子
-#: 是列表项（``- 用户的稳定偏好与工作方式`` …），而我们这个文件里的列表项
-#: **就是记忆条目本身**（``_read_entries`` 按 `- ` 认条目）——照抄的话，
-#: 那四条例子会在下一次 `remember` 时被当成四条已存在的记忆。
-#: 于是改成一句散文，意思一字不差。
-#:
-#: 它教的几件事都留着，其中两件是**安全与卫生**上的：
-#: "不要把每日流水复制进来"（记忆越长越像日志，而它每轮都要进上下文）、
-#: "除非明确要求不要记密码/令牌"（这一条我们只在长度上限上兜过，没有明说）。
-_TEMPLATE = """---
-summary: "Agent 的核心长期记忆，由用户和 Agent 共同维护"
-read_when:
-  - 需要了解长期有效的用户偏好、重要决策、工具设置或经验教训
----
-
-## 核心长期记忆
-
-这是 Agent 的核心长期记忆文件，用户和 Agent 都可以读它、改它、往里加。
-
-记录经过筛选、长期有效、以后会反复用到的信息：对方的稳定偏好与工作方式，
-重要决定与长期约束，工具设置（设备名、地址、别名这类），以及值得长期留下的经验教训。
-
-不要把每日流水或整段会话记录复制到这里——那是笔记的事。除非对方明确要求，
-**不要记录密码、令牌或其他敏感信息**。更新前先读一遍现有内容，
-保留用户或其他会话写进来的有效信息，并合并去重。
-
-{entries}
-
-## 工具设置
-
-<!-- 在这里记录长期有效、与当前工作区相关的工具设置。 -->
-
-## 重要决策与经验
-
-<!-- 在这里记录需要跨会话保留的重要决策、约束和经验教训。 -->
-"""

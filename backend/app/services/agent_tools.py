@@ -58,7 +58,6 @@ from app.services.command_policy import (
 )
 from app.services.llm import ToolSpec
 from app.services.mcp_client import normalized_server_name, split_qualified
-from app.services.memory import WRITABLE_PERSONA_FILES
 from app.services.schedules import timezone_name
 from app.services.skills import recombine_surrogates, text_problem
 from app.services.subagent import parse_tool_content as parse_subagent_content
@@ -444,89 +443,46 @@ _CONVERSATION_FILE_TOOLS = frozenset({"list_conversation_files", "read_conversat
 
 #: 读记忆正文时默认读几行、最多读几行。
 #:
-#: 上限不是技术限制而是**上下文预算**：``recall`` 的片段有上限（``MAX_HIT_CHARS``），
-#: 这个工具是"把片段撑开到够用"，不是"把整份文件倒进上下文"——一次几百行足够
-#: 看清上下文，而它比片段贵得多。
+#: **v0.56 起这两个数不再被 `read_memory` 用**：它读的是整份档案（那份本来就
+#: 每轮注入、只有几十条），不必再按行窗口展开。它们跟着 `daily/` 那一层的
+#: 检索一起留到期五。
 DEFAULT_MEMORY_READ_LINES = 60
 MAX_MEMORY_READ_LINES = 400
 
 #: 记忆**关着时不该出现在工具表里**的工具。
 #:
-#: - ``recall``：关着时它会明确报"未启用长期记忆"，而"给了又拒"正是知识库那一侧
-#:   已经修过的坑（见 ``_KB_TOOLS``——模型会先试一次、再拿一句错误，白花一个来回）；
-#: - ``read_memory``：它是**给 recall 的片段做展开**用的，recall 不在时它没有入口。
+#: - ``recall``：关着时它会明确报"未启用长期记忆"（关的正是注入与 recall 这一对），
+#:   而"给了又拒"正是知识库那一侧已经修过的坑（见 ``_KB_TOOLS``——模型会先试一次、
+#:   再拿一句错误，白花一个来回）。
 #:
-#: ``remember`` 与 ``write_memory`` **必须留着**：它们写的是 ``MEMORY.md`` 与人设
-#: 文件，那几份不看开关也会注入，所以关着时照样有效（见 ``MemoryService.remember``）。
-_MEMORY_SWITCH_TOOLS = frozenset({"recall", "read_memory"})
+#: **其余三件都不看这个开关**：``remember`` / ``forget`` 写的是档案（"关了也能改自己
+#: 的东西"，§7.3），``read_memory`` 读的也是它。旧口径把 ``read_memory`` 藏起来，
+#: 是因为它**只在给 recall 的片段做展开**时有入口；现在它读的是整份档案，
+#: 与 recall 没有依赖关系。
+_MEMORY_SWITCH_TOOLS = frozenset({"recall"})
 
-#: 记忆这一侧的内部工具（对外 MCP 面没有它们）。
+#: 记忆这一侧的内部工具（对外 MCP 面只有 ``recall`` / ``remember`` / ``forget``）。
 #:
-#: **为什么需要 ``read_memory``**：``recall`` 返回的是**片段 + 路径 + 行号**，
-#: 而片段有上限。tools.py 里那句注释写着"行号是渐进式展开的入口"——可 agent 侧的
-#: ``read_file`` 只认 workspace / sandbox 两个根（见 ``agent_files.Roots.pick``），
-#: **够不到 ``data/memory/``**。于是那个入口一直是个空头承诺：模型拿到 600 字，
-#: 再多拿不到，而它并不会说"我只看到一部分"。
+#: **为什么需要 ``read_memory``**：档案虽然每轮已经注入，但模型写进去之后要能
+#: **自查它落在哪、写成什么样**（编辑是"顶替一条"，而顶替目标必须逐字准确）。
+#: 它读的是**磁盘上那份原样的 Markdown**（含 frontmatter 与用户手写的内容），
+#: 比注入块多一层"文件是什么样"的事实。
 #:
-#: 补在记忆这一侧、而不是把 ``read_file`` 的根放宽：两个池子的边界是这一层的
-#: 第一条纪律，读记忆就该走记忆的工具。
+#: **``write_memory`` 已退场**（§7.4）：整份覆盖与条目级预算/变更流不相容，
+#: 它等于给预算与变更流开一个后门。工具表里不再有它，但分发上留了一个
+#: **一律拒绝**的兼容壳（见 ``_write_memory``）——老客户端与老提示词里可能还写着
+#: 这个名字，让它拿到一句"改用 remember"比抛一个未知工具更可解释。
 _MEMORY_TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "read_memory",
         "description": (
-            "读一份**记忆文件**的正文——用来把 `recall` 给的片段展开。"
-            "`recall` 每次只给片段（有上限）并附上 path 与行号；片段不够时用这个工具"
-            "按 path 读上下文，不要凭片段猜、也不要以为片段就是全文。"
+            "读**用户档案**（`PROFILE.md`）的原文，用来自查它现在写了什么、"
+            "某一条的确切文字是什么（更正时 `replaces` 要逐字对得上）。"
+            "它读的是磁盘上那份 Markdown 全文，含四个分区与 frontmatter。"
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "recall 结果里那个 path，例如 daily/2026-09-27/某会话.md",
-                },
-                "start_line": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "从第几行开始读，默认 1",
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_MEMORY_READ_LINES,
-                    "description": f"最多读几行，默认 {DEFAULT_MEMORY_READ_LINES}",
-                },
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "write_memory",
-        "description": (
-            "整份改写 `PROFILE.md`——**关于对方是谁**的那些事实（称呼、在做什么、"
-            "希望你说话的风格）。它是整份替换、不是追加，所以"
-            "**先 read_memory 读一遍，把里面已有的内容一起带上**："
-            "丢掉对方自己写的那些是最糟的结果。"
-            "核心长期事实用 `remember`（它管去重），对话现场由系统自动沉淀，"
-            "这两件都不是这个工具的事。"
-            "**`SOUL.md` 与 `AGENTS.md` 不在这个工具的范围内**：那是对方自己的东西"
-            "（你的人格与规程），想改就**说给他听**，由他决定。"
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "enum": list(WRITABLE_PERSONA_FILES),
-                    "description": "要改写哪一份",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "新的整份正文（原样写进文件，frontmatter 若有要一起带）",
-                },
-            },
-            "required": ["name", "content"],
+            "properties": {},
             "additionalProperties": False,
         },
     },
@@ -656,9 +612,10 @@ def _all_specs(
         for item in _LOCAL_TOOLS
         if scope or item["name"] not in _LOCAL_KB_TOOLS
     )
-    # 记忆这一侧的内部工具：读正文用来展开 `recall` 的片段、写人设用来做首次引导。
-    # **`read_memory` 跟着开关走**（recall 不在，它就没有入口），`write_memory` 恒在
-    # ——与 `remember` 同一口径，见 `_MEMORY_SWITCH_TOOLS`。
+    # 记忆这一侧的内部工具：`read_memory`（读整份档案，供模型自查它写进去的是什么）。
+    # 它**不跟着开关走**（开关管的是注入与 recall），所以这里那道过滤对它其实不起作用
+    # ——留着这条判据是因为 `_MEMORY_SWITCH_TOOLS` 是**一处**定义（谁哪天把某件工具
+    # 归进"关着就不摆"，这里自动跟上）。
     specs.extend(
         ToolSpec(
             name=item["name"],
@@ -1781,81 +1738,51 @@ def _ingest_file(
 
 
 def _read_memory(services: Any, caller: Caller, args: dict[str, Any]) -> ToolOutcome:
-    """读一份记忆文件的正文（按行窗口）——把 ``recall`` 给的片段撑开。
+    """读**整份用户档案**（磁盘上那份 Markdown 的原文）。
 
-    **它存在的理由**：``recall`` 的片段有上限（``MAX_HIT_CHARS``），而 agent 侧的
-    ``read_file`` 够不到记忆目录（见 ``_MEMORY_TOOLS`` 的说明）。没有它，
-    "行号是渐进式展开的入口"就只是一句注释。
-
-    路径走 ``MemoryService.file_text``，也就是**记忆那一侧的同一套安全解析**
-    （越界一律拒）：path 是模型从 ``recall`` 结果里抄来的，但"它不会乱给"
-    不该被当成前提。
+    **它存在的理由**（§7.4）：档案虽然每轮已经注入，但模型写进去之后要能**自查**
+    它落在哪、写成什么样——而"更正一条"（``replaces``）要求**逐字**给出目标，
+    注入块里那几条是渲染过的（标题与条目行的形状可能与文件里不同）。
+    这里给的是文件原文（含 frontmatter 与用户手写的部分），比注入块多一层
+    "文件是什么样"的事实。
 
     结果渲染成文本而不是 JSON——这段文字是给模型读的，JSON 里换行会变成一屏
     ``\\n``（与 ``_run_file_tool`` 同一个理由）。
     """
-    path = str(args.get("path") or "").strip()
-    if not path:
-        return ToolOutcome(content="缺少参数：path")
-    start = max(1, _int_or_none(args.get("start_line")) or 1)
-    limit = min(
-        MAX_MEMORY_READ_LINES,
-        max(1, _int_or_none(args.get("limit")) or DEFAULT_MEMORY_READ_LINES),
-    )
+    del args
     owner_id = caller.owner_id if caller is not None else None
-    try:
-        detail = services.memory.file_text(path, owner_id)
-    except KylabError as exc:
-        # 越界 / 不存在 / 读不动：**如实说**，模型据此才该改路（换个 path，或放弃展开）
-        return ToolOutcome(content=f"读不了这份记忆：{exc}")
-    lines = detail.content.splitlines()
-    window = lines[start - 1 : start - 1 + limit]
-    head = (
-        f"【记忆文件 {detail.path}】第 {start}–{start + len(window) - 1} 行"
-        f"（共 {len(lines)} 行）"
-    )
-    return ToolOutcome(
-        content=_join_blocks(head, chr(10).join(window) or "（这一段是空的）"),
-        summary=f"读了 {len(window)} 行记忆",
-    )
+    text = str(services.memory.archive_text(owner_id) or "").strip()
+    if not text:
+        return ToolOutcome(
+            content="档案还是空的（一条都没写）。要用 `remember` 记第一条。",
+            summary="档案还是空的",
+        )
+    return ToolOutcome(content=text, summary="读了整份档案")
 
 
 def _write_memory(services: Any, caller: Caller, args: dict[str, Any]) -> ToolOutcome:
-    """整份改写 ``PROFILE.md``（白名单见 ``WRITABLE_PERSONA_FILES``）。
+    """**已退场的兼容壳**：一律拒绝，并说清现在该用什么。
 
-    为什么只有这一份、且必须整份替换：见那个常量的说明——``SOUL.md`` / ``AGENTS.md``
-    是对方自己的东西（Agent 的人格与规程），改了既难回滚、也难让对方察觉，
-    所以不在这个工具的范围内。工具描述里明确要求"先读一遍再改"——因为这是覆盖，
-    而那份文件里可能有对方自己写的内容。
+    ``write_memory``（整份改写 ``PROFILE.md``）在 v0.56 随档案制退场（§7.4）：
+    整份覆盖与"条目级预算 + 变更流"不相容——它一次就能把预算撑爆、又能把变更流
+    整个绕过（删掉一条不留痕）。档案的写入只有 `remember` / `forget` 两条路，
+    外加界面上按条目编辑。
 
-    路径与大小限制都走 ``MemoryService.write_file``（记忆那一侧的同一套安全解析），
-    所以这里不必自己再判一次越界。
+    工具表里已经不摆它（见 ``_MEMORY_TOOLS``），这一支留着只为"老客户端/老提示词
+    仍然按名字调它"这一种情况：那时给一句"改用 remember"比抛"未知的工具"更可解释，
+    也让模型知道**不要再试第二次**。
     """
-    name = str(args.get("name") or "").strip()
-    content = str(args.get("content") or "")
-    if name not in WRITABLE_PERSONA_FILES:
-        allowed = "、".join(f"`{item}`" for item in WRITABLE_PERSONA_FILES)
-        return ToolOutcome(
-            content=(
-                f"这个工具只能改 {allowed}。"
-                "`SOUL.md` 与 `AGENTS.md` 是对方自己的东西——想改就把你的建议说给他听；"
-                "核心长期事实用 `remember`（它管去重）；对话现场由系统自动沉淀。"
-            )
-        )
-    if not content.strip():
-        return ToolOutcome(content="缺少参数：content（要写进去的整份正文）")
-    owner_id = caller.owner_id if caller is not None else None
-    try:
-        detail = services.memory.write_file(name, content, owner_id)
-    except KylabError as exc:
-        # 超长 / 写不动：如实说，模型据此才该改（缩短，或改用 remember 记一条）
-        return ToolOutcome(content=f"写不了这份人设：{exc}")
+    del services, caller, args
     return ToolOutcome(
         content=(
-            f"已更新 {detail.path}（{len(content)} 字）。"
-            "**记得告诉对方你改了它**——那是他的人格设定，他该知道。"
-        ),
-        summary=f"更新了 {detail.path}",
+            "`write_memory` 已经不用了：档案是一句一条维护的，整份覆盖会把预算与"
+            "变更流一起绕过去。现在这样写：\n"
+            "- 记一条新的：`remember(content)`（可选 `section` 指定分区）；\n"
+            "- 更正一条：`remember(content, replaces=旧的那句原文)`——一次调用即可；\n"
+            "- 删掉一条：`forget(topic)`；\n"
+            "- 想看档案现在写成什么样：`read_memory`。\n"
+            "**`SOUL.md` 与 `AGENTS.md` 是对方自己的东西**：想改就把建议说给他听。"
+        )
     )
 
 
@@ -2178,7 +2105,7 @@ def _summary(name: str, payload: Any) -> str:
     if name == "get_document_status" and isinstance(payload, dict):
         return f"当前阶段：{payload.get('stage') or '未知'}"
     if name == "recall" and isinstance(items, list):
-        return f"回忆到 {len(items)} 条"
+        return f"查到 {len(items)} 条变更"
     if name == "list_notes" and isinstance(payload, dict):
         total = payload.get("total")
         if isinstance(total, int):
@@ -2193,8 +2120,18 @@ def _summary(name: str, payload: Any) -> str:
         return f"已存进知识库：{payload.get('name') or ''}".rstrip("：")
     if name == "remember" and isinstance(payload, dict):
         # 那三段 note 是**给模型看的操作说明**，不是给用户看的结论——
-        # 原来它整段出现在过程面板里，用户读到的是"一条只记一句可复用的事实"
-        return "已写入长期记忆" if payload.get("saved") else "这条已经在长期记忆里了"
+        # 原来它整段出现在过程面板里，用户读到的是"一条只记一句可复用的事实"。
+        # 现在按 `action` 说清到底做了什么（§4.4 的四种）。
+        return {
+            "added": "已记进档案",
+            "replaced": "已更正档案里的一条",
+            "existing": "档案里已经有了",
+            "rejected": "档案没收下这条",
+        }.get(str(payload.get("action") or ""), "已写入用户档案")
+    if name == "forget" and isinstance(payload, dict):
+        if payload.get("action") == "forgotten":
+            return "已从档案里删掉"
+        return "档案里没有这一条"
     if name == "create_note" and isinstance(payload, dict):
         return f"已存为笔记「{payload.get('title') or ''}」"
     if name == "attach_note_to_kb" and isinstance(payload, dict):

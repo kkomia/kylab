@@ -429,7 +429,7 @@ def test_step_summary_handles_the_bare_list_shape() -> None:
     # 其余裸列表也兜住（"共 N 条"总比一串 JSON 强）
     assert _summary("list_notes", [{}, {}]) == "共 2 条"
     # **具体的措辞不能被兜底那条抢掉**
-    assert _summary("recall", {"items": [1, 2, 3]}) == "回忆到 3 条"
+    assert _summary("recall", {"items": [1, 2, 3]}) == "查到 3 条变更"
     assert _summary("list_documents", {"total": 23}) == "共 23 篇文档"
 
 
@@ -450,11 +450,12 @@ def test_step_summary_never_dumps_raw_json() -> None:
         _summary("export_document", {"name": "方案.docx", "size_bytes": 2048})
         == "已生成「方案.docx」（2 KB）"
     )
-    assert _summary(
-        "remember",
-        {"saved": True, "entries": 1, "note": "已写入核心长期记忆，之后的对话会带上它。"},
-    ) == ("已写入长期记忆")
-    assert _summary("remember", {"saved": False, "entries": 0}) == "这条已经在长期记忆里了"
+    assert _summary("remember", {"action": "added", "receipt": "记下了：……"}) == "已记进档案"
+    assert _summary("remember", {"action": "replaced"}) == "已更正档案里的一条"
+    assert _summary("remember", {"action": "existing"}) == "档案里已经有了"
+    assert _summary("remember", {"action": "rejected"}) == "档案没收下这条"
+    assert _summary("forget", {"action": "forgotten"}) == "已从档案里删掉"
+    assert _summary("forget", {"action": "rejected"}) == "档案里没有这一条"
     assert (
         _summary("create_note", {"note_id": "n1", "title": "会议纪要"}) == "已存为笔记「会议纪要」"
     )
