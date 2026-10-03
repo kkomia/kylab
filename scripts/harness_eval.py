@@ -4,7 +4,7 @@
 
 `agent-harness` 的六步是：任务接入 → 提示词组装 → 动作解析 → 执行与观察 → 控制流 →
 **记录与评分**；读分三原则是**防数据污染**、**警惕古德哈特定律**、**必须附 harness 名**
-（`docs/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 11 条，出处 L36-42/48-58/74-78）。
+（`docs/归档/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 11 条，出处 L36-42/48-58/74-78）。
 我们前五步都有（`isolation.py` / `prompt.py` / `tool_loop.py` 的拒执行、截断标注、
 步数与墙钟），**第六步只有 `session_events` 的只追加日志**——于是"改 harness 有没有用"
 不可度量（§12.338 那批是人工跑的）。这个脚本补的就是那一步。
@@ -27,7 +27,7 @@
 **会变的是模型那一侧**（采样），靠 `--runs N` 出 min/中位/max 分布来标注——
 不许把采样抖动当成 harness 改动的效果。
 
-## 用法（详见 docs/调研/harness-评分口径-v0.1.md）
+## 用法（详见 docs/归档/调研/harness-评分口径-v0.1.md）
 
     python scripts/harness_eval.py list                    # 看任务集与判据
     python scripts/harness_eval.py run  --label before      # 真跑（令牌：KYLAB_HARNESS_TOKEN / --token-file / .shots/.token）
@@ -654,7 +654,7 @@ def _config_from_argv(parser: argparse.ArgumentParser, argv: list[str] | None) -
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Harness 评分（见 docs/调研/harness-评分口径-v0.1.md）")
+    parser = argparse.ArgumentParser(description="Harness 评分（见 docs/归档/调研/harness-评分口径-v0.1.md）")
     parser.add_argument("--api", default=os.environ.get("KYLAB_HARNESS_API", DEFAULT_API))
     # 顶层也挂一个（只为让 `--config … <子命令>` 这种写法**能被 argparse 接受**）：
     # 真正的取值由 `_config_from_argv` 从 argv 里扫，不读这个命名空间（见那里的理由）。

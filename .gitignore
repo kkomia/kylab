@@ -47,6 +47,13 @@ playwright-report/
 .workflow/req-*.json
 .workflow/commit-msg*.txt
 
+# ---- `.workflow/` 的其余部分：**本机临时工作区，不进仓库** ----
+# 里面是一次性的探针脚本（icon-study-* / sidecar-* / skills-* / thinking-*）、
+# 走查驱动与素材（`pw/` 已经在上面忽略）、以及跑批留下的 `harness-eval/run*`。
+# 它们产出的**结论**都写进了文档与提交信息，脚本本身没有复用价值；
+# 交接时整目录收在这一条里，别让"本机的探测器"看起来像仓库的一部分。
+.workflow/
+
 # ---- 编辑器与系统 ----
 .idea/
 .vscode/

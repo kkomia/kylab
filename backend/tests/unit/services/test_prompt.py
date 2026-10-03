@@ -583,7 +583,7 @@ def test_the_clarify_block_asks_only_when_both_conditions_hold() -> None:
 def test_the_search_block_stops_on_the_report_and_the_budget_not_on_a_count() -> None:
     """停止判据**照搬 Kimi**：够不够写一份完整报告 + 预算闸；**不许再留数字阈**。
 
-    出处：`docs/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 2 条（机制级）——
+    出处：`docs/归档/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 2 条（机制级）——
     他们每个研究任务「执行**数十次**精准检索」，停点是「积累足够内容撰写全面报告」。
     我们原先那三个数字（先 2~3 次 / 同一事实 ≥2 来源就停 / 零命中最多两轮）
     与它**方向相反**，会把研究型任务提前掐断，所以这一条同时钉住"新的在、旧的不在"。

@@ -274,7 +274,7 @@ _CLARIFY_BLOCK = (
 
 #: 「检索到什么时候算够」的判据（**照搬 Kimi deep-research 的停止口径**）。
 #:
-#: 出处：`docs/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 2 条（机制级）——
+#: 出处：`docs/归档/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 2 条（机制级）——
 #: https://www.kimi.com/features/deep-research 行 23 / 73：
 #: 「执行**数十次**精准检索」「不断迭代直到**积累足够内容撰写全面报告**」。
 #:
