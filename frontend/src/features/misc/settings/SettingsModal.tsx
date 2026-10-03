@@ -548,7 +548,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         />
                       </label>
                     ))}
-                    <p className="m-edit-hint">太大可能被端点拒绝。</p>
                   </div>
                   <div className="m-edit-actions">
                     <Button onClick={() => setEditing(null)}>返回</Button>
@@ -565,7 +564,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     <div className="m-slot-head">
                       <span className="m-slot-label">
                         默认嵌入模型
-                        <InfoTip text="库建好即冻结，之后不能换。未指定时无法新建知识库。" />
+                        {/* 「建好即冻结」是**选择前必须知道的代价**（不可逆），保留；
+                            原来那句"未指定时无法新建知识库"与下面那行状态是同一件事，删 */}
+                        <InfoTip text="建好即冻结，之后不能换。" />
                       </span>
                       <StatusTag
                         tone={embeddingConfigured ? 'success' : 'warning'}
@@ -585,11 +586,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       disabled={bindingSlot === 'embedding'}
                       label="默认嵌入模型"
                     />
-                    {!embeddingConfigured && (
-                      <p className="m-row-note">
-                        未选定前不能新建知识库。这里没有可选项时，先到「模型注册」添加供应商并登记模型。
-                      </p>
-                    )}
+                    {!embeddingConfigured && <p className="m-row-note">未选定前不能新建知识库。</p>}
                     {testResult && (
                       <div
                         className={
@@ -603,10 +600,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
                   <div className="m-slot-field">
                     <div className="m-slot-head">
-                      <span className="m-slot-label">
-                        重排模型
-                        <InfoTip text="可选；不选则跳过重排，检索本身不受影响。" />
-                      </span>
+                      <span className="m-slot-label">重排模型</span>
                       <StatusTag
                         tone={slotOf('rerank')?.configured ? 'success' : 'neutral'}
                         label={slotOf('rerank')?.configured ? '已启用' : '未启用'}
@@ -691,6 +685,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                           {field.type === 'textarea' ? (
                             <Textarea
                               rows={5}
+                              /* 「留空即恢复内置提示词」是**这一格的填法**，写进 placeholder */
+                              placeholder="留空 = 用内置提示词"
                               value={draft[field.key] ?? ''}
                               onChange={(event) =>
                                 setDraft((current) => ({
@@ -717,12 +713,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         </label>
                       )
                     })}
-
-                    <p className="m-edit-hint">
-                      {editing.key === 'llm'
-                        ? '打开会更慢、更费 token；关掉更快，但难题上的推导会浅一些。'
-                        : '留空即恢复内置提示词。'}
-                    </p>
 
                     {testResult && (
                       <div
@@ -778,9 +768,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         圈着它说"这不就是同一个东西说两遍"——**维度并进了选项标签**，
                         信息没丢，但只说一遍（见 slotOptions）。 */}
                     {!chatConfigured && (
-                      <p className="m-row-note">
-                        未选定时「对话」与标题生成不可用。如果这里没有可选项，先到「模型注册」登记对话模型。
-                      </p>
+                      <p className="m-row-note">未选定时「对话」与标题生成不可用。</p>
                     )}
                     {testResult && (
                       <div
@@ -941,8 +929,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           {/* 功能（动态）：后端那些"没有专门归属"的设置组，在这里自动出现。
               已经各有归属的那几组不在这里（v0.26）：长期记忆在记忆页、
               联网与沙箱执行在能力页。渲染的活交给 `SettingGroupPanel`，
-              与模块页共用同一个组件——同一组设置在两处长得不一样是不能接受的 */}
-          {activeFeatureKey && <SettingGroupPanel keys={[activeFeatureKey]} />}
+              与模块页共用同一个组件——同一组设置在两处长得不一样是不能接受的。
+              **`showTips={false}`**（R5）：组提示 / 编辑提示那两行解释在弹窗里不再渲染，
+              模块页那边照旧（用户说的是"设置里解释太多了"）。 */}
+          {activeFeatureKey && <SettingGroupPanel keys={[activeFeatureKey]} showTips={false} />}
 
           {section === 'users' && (
             <>
@@ -1018,7 +1008,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               {users.isLoading && <p className="m-row-note">正在加载…</p>}
               {users.isError && <ErrorLine>{messageOf(users.error, '用户列表加载失败')}</ErrorLine>}
               {users.data && users.data.length === 0 && (
-                <p className="m-row-note">还没有任何人。开通一个账号，对方就能登录了。</p>
+                <p className="m-row-note">还没有任何人。</p>
               )}
               {users.data && users.data.length > 0 && (
                 <ul className="m-user-list">
@@ -1105,10 +1095,16 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     />
                   </div>
 
-                  <h3 className="m-section-title m-section-gap">
-                    修改密码
-                    <InfoTip text="改密会吊销其他设备上的登录，当前这条保留。" />
-                  </h3>
+                  {/*
+                    「改密会吊销其他设备上的登录，当前这条保留。」那句 InfoTip 删掉了
+                    （用户 2026-10 批注：去解释化）。
+                    ⚠️ 记一笔：**同一条信息现在只出现在"重置他人密码"那个确认弹窗里**
+                    （`resetTarget`：为「X」设置新密码。对方所有已登录的设备会立即退出。）——
+                    那一句说的是另一个动作（管理员重置别人），而**自己改密**这条路上
+                    没有任何确认弹窗（就是一个表单直接提交）。若日后要把这条代价说回来，
+                    该加在这里或一次确认里，而不是重新挂一个 InfoTip。
+                  */}
+                  <h3 className="m-section-title m-section-gap">修改密码</h3>
                   <div className="m-password-form">
                     <Field label="当前密码" htmlFor="kylab-old-password">
                       <Input

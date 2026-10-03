@@ -510,7 +510,7 @@ describe('知识库连接一节（M3 阶段 6）', () => {
     resetProviderStore()
   })
 
-  it('四块内容都在：地址 / 凭据 / 状态 / 库清单，外加"哪几个库参与检索"那句说明', async () => {
+  it('知识库连接：状态 / 地址 / 凭据三行都在，库清单在，且**没有任何成句的解释**（R5）', async () => {
     setProviderStatusForTest(providerStatus())
     stubProviderNetwork(() => providerStatus())
     const user = userEvent.setup()
@@ -519,26 +519,36 @@ describe('知识库连接一节（M3 阶段 6）', () => {
     // 「知识库连接」在「服务」那一组里
     await user.click(await screen.findByRole('button', { name: '知识库连接' }))
 
-    // ① 地址：输入框里是后端解析后的实际地址，带保存与恢复默认
+    // ① 状态一行：连没连上（值 + badge）+ 上次确认/协议版本的小字 + 一颗「测试连接」
+    expect(screen.getAllByText('已连接').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: '测试连接' })).toBeInTheDocument()
+    expect(screen.getByText(/上次确认 · /)).toBeInTheDocument()
+    // 协议版本降级成状态行里的小字（R5：技术味重的读数不单独占一行）
+    expect(screen.getByText(/协议 v1/)).toBeInTheDocument()
+    expect(screen.queryByText('协议版本')).toBeNull()
+    // ② 地址：输入框里是后端解析后的实际地址，带保存与恢复默认
     expect(screen.getByLabelText('知识库地址')).toHaveValue('http://nas:8000/api/v1')
     expect(screen.getByRole('button', { name: '恢复默认' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '保存' })).toBeDisabled() // 没改过就不发请求
-    // ② 凭据：只读，且**只说有没有**（永不回显）
+    // ③ 凭据：只读，且**只说有没有**（永不回显）
     expect(screen.getByText('已配置（桌面壳里的那把钥匙）')).toBeInTheDocument()
-    // ③ 状态：人话 + 协议版本 + 上次确认 + 一颗「测试连接」
-    expect(screen.getAllByText('已连接').length).toBeGreaterThan(0)
-    expect(screen.getByText('协议版本')).toBeInTheDocument()
-    expect(screen.getByText('1（对面应用 0.1.1）')).toBeInTheDocument()
-    expect(screen.getByText('上次确认')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '测试连接' })).toBeInTheDocument()
     // ④ 库清单：名字 / 文档数 / 能不能写
     expect(screen.getByText('论文')).toBeInTheDocument()
     expect(screen.getByText(/12 篇文档/)).toBeInTheDocument()
     expect(screen.getByText('可写')).toBeInTheDocument()
     expect(screen.getByText('手册')).toBeInTheDocument()
     expect(screen.getByText('只读')).toBeInTheDocument()
-    // 那句"避免再发明一个默认库集"的说明
-    expect(screen.getByText(/哪几个库参与检索/)).toBeInTheDocument()
+
+    /*
+      **R5：这一节不再有成句的解释**（用户点名"解释太多了，你是一个产品好不好"）。
+      判据落在 DOM 上：这一节里一个 `.m-row-note` / `.m-edit-hint` 都不该有——
+      值、badge、按钮、以及"留空 = …"这类**填法**（在 label / placeholder 上）才是内容。
+      那句"哪几个库参与检索，由对话里那个开关决定"的说明也随之下线。
+    */
+    // 这一节里一个 `.m-row-note` / `.m-edit-hint` 都不该有（R5：去解释化；这两个类是
+    // "成句说明"在本仓的落点）。状态与值走的是 m-row-value / StatusTag / 按钮。
+    expect(document.querySelectorAll('.m-row-note, .m-edit-hint').length).toBe(0)
+    expect(screen.queryByText(/哪几个库参与检索/)).toBeNull()
   })
 
   it('保存地址走 PATCH，并把新地址显示出来（后端会立刻重探并回最新状态）', async () => {
@@ -567,7 +577,10 @@ describe('知识库连接一节（M3 阶段 6）', () => {
       base_url: 'http://other-nas:8000/api/v1',
     })
     // 回来的状态整个写进面板：地址变了，状态也如实变成"不可用 + 原因"
+    // （原因在状态那一行下方的 ErrorLine 上；库清单那一句只说"看不到任何库"，
+    //  不再把同一句话复制一遍——R5 去解释化时顺手收掉的重复）
     await waitFor(() => expect(screen.getByText('连不上 other-nas')).toBeInTheDocument())
+    expect(screen.getByText('连不上，所以现在看不到任何库。')).toBeInTheDocument()
     expect(screen.getByLabelText('知识库地址')).toHaveValue('http://other-nas:8000/api/v1')
   })
 
@@ -698,7 +711,7 @@ describe('「本机留了一份」那一块（M4 阶段 6）', () => {
     resetProviderStore()
   })
 
-  it('四要素都在：留了几项 / 最近更新 / 「立即刷新」/「清除」，外加"删了不影响 NAS"那句', async () => {
+  it('四要素都在：留了几项 / 最近更新 / 「立即刷新」/「清除」（R5：那段说明已删）', async () => {
     setProviderStatusForTest(providerStatus())
     const calls: string[] = []
     stubKeptNetwork(calls)
@@ -716,8 +729,9 @@ describe('「本机留了一份」那一块（M4 阶段 6）', () => {
     expect(screen.getByRole('button', { name: '清除' })).toBeInTheDocument()
     // 界面上**不许出现实现语汇**（"缓存"那一类，U2 是硬门禁）：说的是"留了一份"
     expect(block.textContent).not.toContain('缓存')
-    // 那句"删了只影响速度、不影响 NAS 上的数据"
-    expect(screen.getByText(/删了只影响下次打开的速度，不影响 NAS 上的数据/)).toBeInTheDocument()
+    // R5：原来那段"留着的是一份目录…删了只影响速度"的说明整段删掉（用户："解释太多了"）；
+    // 那一块现在只有两行读数 + 两颗按钮
+    expect(screen.queryByText(/删了只影响下次打开的速度/)).toBeNull()
     // 读的是后端那一份读数（不是前端自己数）
     expect(calls.some((call) => call.includes('/local/kb-cache/stats'))).toBe(true)
   })
@@ -954,9 +968,13 @@ describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
       within(screen.getByTestId('settings-backup-include-workspace')).getByText('带上'),
     ).toBeInTheDocument()
     expect(screen.getByLabelText('每多少小时自动打一份')).toHaveValue('12')
-    expect(screen.getByTestId('settings-backup-every-hours').textContent).toContain(
-      '现在是每 12 小时自动打一份',
+    // R5：原来那行"现在是每 12 小时自动打一份 / 填 0 = 只手动打"的说明删了——
+    // 当前值就是输入框里的 `12`（上面那一条钉着），填法落在 placeholder 上
+    expect(screen.getByLabelText('每多少小时自动打一份')).toHaveAttribute(
+      'placeholder',
+      '0 = 只手动打',
     )
+    expect(screen.queryByText(/现在是每 12 小时自动打一份/)).toBeNull()
   })
 
   it('提供者连不上时这一节照旧在（判据不是 "ready"）', async () => {

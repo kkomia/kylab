@@ -9,7 +9,6 @@
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/ui/button'
-import { InfoTip } from '../shared/composites'
 import {
   addBinding,
   bindingFromEvent,
@@ -82,10 +81,7 @@ export function ShortcutsSection() {
 
   return (
     <>
-      <h3 className="m-section-title">
-        快捷键
-        <InfoTip text="只影响这一台机器的浏览器，存在本地。全局那两条在输入框里不生效。" />
-      </h3>
+      <h3 className="m-section-title">快捷键</h3>
 
       {commands.map((command) => (
         <div key={command.id} className="m-shortcut-row">

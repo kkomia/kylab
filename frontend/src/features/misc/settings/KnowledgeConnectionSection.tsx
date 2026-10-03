@@ -1,42 +1,40 @@
 /**
  * 设置 ·「知识库连接」一节（M3 阶段 6）——**本机档才渲染**。
  *
- * ## 为什么这一节只有本机档有（一句话，说给用户听）
- *
  * 浏览器 / NAS 网页端那一档，**知识库就是它自己**（进程内检索、本机那几张表），
  * "提供者在不在"没有第二个东西可问；本机档正相反——知识库在**壳里那台 NAS** 上，
- * 于是"连没连上、能力集是什么、这把钥匙看得见哪些库"必须有一处能看、能改。
+ * 于是"连没连上、这把钥匙看得见哪些库"必须有一处能看、能改。
  *
- * ## 四块内容（方案 §4.1）
+ * ## 版式：三行说清（R5 起按产品化整改，见 `misc-settings` 的门禁）
  *
- * 1. **地址**：输入 + 保存 + 恢复默认。权威那一处是**壳的 `config.json`**
- *    （`server` + `api_key`，也是长期凭据唯一的落点），这里的地址是一处**覆盖**——
- *    只在"知识库要指到另一台 NAS"时才需要填，留空即回到继承（决策点 D2）；
- * 2. **凭据**：**只读**。凭据只看有没有（`configured` / `missing`），**永不回显**——
- *    它只从引导级来（壳的 `config.json` / 环境变量），本机库里没有、日志里也没有
- *    （方案 §4.2 与 R3）。所以这一块没有输入框，也不打算有；
- * 3. **状态**：`state` / 原因 / 协议版本 / 上次确认时间，外加一颗「测试连接」
- *    （= `refresh=1` 强制重探）。保存地址之后不需要重启边车：提供者**每次调用现取目标**；
- * 4. **库清单**：名字 / 文档数 / 能不能写。不可用时**显示不可用原因**，而不是空清单
- *    ——"看不见任何库"与"根本没连上"是两件完全不同的事。
+ * ```
+ * 连接   <状态人话>   上次确认 · 刚刚 · 协议 v1   [已连接] [测试连接]
+ * 地址   <当前地址>                                [已设置]
+ * 凭据   <已配置/未配置>                            [已配置]
+ * ```
+ *
+ * 三条纪律（这一节曾被用户点名"解释太多、很草台"）：
+ *
+ * 1. **零段落文字**：不再有 `m-row-note` / `m-edit-hint` 那种成句的说明；
+ *    "留空 = 用壳里那台"这类**填法**写在标签上，"上次确认 / 协议版本"这类**技术读数**
+ *    降成状态行里的小字；
+ * 2. **只用设置里既有的行/节规范**（`m-row` / `m-edit-*` / `m-section-title`），
+ *    不为这一页现造组件或样式；
+ * 3. **状态与代价照旧如实说**：连不上时后端那句原因原样摆出来（`ErrorLine`），
+ *    值读不到就说读不到（不摆 0、不摆猜测）。
+ *
+ * 行为一个字没动：地址可改可恢复默认、保存后后端立刻重探、测试连接 = `refresh=1` 强制重探、
+ * 「本机留了一份」那两颗按钮照旧（`GET|POST /local/kb-cache/*`）。
  *
  * ## 第五块：「本机留了一份」（M4 阶段 6）
  *
  * 本机后端会留一份知识库的**目录性**内容（库列表 / 每库详情 / 文档清单），下次打开知识库页
- * 就先把这一份摆上屏幕、再如实更新。这一块把"留了多少、最近一次是什么时候"**如实说出来**，
+ * 就先把这一份摆上屏幕、再如实更新。这一块把"留了多少、最近一次是什么时候"如实说出来，
  * 并给两颗按钮：**立即刷新**（去 NAS 再确认一次）与**清除**（把留着的清掉）。
  *
- * 两条纪律：
- *
- * - 行数与最近更新读的是后端那一份读数（`GET /local/kb-cache/stats`，与「清除」同一族），
- *   **不是**前端自己数——"留了多少"只有一个答案；
- * - 界面上**不许出现实现语汇**（"缓存"那一类，U2 是硬门禁）：说的永远是"本机留了一份"、
- *   "留着的内容"、"上次看到的内容"。
- *
- * 它随时可以丢掉：**删了只丢速度、不丢数据**（NAS 上那份才是权威）——那句话也写在下面。
- *
- * 最后一句常显的说明回答一个**故意不做的功能**：「哪几个库参与检索由对话里那个开关决定」
- * ——这里不发明第二套"默认库集"，否则同一个问题会有两个答案。
+ * 行数与最近更新读的是后端那一份读数（`GET /local/kb-cache/stats`）——"留了多少"只有一个答案。
+ * 界面上**不许出现实现语汇**（"缓存"那一类，U2 是硬门禁）：说的永远是"本机留了一份"、
+ * "留着的内容"、"上次看到的内容"。
  */
 import { useCallback, useEffect, useState } from 'react'
 
@@ -44,20 +42,15 @@ import { clearKbCache, getKbCacheStats, revalidateKbCache, type KbCacheStats } f
 import {
   credentialLabel,
   patchLocalProvider,
-  providerDetailLines,
   providerStateLabel,
   useKnowledgeProviderStatus,
 } from '@/api/provider'
 import { formatCount, formatRelativeTime } from '@/lib/format'
 
-import { ErrorLine, InfoTip, SkeletonBlock, StatusTag } from '../shared/composites'
+import { ErrorLine, SkeletonBlock, StatusTag } from '../shared/composites'
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
-
-/** 那一句"哪几个库参与检索"的说明（常显，避免再发明一个"默认库集"概念）。 */
-const PICK_NOTE =
-  '哪几个库参与检索，由对话输入框上那个「知识库」开关决定——这里只管连接，不设默认库集。'
 
 export function KnowledgeConnectionSection() {
   const provider = useKnowledgeProviderStatus()
@@ -166,45 +159,60 @@ export function KnowledgeConnectionSection() {
     return (
       <>
         <h3 className="m-section-title">知识库连接</h3>
-        <p className="m-row-note">
-          「知识库连接」只有本机档（桌面壳）才有：这一档的知识库就是它自己， 没有第二个东西可问。
-        </p>
+        <p className="m-row-note">「知识库连接」只有本机档（桌面壳）才有。</p>
       </>
     )
   }
 
   const unavailable = !provider.ready
-  const capabilityLines: string[] = []
-  const ingest = provider.capabilities?.ingest
-  if (ingest?.max_bytes) {
-    capabilityLines.push(`单文件上限 ${Math.round(ingest.max_bytes / (1024 * 1024))}MB`)
-  }
-  if (ingest?.extensions?.length) {
-    capabilityLines.push(`收 ${ingest.extensions.length} 种格式`)
-  }
-  if (provider.capabilities?.embedding) {
-    capabilityLines.push(
-      provider.capabilities.embedding.configured ? '向量化已配置' : '向量化未配置（不能建库）',
-    )
-  }
 
   return (
     <>
-      <h3 className="m-section-title">
-        知识库连接
-        <InfoTip text="默认就是壳里那台 NAS；除非你在这里填了别的地址。" />
-      </h3>
+      <h3 className="m-section-title">知识库连接</h3>
 
-      {/* 还没探过：如实写"正在确认"，不先给一个判断（与顶栏那条同一条口径） */}
+      {/* 还没探过：如实写"正在确认"，不先给一个判断 */}
       {!provider.settled ? (
         <SkeletonBlock variant="text" rows={2} />
       ) : (
         <>
-          {/* ------------------------------------------------------------------ ① 地址 */}
+          {/* ------------------------------------------------------------------ ① 状态
+              一行说完三件事：连没连上（值 + badge）、上次什么时候确认的（小字，技术味重的
+              协议版本也降到这里）、当场测一次（按钮）。 */}
+          <div className="m-row" data-testid="provider-status">
+            <div className="m-row-main">
+              <span className="m-row-label">连接</span>
+              <span className="m-row-value">
+                {status ? providerStateLabel(status.state) : '读不到'}
+              </span>
+            </div>
+            <span className="m-row-value">
+              {status?.checked_at
+                ? `上次确认 · ${formatRelativeTime(status.checked_at)}`
+                : '还没探过'}
+              {status?.protocol_version != null ? ` · 协议 v${status.protocol_version}` : ''}
+            </span>
+            <StatusTag
+              tone={provider.ready ? 'success' : 'warning'}
+              label={provider.ready ? '已连接' : status ? '未连接' : '读不到'}
+            />
+            <Button disabled={provider.loading} onClick={() => void test()}>
+              {provider.loading ? '测试中…' : '测试连接'}
+            </Button>
+          </div>
+          {/* 连不上时把后端那句原因原样摆出来（不静默） */}
+          {unavailable ? (
+            <ErrorLine>
+              {status
+                ? status.reason || '（后端没给原因）'
+                : `读不到：${provider.error || '本机后端没给出原因'}`}
+            </ErrorLine>
+          ) : null}
+
+          {/* ------------------------------------------------------------------ ② 地址 */}
           <div className="m-row">
             <div className="m-row-main">
               <span className="m-row-label">地址</span>
-              <span className="m-row-value">{resolved || '（留空 = 用壳里那台 NAS）'}</span>
+              <span className="m-row-value">{resolved || '壳里那台 NAS'}</span>
             </div>
             <StatusTag
               tone={resolved ? 'neutral' : 'warning'}
@@ -213,7 +221,8 @@ export function KnowledgeConnectionSection() {
           </div>
           <div className="m-edit-form">
             <label className="m-edit-field">
-              <span className="m-edit-label">知识库地址（留空 = 恢复默认）</span>
+              {/* 「留空 = …」是**这一格的填法**，写在标签上（不另起一句解释） */}
+              <span className="m-edit-label">知识库地址（留空 = 用壳里那台）</span>
               <Input
                 value={address}
                 placeholder="http://nas:8000/api/v1"
@@ -221,10 +230,6 @@ export function KnowledgeConnectionSection() {
                 onChange={(event) => setDraft(event.target.value)}
               />
             </label>
-            <p className="m-edit-hint">
-              默认就是壳里那台 NAS；除非你在这里填了别的地址。填错也没关系——
-              保存后立刻重探，状态会如实告诉你连不上。
-            </p>
           </div>
           <div className="m-edit-actions">
             <Button disabled={saving} onClick={() => void save('')}>
@@ -234,7 +239,8 @@ export function KnowledgeConnectionSection() {
               {saving ? '保存中…' : '保存'}
             </Button>
           </div>
-          {/* ------------------------------------------------------------------ ② 凭据 */}
+
+          {/* ------------------------------------------------------------------ ③ 凭据 */}
           <div className="m-row">
             <div className="m-row-main">
               <span className="m-row-label">凭据</span>
@@ -248,72 +254,15 @@ export function KnowledgeConnectionSection() {
               label={status?.credential === 'configured' ? '已配置' : status ? '未配置' : '读不到'}
             />
           </div>
-          <p className="m-row-note">
-            凭据只从桌面壳那侧来（跟地址不是同一处，也**不会**存在本机库里）—— 要连另一台
-            NAS，得先把那台的钥匙交给壳。
-          </p>
-          {/* ------------------------------------------------------------------ ③ 状态 */}
-          <h3 className="m-section-title m-section-gap">状态</h3>
-          {unavailable ? (
-            <ErrorLine>
-              {status
-                ? `${providerStateLabel(status.state)}：${status.reason || '（后端没给原因）'}`
-                : `读不到：${provider.error || '本机后端没给出原因'}`}
-            </ErrorLine>
-          ) : null}
-          <div className="m-row">
-            <div className="m-row-main">
-              <span className="m-row-label">连接</span>
-              <span className="m-row-value">
-                {status ? providerStateLabel(status.state) : '读不到'}
-              </span>
-            </div>
-            <StatusTag
-              tone={provider.ready ? 'success' : 'warning'}
-              label={provider.ready ? '已连接' : status ? '未连接' : '读不到'}
-            />
-            <Button disabled={provider.loading} onClick={() => void test()}>
-              {provider.loading ? '测试中…' : '测试连接'}
-            </Button>
-          </div>
-          {status?.protocol_version != null ? (
-            <div className="m-row">
-              <div className="m-row-main">
-                <span className="m-row-label">协议版本</span>
-                <span className="m-row-value">
-                  {status.protocol_version}
-                  {status.app_version ? `（对面应用 ${status.app_version}）` : ''}
-                </span>
-              </div>
-            </div>
-          ) : null}
-          <div className="m-row">
-            <div className="m-row-main">
-              <span className="m-row-label">上次确认</span>
-              <span className="m-row-value">
-                {status?.checked_at ? formatRelativeTime(status.checked_at) : '还没探过'}
-              </span>
-            </div>
-          </div>{' '}
-          {capabilityLines.length > 0 ? (
-            <div className="m-row">
-              <div className="m-row-main">
-                <span className="m-row-label">这台提供者能做</span>
-                <span className="m-row-value">{capabilityLines.join(' · ')}</span>
-              </div>
-            </div>
-          ) : null}
+
           {/* ------------------------------------------------------------------ ④ 库清单 */}
           <h3 className="m-section-title m-section-gap">看得见的库</h3>
-          {/* 不可用时**显示原因**：空清单会被读成"一个库都没有"（两件事完全不同） */}
+          {/* 不可用时**显示原因**：空清单会被读成"一个库都没有"（两件事完全不同）。
+              原因只在那条 ErrorLine 上说一遍（就在上面一行），这里不再重复那句话。 */}
           {unavailable ? (
-            <p className="m-row-note">
-              {provider.reason || provider.error || '连不上，所以现在看不到任何库。'}
-            </p>
+            <p className="m-row-note">连不上，所以现在看不到任何库。</p>
           ) : provider.knowledgeBases.length === 0 ? (
-            <p className="m-row-note">
-              这把凭据在这台提供者上看得见 0 个库（受限的钥匙只会看到范围内的）。
-            </p>
+            <p className="m-row-note">这把凭据在这台提供者上看不见任何库。</p>
           ) : (
             <ul className="m-user-list">
               {provider.knowledgeBases.map((kb) => (
@@ -338,7 +287,6 @@ export function KnowledgeConnectionSection() {
               ))}
             </ul>
           )}
-          <p className="m-row-note">{PICK_NOTE}</p>
           {/* ------------------------------------------------------------------ ⑤ 本机留了一份 */}
           <h3 className="m-section-title m-section-gap">本机留了一份</h3>
           <div className="m-row" data-testid="kept-snapshot-row">
@@ -366,17 +314,6 @@ export function KnowledgeConnectionSection() {
               {clearing ? '清除中…' : '清除'}
             </Button>
           </div>
-          <p className="m-row-note">
-            这台机器上留着一份知识库的目录（库、每库的详情、文档清单这些目录性质的内容），
-            下次打开知识库页会先把这一份摆上屏幕、再如实更新。它随时可以丢掉——
-            <strong>删了只影响下次打开的速度，不影响 NAS 上的数据</strong>。
-          </p>
-          {/* 排障那一眼（地址 / 协议版本 / 库数 / 上次确认）：与顶栏那条状态条同一份口径 */}
-          {status ? (
-            <p className="m-row-note" data-testid="provider-detail">
-              {providerDetailLines(status).join('；')}
-            </p>
-          ) : null}
         </>
       )}
     </>

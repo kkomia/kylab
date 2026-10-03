@@ -32,13 +32,8 @@ import { useState } from 'react'
 import { createBackupSnapshot, patchLocalBackup, useBackupStatus } from '@/api/backup'
 import { credentialLabel } from '@/api/provider'
 import {
-  CREDENTIAL_NOTE,
-  ENABLED_NOTE,
-  EVERY_HOURS_NOTE,
-  INCLUDE_WORKSPACE_NOTE,
   backupStateLabel,
   enabledLabel,
-  everyHoursNowText,
   everyHoursText,
   includeWorkspaceLabel,
   queueSummaryText,
@@ -108,9 +103,7 @@ export function BackupSection({ onOpenPage }: { onOpenPage: () => void }) {
     return (
       <>
         <h3 className="m-section-title">备份</h3>
-        <p className="m-row-note">
-          「备份」只有本机档（桌面壳）才有：这一档的数据在这台机器上，备份的目的地是别处。
-        </p>
+        <p className="m-row-note">「备份」只有本机档（桌面壳）才有。</p>
       </>
     )
   }
@@ -186,22 +179,19 @@ export function BackupSection({ onOpenPage }: { onOpenPage: () => void }) {
                   />
                 )}
               </div>
-              <p className="m-row-note">{ENABLED_NOTE}</p>
-
-              {/* ------------------------------------------------ 自动间隔（回填当前值） */}
+              {/* ------------------------------------------------ 自动间隔（回填当前值）
+                  当前值与"填 0 = 只手动"都落在控件上（值即输入框内容、填法写进 placeholder），
+                  不再另起一段说明。 */}
               <div className="m-edit-form" data-testid="settings-backup-every-hours">
                 <label className="m-edit-field">
                   <span className="m-edit-label">每多少小时自动打一份</span>
                   <Input
                     value={hoursText}
+                    placeholder="0 = 只手动打"
                     aria-label="每多少小时自动打一份"
                     onChange={(event) => setHours(event.target.value)}
                   />
                 </label>
-                <p className="m-edit-hint">
-                  {everyHoursNowText(currentHours)}
-                  {EVERY_HOURS_NOTE}
-                </p>
               </div>
               <div className="m-edit-actions">
                 <Button
@@ -239,7 +229,6 @@ export function BackupSection({ onOpenPage }: { onOpenPage: () => void }) {
                   />
                 )}
               </div>
-              <p className="m-row-note">{INCLUDE_WORKSPACE_NOTE}</p>
 
               {/* ------------------------------------------------ 凭据（只读） */}
               <div className="m-row">
@@ -254,7 +243,6 @@ export function BackupSection({ onOpenPage }: { onOpenPage: () => void }) {
                   label={provider.credential === 'configured' ? '已配置' : '未配置'}
                 />
               </div>
-              <p className="m-row-note">{CREDENTIAL_NOTE}</p>
             </>
           )}
 

@@ -6,7 +6,6 @@
  * 两者都用**卡片式选择器**：三档主题、四档字号，选中那一档靠底色表达，
  * 而不是靠一个字面上的"当前"。
  */
-import { InfoTip } from '../shared/composites'
 import { FONT_SCALES, useFontScale } from './useFontScale'
 import { setTheme, useThemeMode, type ThemeMode } from './useTheme'
 
@@ -24,10 +23,7 @@ export function AppearanceSection() {
 
   return (
     <>
-      <h3 className="m-section-title">
-        外观
-        <InfoTip text="主题与字号只影响这一台机器的浏览器，存在本地。" />
-      </h3>
+      <h3 className="m-section-title">外观</h3>
 
       <div className="m-row">
         <div className="m-row-main">

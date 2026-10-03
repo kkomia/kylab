@@ -21,7 +21,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { getLocalSecrets, migrateLocalSecrets, type SecretsRead } from '@/api/secrets'
 
-import { ErrorLine, InfoTip, SkeletonBlock, StatusTag } from '../shared/composites'
+import { ErrorLine, SkeletonBlock, StatusTag } from '../shared/composites'
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'
 
@@ -77,10 +77,7 @@ export function CredentialsSection() {
 
   return (
     <>
-      <h3 className="m-section-title">
-        凭据
-        <InfoTip text="系统钥匙串就是这台机器的凭据保管处（Windows 凭据管理器）。" />
-      </h3>
+      <h3 className="m-section-title">凭据</h3>
 
       {read === null ? (
         <SkeletonBlock variant="text" rows={2} />
@@ -134,7 +131,6 @@ export function CredentialsSection() {
           {data?.store === 'unavailable' ? (
             <p className="m-row-note">系统钥匙串现在用不了，先不能迁。</p>
           ) : null}
-          <p className="m-row-note">迁完之后，库里不再留着明文；换机器要重新填一次。</p>
         </>
       )}
     </>

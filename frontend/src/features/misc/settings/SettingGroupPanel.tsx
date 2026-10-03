@@ -71,7 +71,22 @@ export function settingsPayloadOf(
     .map((field) => ({ key: field.key, value: draft[field.key] ?? '' }))
 }
 
-export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?: () => void }) {
+export function SettingGroupPanel({
+  keys,
+  onSaved,
+  showTips = true,
+}: {
+  keys: string[]
+  onSaved?: () => void
+  /**
+   * 组提示（`groupTip`）与编辑提示（`editHint`）画不画。
+   *
+   * **设置弹窗传 false**（R5：用户点名"解释太多了"，弹窗里那些提示语不再渲染）；
+   * 模块页（记忆页 / 能力页）保持 true —— 那里是"这一组的设置就长在这一页上"，
+   * 提示语承担的是"填法 / 代价"两件事，本轮不动。
+   */
+  showTips?: boolean
+}) {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<SettingGroup | null>(null)
   const [draft, setDraft] = useState<Record<string, string>>({})
@@ -124,7 +139,7 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
         <section key={group.key}>
           <h3 className="m-section-title">
             {group.label}
-            {groupTip(group.key) && <InfoTip text={groupTip(group.key)} />}
+            {showTips && groupTip(group.key) && <InfoTip text={groupTip(group.key)} />}
           </h3>
 
           {editing?.key === group.key ? (
@@ -207,7 +222,9 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
                     </label>
                   )
                 })}
-                {editHint(editing.key) && <p className="m-edit-hint">{editHint(editing.key)}</p>}
+                {showTips && editHint(editing.key) && (
+                  <p className="m-edit-hint">{editHint(editing.key)}</p>
+                )}
               </div>
               <div className="m-edit-actions">
                 <Button onClick={() => setEditing(null)}>返回</Button>
