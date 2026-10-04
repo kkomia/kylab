@@ -3001,6 +3001,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/memory/draft/organize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 整理迁移草稿（一次模型调用，只给建议）
+         * @description 跑一次模型，把 ``import-draft.md`` 里的旧条目改写成画像条目（§8.3）。
+         *
+         *     **用户显式点一次才发生**（"会花钱的默认关"），而它**一个字都不写**：
+         *     返回的是预览建议，用户确认之后前端逐条打 ``POST /memory/remember``——
+         *     于是这一次模型调用不可能绕过预算、顶替判据与变更流（§3.3–§3.4），
+         *     每一条的回执也仍然是从那一处文案来的。
+         *
+         *     **失败与"没整理出东西"都如实报错**（映射成可读的错误信封）：
+         *     这一次是花过钱的，静默返回空列表会让用户以为"点了没反应"。
+         */
+        post: operations["organize_memory_draft_api_v1_memory_draft_organize_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces": {
         parameters: {
             query?: never;
@@ -6433,6 +6461,23 @@ export interface components {
             changes?: components["schemas"]["MemoryChangeOut"][];
         };
         /**
+         * MemoryDraftOrganizeOut
+         * @description 一次「整理初稿」的结果。
+         *
+         *     **这一步不写任何东西**：它只跑一次模型、把草稿里的旧条目改写成画像条目并把
+         *     归区建议带回来，用户在界面上确认之后才逐条走 ``POST /memory/remember``
+         *     ——于是这一次模型调用**不可能绕过预算与变更流**（§3.3–§3.4）。
+         */
+        MemoryDraftOrganizeOut: {
+            /** Items */
+            items?: components["schemas"]["MemoryDraftSuggestionOut"][];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /**
          * MemoryDraftOut
          * @description ``import-draft.md``：迁移时没挤进档案的旧条目（§8.2 第 3、4 类）。
          */
@@ -6452,6 +6497,19 @@ export interface components {
              * @default 0
              */
             entries: number;
+        };
+        /**
+         * MemoryDraftSuggestionOut
+         * @description 「整理初稿」给出的一条建议（§8.3）：**只是建议，还没有写进档案**。
+         */
+        MemoryDraftSuggestionOut: {
+            /** Text */
+            text: string;
+            /**
+             * Section
+             * @default
+             */
+            section: string;
         };
         /**
          * MemoryEntryOut
@@ -6511,20 +6569,11 @@ export interface components {
              * @default
              */
             modified_at: string;
-            /** Links */
-            links?: string[];
-            /**
-             * Retrievable
-             * @default false
-             */
-            retrievable: boolean;
             /**
              * Injected
              * @default false
              */
             injected: boolean;
-            /** Consolidated */
-            consolidated?: boolean | null;
             /**
              * Content
              * @default
@@ -6573,23 +6622,11 @@ export interface components {
              * @default
              */
             modified_at: string;
-            /** Links */
-            links?: string[];
-            /**
-             * Retrievable
-             * @default false
-             */
-            retrievable: boolean;
             /**
              * Injected
              * @default false
              */
             injected: boolean;
-            /**
-             * Consolidated
-             * @default false
-             */
-            consolidated: boolean;
         };
         /**
          * MemoryForgetIn
@@ -6646,21 +6683,6 @@ export interface components {
              * @default text
              */
             source: string;
-        };
-        /** MemoryLinkOut */
-        MemoryLinkOut: {
-            /** Path */
-            path: string;
-            /**
-             * Direction
-             * @enum {string}
-             */
-            direction: "out" | "in";
-            /**
-             * Name
-             * @default
-             */
-            name: string;
         };
         /**
          * MemoryMigrationOut
@@ -6742,8 +6764,6 @@ export interface components {
             query: string;
             /** Hits */
             hits?: components["schemas"]["MemoryHitOut"][];
-            /** Links */
-            links?: components["schemas"]["MemoryLinkOut"][];
             /**
              * Note
              * @default
@@ -6892,25 +6912,10 @@ export interface components {
              */
             file_count: number;
             /**
-             * Retrievable Count
-             * @default 0
-             */
-            retrievable_count: number;
-            /**
-             * Entry Count
-             * @default 0
-             */
-            entry_count: number;
-            /**
              * Last Changed At
              * @default
              */
             last_changed_at: string;
-            /**
-             * Unconsolidated Count
-             * @default 0
-             */
-            unconsolidated_count: number;
         };
         /** MetadataFilterIn */
         MetadataFilterIn: {
@@ -15699,6 +15704,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemoryMigrationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    organize_memory_draft_api_v1_memory_draft_organize_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryDraftOrganizeOut"];
                 };
             };
             /** @description Validation Error */

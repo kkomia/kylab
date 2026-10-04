@@ -43,6 +43,7 @@ vi.mock('@/api/memory', () => ({
   restoreMemory: vi.fn(),
   renameMemoryGroup: vi.fn(),
   migrateMemory: vi.fn(),
+  organizeMemoryDraft: vi.fn(),
   recallMemory: vi.fn(),
 }))
 
@@ -58,6 +59,7 @@ import {
   getMemoryChanges,
   getMemoryFile,
   migrateMemory,
+  organizeMemoryDraft,
   rememberMemory,
   restoreMemory,
   type MemoryArchive,
@@ -79,6 +81,7 @@ const rememberMock = vi.mocked(rememberMemory)
 const forgetMock = vi.mocked(forgetMemory)
 const restoreMock = vi.mocked(restoreMemory)
 const migrateMock = vi.mocked(migrateMemory)
+const organizeMock = vi.mocked(organizeMemoryDraft)
 
 /** 档案卡的数据是可变的：写入之后后端读到的是新的一份，用例模拟这件事。 */
 let archiveState: MemoryArchive
@@ -153,10 +156,7 @@ function overviewOf(overrides: Partial<MemoryOverview> = {}): MemoryOverview {
       core_file_exists: true,
       detail: '',
       file_count: 2,
-      retrievable_count: 0,
-      entry_count: 0,
       last_changed_at: '2026-10-04T09:00:00Z',
-      unconsolidated_count: 0,
     },
     files: [
       {
@@ -168,10 +168,7 @@ function overviewOf(overrides: Partial<MemoryOverview> = {}): MemoryOverview {
         tags: [],
         size_bytes: 100,
         modified_at: '2026-10-04T09:00:00Z',
-        links: [],
-        retrievable: false,
         injected: true,
-        consolidated: false,
       },
       {
         path: 'MEMORY.md',
@@ -182,10 +179,7 @@ function overviewOf(overrides: Partial<MemoryOverview> = {}): MemoryOverview {
         tags: [],
         size_bytes: 80,
         modified_at: '2026-10-01T09:00:00Z',
-        links: [],
-        retrievable: false,
         injected: false,
-        consolidated: false,
       },
     ],
     truncated: false,
@@ -557,8 +551,41 @@ describe('记忆页 · 迁移与旧档', () => {
     renderMisc(<MemoryPage />)
 
     expect(await screen.findByTestId('draft-count')).toHaveTextContent('还有 3 条旧条目没进档案')
-    await user.click(within(screen.getByTestId('draft-hint')).getByRole('button'))
+    await user.click(within(screen.getByTestId('draft-hint')).getByRole('button', { name: '展开' }))
     await waitFor(() => expect(screen.getByTestId('draft-content')).toHaveTextContent('旧条目甲'))
+  })
+
+  it('「整理初稿」先给预览，点「写进档案」才逐条写入（§8.3）', async () => {
+    const user = userEvent.setup()
+    organizeMock.mockResolvedValue({
+      items: [{ text: '用户要求先给结论。', section: '长期偏好与风格' }],
+      note: '这些还只是建议。',
+    })
+    rememberMock.mockResolvedValue({
+      action: 'added',
+      receipt: '记下了：用户要求先给结论。',
+      text: '用户要求先给结论。',
+      section: '长期偏好与风格',
+      replaced: '',
+      entries: 5,
+    })
+    archiveState = archiveOf({ draft: { exists: true, path: 'import-draft.md', entries: 2 } })
+    renderMisc(<MemoryPage />)
+
+    await user.click(await screen.findByTestId('draft-organize'))
+
+    const preview = await screen.findByTestId('draft-preview')
+    expect(preview).toHaveTextContent('用户要求先给结论。')
+    expect(rememberMock).not.toHaveBeenCalled()
+
+    await user.click(screen.getByTestId('draft-apply'))
+
+    await waitFor(() =>
+      expect(rememberMock).toHaveBeenCalledWith('用户要求先给结论。', {
+        section: '长期偏好与风格',
+      }),
+    )
+    await waitFor(() => expect(screen.queryByTestId('draft-preview')).not.toBeInTheDocument())
   })
 
   it('旧记忆（只读）按 injected=false 识别并展示', async () => {

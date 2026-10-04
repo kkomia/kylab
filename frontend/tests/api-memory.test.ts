@@ -19,6 +19,7 @@ import {
   getMemoryChanges,
   getMemoryFile,
   migrateMemory,
+  organizeMemoryDraft,
   rememberMemory,
   renameMemoryGroup,
   restoreMemory,
@@ -207,5 +208,22 @@ describe('memory api', () => {
     expect(url).toContain('/memory/migrate')
     expect(init.method).toBe('POST')
     expect(report.added).toBe(3)
+  })
+
+  it('整理初稿是 POST /memory/draft/organize，把 items 取出来', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        items: [{ text: '用户要求先给结论。', section: '长期偏好与风格' }],
+        note: '这些还只是建议。',
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await organizeMemoryDraft()
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('/memory/draft/organize')
+    expect(init.method).toBe('POST')
+    expect(result.items).toEqual([{ text: '用户要求先给结论。', section: '长期偏好与风格' }])
   })
 })

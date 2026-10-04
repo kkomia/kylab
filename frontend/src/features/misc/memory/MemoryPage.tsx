@@ -27,6 +27,9 @@ import {
   getMemoryChanges,
   getMemoryFile,
   migrateMemory,
+  organizeMemoryDraft,
+  rememberMemory,
+  type MemoryDraftSuggestion,
   type MemoryMigration,
 } from '@/api/memory'
 import { useSessionStore } from '@/lib/session'
@@ -59,6 +62,8 @@ export function MemoryPage() {
   const [reportOpen, setReportOpen] = useState(false)
   const [report, setReport] = useState<MemoryMigration | null>(null)
   const [draftOpen, setDraftOpen] = useState(false)
+  /** 「整理初稿」的**预览**：模型给的建议，确认之前一个字都不写（§8.3）。 */
+  const [draftItems, setDraftItems] = useState<MemoryDraftSuggestion[] | null>(null)
 
   const status = overview.data?.status ?? null
 
@@ -93,6 +98,34 @@ export function MemoryPage() {
       setReportOpen(true)
       await refresh()
       notifySuccess(result.skipped ? '没有新的旧条目' : '折叠完成')
+    },
+    onError: (error: unknown) => notifyError(messageOf(error)),
+  })
+
+  /** 整理初稿：**只拿建议**，预览确认之后才写。 */
+  const organize = useMutation({
+    mutationFn: organizeMemoryDraft,
+    onSuccess: (result) => setDraftItems(result.items ?? []),
+    onError: (error: unknown) => notifyError(messageOf(error)),
+  })
+
+  /** 把预览里那几条逐条写进档案——**走的就是 remember 那条正规的路**。 */
+  const applyDraft = useMutation({
+    mutationFn: async (items: MemoryDraftSuggestion[]) => {
+      const receipts: string[] = []
+      let written = 0
+      for (const item of items) {
+        const result = await rememberMemory(item.text, { section: item.section })
+        if (result.action === 'rejected') receipts.push(result.receipt)
+        else written += 1
+      }
+      return { written, receipts }
+    },
+    onSuccess: async ({ written, receipts }) => {
+      setDraftItems(null)
+      await refresh()
+      if (receipts.length > 0) notifyError(receipts.join('；'))
+      else notifySuccess(`写进档案：${written} 条`)
     },
     onError: (error: unknown) => notifyError(messageOf(error)),
   })
@@ -154,6 +187,15 @@ export function MemoryPage() {
             {draftEntries > 0 && (
               <div className="m-draft" data-testid="draft-hint">
                 <span data-testid="draft-count">还有 {draftEntries} 条旧条目没进档案</span>
+                <Button
+                  data-testid="draft-organize"
+                  variant="ghost"
+                  size="sm"
+                  disabled={organize.isPending}
+                  onClick={() => organize.mutate()}
+                >
+                  {organize.isPending ? '整理中…' : '整理初稿'}
+                </Button>
                 <Button variant="ghost" size="sm" onClick={() => setDraftOpen((prev) => !prev)}>
                   {draftOpen ? '收起' : '展开'}
                 </Button>
@@ -161,6 +203,34 @@ export function MemoryPage() {
                   <pre className="m-original-body" data-testid="draft-content">
                     {draftText.data?.content ?? ''}
                   </pre>
+                )}
+                {draftItems !== null && (
+                  <div className="m-draft-preview" data-testid="draft-preview">
+                    {draftItems.length === 0 ? (
+                      <span data-testid="draft-preview-empty">这一轮没有整理出可用的条目</span>
+                    ) : (
+                      <>
+                        <ul>
+                          {draftItems.map((item) => (
+                            <li
+                              key={`${item.section}-${item.text}`}
+                              data-testid="draft-preview-item"
+                            >
+                              <Badge variant="secondary">{item.section}</Badge>
+                              {item.text}
+                            </li>
+                          ))}
+                        </ul>
+                        <Button
+                          data-testid="draft-apply"
+                          disabled={applyDraft.isPending}
+                          onClick={() => applyDraft.mutate(draftItems)}
+                        >
+                          {applyDraft.isPending ? '写入中…' : '写进档案'}
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             )}

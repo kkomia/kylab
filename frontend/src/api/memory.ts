@@ -51,6 +51,8 @@ export type MemoryArchive = Omit<Schema['MemoryArchiveOut'], 'sections'> & {
 }
 export type MemoryChange = Schema['MemoryChangeOut']
 export type MemoryMigration = Schema['MemoryMigrationOut']
+export type MemoryDraftOrganize = Schema['MemoryDraftOrganizeOut']
+export type MemoryDraftSuggestion = Schema['MemoryDraftSuggestionOut']
 
 export function getMemory(): Promise<MemoryOverview> {
   return requestLocal<MemoryOverview>('/memory')
@@ -132,6 +134,17 @@ export function renameMemoryGroup(
 /** 跑一遍机械折叠迁移（**零模型调用**，§8.3），返回迁移报告。 */
 export function migrateMemory(): Promise<MemoryMigration> {
   return requestLocal<MemoryMigration>('/memory/migrate', { method: 'POST' })
+}
+
+/**
+ * 跑一次模型整理迁移草稿（§8.3）：把旧条目改写成画像条目并给归区建议。
+ *
+ * **用户点一次才发生**（会花钱的默认关），而它**一个字都不写**：返回的是预览，
+ * 确认之后前端逐条打 `rememberMemory`——于是这一次模型调用不可能绕过预算、
+ * 顶替判据与变更流，每条的回执也仍然从那一处文案来。
+ */
+export function organizeMemoryDraft(): Promise<MemoryDraftOrganize> {
+  return requestLocal<MemoryDraftOrganize>('/memory/draft/organize', { method: 'POST' })
 }
 
 /** 在档案的变更流里查证。**与知识库检索是两条路**，结果不合并。 */
