@@ -18,32 +18,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from app.core.exceptions import InvalidRequestError
 from app.services import memory as memory_service
-from app.services import memory_files
+from app.services.archive import SECTION_ENTRY_LIMITS, SOURCE_IMPLICIT
 from app.services.llm import LLMConfig
 from app.services.memory import (
     AGENTS_FILE,
+    CAPTURE_SIGNALS,
     CORE_MEMORY_FILE,
-    LINK_MAX,
     PROFILE_FILE,
     SOUL_FILE,
+    MemoryHit,
     MemoryService,
-    _append_see_also,
-    _capture_headline,
-    _dream_slug,
-    _fingerprint,
-    _normalize,
-    _parse_dream,
-    _select_new,
-    _similar,
+    _parse_lines,
+    matched_signal,
 )
-from app.services.memory_files import MemoryMatch
 
 
 class _FakeRuntime:
@@ -73,27 +66,24 @@ class _FakeRuntime:
         except ValueError:
             return 0
 
-    def get_float(self, key: str) -> float:
-        """同上（``memory.vector_min_score`` 用的是它）。"""
-        try:
-            return float(self.get(key))
-        except ValueError:
-            return 0.0
-
     def llm(self) -> LLMConfig:
         """没绑定对话模型的那个快照（``is_configured`` 为假）。
 
-        捕获那条路要用它；给一个"没配模型"的替身，才能测到那条明确报错的路径
+        隐式捕获那条路要用它；给一个"没配模型"的替身，才能测到那条明确报错的路径
         （真实现里这个快照来自注册表，见 ``RuntimeConfigService.llm``）。
         要测"真的走到模型通道"时（比如思考开关），构造时传一份配置好的进来。
         """
         return self._llm or LLMConfig(base_url="", api_key="", model_id="")
 
+    def llm_for(self, model_pk: str | None) -> LLMConfig:
+        """按指定模型取快照（``memory.capture_model`` 那条路）。替身里两者等价。"""
+        return self.llm()
+
 
 class _FakeChat:
     """假的"问一次模型"：把准备好的回答按顺序发出去，并记下收到的提示词。
 
-    捕获链路要测的是"拿到模型的输出之后我们做什么"（解析、去重、落盘），
+    隐式捕获这条链路要测的是"拿到模型的输出之后我们做什么"（解析、写档案、回执），
     不是"模型会不会说人话"——所以这里不连任何真实模型。
     """
 
@@ -106,10 +96,12 @@ class _FakeChat:
         return self._replies.pop(0) if self._replies else ""
 
 
-def _service(tmp_path: Path, *, ask=None, embed=None, **values: str) -> MemoryService:
+def _service(
+    tmp_path: Path, *, ask=None, llm: LLMConfig | None = None, **values: str
+) -> MemoryService:
     base = {"memory.enabled": "true", "memory.workspace": "memory"}
     base.update(values)
-    return MemoryService(_FakeRuntime(base), tmp_path, ask=ask, embed=embed)  # type: ignore[arg-type]
+    return MemoryService(_FakeRuntime(base, llm), tmp_path, ask=ask)  # type: ignore[arg-type]
 
 
 def _write(workspace: Path, path: str, content: str) -> Path:
@@ -344,68 +336,11 @@ _SEED_CHANGES = """- 2026-10-01 09:20 · 新增 · 长期偏好与风格 · 来�
 """
 
 
-def _no_jieba(monkeypatch: pytest.MonkeyPatch) -> None:
-    """让 ``import jieba`` 真的失败（抛的是**真** ``ModuleNotFoundError``）。
-
-    两件事都得做：拦住 import（``sys.meta_path`` 里插一个只拒 jieba 的 finder），
-    以及**清掉分词器缓存**（``coverage._JIEBA``）——上一个用例可能已经把它导进来了。
-    """
-    import sys
-
-    from app.services.retrieval import coverage
-
-    class _NoJieba:
-        def find_spec(self, name, path=None, target=None):  # type: ignore[no-untyped-def]
-            if name == "jieba" or name.startswith("jieba."):
-                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
-            return None
-
-    monkeypatch.setattr(coverage, "_JIEBA", None)
-    monkeypatch.setattr(sys, "meta_path", [_NoJieba(), *sys.meta_path])
-
-
-def test_recall_works_when_jieba_is_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**缺 jieba 的运行时里 recall 照常工作**（打包后的桌面端就是那种运行时）。
-
-    这条用例的口径在期二随池子换过一次，理由要说清：它原先钉的是
-    "``memory_files.search`` 的分词通道失败时降级到字对通道"——而 recall 现在
-    **根本不走那条路**（池子只剩变更流，排序是纯字面的二元组覆盖率，见 §5.3）。
-    留着的意义因此变成**回归护栏**：谁哪天把分词（或向量、或 ``memory_files``）
-    再接回 recall，这条就会红——那种接法会让桌面端重新出现"一召回就炸"。
-
-    标 ``local``：它证明的恰恰是**没有 jieba 的那台机器**上的行为，
-    而它只用临时目录与假 runtime，不该因为缺 PG 被跳过。
-    """
-    service = _service(tmp_path)
-    _seed(service)
-    _no_jieba(monkeypatch)
-    # 那个标记是**进程级**的（一台机器上"有没有 jieba"不会变），用例自己擦干净
-    monkeypatch.setattr(memory_files, "_SEGMENTATION_MISSING", False)
-
-    hits, _links = service.recall("项目代号叫什么")
-
-    assert hits, "缺 jieba 不该把 recall 整条打掉"
-    assert hits[0].path == "changes.md"
-    # 连分词器都没被问过：`_SEGMENTATION_MISSING` 是"试过一次、它不在"的标记，
-    # 而 recall 现在根本不走那条通道（这正是这条用例的意义）
-    assert memory_files.segmentation_unavailable() is False
-
-    from app.api.v1.memory import RECALL_NOTE as api_note
-    from app.services.tools import _recall_note as tool_note
-
-    # **两处的说明都不再提分词**：池子只有几十到几百条记录，谁也没走分词那条通道，
-    # 再挂一句"召回质量受影响"就是描述一个不存在的机制
-    assert memory_files.SEGMENTATION_UNAVAILABLE_NOTE not in api_note
-    assert memory_files.SEGMENTATION_UNAVAILABLE_NOTE not in tool_note()
-
-
 def _seed(service: MemoryService) -> Path:
     """铺一个像样的工作区：一份档案 + 一份变更流（外加 daily/digest 各一份）。
 
-    daily 与 digest 那两份**故意留着**：它们曾经是召回池，现在不是了——
-    下面有用例钉"它们不再被 recall 返回"（池子换了，不是全都招不到）。
+    daily 与 digest 那两份**故意留着**：它们曾经是召回池，现在**代码不再消费它们**
+    （文件还在磁盘上，那是用户数据）。下面有用例钉"它们不再被 recall 返回"。
     """
     workspace = service.workspace
     _write(workspace, "digest/personal/锂价.md", _SEED_DIGEST)
@@ -429,7 +364,7 @@ def test_recall_finds_a_changed_entry_with_a_real_line_range(tmp_path: Path) -> 
     service = _service(tmp_path)
     _seed(service)
 
-    hits, _links = service.recall("项目代号叫什么")
+    hits = service.recall("项目代号叫什么")
 
     assert hits, "这条改动就在变更流里，必须能查到"
     top = hits[0]
@@ -445,8 +380,8 @@ def test_recall_refuses_a_noise_query(tmp_path: Path) -> None:
     service = _service(tmp_path)
     _seed(service)
 
-    assert service.recall("合唱团的排练时间安排")[0] == []
-    assert service.recall("今天天气怎么样")[0] == []
+    assert service.recall("合唱团的排练时间安排") == []
+    assert service.recall("今天天气怎么样") == []
 
 
 def test_recall_pool_excludes_archive_entries_already_injected(tmp_path: Path) -> None:
@@ -458,24 +393,23 @@ def test_recall_pool_excludes_archive_entries_already_injected(tmp_path: Path) -
     service = _service(tmp_path)
     _seed(service)
 
-    hits, _links = service.recall("用户叫小又，称呼「小又」即可")
-    assert hits == [], "档案里的条目不在召回池里"
+    assert service.recall("用户叫小又，称呼「小又」即可") == [], "档案里的条目不在召回池里"
 
     # 反向确认：变更流里那条**确实**能查到（池子不是空的，是换了个池子）
-    assert service.recall("先给结论，再列依据")[0]
+    assert service.recall("先给结论，再列依据")
 
 
-def test_recall_pool_is_not_the_daily_or_digest_layer(tmp_path: Path) -> None:
-    """daily / digest 那一层**不再进召回池**（§5.3）。
+def test_recall_pool_never_reads_the_daily_or_digest_files(tmp_path: Path) -> None:
+    """daily / digest 那一层**不进召回池**（§5.3）——那一层的检索已经整条退场。
 
-    它们仍在工作区里（期五才清理），但 recall 已经不吃它们了——
-    这条与上一条一起把"池子换了"钉死：不是检索坏了，是换了池子。
+    它们仍在工作区里（旧文件不删，用户数据），但 recall 只看 ``changes.md``：
+    这条与上一条一起把"池子换了"钉死——不是检索坏了，是换了池子。
     """
     service = _service(tmp_path)
     _seed(service)
 
-    assert service.recall("锂价下跌对毛利的影响")[0] == []
-    assert service.recall("发布前必须先跑一遍后端门禁脚本")[0] == []
+    assert service.recall("锂价下跌对毛利的影响") == []
+    assert service.recall("发布前必须先跑一遍后端门禁脚本") == []
 
 
 def test_recall_never_returns_document_pool_content(tmp_path: Path) -> None:
@@ -484,10 +418,8 @@ def test_recall_never_returns_document_pool_content(tmp_path: Path) -> None:
     service = _service(tmp_path)
     _seed(service)
 
-    hits, _links = service.recall("知识库原文里的那段话")
-
-    assert hits == []
-    assert all(hit.path == "changes.md" for hit in service.recall("项目代号")[0])
+    assert service.recall("知识库原文里的那段话") == []
+    assert all(hit.path == "changes.md" for hit in service.recall("项目代号"))
 
 
 def test_recall_clamps_the_limit(tmp_path: Path) -> None:
@@ -504,7 +436,7 @@ def test_recall_clamps_the_limit(tmp_path: Path) -> None:
         ),
     )
 
-    hits, _links = service.recall("偏好记录", limit=9999)
+    hits = service.recall("偏好记录", limit=9999)
 
     assert len(hits) == 20
 
@@ -514,9 +446,7 @@ def test_recall_is_empty_when_there_is_no_changelog(tmp_path: Path) -> None:
     service = _service(tmp_path)
     _write(service.workspace, PROFILE_FILE, "---\nupdated: 2026-10-03\n---\n\n- 项目代号叫 kylab\n")
 
-    hits, links = service.recall("项目代号")
-
-    assert hits == [] and links == []
+    assert service.recall("项目代号") == []
 
 
 def test_recall_raises_when_the_query_is_empty(tmp_path: Path) -> None:
@@ -524,55 +454,25 @@ def test_recall_raises_when_the_query_is_empty(tmp_path: Path) -> None:
         _service(tmp_path).recall("   ")
 
 
-def test_recall_does_not_use_the_vector_route(tmp_path: Path) -> None:
-    """**向量那一路不参与 recall**（§5.3）：池子只有几十到几百条记录，
-    排序是纯字面判据——不建索引、不嵌任何东西。
-
-    这条同时挡住"顺手把 recall 又接回记忆索引"：那样每次查询都要赌一次
-    嵌入延迟，而换来的精度在一个几十条的池子上没有意义。
-    """
-
-    def _boom(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("recall 不该去碰嵌入/向量那一路")
-
-    service = MemoryService(  # type: ignore[arg-type]
-        _FakeRuntime(
-            {
-                "memory.enabled": "true",
-                "memory.workspace": "memory",
-                # 开关打开也没用：recall 那一侧根本不问它（下面那个 embed 会炸）
-                "memory.vector_enabled": "true",
-            }
-        ),
-        tmp_path,
-        embed=_boom,
-    )
-    _seed(service)
-
-    hits, _links = service.recall("项目代号叫什么")
-
-    assert hits, "关掉向量那一路不影响查变更流"
+# --------------------------------------------------- 查证结果与工作区的形状
 
 
-# --------------------------------------------------- 召回结果与工作区的形状
-
-
-def test_hit_is_a_match_record_with_source() -> None:
-    """召回结果必须带出处（``path`` + 行号）：没有出处就没法溯源、也没法去改。"""
-    hit = MemoryMatch(
-        text="锂价下跌 10% 会让毛利下降",
-        path="digest/personal/锂价.md",
-        start_line=7,
-        end_line=7,
+def test_hit_carries_its_source_lines() -> None:
+    """查证结果必须带出处（``path`` + 行号）：没有出处就没法溯源、也没法去改。"""
+    hit = MemoryHit(
+        text="项目代号叫 kylab2，11 月交付。",
+        path="changes.md",
+        start_line=3,
+        end_line=5,
         score=1.5,
         coverage=1.0,
     )
 
-    assert (hit.path, hit.start_line, hit.end_line) == ("digest/personal/锂价.md", 7, 7)
+    assert (hit.path, hit.start_line, hit.end_line) == ("changes.md", 3, 5)
 
 
-def test_status_is_local_and_counts_the_pool(tmp_path: Path) -> None:
-    """状态是纯本地的数字：几份文件、其中几份可召回、可召回几条、上次更新时间。
+def test_status_is_local_and_counts_the_files(tmp_path: Path) -> None:
+    """状态是纯本地的数字：几份文件、上次更新时间。
 
     **没有任何"连没连上"**（v0.46 删了）：记忆在我们的进程里跑，没有第二个进程可连。
     """
@@ -583,13 +483,8 @@ def test_status_is_local_and_counts_the_pool(tmp_path: Path) -> None:
 
     assert status.enabled is True
     # 档案 + 变更流 + digest + daily = 4 份（`PROFILE.md` 与 `changes.md` 是期二
-    # 新写进来的两份；`daily`/`digest` 那一层还在盘上，等期五清理）
+    # 新写进来的两份；`daily`/`digest` 那一层还在盘上，只是代码不再消费）
     assert status.file_count == 4
-    assert status.retrievable_count == 2
-    # 那个数字数的仍是**旧召回池**（daily/digest）的切块数：digest 2 块 + daily 2 块。
-    # 期二没有改它的口径——它随整个统计一起等期五（那时 daily/digest 退场，
-    # 界面上这个数字也跟着换）。
-    assert status.entry_count == 4
     assert status.core_file_exists is False, "MEMORY.md 退场：新部署不再有这份文件"
     assert status.last_changed_at, "有文件就该有'上次更新'时间"
     assert status.detail == ""
@@ -602,383 +497,218 @@ def test_status_says_why_it_is_off_when_disabled(tmp_path: Path) -> None:
     assert "未启用" in status.detail
 
 
-# --------------------------------------------------------------------- 捕获
+# --------------------------------------------------------------- 隐式捕获（§4.1 ②）
 #
-# 捕获 = 问一次对话模型 → 解析 → 去重 → 追加到当天的 daily 文件。
-# 这一组用假模型（``ask``），测的是我们这一侧的全部逻辑。
+# 信号命中 → 一次判定调用 → 画像双问过了才写。这一组用假模型（``ask``）测我们这
+# 一侧的全部逻辑：开关、词表、解析、写档案、回执、超限与敏感否决。
 
-_TURN = [
-    {"role": "user", "name": "用户", "content": "以后回答简短点，先说结论"},
-    {"role": "assistant", "name": "助手", "content": "好，以后都这样"},
-]
+#: 判定说"值得记"时模型该给的那一行（分区 + 一句话）。
+_CAPTURE_REPLY = "长期偏好与风格｜用户要求以后的回答都先给结论。"
 
-
-def _day(service: MemoryService) -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+#: 一句会命中信号词的话（"以后"）。
+_SIGNAL_MESSAGE = "我以后都要先看结论"
 
 
-def _day_path(service: MemoryService) -> Path:
-    """**当天索引页**（``daily/<日期>.md``）——它列出当天各条会话笔记。"""
-    return service.workspace / "daily" / f"{_day(service)}.md"
+def _capturing(tmp_path: Path, reply: str, **values: str) -> tuple[MemoryService, _FakeChat]:
+    """开好开关、接上假模型的捕获服务（产品默认是关的，用例里显式打开）。"""
+    chat = _FakeChat(reply)
+    values.setdefault("memory.capture", "true")
+    return _service(tmp_path, ask=chat, **values), chat
 
 
-def _day_dir(service: MemoryService) -> Path:
-    """当天各条**会话笔记**所在的目录（``daily/<日期>/``）。"""
-    return service.workspace / "daily" / _day(service)
+def test_implicit_capture_off_by_default(tmp_path: Path) -> None:
+    """§9.2 第 9 条：``memory.capture=false`` 时捕获路径**一次模型都不调**。
 
-
-def _all_notes(service: MemoryService) -> str:
-    """当天全部会话笔记拼起来（测试多半只关心"一共写了几次"）。"""
-    directory = _day_dir(service)
-    if not directory.is_dir():
-        return ""
-    return "\n".join(
-        item.read_text(encoding="utf-8") for item in sorted(directory.glob("*.md"))
-    )
-
-
-def test_capture_writes_new_entries_into_todays_daily_file(tmp_path: Path) -> None:
-    """捕获落 **daily**（设计文档 §1 的两层分工）：``MEMORY.md`` 是每轮整份注入的
-    核心记忆，自动沉淀直接写进去等于机器替人决定"什么该长期占着上下文窗口"。
-
-    落点是**这个会话当天的那一条笔记**（``daily/<日期>/<会话>.md``），来源会话
-    既进 frontmatter（用来认领这份笔记）也留一行 HTML 注释（渲染时看不见）。
+    构造直接用**产品默认值**（不是自己写一份配置）：默认值哪天翻过来，这条跟着翻
+    ——手抄一份的话，测的就是测试自己写的配置了。
     """
-    chat = _FakeChat("- 用户偏好简短回答，先说结论\n- 回复不要长篇大论")
-    service = _service(tmp_path, ask=chat)
+    from app.services.runtime_config import DEFAULTS
 
-    result = service.capture(_TURN, session_id="conv_1")
+    assert DEFAULTS["memory.capture"] == "false", "隐式捕获必须默认关"
 
-    assert result["created"] is True
-    assert result["path"].startswith(f"daily/{_day(service)}/")
-    body = (service.workspace / result["path"]).read_text(encoding="utf-8")
-    assert "- 用户偏好简短回答，先说结论" in body
-    assert "- 回复不要长篇大论" in body
-    assert "conv_1" in body
-    # 当天索引页把这条笔记列出来，而且链的是**真实存在**的那一份
-    assert f"[[{result['path']}]]" in _day_path(service).read_text(encoding="utf-8")
-    # 提示词里要带上"谁说的"与"这一轮对话"——否则模型无从判断该记什么
-    prompt = str(chat.prompts[0])
-    assert "以后回答简短点" in prompt and "助手" in prompt
+    chat = _FakeChat(_CAPTURE_REPLY)
+    service = _service(tmp_path, ask=chat, **{"memory.capture": DEFAULTS["memory.capture"]})
+
+    assert service.capture_enabled is False
+    assert service.capture_implicit(_SIGNAL_MESSAGE) is None
+    assert chat.prompts == [], "关着时连信号词都不看"
+    assert service.archive().read().entries == ()
 
 
-def test_capture_is_idempotent_across_turns(tmp_path: Path) -> None:
-    """**同一件事不反复写**：第二轮的同一轮对话不该再多写一行。
+def test_no_signal_word_means_no_call(tmp_path: Path) -> None:
+    """**不在无信号轮次调用**：词表没命中就连判定都不发起（§4.1 的机械前置筛）。"""
+    service, chat = _capturing(tmp_path, _CAPTURE_REPLY)
 
-    这道防线有两层：提示词里把已有条目给模型看（让它自己别重复），
-    以及机械比对兜底（模型并不总是听话）。这里测的是第二层——
-    假模型**故意**把同一条再说一遍。
+    assert service.capture_implicit("帮我把这段改短一点") is None
+    assert chat.prompts == [], "没信号的一轮一次都不该问模型"
+
+    # 命中之后才问，而且**同一轮里只问一次**
+    assert service.capture_implicit(_SIGNAL_MESSAGE) is not None
+    assert len(chat.prompts) == 1
+
+
+def test_capture_signal_table_is_a_flat_literal_lookup() -> None:
+    """词表是一张**扁平的字面表**（可调、可读、可被真实使用推翻，§10 第 5 条）。"""
+    assert matched_signal("我以后都要这样") == "以后"
+    assert matched_signal("记住：别用 emoji") in {"记住", "别"}
+    assert matched_signal("帮我看一下这个文件") == ""
+    # 设计文档点名的那几个词都在（词表改动要能一眼对上文档）
+    for word in ("记住", "以后", "下次都", "每次都", "别", "不要", "目标是", "必须是"):
+        assert word in CAPTURE_SIGNALS
+
+
+def test_parse_capture_reads_labels_bullets_and_drops_prose() -> None:
+    """解析的宽容与严格各一半（模型随时会飘一点）。
+
+    宽：项目符号、围栏、全角/半角竖线都认；分区名写错也认（归区有机械词表兜底）。
+    严：**散文一律丢掉**——写进档案的东西每轮都在收税，而模型回一句
+    「这一轮没有值得记的」正是要我们别写。
     """
-    chat = _FakeChat(
-        "- 用户偏好简短回答，先说结论",
-        "- 用户偏好简短回答，先说结论",
-    )
-    service = _service(tmp_path, ask=chat)
-
-    first = service.capture(_TURN, session_id="conv_1")
-    second = service.capture(_TURN, session_id="conv_2")
-
-    assert first["created"] is True
-    assert second["created"] is False, "同一条内容第二次不该再写"
-    # 数**条目行**而不是那句话：新笔记的 summary 取自第一条，所以同一句话在
-    # 文件里本来就有两处（frontmatter 一次、条目一次）。
-    assert _all_notes(service).count("- 用户偏好简短回答") == 1
-
-
-def test_capture_skips_a_paraphrase_of_an_existing_entry(tmp_path: Path) -> None:
-    """换了语序/换了个词的同一句话也算重复（``_similar`` 的二元组判据）。"""
-    chat = _FakeChat(
-        "- 设备名是 nas，地址是 192.168.1.10",
-        "- 地址是 192.168.1.10，设备名是 nas",
-    )
-    service = _service(tmp_path, ask=chat)
-
-    service.capture(_TURN, session_id="conv_1")
-    again = service.capture(_TURN, session_id="conv_2")
-
-    assert again["created"] is False
+    assert _parse_lines("长期偏好与风格｜用户要求先给结论。", limit=2) == [
+        ("长期偏好与风格", "用户要求先给结论。")
+    ]
+    assert _parse_lines("```\n- 工具与环境|用户的内网有一台 L20。\n```", limit=2) == [
+        ("工具与环境", "用户的内网有一台 L20。")
+    ]
+    # 分区名认不出来：正文照收，归区交给机械词表
+    assert _parse_lines("我猜的分区｜用户喜欢简短回答。", limit=2) == [("", "用户喜欢简短回答。")]
+    # 散文（既没有项目符号、也没有「｜」）：丢掉，不猜
+    assert _parse_lines("这一轮没有值得记的。", limit=2) == []
+    assert _parse_lines("好的，我整理如下：\n没有。", limit=2) == []
+    # 上限：一次最多两条（隐式捕获那条路的"宁可漏不可滥"）
+    five = "\n".join(f"长期偏好与风格｜第 {i} 条。" for i in range(5))
+    assert len(_parse_lines(five, limit=2)) == 2
 
 
-def test_capture_writes_nothing_when_the_model_finds_nothing(tmp_path: Path) -> None:
-    """没有值得记的**也是一次正常结果**（``created=false``），不是错误。
+def test_implicit_capture_writes_into_the_archive_with_a_receipt(tmp_path: Path) -> None:
+    """开着时真 mock 模型跑一句「我以后都要…」：**被捕获、进档案、有回执**。
 
-    模型偶尔会回一句散文（"这轮没有值得记的"）——那不能被当成一条记忆写进去。
+    三条一起钉：分区按模型给的走、来源记成**隐式**、回执与显式那条路**同一份文案**
+    （§4.4：模型从工具听到的、人在界面上看到的、这一句，必须是一句话）。
     """
-    service = _service(tmp_path, ask=_FakeChat("这一轮没有值得记的内容。"))
+    service, chat = _capturing(tmp_path, _CAPTURE_REPLY)
 
-    result = service.capture(_TURN, session_id="conv_1")
+    outcome = service.capture_implicit(_SIGNAL_MESSAGE)
 
-    assert result["created"] is False
-    assert result["path"] == ""
-    assert not _day_path(service).exists()
+    assert outcome is not None
+    assert outcome.signal == "以后"
+    assert [item.action for item in outcome.results] == ["added"]
+    assert outcome.receipt == "记下了：用户要求以后的回答都先给结论。"
+    assert chat.prompts and "我以后都要先看结论" in str(chat.prompts[0])
+
+    entries = service.archive().read().entries
+    assert [(item.section, item.text) for item in entries] == [
+        ("长期偏好与风格", "用户要求以后的回答都先给结论。")
+    ]
+    assert service.archive().changes()[0].source == SOURCE_IMPLICIT
 
 
-def test_capture_keeps_one_note_per_session(tmp_path: Path) -> None:
-    """**一个会话一天一条笔记**：同一天再沉淀是续写那一条，不是另起一份。
+def test_implicit_capture_takes_a_wrong_section_name_and_falls_back(tmp_path: Path) -> None:
+    """分区名写错（模型偶尔会）**不该让一条真事实落不了盘**：按内容机械归区兜底。"""
+    service, _chat = _capturing(tmp_path, "- 我猜到了｜用户喜欢简短回答。")
 
-    这是这一层从"只增不并"里走出来的那一步。原先所有会话往同一个平铺文件尾部
-    追加，既分不清哪些条目属于哪次对话、也没有地方可以"更新"，于是只能越堆越长。
-    照 QwenPaw 的 Auto-Memory：认领的键是 frontmatter 里的 ``session_id``
-    （精确相等），**不靠内容相似度去猜**。
+    outcome = service.capture_implicit(_SIGNAL_MESSAGE)
+
+    assert outcome is not None
+    assert [(item.section, item.text) for item in service.archive().read().entries] == [
+        ("长期偏好与风格", "用户喜欢简短回答。")
+    ]
+
+
+def test_implicit_capture_does_not_consult_the_memory_switch(tmp_path: Path) -> None:
+    """两个开关**各管一件事**：``memory.enabled`` 关着时隐式捕获照写。
+
+    与 `remember` 同一条纪律（"关了也能改自己的东西"）：注入停不停，与自动写入
+    能不能发生，是两件事——合成一个判据的后果是"关掉注入之后，用户显式打开的
+    自动记也不明不白地停了"。
     """
-    service = _service(tmp_path, ask=_FakeChat("- 第一条事实"))
-    service.capture(_TURN, session_id="conv_1")
+    service, chat = _capturing(tmp_path, _CAPTURE_REPLY, **{"memory.enabled": "false"})
 
-    # 同一会话、同一天，第二次沉淀 → 还是那一份笔记，只是多了一行
-    again = _service(tmp_path, ask=_FakeChat("- 第二条事实"))
-    again.capture(_TURN, session_id="conv_1")
-    notes = sorted(_day_dir(service).glob("*.md"))
-    assert len(notes) == 1
-    body = notes[0].read_text(encoding="utf-8")
-    assert "- 第一条事实" in body and "- 第二条事实" in body
+    outcome = service.capture_implicit(_SIGNAL_MESSAGE)
 
-    # 另一个会话 → 另一份笔记；当天索引页把两条都列出来
-    other = _service(tmp_path, ask=_FakeChat("- 别的会话的事"))
-    other.capture(_TURN, session_id="conv_2")
-
-    assert len(sorted(_day_dir(service).glob("*.md"))) == 2
-    assert _day_path(service).read_text(encoding="utf-8").count("[[daily/") == 2
+    assert outcome is not None and outcome.results
+    assert len(chat.prompts) == 1
+    assert service.archive().read().entries
 
 
-def test_capture_does_not_wipe_a_flat_day_file_from_an_older_version(
-    tmp_path: Path,
-) -> None:
-    """升级不抹记忆：**旧的平铺当天文件**（条目直接写在 ``daily/<日期>.md`` 里）
-    必须原样留着，索引区块只追加。
+def test_implicit_capture_writes_nothing_when_the_judgement_says_no(tmp_path: Path) -> None:
+    """**画像双问皆否（或三条否决命中）时模型什么都不输出**：档案一个字不动。
 
-    老部署里那些条目是用户看得到、也改得过的记忆。重建整份索引页会把它们删掉，
-    而"升级把记忆弄没了"是这一层最不可接受的失败。
+    空结果要能与"没信号"分得开（那一种返回 ``None``）：前者是判定跑过了、
+    后者是根本没跑——调用方靠这个决定要不要在过程面上提这件事。
     """
-    service = _service(tmp_path, ask=_FakeChat("- 新沉淀的事实"))
-    _day_path(service).parent.mkdir(parents=True, exist_ok=True)
-    _day_path(service).write_bytes("# 老格式\n\n- 老版本记下的事实\n".encode())
+    service, chat = _capturing(tmp_path, "")
 
-    service.capture(_TURN, session_id="conv_1")
+    outcome = service.capture_implicit("记住：今天先把这段改短")
 
-    index = _day_path(service).read_text(encoding="utf-8")
-    assert "- 老版本记下的事实" in index
-    assert "- [[daily/" in index
+    assert outcome is not None and outcome.results == ()
+    assert outcome.receipt == ""
+    assert len(chat.prompts) == 1, "判定确实跑过一次"
+    assert service.archive().read().entries == ()
+    assert service.archive().changes() == []
 
 
-def test_capture_drops_overlong_entries(tmp_path: Path) -> None:
-    """超过单条上限的**丢掉而不是截断**：半条记忆会被当成完整事实读，比没有更糟。"""
-    service = _service(tmp_path, ask=_FakeChat(f"- {'字' * 501}\n- 短的那条"))
+def test_implicit_capture_over_budget_is_rejected_with_a_way_out(tmp_path: Path) -> None:
+    """超限被拒时回执**给出两条出路**（§4.4），而且档案**逐字节不变**（§9.2 第 3 条）。"""
+    service, _chat = _capturing(tmp_path, _CAPTURE_REPLY)
+    for index in range(SECTION_ENTRY_LIMITS["长期偏好与风格"]):
+        service.remember(f"用户偏好第 {index} 条。", section="长期偏好与风格")
+    before = service.archive_text()
 
-    service.capture(_TURN, session_id="conv_1")
+    outcome = service.capture_implicit(_SIGNAL_MESSAGE)
 
-    body = _all_notes(service)
-    assert "短的那条" in body
-    assert "字" * 501 not in body
+    assert outcome is not None
+    assert outcome.results[0].action == "rejected"
+    assert "满了" in outcome.receipt and "删一条" in outcome.receipt
+    assert service.archive_text() == before
 
 
-def test_capture_caps_how_many_entries_one_turn_can_write(tmp_path: Path) -> None:
-    service = _service(tmp_path, ask=_FakeChat("\n".join(f"- 事实 {index}" for index in range(9))))
+def test_implicit_capture_never_writes_sensitive_content(tmp_path: Path) -> None:
+    """敏感信息那条否决**绝不写**，而且变更流里一条痕都不留（留痕本身就是泄漏）。"""
+    service, _chat = _capturing(tmp_path, "工具与环境｜用户的密钥是 sk-abcdef123456。")
 
-    result = service.capture(_TURN, session_id="conv_1")
+    outcome = service.capture_implicit("记住：我的密钥是 sk-abcdef123456")
 
-    assert result["created"] is True
-    assert len(result["entries"]) == 5
+    assert outcome is not None
+    assert outcome.results[0].action == "rejected"
+    assert "不进档案" in outcome.receipt
+    assert service.archive().read().entries == ()
+    assert service.archive().changes() == []
+    assert "sk-abcdef123456" not in service.archive_text()
 
 
-def test_capture_rejects_messages_without_role_or_content(tmp_path: Path) -> None:
-    service = _service(tmp_path, ask=_FakeChat("- 甲"))
+def test_implicit_capture_reports_a_missing_model(tmp_path: Path) -> None:
+    """没配模型时**明确报错**，不静默什么都不做（调用方把它吞成日志）。"""
+    service = _service(tmp_path, **{"memory.capture": "true"})
 
-    with pytest.raises(InvalidRequestError, match="缺少 role / content"):
-        service.capture([{"role": "user"}], session_id="conv_1")
-
-
-def test_capture_requires_a_session_id(tmp_path: Path) -> None:
-    """``session_id`` 是溯源锚点：没有它，"这条记忆是哪次对话来的"就查不到了。"""
-    service = _service(tmp_path, ask=_FakeChat("- 甲"))
-
-    with pytest.raises(InvalidRequestError, match="session_id"):
-        service.capture(_TURN, session_id="  ")
-
-
-def test_capture_rejects_empty_messages(tmp_path: Path) -> None:
-    with pytest.raises(InvalidRequestError, match="没有可沉淀的消息"):
-        _service(tmp_path, ask=_FakeChat("- 甲")).capture([], session_id="conv_1")
-
-
-def test_capture_still_needs_the_switch(tmp_path: Path) -> None:
-    """自动沉淀**仍然要开关**：它是一次真实的模型调用，
-    不打招呼就烧 token 是这一层最不该有的默认。"""
-    service = _service(tmp_path, ask=_FakeChat("- 甲"), **{"memory.enabled": "false"})
-
-    with pytest.raises(InvalidRequestError, match="未启用"):
-        service.capture(_TURN, session_id="conv_1")
-
-
-def test_capture_reports_a_missing_chat_model(tmp_path: Path) -> None:
-    """没配对话模型时**明确报错**（由队列去重试），不静默什么都不做——
-    静默的后果是"记忆开着却什么都没记住"，那是最难查的一类症状。"""
-    service = _service(tmp_path)  # 不给 ask，用的是 runtime.llm() 那条路
-
-    with pytest.raises(InvalidRequestError, match="没有配置对话模型"):
-        service.capture(_TURN, session_id="conv_1")
-
-
-# ------------------------------------------------------------------ 去重判据
-
-
-def test_similar_catches_rewrites_but_not_new_facts() -> None:
-    """去重判据的**两侧**都要钉住：同一句话的改写要拦，新信息不能拦。
-
-    阈值定得偏高（0.7）与"包含关系最多只多 6 个字"（``CONTAINMENT_SLACK``）是
-    故意偏保守的：漏过一条重复看得见（用户扫一眼文件就能删），
-    误判"新事实 = 旧条目"会静默丢掉一条真事实，而**这一轮没有整理机制**
-    把新信息并进旧条目——拦下来就等于丢了。两者不对等。
-    """
-    # 只差标点/空白：同一句
-    assert _similar("设备名是 nas", "设备名是 nas。")
-    # 同一句话的标点级补充：多两个字，算重复
-    assert _similar("设备名是 nas", "设备名是 nas 那台")
-    # 语序调换的同一句话：二元组够像，算重复
-    assert _similar("设备名是 nas，地址是 10.0.0.1", "地址是 10.0.0.1，设备名是 nas")
-    # **补了半句的新信息不拦**：没有整理机制去合并，拦下来就是丢信息
-    assert not _similar("设备名是 nas", "设备名是 nas，地址是 192.168.1.10")
-    # 不同的事实：不能拦
-    assert not _similar("设备名是 nas", "用户偏好简短回答")
-    # **数字变了就是另一件事**：短句上"只差两个字"的相似度天然很高，
-    # 没有这条否决，新版本（kylab → kylab2）会被静默丢掉
-    assert not _similar("项目代号叫 kylab", "项目代号叫 kylab2 代")
-    assert not _similar("订阅端口是 2333", "订阅端口改成 3333")
-
-
-def test_fingerprint_and_normalize_ignore_formatting_only() -> None:
-    assert _fingerprint("设备名是 nas。") == _fingerprint("设备名是nas")
-    assert _normalize("- 甲 #x") == _normalize("- 甲 #y")
-    assert _normalize("- 甲") != _normalize("- 乙")
-
-
-def test_select_new_only_accepts_bullet_lines() -> None:
-    """解析只认带项目符号/编号的行：模型回散文时结果就是"没有新条目"。"""
-    fresh = _select_new("好的，我挑出了两条：\n- 甲\n2. 乙\n（以上）", [])
-
-    assert fresh == ["甲", "乙"]
-
-
-# --------------------------------------------------------------------- 节流
-
-
-class _FakeMeta:
-    def __init__(self) -> None:
-        self.tasks: list[object] = []
-        self.settings: dict[str, str] = {}
-
-    def enqueue_task(self, record: object) -> None:
-        self.tasks.append(record)
-
-    def get_setting(self, key: str) -> str | None:
-        return self.settings.get(key)
-
-    def set_setting(self, key: str, value: str) -> None:
-        self.settings[key] = value
-
-
-class _FakeStores:
-    def __init__(self) -> None:
-        self.meta = _FakeMeta()
-
-
-def _service_with_stores(tmp_path: Path, **values: str) -> tuple[MemoryService, _FakeStores]:
-    stores = _FakeStores()
-    values.setdefault("memory.enabled", "true")
-    service = MemoryService(
-        _FakeRuntime({"memory.workspace": "memory", **values}),  # type: ignore[arg-type]
-        tmp_path,
-        stores=stores,  # type: ignore[arg-type]
-    )
-    return service, stores
-
-
-def test_implicit_capture_never_fires_from_the_turn_flow(tmp_path: Path) -> None:
-    """§9.2 第 9 条：**捕获路径一次模型都不调**（旧定时捕获已废）。
-
-    期二把"每 N 个用户回合判一次"整条退场了（§4.1：它花的是固定节奏的钱），
-    所以 `enqueue_capture` 恒 False、一个任务都不入队——哪怕
-    ``memory.capture_every`` 设成 1、存储也接上了。
-
-    留下的自动写入只有**期四的信号捕获**（默认关）；在那之前
-    "默认配置下每轮零额外模型调用"是**结构上**成立的。
-    """
-    service, stores = _service_with_stores(tmp_path, **{"memory.capture_every": "1"})
-
-    for turn in (1, 2, 3, 4, 5):
-        assert service.enqueue_capture(_TURN, session_id="c1", turn_count=turn) is False
-
-    assert stores.meta.tasks == []
-
-
-def test_capture_turn_is_retired(tmp_path: Path) -> None:
-    """一轮问答收尾时不再有"沉淀"这一步：`capture_turn` 恒 False，**含 ``force``**。
-
-    ``force`` 原先服务上下文压缩那一刻（被折进摘要的内容再不记就没人记得住了）。
-    它一起退场的理由：自动写入只剩期四那一条路，留一个"能绕过一切的开关"
-    就等于把定时捕获又接回来——而那正是这一次要废掉的东西。
-    """
-    service, stores = _service_with_stores(tmp_path, **{"memory.capture_every": "1"})
-
-    assert service.capture_turn("c1", turn_count=5) is False
-    assert service.capture_turn("c1", turn_count=5, force=True) is False
-    assert stores.meta.tasks == []
-
-
-def test_capture_is_off_when_memory_is_disabled(tmp_path: Path) -> None:
-    service, stores = _service_with_stores(
-        tmp_path, **{"memory.enabled": "false", "memory.capture_every": "1"}
-    )
-
-    assert service.enqueue_capture(_TURN, session_id="c1", turn_count=1) is False
-    assert stores.meta.tasks == []
-
-
-def test_capture_without_stores_is_a_noop(tmp_path: Path) -> None:
-    """没接存储时不入队、也不报错——recall / remember / 注入都不需要数据库，
-    测试与脚本因此可以轻量构造。"""
-    service = _service(tmp_path, **{"memory.capture_every": "5"})
-
-    assert service.enqueue_capture(_TURN, session_id="c1", turn_count=5) is False
-
-
-def test_capture_due_is_always_false_now(tmp_path: Path) -> None:
-    """`capture_due` 是界面那一步（「交给长期记忆」）问的判据：**恒 False**。
-
-    它必须与写侧同源（`api/v1/chat._memory_handoff_step`）：写侧不入队而它说"会"，
-    界面就会报一件不会发生的事——那比不报更糟。现在两边都是 False，
-    于是那一步也不会出现（期四把两边一起改回真判据）。
-    """
-    with_store, _meta = _capturing_service(tmp_path, **{"memory.capture_every": "1"})
-    bare = _service(tmp_path)
-
-    assert with_store.capture_due(5) is False
-    assert bare.capture_due(5) is False
+    with pytest.raises(InvalidRequestError, match="没有可用的对话模型"):
+        service.capture_implicit(_SIGNAL_MESSAGE)
 
 
 def test_default_config_makes_zero_extra_model_calls_per_turn(tmp_path: Path) -> None:
     """§9.2 第 1 条：**默认配置下，一轮对话的模型调用次数与记忆无关**。
 
     注入、显式写入（``remember``/``forget``）、``recall`` 都不新增调用——
-    它们要么是纯本地读写，要么本来就在当轮的工具循环里。
+    它们要么是纯本地读写，要么本来就在当轮的工具循环里；而唯一会自动花钱的
+    隐式捕获**默认关**（§9.2 第 9 条，见上面那条）。
 
     这一条**按产品默认值构造**（从 ``DEFAULTS`` 取 memory.* 那几个键），
     而不是自己发明一份配置：默认值一改，这条就会跟着改口径；要是手抄一份，
     测的就是测试自己写的配置了。
 
-    顺带钉住 v0.56 的默认值变更（§7.3 的行为变更）：``memory.enabled`` 默认 **true**、
+    顺带钉住 v0.56 的默认值：``memory.enabled`` 默认 **true**、
     ``memory.persona_files`` 只剩两份人设（档案不在那份清单里）。
     """
     from app.services.runtime_config import DEFAULTS
 
     assert DEFAULTS["memory.enabled"] == "true"
     assert DEFAULTS["memory.persona_files"] == "SOUL.md,AGENTS.md"
+    assert DEFAULTS["memory.capture"] == "false"
+    assert DEFAULTS["memory.capture_model"] == ""
 
     defaults = {key: value for key, value in DEFAULTS.items() if key.startswith("memory")}
     chat = _FakeChat()  # 每被调用一次就往 `prompts` 里记一笔
-    stores = _FakeStores()
-    service = MemoryService(  # type: ignore[arg-type]
-        _FakeRuntime(defaults), tmp_path, stores=stores, ask=chat
-    )
+    service = MemoryService(_FakeRuntime(defaults), tmp_path, ask=chat)  # type: ignore[arg-type]
 
     # 一轮对话里与记忆有关的那几件事，一件不落
     service.seed_persona()
@@ -992,12 +722,45 @@ def test_default_config_makes_zero_extra_model_calls_per_turn(tmp_path: Path) ->
 
     assert chat.prompts == [], "这几件事一件都不该问模型"
 
-    # 自动捕获那两条路也不许产生调用（定时捕获已废）
-    assert service.capture_turn("c1", turn_count=5) is False
-    assert service.capture_turn("c1", turn_count=5, force=True) is False
-    assert service.enqueue_capture(_TURN, session_id="c1", turn_count=5) is False
+    # 自动写入只剩隐式这一条路，而它默认关：连信号词都不用看就返回
+    assert service.capture_implicit("记住：我以后都要先给结论") is None
     assert chat.prompts == []
-    assert stores.meta.tasks == [], "一个记忆任务都不该入队"
+
+
+# ------------------------------------------------------------- 整理初稿（§8.3）
+#
+# 用户显式点一次才发生的一次模型整理：把迁移草稿改写成"主语是用户"的一句话并给
+# 归区建议。**它只给建议**——落盘走 `remember` 那条正规的路（预算/顶替/变更流/回执
+# 全是同一套），于是这一次模型调用不可能绕过 §3.3–§3.4 的任何一条。
+
+
+def test_organize_draft_only_suggests_and_writes_nothing(tmp_path: Path) -> None:
+    service = _service(tmp_path, ask=_FakeChat("长期偏好与风格｜用户要求先给结论。"))
+    _write(service.workspace, "import-draft.md", "# 草稿\n\n- 先给结论\n- 说话别绕\n")
+
+    items = service.organize_draft()
+
+    assert [(item.section, item.text) for item in items] == [
+        ("长期偏好与风格", "用户要求先给结论。")
+    ]
+    assert service.archive().read().entries == (), "预览阶段一个字都不写"
+    assert service.archive().changes() == []
+
+
+def test_organize_draft_says_so_when_the_model_gives_nothing(tmp_path: Path) -> None:
+    """模型没给出可用条目时**如实报错**：这一次是花过钱的，静默返回空像"点了没反应"。"""
+    service = _service(tmp_path, ask=_FakeChat("这一轮没有值得留下的。"))
+    _write(service.workspace, "import-draft.md", "- 先给结论\n")
+
+    with pytest.raises(InvalidRequestError, match="没有给出可用的条目"):
+        service.organize_draft()
+
+
+def test_organize_draft_needs_a_draft(tmp_path: Path) -> None:
+    service = _service(tmp_path, ask=_FakeChat("长期偏好与风格｜用户要求先给结论。"))
+
+    with pytest.raises(InvalidRequestError, match="没有可整理的条目"):
+        service.organize_draft()
 
 
 # --------------------------------------------------------------------- 注入
@@ -1126,15 +889,17 @@ def test_remember_does_not_rewrite_line_endings(tmp_path: Path) -> None:
 
 
 def test_capture_does_not_rewrite_line_endings(tmp_path: Path) -> None:
-    """捕获写的是当天的现场文件，同一条纪律：按字节写。
+    """隐式捕获写档案，同一条纪律：**按字节写**。
 
-    （捕获这条链路期二已从请求流程里退场，机制本身还在，等期五清理。）
+    `write_text` 在 Windows 上会把换行改成 CRLF，而这份文件每次都在被读、被比对
+    （顶替判据、注入、逐字节的还原），换行来回翻会让那些判据都不稳定。
     """
-    service = _service(tmp_path, ask=_FakeChat("- 甲"))
+    service, _chat = _capturing(tmp_path, _CAPTURE_REPLY)
 
-    service.capture(_TURN, session_id="conv_1")
+    service.capture_implicit(_SIGNAL_MESSAGE)
 
-    assert b"\r\n" not in _day_path(service).read_bytes()
+    assert b"\r\n" not in (tmp_path / "memory" / PROFILE_FILE).read_bytes()
+    assert b"\r\n" not in (tmp_path / "memory" / "changes.md").read_bytes()
 
 
 def test_untouched_legacy_templates_are_upgraded(tmp_path: Path) -> None:
@@ -1327,550 +1092,6 @@ def test_bootstrap_is_silent_without_a_profile_file(tmp_path: Path) -> None:
     assert _service(tmp_path).bootstrap_block() == ""
 
 
-# ------------------------------------------------------------------ 累积捕获
-
-
-class _Msg:
-    """一条会话消息的最小形状（捕获只看 id / role / content 三样）。"""
-
-    def __init__(self, mid: str, role: str, content: str, conversation_id: str = "c1") -> None:
-        self.id = mid
-        self.role = role
-        self.content = content
-        self.conversation_id = conversation_id
-
-
-class _MetaWithMessages:
-    """水位线要用到的四个动作：列消息、读写设置、入队。"""
-
-    def __init__(self) -> None:
-        self.messages: list[_Msg] = []
-        self.settings: dict[str, str] = {}
-        self.tasks: list[object] = []
-
-    def list_messages(self, conversation_id: str) -> list[_Msg]:
-        return [item for item in self.messages if item.conversation_id == conversation_id]
-
-    def get_setting(self, key: str) -> str | None:
-        return self.settings.get(key)
-
-    def set_setting(self, key: str, value: str) -> None:
-        self.settings[key] = value
-
-    def enqueue_task(self, record: object) -> None:
-        self.tasks.append(record)
-
-
-class _StoresWithMessages:
-    def __init__(self, meta: _MetaWithMessages) -> None:
-        self.meta = meta
-
-
-def _capturing_service(
-    tmp_path: Path, **values: str
-) -> tuple[MemoryService, _MetaWithMessages]:
-    meta = _MetaWithMessages()
-    values.setdefault("memory.enabled", "true")
-    service = MemoryService(
-        _FakeRuntime({"memory.workspace": "memory", **values}),  # type: ignore[arg-type]
-        tmp_path,
-        stores=_StoresWithMessages(meta),  # type: ignore[arg-type]
-    )
-    return service, meta
-
-
-def _turns(count: int, conversation_id: str = "c1") -> list[_Msg]:
-    out: list[_Msg] = []
-    for index in range(1, count + 1):
-        out.append(_Msg(f"m{index * 2 - 1}", "user", f"t{index} 问", conversation_id))
-        out.append(_Msg(f"m{index * 2}", "assistant", f"t{index} 答", conversation_id))
-    return out
-
-
-def _bodies(meta: _MetaWithMessages, index: int = 0) -> list[str]:
-    payload = meta.tasks[index].payload  # type: ignore[attr-defined]
-    return [item["content"] for item in payload["messages"]]
-
-
-def _backlog(service: MemoryService, meta: _MetaWithMessages, cid: str = "c1"):  # type: ignore[no-untyped-def]
-    """直接问服务层的"_backlog"（"上次捕获以来该送哪一段"）。
-
-    **为什么要绕开 ``capture_turn``**：期二把定时捕获整条退场了（见
-    ``test_capture_turn_is_retired``），但"该送哪一段"这段逻辑本身留着——
-    期四的信号捕获要复用它，期五才随 ``daily/`` 一起清理。所以这一组改成
-    直接钉那个纯计算，口径不变而入口换掉了。
-    """
-    return service._backlog(_StoresWithMessages(meta), cid)
-
-
-def test_capture_backlog_sends_everything_since_the_last_capture(tmp_path: Path) -> None:
-    """**拍 10 轮，每一轮都要进得了那一段**（这是当年修过的那个漏）。
-
-    原先每次只把**当轮**那两条交出去，而节流是"每 5 个用户回合一次"——
-    两者相乘的结果是每 5 轮里只有 1 轮被看过一眼，其余 4 轮永远不进入记忆。
-    用户那边的现象就是"我明明说过，它就是不记得"。
-    """
-    service, meta = _capturing_service(tmp_path)
-    every_turn = _turns(10)
-    meta.messages = list(every_turn)
-
-    backlog, upto = _backlog(service, meta)
-
-    assert backlog[0]["content"] == "t1 问"
-    assert len(backlog) == 20 and upto == "m20"
-
-
-def test_capture_backlog_caps_one_payload_and_catches_up_next_time(
-    tmp_path: Path,
-) -> None:
-    """一次 payload 有上限；超出的**下一轮接着补**，不是静默丢掉。
-
-    没有上限的话，一个中间一直没沉淀的会话会把几百条消息塞进 ``tasks`` 表的
-    一行 JSON——那种形状平时看不出问题，出事时很难查。
-    """
-    from app.services.memory import CAPTURE_BATCH_TURNS
-
-    service, meta = _capturing_service(tmp_path)
-    meta.messages = _turns(CAPTURE_BATCH_TURNS + 10)
-
-    first, upto = _backlog(service, meta)
-    assert len(first) == CAPTURE_BATCH_TURNS * 2
-    # 水位线推进到"真正送出去的那一条"，所以下一轮接着补
-    meta.settings["memory.captured.c1"] = upto
-    rest, _ = _backlog(service, meta)
-    assert len(first) + len(rest) == len(meta.messages)
-
-
-def test_capture_backlog_takes_a_recent_window_when_the_watermark_is_gone(
-    tmp_path: Path,
-) -> None:
-    """水位线那条消息被 ``/rewind`` 删掉时，取**最近**一段而不是从头。
-
-    从头等于把整段会话重记一遍，而其中绝大部分早就记过了；取最近这一段，
-    重复的部分由捕获自身的去重兜住。
-    """
-    from app.services.memory import CAPTURE_BATCH_TURNS
-
-    service, meta = _capturing_service(tmp_path)
-    meta.messages = _turns(30)
-    meta.settings["memory.captured.c1"] = "rewind 删掉的那条"
-
-    backlog, _upto = _backlog(service, meta)
-
-    assert backlog[0]["content"] == f"t{30 - CAPTURE_BATCH_TURNS + 1} 问"
-
-
-def test_capture_backlog_advances_the_watermark_past_an_empty_message(
-    tmp_path: Path,
-) -> None:
-    """最后一条正文是空的，水位线**照样要往前推**。
-
-    不推的话，一条空消息会把水位线永久卡在它前面，之后每一轮都从它重新往后送
-    ——越送越长，而这次的"什么都没送"会一直重复。
-    """
-    service, meta = _capturing_service(tmp_path)
-    meta.messages = [
-        _Msg("y1", "user", "真问题"),
-        _Msg("y2", "assistant", ""),
-    ]
-
-    backlog, upto = _backlog(service, meta)
-
-    assert [item["content"] for item in backlog] == ["真问题"]
-    assert upto == "y2"
-
-
-# --------------------------------------------------------------------- 整理
-#
-# Auto-Dream 的等价物：把``daily/`` 那份**现场**沉淀成 ``digest/`` 那份**长期知识**。
-# 这一组的重点是"该不该动、往哪动"——整理是**唯一一个会自动改写已有记忆**的动作，
-# 所以每一条纪律都要有用例钉着。
-
-
-_DREAM_REPLY = (
-    "=== CREATE｜personal｜发布顺序\n"
-    "摘要：发布顺序固定为：先跑门禁、再打标签、最后推镜像\n"
-    "关联：[[镜像发布]]\n"
-    "正文：\n"
-    "发布顺序固定为：先跑门禁 → 再打标签 → 最后推镜像。不要跳步。\n"
-    "===\n"
-)
-
-
-def _field_note(tmp_path: Path) -> None:
-    """铺一份现场记忆（整理的输入）。"""
-    _write(
-        tmp_path / "memory",
-        "daily/2026-09-25.md",
-        "# 2026-09-25\n\n- 发布顺序固定为先跑门禁再打标签\n",
-    )
-
-
-def _dream_service(
-    tmp_path: Path, *, ask: _FakeChat, **values: str
-) -> tuple[MemoryService, Path]:
-    """带存储（水位线要落库）与假模型的服务。"""
-    stores = _FakeStores()
-    values.setdefault("memory.enabled", "true")
-    values.setdefault("memory.dream_after_hours", "24")
-    service = MemoryService(
-        _FakeRuntime({"memory.workspace": "memory", **values}),  # type: ignore[arg-type]
-        tmp_path,
-        ask=ask,
-        stores=stores,  # type: ignore[arg-type]
-    )
-    service.seed_persona()
-    return service, service.workspace
-
-
-def test_dream_moves_the_field_notes_into_long_term_knowledge(tmp_path: Path) -> None:
-    """**整理把现场沉淀成长期知识。**
-
-    四件事一起验：落点在 ``digest/<类别>/``；``## Sources`` 指回那份现场
-    （于是它被认成"已整合"——界面上那枚「待整合」标记从此才真的在说事）；
-    关联变成正文里的一句话；**现场一个字都没被改**。
-    """
-    _field_note(tmp_path)
-    service, workspace = _dream_service(tmp_path, ask=_FakeChat(_DREAM_REPLY))
-    field = workspace / "daily" / "2026-09-25.md"
-    before = field.read_bytes()
-
-    result = service.dream(force=True)
-
-    assert result["created"] == ["digest/personal/发布顺序.md"]
-    body = (workspace / "digest" / "personal" / "发布顺序.md").read_text(encoding="utf-8")
-    assert body.startswith("---\n") and "kind: preference" in body
-    assert "先跑门禁" in body
-    assert "另见 [[镜像发布]]。" in body, "关联要收成一句话，不是裸链接行"
-    assert "- [[daily/2026-09-25.md]]" in body
-    assert field.read_bytes() == before, "现场是「当时到底发生了什么」的不可变记录"
-
-    entries = {item.path: item for item in memory_files.scan(workspace)}
-    assert entries["daily/2026-09-25.md"].consolidated is True
-
-
-def test_dream_calls_the_model_only_when_something_changed(tmp_path: Path) -> None:
-    """**没有变化就一次模型都不调**（照 QwenPaw 的 "No changed dream input"）。
-
-    这条是省钱的闸：worker 的空闲分支每小时都会来问一次，不问清楚就会变成
-    "每小时烧一次钱"。
-    """
-    _field_note(tmp_path)
-    chat = _FakeChat(_DREAM_REPLY)
-    service, _workspace = _dream_service(tmp_path, ask=chat)
-
-    first = service.dream(force=True)
-    second = service.dream(force=True)
-
-    assert first["units"] == 1
-    assert second["skipped"] == "现场没有变化"
-    assert len(chat.prompts) == 1, "第二次不该再问模型"
-
-
-def test_dream_respects_the_cadence(tmp_path: Path) -> None:
-    """节拍没到就不跑。**这是这件事唯一的开关**——不另立"启用整理"（见 `dream` 的说明）。"""
-    _field_note(tmp_path)
-    service, _workspace = _dream_service(tmp_path, ask=_FakeChat(_DREAM_REPLY))
-    service.dream(force=True)
-
-    assert service.dream()["skipped"] == "还没到节拍"
-
-
-def test_dream_cadence_zero_turns_it_off(tmp_path: Path) -> None:
-    """``memory.dream_after_hours = 0`` 就是不做。"""
-    _field_note(tmp_path)
-    service, _workspace = _dream_service(
-        tmp_path, ask=_FakeChat(_DREAM_REPLY), **{"memory.dream_after_hours": "0"}
-    )
-
-    assert service.dream()["skipped"] == "整理已关闭（节拍为 0）"
-
-
-def test_dream_is_off_when_memory_is_disabled(tmp_path: Path) -> None:
-    """记忆整个关着时，整理也不该动（它写的是记忆）。"""
-    _field_note(tmp_path)
-    service, _workspace = _dream_service(
-        tmp_path, ask=_FakeChat(_DREAM_REPLY), **{"memory.enabled": "false"}
-    )
-
-    assert service.dream()["skipped"] == "未启用长期记忆"
-
-
-def test_dream_updates_an_existing_note_instead_of_making_a_second_one(
-    tmp_path: Path,
-) -> None:
-    """``CORROBORATE`` / ``REFINE`` / ``CORRECT`` 并进**已有那一份**，不新开一条。
-
-    这是"只增不并"的正面：同一个主题再出现时，长期知识里仍然只有一条，
-    而来源多了一条（``## Sources`` 里已经有的那个不重复加）。
-    """
-    _field_note(tmp_path)
-    _write(
-        tmp_path / "memory",
-        "digest/wiki/锂价敏感性.md",
-        "---\nsummary: 锂价敏感性\n---\n\n# 锂价敏感性\n\n锂价下跌压低正极材料成本。\n"
-        "\n## Sources\n- [[daily/2026-09-20.md]]\n",
-    )
-    chat = _FakeChat(
-        "=== CORROBORATE｜wiki｜锂价敏感性\n"
-        "摘要：锂价敏感性\n"
-        "正文：\n"
-        "又确认了一次：锂价下跌压低正极材料成本。\n"
-        "===\n"
-    )
-    service, workspace = _dream_service(tmp_path, ask=chat)
-
-    result = service.dream(force=True)
-
-    assert result["updated"] == ["digest/wiki/锂价敏感性.md"]
-    body = (workspace / "digest" / "wiki" / "锂价敏感性.md").read_text(encoding="utf-8")
-    assert "## 更新（" in body and "又确认了一次" in body
-    assert body.count("- [[daily/2026-09-20.md]]") == 1, "旧来源不重复加"
-    assert "- [[daily/2026-09-25.md]]" in body
-    assert len(list((workspace / "digest" / "wiki").glob("*.md"))) == 1, "不新开一条"
-
-
-def test_dream_creates_when_the_named_target_does_not_exist(tmp_path: Path) -> None:
-    """模型把动作说错了（说 REFINE 但那个主题还不存在）→ **退回新建**。
-
-    并进一份不存在的文件是没意义的；"新建"是可恢复的（用户看得见、能改），
-    而覆盖不是。
-    """
-    _field_note(tmp_path)
-    service, workspace = _dream_service(
-        tmp_path,
-        ask=_FakeChat(
-            "=== REFINE｜procedure｜回滚流程\n摘要：回滚\n正文：\n先停流量，再回滚镜像。\n===\n"
-        ),
-    )
-
-    result = service.dream(force=True)
-
-    assert result["created"] == ["digest/procedure/回滚流程.md"]
-    assert (workspace / "digest" / "procedure" / "回滚流程.md").exists()
-
-
-def test_dream_retries_a_note_it_failed_to_write(tmp_path: Path, monkeypatch) -> None:
-    """**写不进去的那一份不回写水位线**，下一轮会重新出现在"变了样的"里面。
-
-    这是 QwenPaw 的 dream catalog 那条规矩（失败路径绝不回写 checkpoint）：
-    回写了就等于那份现场永远不再被整理——而且**不会报错**，是查不出来的坏法。
-    """
-    _field_note(tmp_path)
-    service, _workspace = _dream_service(tmp_path, ask=_FakeChat(_DREAM_REPLY, _DREAM_REPLY))
-
-    def boom(*_args: object, **_kwargs: object) -> None:
-        raise InvalidRequestError("磁盘满了")
-
-    monkeypatch.setattr(memory_files, "write_file", boom)
-    first = service.dream(force=True)
-
-    assert first["created"] == [], "一条都没落盘"
-    assert first["failed"] == ["digest/personal/发布顺序.md"]
-    monkeypatch.undo()
-    second = service.dream(force=True)
-    assert second["created"] == ["digest/personal/发布顺序.md"], "下一轮会重试那一份"
-
-
-def test_dream_does_not_repeat_an_update_that_already_landed(tmp_path: Path) -> None:
-    """**重试是幂等的**：已经追加过的那条正文不会再追加一遍。
-
-    这条与上一条是一对：上一条要求"有一条没落盘就整批留到下一轮重试"，
-    而重试会把**已经成功**的那几条重新算一遍——如果追加不幂等，
-    一次写失败就会换来一条重复的「更新」节。
-    """
-    _field_note(tmp_path)
-    body = "锂价下跌压低正极材料成本。"
-    chat = _FakeChat(
-        f"=== CREATE｜wiki｜锂价敏感性\n摘要：锂价敏感性\n正文：\n{body}\n===\n",
-        f"=== CORROBORATE｜wiki｜锂价敏感性\n摘要：锂价敏感性\n正文：\n{body}\n===\n",
-    )
-    service, workspace = _dream_service(tmp_path, ask=chat)
-    service.dream(force=True)
-    digest = workspace / "digest" / "wiki" / "锂价敏感性.md"
-    before = digest.read_bytes()
-
-    # 把现场改一下（mtime 变了），逼它重新整理同一个主题
-    field = workspace / "daily" / "2026-09-25.md"
-    field.write_bytes(field.read_bytes() + "\n- 又提了一次锂价\n".encode())
-    result = service.dream(force=True)
-
-    assert result["updated"] == [], "正文已经在里面了，这一次是空操作"
-    assert digest.read_bytes() == before
-
-
-def test_dream_all_walks_every_workspace(tmp_path: Path) -> None:
-    """``dream_all`` 是给 worker 的空档分支用的：共享桶与每个账号的工作区都要看。
-
-    判据是"这个目录里有那四份核心文件里的至少一份"——``daily/`` 这类子目录不会命中，
-    所以不必另立一张"哪些账号有工作区"的表。
-    """
-    _field_note(tmp_path)
-    service, _workspace = _dream_service(tmp_path, ask=_FakeChat(_DREAM_REPLY, _DREAM_REPLY))
-    service.seed_persona("u1")
-    # 每个工作区各有各的现场（共享桶的那份是 `_field_note` 铺的）
-    _write(
-        tmp_path / "memory",
-        "u1/daily/2026-09-25.md",
-        "# 2026-09-25\n\n- 发布顺序固定为先跑门禁再打标签\n",
-    )
-
-    assert service.workspaces() == [None, "u1"]
-    done = service.dream_all(force=True)
-
-    assert set(done) == {"-", "u1"}, "两个工作区都要真的被整理过，而不是只看了共享桶"
-
-
-# --------------------------------------------------- 整理：解析与文件名（纯函数）
-
-
-def test_dream_keeps_the_field_notes_when_it_cannot_read_the_output(tmp_path: Path) -> None:
-    """模型**说了话、但一条都认不出来** → 不把那几份现场记成"已整理"。
-
-    这是真跑逼出来的：两次真跑的模型输出都没能被解析（一次把格式里的占位符原样吐回，
-    一次把推理过程写进了正文），而当时的实现**照样推进了水位线**——那几份现场就永远
-    不会再被整理，而且**不会报错**。
-
-    同时断言"时钟走了"：``at`` 要往前推，否则每个空闲周期都会去问一次模型
-    ——那是拿钱换一个已知会失败的结果。
-    """
-    _field_note(tmp_path)
-    junk = "好的，我看看。\n=== 动作｜类别｜名字\n摘要：示例\n正文：\n占位\n===\n"
-    service, _workspace = _dream_service(tmp_path, ask=_FakeChat(junk, junk))
-
-    first = service.dream(force=True)
-    second = service.dream(force=True)
-    cadence = service.dream()
-
-    assert first["skipped"] == "模型输出认不出来"
-    assert second["skipped"] == "模型输出认不出来", "那几份现场下一轮还会重试"
-    assert cadence["skipped"] == "还没到节拍", "但时钟走了：不会每个空闲周期都问一次"
-
-
-def test_dream_turns_thinking_off_for_the_extraction_call(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """**抽取类调用要关掉思考。**
-
-    ``llm.py`` 的模块注释里就写着这条（"测试场景要显式传 ``enable_thinking: false``"），
-    而真跑（真模型 + 真数据）证实它不是理论问题：开着思考时模型的推理**混进了正文**
-    ——那次输出里中英文夹着「等等，第二个条目没有内容，不应该输出…Let me reconsider」，
-    于是解析器只认得出半条。
-    """
-    _field_note(tmp_path)
-    seen: list[LLMConfig] = []
-
-    class _Chat:
-        def __init__(self, config: LLMConfig) -> None:
-            seen.append(config)
-
-        def complete(self, messages: list[object]) -> str:
-            return _DREAM_REPLY
-
-    monkeypatch.setattr(memory_service, "OpenAICompatChat", _Chat)
-    service = MemoryService(
-        _FakeRuntime(  # type: ignore[arg-type]
-            {"memory.enabled": "true", "memory.workspace": "memory"},
-            llm=LLMConfig(
-                base_url="http://model.invalid/v1",
-                api_key="k",
-                model_id="m",
-                enable_thinking=True,
-            ),
-        ),
-        tmp_path,
-        stores=_FakeStores(),  # type: ignore[arg-type]
-        ask=None,
-    )
-    service.seed_persona()
-
-    service.dream(force=True)
-
-    assert seen, "应该真的走到了模型通道"
-    assert seen[0].enable_thinking is False, "记忆抽取不该带思考"
-
-
-# --------------------------------------------------------------- 向量那一路
-#
-# 这一组测的是**用户看得见的那一层**：开关关着时一次嵌入都不发（默认配置下不该
-# 因为多了一条路而花钱），开着时同义写法也能找到。向量用查表给——真实模型的分离度
-# 在真跑里量过（见 services/memory_index.py 的模块说明）。
-
-
-class _FakeEmbed:
-    """按文本查表给向量；查不到就给默认向量。记录每一次调用。"""
-
-    model_id = "fake-1"
-    dim = 2
-    max_batch = 2
-
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-        self.table: dict[str, list[float]] = {}
-
-    def embed(self, texts):  # type: ignore[no-untyped-def]
-        self.calls.append(list(texts))
-        return [list(self.table.get(text, [1.0, 0.0])) for text in texts]
-
-
-#: 用例里显式给出余弦下限。**为什么必须显式**：真实现取不到值时回落到
-#: ``DEFAULTS``（0.45），而假 runtime 没有那份默认表——不写的话这里会变成 0.0，
-#: 于是"余弦正好 0 的噪声"也会过闸，测出来的就不是产品行为了。
-_FLOOR = {"memory.vector_min_score": "0.45"}
-
-
-def test_recall_stays_lexical_when_the_vector_route_is_off(tmp_path: Path) -> None:
-    """开关关着时**一次嵌入都不发**——而且 recall 现在压根不看这个开关。
-
-    这条是"默认关"那个决定的兑现方式：默认配置下，记忆层不该因为多了一条路而
-    开始花钱。期二之后这句话更硬了：**recall 的池子只有变更流**，向量那一路
-    （``memory.vector_enabled``）已经不参与它了（§5.3）——下面两条用例
-    （开着时的同义命中）一起被这条性质取代，它们测的是旧检索路径。
-    """
-    fake = _FakeEmbed()
-    service = _service(tmp_path, **{"memory.vector_enabled": "false"}, embed=fake)
-    _write(service.workspace, "digest/偏好.md", "# 偏好\n\n沟通风格是开门见山。\n")
-
-    hits, _links = service.recall("我之前的回答是什么风格")
-
-    assert fake.calls == [], "关着时不该有任何嵌入调用"
-    assert hits == [], "那一层已经不在池子里了"
-
-
-def test_recall_ignores_the_vector_route_even_when_it_is_on(tmp_path: Path) -> None:
-    """把向量那一路打开也**一次嵌入都不发**（§5.3）。
-
-    这条替代了原来的两条"同义命中"用例：它们钉的是 `memory_files.search` +
-    `memory_index.search_hybrid` 那条检索链，而 recall 已经不吃它了。
-    向量那一层本身还留在代码里（期五清理），但"把嵌入挪进查询路径就等于
-    每次查询赌一次上游延迟"这条纪律，从今往后由**没有调用点**来保证。
-    """
-    fake = _FakeEmbed()
-    service = _service(tmp_path, **{"memory.vector_enabled": "true", **_FLOOR}, embed=fake)
-    _seed(service)
-
-    hits, _links = service.recall("项目代号叫什么")
-
-    assert fake.calls == [], "开着也不该有嵌入调用"
-    assert [hit.path for hit in hits] == ["changes.md"]
-
-
-def test_sync_index_is_a_no_op_without_an_embedder(tmp_path: Path) -> None:
-    """没有嵌入能力时对齐是空操作（不报错）：词面那一路本来就是完整的。"""
-    service = _service(tmp_path, **{"memory.vector_enabled": "true"})
-
-    assert service.sync_index(force=True) == {"skipped": "没有嵌入能力"}
-
-
-def test_sync_index_is_a_no_op_when_the_switch_is_off(tmp_path: Path) -> None:
-    """开关关着时对齐也是空操作——**一次嵌入都不该发**。"""
-    fake = _FakeEmbed()
-    service = _service(tmp_path, **{"memory.vector_enabled": "false"}, embed=fake)
-
-    assert service.sync_index() == {"skipped": "向量那一路关着"}
-    assert fake.calls == []
-
-
 # ------------------------------------ 人设文件：注入哪几份、按什么顺序（v0.51）
 #
 # 照 QwenPaw 的 ``system_prompt_files``：那几份文件每轮整份进 system prompt，
@@ -1938,242 +1159,6 @@ def test_persona_order_falls_back_when_nothing_is_recognised(tmp_path: Path) -> 
     service = _service(tmp_path, **{"memory.persona_files": "不存在的文件.md"})
 
     assert service.persona_order() == (SOUL_FILE, AGENTS_FILE)
-
-
-def test_capture_takes_the_title_and_summary_the_model_gave(tmp_path: Path) -> None:
-    """模型给的「主题」「摘要」进 frontmatter（v0.51）：**摘要是这份笔记的一句话**，
-    而不是第一条条目（那处降级写在 ``_note_summary`` 里）。
-
-    两样都是**看得见**的东西：摘要进界面列表那一列与召回时的标题加权；主题进
-    frontmatter 的 ``title``（``memory_files._title_of`` 优先取它），所以列表里显示的
-    是"这份笔记在讲什么"，而不是日期。**主题不占正文标题**——那份 H1 还是当天那行，
-    免得同一天里每次沉淀都把标题改一遍。
-    """
-    chat = _FakeChat(
-        "主题：回复风格与设备\n"
-        "摘要：他偏好先给结论，不要客套\n"
-        "- 用户偏好简短回答，先说结论\n"
-    )
-    service = _service(tmp_path, ask=chat)
-
-    result = service.capture(_TURN, session_id="conv_1")
-
-    body = (service.workspace / result["path"]).read_text(encoding="utf-8")
-    assert 'title: "回复风格与设备"' in body
-    assert 'summary: "他偏好先给结论，不要客套"' in body
-    assert f"# {_day(service)} 现场" in body, "主题不占正文标题"
-    entries = {item.path: item for item in memory_files.scan(service.workspace)}
-    assert entries[result["path"]].title == "回复风格与设备"
-    assert entries[result["path"]].summary == "他偏好先给结论，不要客套"
-
-
-def test_capture_falls_back_to_the_first_entry_without_a_summary(tmp_path: Path) -> None:
-    """模型没给那两行时走兜底：**摘要取第一条**（老行为），而且条目照常落盘。
-
-    提示词说了"能写就写"，所以"没写"是正常路径，不是失败路径。
-    """
-    chat = _FakeChat("- 用户偏好简短回答，先说结论\n")
-    service = _service(tmp_path, ask=chat)
-
-    result = service.capture(_TURN, session_id="conv_1")
-
-    body = (service.workspace / result["path"]).read_text(encoding="utf-8")
-    assert 'summary: "用户偏好简短回答，先说结论"' in body
-    assert "title:" not in body
-
-
-def test_capture_headline_is_lenient_but_needs_a_colon() -> None:
-    """解析的宽容与严格各一半。
-
-    宽：全角/半角冒号都认、标签前有项目符号也认、近义说法（标题/描述）也认。
-    严：**没有冒号的行不算**——否则 `- 主题是深色` 这种**条目**会被当成标题读走，
-    那会静默改掉这份笔记的显示名。
-    """
-    title, summary = _capture_headline(
-        "好的，我整理如下：\n主题: 部署与设备\n描述：内网部署的两台机器\n- 主题是深色\n"
-    )
-
-    assert title == "部署与设备"
-    assert summary == "内网部署的两台机器"
-    assert _capture_headline("- 主题是深色\n- 摘要里有冒号：但不在行首\n") == ("", "")
-
-
-# ------------------------------------------- Auto-Link 的另一半（补链，v0.51）
-#
-# 模型只在写入那一刻给它知道的关联；**两份长期知识之间的边要等它们都存在之后**
-# 才看得出来。这一组钉的是：补得上、补得准（判据比召回更严）、双向、不重复。
-
-
-def test_append_see_also_extends_the_existing_line() -> None:
-    """**并进已有的那一行**，而不是再起一行：一文件里堆三行「另见」读起来像三份文档。"""
-    text = "# 甲\n\n正文。\n\n另见 [[乙]]。\n\n## Sources\n\n- [[daily/a.md]]\n"
-
-    merged = _append_see_also(text, ["丙"])
-
-    assert merged.count("另见 ") == 1
-    assert "另见 [[乙]]、[[丙]]。" in merged
-    assert merged.endswith("- [[daily/a.md]]\n"), "来源那一节原样在末尾"
-
-
-def test_append_see_also_is_idempotent() -> None:
-    """已经在那一行里的名字不再重复加——重试（整批留到下一轮）因此是安全的。"""
-    text = "# 甲\n\n正文。\n\n另见 [[乙]]。\n"
-
-    assert _append_see_also(text, ["乙"]) == text
-    assert _append_see_also(text, ["乙", "乙"]) == text
-
-
-def test_append_see_also_starts_a_line_when_there_is_none() -> None:
-    merged = _append_see_also("# 甲\n\n正文。\n", ["乙", "丙"])
-
-    assert merged.rstrip("\n").endswith("另见 [[乙]]、[[丙]]。")
-
-
-def test_append_see_also_caps_what_it_adds() -> None:
-    """自动补的最多几条：**链接多了等于没链接**（照 QwenPaw 的克制）。"""
-    merged = _append_see_also("# 甲\n\n正文。\n", ["乙", "丙", "丁", "戊"])
-
-    assert merged.count("[[") == LINK_MAX
-
-
-def _two_related_notes(tmp_path: Path) -> tuple[MemoryService, Path]:
-    service = _service(tmp_path)
-    _write(
-        service.workspace,
-        "digest/wiki/锂价敏感性.md",
-        "---\nsummary: 锂价敏感性\n---\n\n# 锂价敏感性\n\n锂价下跌压低正极材料成本。\n",
-    )
-    _write(
-        service.workspace,
-        "digest/wiki/锂价与毛利.md",
-        "---\nsummary: 锂价与毛利\n---\n\n# 锂价与毛利\n\n"
-        "锂价敏感性与毛利的关系：锂价跌一成就少几个点。\n",
-    )
-    return service, service.workspace
-
-
-def test_autolink_connects_two_related_notes_both_ways(tmp_path: Path) -> None:
-    """找得到同类主题就补上，而且**双向**——图谱的"入链"那一半才有东西可显示。"""
-    service, space = _two_related_notes(tmp_path)
-
-    added = service._autolink(space, ["digest/wiki/锂价敏感性.md"])
-
-    first = (space / "digest/wiki/锂价敏感性.md").read_text(encoding="utf-8")
-    second = (space / "digest/wiki/锂价与毛利.md").read_text(encoding="utf-8")
-    assert "[[锂价与毛利]]" in first
-    assert "[[锂价敏感性]]" in second
-    assert set(added) == {"digest/wiki/锂价敏感性.md", "digest/wiki/锂价与毛利.md"}
-
-
-def test_autolink_leaves_unrelated_notes_alone(tmp_path: Path) -> None:
-    """**判据比召回更严**：链接错了是在图谱上写下一句"这两件事有关"，而用户会信它。"""
-    service, space = _two_related_notes(tmp_path)
-    _write(
-        service.workspace,
-        "digest/wiki/合唱团.md",
-        "---\nsummary: 合唱团\n---\n\n# 合唱团\n\n每周四晚上排练，指挥姓王。\n",
-    )
-
-    added = service._autolink(space, ["digest/wiki/锂价敏感性.md"])
-
-    assert "合唱团" not in added.get("digest/wiki/锂价敏感性.md", [])
-    assert "另见" not in (space / "digest/wiki/合唱团.md").read_text(encoding="utf-8")
-
-
-def test_autolink_does_not_add_the_same_link_twice(tmp_path: Path) -> None:
-    """第二次跑**什么都不改**（幂等）：它挂在每次整理之后，而整理会重复跑。"""
-    service, space = _two_related_notes(tmp_path)
-    service._autolink(space, ["digest/wiki/锂价敏感性.md"])
-    before = (space / "digest/wiki/锂价敏感性.md").read_text(encoding="utf-8")
-
-    again = service._autolink(space, ["digest/wiki/锂价敏感性.md"])
-
-    assert again == {}
-    assert (space / "digest/wiki/锂价敏感性.md").read_text(encoding="utf-8") == before
-
-
-def test_dream_reports_the_links_it_added(tmp_path: Path) -> None:
-    """整理这条链路里确实接上了补链（不是只写了一个没人调的函数）。
-
-    夹具是"现场里有一条发布顺序、已有长期知识里也有一条发布流程"——整理会**新建**
-    那份长期知识，而新建之后它和已有那条讲的是同一件事，补链应当把它们连起来。
-    """
-    _field_note(tmp_path)
-    _write(
-        tmp_path / "memory",
-        "digest/procedure/发布流程.md",
-        "---\nsummary: 发布流程\n---\n\n# 发布流程\n\n发布顺序固定为先跑门禁再打标签。\n",
-    )
-    service, workspace = _dream_service(tmp_path, ask=_FakeChat(_DREAM_REPLY))
-
-    result = service.dream(force=True)
-
-    assert result["created"] == ["digest/personal/发布顺序.md"]
-    assert "digest/personal/发布顺序.md" in result["linked"]
-    created = (workspace / "digest" / "personal" / "发布顺序.md").read_text(encoding="utf-8")
-    peer = (workspace / "digest" / "procedure" / "发布流程.md").read_text(encoding="utf-8")
-    # 模型给的那条关联与自动找到的这条**并进同一行**（不是各起一行）
-    assert "另见 [[镜像发布]]、[[发布流程]]。" in created
-    assert "另见 [[发布顺序]]" in peer, "另一头也要补（图谱的入链那一半）"
-
-
-def test_parse_dream_reads_the_block_format() -> None:
-    """围栏要吃掉、三个字段都要认出来、正文可以多行。"""
-    units = _parse_dream(
-        "```\n"
-        "=== CREATE｜personal｜发布顺序\n"
-        "摘要：发布顺序\n"
-        "关联：[[镜像发布]] [[回滚流程]]\n"
-        "正文：\n"
-        "第一行\n"
-        "第二行\n"
-        "===\n"
-        "```\n"
-    )
-
-    assert len(units) == 1
-    unit = units[0]
-    assert (unit.action, unit.bucket, unit.name) == ("CREATE", "personal", "发布顺序")
-    assert unit.summary == "发布顺序"
-    assert unit.links == ("镜像发布", "回滚流程")
-    assert unit.body == "第一行\n第二行"
-
-
-def test_parse_dream_skips_what_it_cannot_read() -> None:
-    """**宽容的是"多写一句解释"，严格的是"字段值不合法"。**
-
-    写进 ``digest/`` 的东西要长期留着，所以动作/类别认不出来、或者没有正文的那一条
-    宁可丢掉（并记日志），也不猜着写下去。
-    """
-    units = _parse_dream(
-        "好的，我整理了一下：\n"
-        "=== UPDATE｜personal｜动作不认识\n摘要：x\n正文：\n有正文\n===\n"
-        "=== CREATE｜不存在的类别｜类别不认识\n摘要：x\n正文：\n有正文\n===\n"
-        "=== CREATE｜wiki｜少了正文\n摘要：只有摘要\n===\n"
-        "=== CREATE｜wiki｜这条是对的\n摘要：对\n正文：\n正文在这里\n===\n"
-    )
-
-    assert [unit.name for unit in units] == ["这条是对的"]
-    assert units[0].body == "正文在这里"
-
-
-def test_parse_dream_tolerates_a_missing_body_marker() -> None:
-    """模型偶尔漏掉「正文：」那个标记——**剩下的行仍然是内容**，不该整条丢掉。"""
-    units = _parse_dream("=== CREATE｜wiki｜概念\n摘要：一句话\n就是正文本身。\n===\n")
-
-    assert len(units) == 1
-    assert units[0].body == "就是正文本身。"
-    assert units[0].summary == "一句话"
-
-
-def test_dream_slug_flattens_names_into_a_filename() -> None:
-    """主题名要同时满足：能被 ``[[...]]`` 链上、在 Windows 上合法、同名即同一条。"""
-    assert _dream_slug("发布顺序") == "发布顺序"
-    assert _dream_slug("digest/wiki/锂价敏感性.md") == "锂价敏感性", "路径前缀要抹掉"
-    assert _dream_slug("wiki/锂价敏感性.md") == "锂价敏感性"
-    assert _dream_slug("  发布 顺序  ") == "发布-顺序"
-    assert _dream_slug('a/b:c*d?"e') == "abcde"
-    assert _dream_slug("///") == "未命名"
 
 
 def test_the_archive_block_warns_against_placeholder_words(tmp_path: Path) -> None:

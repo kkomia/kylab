@@ -23,7 +23,6 @@ from pathlib import Path
 
 from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
-from app.services import memory_index
 from app.services.api_key import ApiKeyService
 from app.services.approvals import ApprovalRegistry
 from app.services.artifacts import ArtifactService
@@ -193,9 +192,9 @@ class Services:
     """定时任务（v0.33）：到点替用户跑一轮问答。
 
     执行体见 ``services/schedule_runner.py``。"""
-    """长期记忆的门面（设计见 `docs/设计/记忆层设计-v0.1.md`）。
+    """长期记忆的门面（设计见 `docs/设计/记忆档案-设计-v0.1.md`）。
 
-    默认关；关着时它的每个方法都明确报错。"""
+    一份四区档案（`PROFILE.md`）+ 变更流；写入三条路，其中隐式捕获默认关。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
     worker: TaskWorker
@@ -534,22 +533,11 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # 检索次数原先只在日志里：接了回调仪表盘才有"检索量 / 平均命中"可看
         usage_recorder=lambda **kwargs: usage.record(**kwargs),  # type: ignore[arg-type]
     )
-    # 记忆服务：**内容全在本地**（`data/memory/` 下的 Markdown），只有两个可选动作会
-    # 出网——捕获问一次对话模型（`ask` 不传就用运行期绑定的那个）、向量那一路嵌入
-    # （默认关，见 `memory.vector_enabled`）。所以它得**建在 embedder 之后**：
-    # 那个嵌入能力要连同**模型身份**一起交进去（换模型之后旧向量就是垃圾，
-    # 见 services/memory_index.py 的说明第 2 条）。
-    memory_service = MemoryService(
-        runtime,
-        resolved.data_dir,
-        stores=bundle,
-        embed=memory_index.EmbeddingSource(
-            model_id=embedder.model_id,
-            dim=embedder.dim,
-            embed=embedder.embed,
-            max_batch=embedder.max_batch,
-        ),
-    )
+    # 记忆服务：**内容全在本地**（`data/memory/` 下的 Markdown）。出网只有一个动作
+    # ——隐式捕获在信号出现的那一轮问一次对话模型（`memory.capture`，**默认关**），
+    # 而它用的是运行期绑定的那条模型通道（见 `MemoryService._ask_model`）。
+    # 所以这个服务不需要嵌入能力，也不需要存储：构造它是纯本地的。
+    memory_service = MemoryService(runtime, resolved.data_dir)
     # webhook 先建：下面的摄入与生命周期都通过回调向它发事件（T4.6）。
     # **用回调而不是直接依赖**：通知是旁路，它挂了不能让摄入卡住
     webhooks = WebhookService(bundle)
@@ -850,22 +838,6 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # 而用户以为"7 天后就清掉了"
         lifecycle = LifecycleService(bundle)
         lifecycle.purge_expired_trash()
-        # 记忆整理（Auto-Dream 的等价物，v0.49）：把**变了样的现场**沉淀进 digest/。
-        # 挂在空闲分支上与补摘要同一个理由——用空闲时间换召回质量，而且有节拍
-        # （`memory.dream_after_hours`）。**没有变化时它一次模型都不调**，
-        # 所以放在这里不会让空转的实例开始烧钱。
-        try:
-            memory_service.dream_all()
-        except Exception:
-            logger.warning("记忆整理失败，跳过本轮", exc_info=True)
-        # 记忆的向量索引对齐（v0.50）：**与整理同一个理由挂在空档上**——嵌入是一次
-        # 网络调用，放进召回路径就等于让每次检索都赌一次上游延迟。代价是索引可能
-        # 落后一轮，而查询只认当前确实存在的块（见 services/memory_index.py 第 1 条）。
-        # 开关关着、或没有块变过时，它一次嵌入都不发。
-        try:
-            memory_service.sync_index_all()
-        except Exception:
-            logger.warning("记忆向量索引对齐失败，跳过本轮", exc_info=True)
 
     lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
     folders_service = FolderService(bundle)
@@ -887,7 +859,6 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         sources=sources_service,
         wiki=wiki_service,
         summaries=summary_service,
-        memory=memory_service,
         schedules=schedule_service,
         run_scheduled=_run_scheduled,
     )
@@ -993,7 +964,6 @@ def _build_workers(
     sources: SourceService,
     wiki: WikiService,
     summaries: DocumentSummaryService,
-    memory: MemoryService,
     schedules: ScheduleService,
     run_scheduled: Callable[[str], object],
 ) -> list[TaskWorker]:
@@ -1021,12 +991,6 @@ def _build_workers(
             sync_source=sources.sync_now,
             # Wiki 重建同样是知识库级任务（见 _handle）
             compile_wiki=wiki.generate,
-            # 记忆沉淀（v0.14）：把一轮对话交给记忆服务。**它是可选回调**——
-            # 记忆关着时这个回调仍然存在，由 MemoryService 自己判断"未启用"并报错
-            # （而不是在这里判，那样"关着"会表现成任务静默失败）
-            capture_memory=lambda messages, session_id, user_id: memory.capture(
-                messages, session_id=session_id, user_id=user_id or None
-            ),
             # 补文档摘要（v25）：空闲时一小批一小批地补，不需要用户点任何东西
             summarize_gap=summaries.summarize_missing,
             # 定时任务（v0.33）：到点入队 + 到点执行。**两个回调分工明确**——

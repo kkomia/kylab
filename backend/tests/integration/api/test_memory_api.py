@@ -62,7 +62,7 @@ _CHANGES = """- 2026-10-01 09:20 · 新增 · 长期偏好与风格 · 来源：
   - 新：用户偏好先给结论
 - 2026-10-02 14:05 · 顶替 · 长期偏好与风格 · 来源：显式
   - 旧：用户偏好先给结论
-  - 新：用户要求回答先给结论，再列依据
+  - 新：用户要求回答先给结论，再列依据。
 """
 
 
@@ -135,55 +135,32 @@ def test_overview_lists_files_and_counts(client: TestClient, workspace) -> None:
     assert body["truncated"] is False
 
 
-def test_overview_reports_retrievability_and_injection(client: TestClient, workspace) -> None:
-    """``retrievable`` / ``injected`` 是界面解释"为什么搜不到"的依据。
-
-    v0.56 起 ``injected`` 报的是**那三份设定文件**（两份人设 + 档案）——
-    ``MEMORY.md`` **不在里面**：它已经退场（§7.2），界面上显示成"旧记忆（只读）"。
-    """
+def test_overview_reports_which_files_are_injected(client: TestClient, workspace) -> None:
+    """``injected`` 报的是**那三份设定文件**（两份人设 + 档案）——
+    ``MEMORY.md`` **不在里面**：它已经退场（§7.2），界面上显示成"旧记忆（只读）"。"""
     by_path = {item["path"]: item for item in client.get("/api/v1/memory").json()["files"]}
 
-    assert by_path["daily/2026-09-16/会话一.md"]["retrievable"] is True
-    assert by_path["digest/personal/锂价.md"]["retrievable"] is True
-    assert by_path["MEMORY.md"]["retrievable"] is False
     assert by_path["MEMORY.md"]["injected"] is False
     assert by_path["PROFILE.md"]["injected"] is True
     assert by_path["SOUL.md"]["injected"] is True
+    assert by_path["daily/2026-09-16/会话一.md"]["injected"] is False
 
 
 def test_overview_reports_local_counts(client: TestClient, workspace) -> None:
-    """状态是**纯本地的数字**：几份文件、其中几份可召回、可召回几条、上次更新。
+    """状态是**纯本地的数字**：几份文件、上次更新。
 
-    这三个数字原先由界面 filter 出来（而且"可召回"那时是别人家索引的性质）；
-    现在它们是这一层的本地事实——也就必须有用例钉住"数的是召回池里那些文件"。
+    原先还有"几份可召回、可召回几条"那两个读数——它们数的是旧召回池
+    （``daily/`` / ``digest/``）切出来的块，而检索那一路已经退场、代码不再消费
+    那些文件，所以两个读数连同它们的口径一起删了。
     """
     status = client.get("/api/v1/memory").json()["status"]
 
-    assert status["retrievable_count"] == 2  # daily 一份 + digest 一份
-    assert status["entry_count"] > 0
+    assert status["file_count"] > 0
     assert status["last_changed_at"], "有文件就该有'上次更新'时间"
     # **没有连通性字段了**：没有第二个进程可连，也就没有"连没连上"这回事
     assert "reachable" not in status
     assert "base_url" not in status
-
-
-def test_overview_counts_unconsolidated(client: TestClient, workspace) -> None:
-    """「哪些还没被整合」= ``daily/`` 里没被 ``digest/`` 链到的。
-    实测那份里 ``会话一.md`` 是被链到的，所以计数为 0。"""
-    assert client.get("/api/v1/memory").json()["status"]["unconsolidated_count"] == 0
-
-
-def test_overview_counts_unconsolidated_when_nothing_links_back(
-    client: TestClient, workspace
-) -> None:
-    """反向也要钉：没有回链的日笔记要**真的算进**那个计数。
-
-    只测"等于 0"的话，一个恒为 0 的实现也能过——而那个数字是界面上
-    「待整合」标记的依据（本轮没有自动整理，它是用户判断"还有多少没归档"的唯一线索）。
-    """
-    (workspace / "daily" / "2026-09-17.md").write_bytes("# 新的一天\n\n还没被整合。\n".encode())
-
-    assert client.get("/api/v1/memory").json()["status"]["unconsolidated_count"] == 1
+    assert "retrievable_count" not in status and "entry_count" not in status
 
 
 # ------------------------------------------------------------------- 已删除的端点
@@ -225,8 +202,6 @@ def test_read_file_roundtrip(client: TestClient, workspace) -> None:
     assert body["content"].startswith("---")
     assert body["meta"] == {"tags": ["锂价"]}
     assert body["title"] == "锂价敏感性"
-    # 整合状态是**跨文件**才知道的：读单个文件时不猜，显式给 None（"没算"）
-    assert body["consolidated"] is None
 
 
 def test_reading_works_even_when_memory_is_disabled(client: TestClient, workspace) -> None:
@@ -497,7 +472,7 @@ def test_changes_endpoint_is_newest_first(client: TestClient, workspace) -> None
     assert [item["action"] for item in changes] == ["顶替", "新增"]
     assert [item["index"] for item in changes] == [1, 0]
     assert changes[0]["old"] == "用户偏好先给结论"
-    assert changes[0]["new"] == "用户要求回答先给结论，再列依据"
+    assert changes[0]["new"] == "用户要求回答先给结论，再列依据。"
     # 顶替有旧值可写回 → 可还原；新增没有 → 不可还原
     assert changes[0]["restorable"] is True
     assert changes[1]["restorable"] is False
@@ -591,11 +566,12 @@ def test_the_settings_group_has_no_service_address(client: TestClient, workspace
 
     assert keys == [
         "memory.enabled",
+        "memory.capture",
+        "memory.capture_model",
         "memory.workspace",
-        "memory.capture_every",
-        "memory.dream_after_hours",
-        "memory.vector_enabled",
-        "memory.vector_min_score",
         "memory.persona_files",
     ]
     assert all("base_url" not in key and "service_scope" not in key for key in keys)
+    # 旧的四项（定时捕获 / 整理 / 向量）连字段都不该在——留着会让设置页显示几个
+    # "改了没有任何效果"的开关（期五清理）
+    assert not any("capture_every" in key or "dream" in key or "vector" in key for key in keys)

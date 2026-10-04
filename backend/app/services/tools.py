@@ -1134,7 +1134,7 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
     """
     query = _require(args, "query")
     limit = int(args.get("limit") or DEFAULT_RECALL)
-    hits, links = services.memory.recall(query, limit=limit, user_id=_owner_of(caller))
+    hits = services.memory.recall(query, limit=limit, user_id=_owner_of(caller))
     return {
         "query": query,
         "hits": [
@@ -1147,12 +1147,6 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
                 "score": round(item.score, 4) if item.score is not None else None,
             }
             for item in hits
-        ],
-        # 这一侧本期**没有链接可给**（wikilink 属于 daily/digest 那一层，已不在池子里）；
-        # 字段留着是因为 REST 与外部客户端按同一个形状读，删字段是另一件事
-        "links": [
-            {"path": item.path, "name": item.name, "direction": item.direction}
-            for item in links[:20]
         ],
         "total": len(hits),
         "note": _recall_note(),
@@ -1171,10 +1165,6 @@ def _recall_note() -> str:
 
     与 REST 那份（``api/v1/memory.RECALL_NOTE``）**同一口径**：写两份的话，
     模型听到的与人在界面上看到的就是两种说法（旧设计里那条纪律继续有效）。
-
-    分词那一段（``memory_files.SEGMENTATION_UNAVAILABLE_NOTE``）**本期不再挂**：
-    池子只有几十到几百条记录，排序用的是纯字面判据（二元组覆盖率），
-    根本不走分词——再提一句"召回质量受影响"会指向一个不存在的机制。
     """
     return RECALL_NOTE
 

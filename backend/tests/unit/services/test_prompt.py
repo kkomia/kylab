@@ -318,11 +318,10 @@ def test_persona_files_are_listed_and_editable_through_the_memory_layer(
 
     assert set(listed) == {SOUL_FILE, PROFILE_FILE, AGENTS_FILE}
     for name, item in listed.items():
-        # 核心文件：**不参与检索**——正是设定该有的属性
+        # 核心文件按文件名判（它们在根下），分类不猜内容
         assert item.kind == "core", name
-        assert item.retrievable is False, name
-    # 改得动（走的是同一个安全路径解析）
-    memory_files.write_file(service.workspace_for("u1"), SOUL_FILE, "改过的人格")
+    # 改得动（用户拿别的编辑器改自己的文件）
+    (service.workspace_for("u1") / SOUL_FILE).write_bytes("改过的人格".encode())
     assert (service.workspace_for("u1") / SOUL_FILE).read_text(encoding="utf-8") == "改过的人格"
 
 

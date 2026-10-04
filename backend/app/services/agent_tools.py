@@ -441,14 +441,6 @@ _FILE_TOOLS = frozenset({"list_files", "read_file", "search_files"})
 #: （见 ``services/artifacts.py`` 的 ``ArtifactSpot``）。三种落点各走各的门。
 _CONVERSATION_FILE_TOOLS = frozenset({"list_conversation_files", "read_conversation_file"})
 
-#: 读记忆正文时默认读几行、最多读几行。
-#:
-#: **v0.56 起这两个数不再被 `read_memory` 用**：它读的是整份档案（那份本来就
-#: 每轮注入、只有几十条），不必再按行窗口展开。它们跟着 `daily/` 那一层的
-#: 检索一起留到期五。
-DEFAULT_MEMORY_READ_LINES = 60
-MAX_MEMORY_READ_LINES = 400
-
 #: 记忆**关着时不该出现在工具表里**的工具。
 #:
 #: - ``recall``：关着时它会明确报"未启用长期记忆"（关的正是注入与 recall 这一对），

@@ -99,6 +99,7 @@ from app.services.llm import (
     split_text_tool_calls,
     tidy_text,
 )
+from app.services.memory import CaptureOutcome
 from app.services.session_events import (
     KIND_ERROR,
     KIND_INTERRUPTED,
@@ -1316,11 +1317,6 @@ def _turn_events(
                 "status": "done",
             }
         )
-        # 压过上下文就**立刻补一次沉淀**（绕过节流）：这些较早的消息从此不再进
-        # 模型视野，而记忆要是还没记过它们，用户下一轮问"刚才说的那个"会两头落空
-        # ——原文成了摘要、``recall`` 里也还没有。照 QwenPaw 把 compact 当第三个
-        # 触发源，这一步就是为那个窗口做的。
-        _maybe_capture_memory(services, payload.conversation_id, caller=caller, force=True)
 
     if _use_agent(services):
         # **工具循环是主流程**（P0）：模型拿到十几个工具（内置 + 技能 + 外部 MCP 服务），
@@ -1558,10 +1554,10 @@ def _turn_events(
     # 这条判断必须真的写出来——v0.12 之前只有注释、没有 if，于是流"正常结束但一个字都没吐"
     # 时照样落了一条空回答（实测：推理模型的思考吃光预算时就是这样）。
     if answer:
-        # 「交给长期记忆」那一步必须在 `close_turn` **之前**补：`turn/end` 里的
-        # 步数读的是 `sink.steps`，之后再补就数不上它——而它正是这一轮的最后一步。
-        _note_memory_handoff(
-            services, payload.conversation_id, caller=caller, steps=step_log, sink=sink
+        # 信号捕获那一步必须在 `close_turn` **之前**补：`turn/end` 里的步数读的是
+        # `sink.steps`，之后再补就数不上它——而它正是这一轮的最后一步。
+        _implicit_capture_step(
+            services, payload.query, caller=caller, steps=step_log, sink=sink
         )
         # 这一轮有结论了：先记 ``turn/end``（终止原因是枚举，不是"有没有异常"），
         # 再连消息一起写——消息与事件同一个事务，见
@@ -2309,75 +2305,10 @@ def _context(
         return services.conversations.history(payload.conversation_id), "", False
 
 
-def _memory_handoff_step(
-    services: Services, conversation_id: str | None
-) -> dict[str, object] | None:
-    """这一轮要不要交给长期记忆；要的话给一条**过程步骤**（P0-8 的可见性）。
-
-    为什么需要它：自动沉淀是**异步**的（走队列，可能在几分钟后才真的写盘），
-    所以它没法像工具调用那样在过程面板里自己长出来。用户那边看到的现象就是
-    "记忆这东西好像存在，但从来没见过它动"。
-
-    措辞刻意只说"**会**沉淀"、不说"记住了 N 条"：此刻还不知道——那是队列里
-    另一次模型调用的结果，要报结果得等它跑完，而那时这一轮早结束了。
-
-    **判据与写侧逐字对齐**：这一轮马上要写两条消息（问 + 答），所以沉淀判据里的
-    回合数是"之后"的那个；`MemoryService.capture_due` 是同一处判据的公开入口。
-    """
-    if not conversation_id:
-        return None
-    try:
-        count = services.conversations.message_count(conversation_id)
-    except Exception:
-        logger.warning("读会话消息数失败，不显示记忆那一步：%s", conversation_id, exc_info=True)
-        return None
-    if not services.memory.capture_due((count + 2) // 2):
-        return None
-    return {
-        "phase": "memory",
-        "label": "交给长期记忆",
-        "detail": "这一轮的内容会沉淀进长期记忆",
-        "status": "done",
-    }
-
-
-def _note_memory_handoff(
-    services: Services,
-    conversation_id: str | None,
-    *,
-    caller: Caller,
-    steps: list[dict[str, object]],
-    sink: _TurnSink,
-) -> None:
-    """把「交给长期记忆」那一步**同时**记进快照与日志。
-
-    两份用**同一个 payload**：P0-2 有一条硬验收是"日志的投影 == 消息里的快照"
-    （`services.session_events.steps_from_events`）。它禁的是"只进其中一处"
-    ——压缩那一步就因此只发直播、哪边都不落。两处一起进、而且是同一个对象，
-    那条验收就仍然成立。
-
-    ``steps`` 是**要落库的那一份**；非 Agent 那条链路上它与 ``sink.steps`` 不是
-    同一个对象（那里没有工具循环），所以两边都要有：``turn/end`` 的步数读 sink，
-    落库读 ``steps``。
-
-    ``caller`` 用来判"这一轮到底会不会沉淀"：自动化通道不沉淀（见
-    ``_sediments_memory``），那就**不能报这一步**——报一个不会发生的事比不报更糟。
-    """
-    if not _sediments_memory(caller):
-        return
-    payload = _memory_handoff_step(services, conversation_id)
-    if payload is None:
-        return
-    if steps is not sink.steps:
-        sink.steps.append(payload)
-    steps.append(payload)
-    sink.events.append(EventDraft(kind=KIND_STEP, payload=payload))
-
-
 def _sediments_memory(caller: Caller) -> bool:
-    """这一轮该不该往长期记忆里**沉淀**（目标清单里的"自动化请求不入记忆"）。
+    """这一轮该不该往长期记忆里**写**（目标清单里的"自动化请求不入记忆"）。
 
-    **API Key 那条路不沉淀**：它是 MCP 客户端、脚本与自动化测试在说话——非流式那个
+    **API Key 那条路不写**：它是 MCP 客户端、脚本与自动化测试在说话——非流式那个
     端点的说明自己就写着"给脚本、MCP 与自动化测试用"。把它们记进"这个人说过什么"里，
     等于让机器替人往记忆里写话；而记忆一旦被机器的话淹了，**没有任何界面能把它挑回来**
     （用户看到的是一堆自己没说过的事）。
@@ -2390,53 +2321,62 @@ def _sediments_memory(caller: Caller) -> bool:
     return caller.api_key is None
 
 
-def _maybe_capture_memory(
+def _capture_implicit(services: Services, query: str, *, caller: Caller) -> CaptureOutcome | None:
+    """跑一次隐式捕获——**best-effort 的**（§4.1 第②路）。
+
+    「关着 / 没信号 / 判定说没有值得写的」三种情况都由服务层回答（返回 ``None``
+    或一个空的 ``results``），这里只做两件事：挡掉自动化通道，把失败**吞成日志**。
+
+    为什么吞：记忆是加分项，绝不能让它影响一次已经成功的问答（与 webhook 同一条
+    口径）。为什么不静默：判定是一次出网的模型调用，它坏了要能在日志里看见。
+    """
+    if not _sediments_memory(caller):
+        return None
+    try:
+        return services.memory.capture_implicit(query, user_id=_memory_owner(caller))
+    except Exception:
+        logger.warning("隐式记忆捕获失败，这一轮不写：%r", query[:80], exc_info=True)
+        return None
+
+
+def _implicit_capture_step(
     services: Services,
-    conversation_id: str | None,
+    query: str,
     *,
     caller: Caller,
-    force: bool = False,
+    steps: list[dict[str, object]],
+    sink: _TurnSink,
 ) -> None:
-    """把这次问答之后该沉淀的对话交给记忆——**节流后的、best-effort 的**。
+    """信号命中且有东西写进去时，把**回执**补进这一轮的过程面（§4.1、§4.4）。
 
-    三件事缺一不可，缺了就不入队：
+    三条纪律：
 
-    1. 记忆开着（``MemoryService`` 自己判，这里不重复判）；
-    2. 这一轮真的落进了某个会话——没有会话就没有可回溯的来源；
-    3. **到了该沉淀的回合**（每 N 个用户回合一次）。节流规则在服务层，
-       这里只提供"这是第几个用户回合"。
+    - **回执与显式那条路同一份文案**：这一句就是 ``WriteResult.receipt``
+      （「记下了：…」「改成：…」「这一区满了（20/20 条）…」）——模型从 `remember`
+      工具听到的、人在界面上看到的、这里冒出来的，三处是一句话；
+    - **没写进去就不报这一步**：这一轮没信号、或判定说没有值得写的，过程面上
+      什么都不加——报一件没发生的事比不报更糟；
+    - **两份用同一个 payload**：P0-2 的硬验收是"日志的投影 == 消息里的快照"
+      （`services.session_events.steps_from_events`），所以 ``sink.steps`` 与
+      要落库的 ``steps`` 两边都进、而且是同一个对象。``steps`` 在非 Agent 那条
+      链路上与 ``sink.steps`` 不是同一个列表，所以两边都要有。
 
-    **送哪一段也由服务层决定**：不是当轮那两条，而是"上次捕获以来累积的对话"
-    （见 ``MemoryService.capture_turn``）。原先这里自己拼当轮两条，与"每 N 轮一次"
-    相乘的结果是**每 N 轮里只有 1 轮进得了记忆**。调用方不该知道该送哪几条，
-    正如它不该知道节流阈值——两件事都是"记忆怎么工作"。
-
-    ``force``（绕过节流）只给**上下文压缩**那一刻用：被折进摘要的内容从此不再
-    进模型视野，而记忆要是还没记过它，用户下一轮问"刚才说的那个"就两头都查不到。
-
-    失败一律吞掉只记日志：**记忆是加分项，绝不能让它影响一次已经成功的问答**。
-    这与 webhook 的处置同一口径。
+    位置在 ``sink.close_turn`` **之前**：``turn/end`` 里的步数读的是 ``sink.steps``，
+    之后再补就数不上它——而它正是这一轮的最后一步。
     """
-    if not conversation_id:
+    outcome = _capture_implicit(services, query, caller=caller)
+    if outcome is None or not outcome.results:
         return
-    if not _sediments_memory(caller):
-        return
-    try:
-        count = services.conversations.message_count(conversation_id)
-    except Exception:
-        logger.warning("读会话消息数失败，本轮不沉淀记忆：%s", conversation_id, exc_info=True)
-        return
-    # 一个回合 = 用户 + 助手两条消息（见 _record_turn）
-    turn_count = count // 2
-    try:
-        services.memory.capture_turn(
-            conversation_id,
-            turn_count=turn_count,
-            user_id=_memory_owner(caller),
-            force=force,
-        )
-    except Exception:
-        logger.warning("记忆沉淀入队失败：%s", conversation_id, exc_info=True)
+    payload: dict[str, object] = {
+        "phase": "memory",
+        "label": "记进档案",
+        "detail": outcome.receipt,
+        "status": "done",
+    }
+    if steps is not sink.steps:
+        sink.steps.append(payload)
+    steps.append(payload)
+    sink.events.append(EventDraft(kind=KIND_STEP, payload=payload))
 
 
 def _record_turn(  # type: ignore[no-untyped-def]
@@ -2481,8 +2421,6 @@ def _record_turn(  # type: ignore[no-untyped-def]
         # 记日志即可；下一轮的历史会缺这一条，但不影响继续对话。
         logger.exception("对话落库失败：%s", conversation_id)
         return
-    # 落库成功之后才谈沉淀：消息没进库就沉淀，记忆会指向一个空会话
-    _maybe_capture_memory(services, conversation_id, caller=caller)
 
 
 class TurnRecordIn(BaseModel):
@@ -2583,14 +2521,16 @@ def record_turn_endpoint(
         events=[marker],
     )
     services.conversations.ensure_title(conversation_id, payload.question)
-    # **落库成功之后才谈沉淀** ✓（与服务器自己那条链路同一个口径 ✓，见 `chat.py:2485`）：
-    # 边车写回的轮次与人在网页里问的那一轮在库里长得一模一样 ✓，
-    # 不在这里接一下 ✗，这些轮次就**永远不进长期记忆** ✗ —— 而"记忆里少了边车那几轮"
-    # 是用户事后才发现、且无法补回的那类丢失 ✓。
+    # **落库成功之后才谈隐式捕获**（与服务器自己那条链路同一个口径）：
+    # 边车写回的轮次与人在网页里问的那一轮在库里长得一模一样，
+    # 不在这里接一下，这些轮次就**永远不进长期记忆**——而"记忆里少了边车那几轮"
+    # 是用户事后才发现、且无法补回的那类丢失。
     #
-    # 位置就在**幂等命中之后** ✗：同一轮上报两次时上面已经 `return` ✓，
-    # 于是重复上报不会把同一轮再送进记忆一遍 ✓（`_maybe_capture_memory` 自己还有节流 ✓）。
-    _maybe_capture_memory(services, conversation_id, caller=caller)
+    # 位置就在**幂等命中之后**：同一轮上报两次时上面已经 `return`，
+    # 于是重复上报不会把同一轮再判一次。
+    #
+    # 它没有过程面可补（这条链路上没有对话流），所以只要结果、不报步骤。
+    _capture_implicit(services, payload.question, caller=caller)
     return TurnRecordOut(
         conversation_id=conversation_id, turn_id=payload.turn_id, recorded=True
     )
@@ -3041,9 +2981,6 @@ def _compact(
         return _CommandResult(name="compact", ok=False, text=f"压缩失败：{exc}")
     if count == 0:
         return _CommandResult(name="compact", text="没有可压缩的内容：这条会话的对话都已进摘要。")
-    # 手动压缩与自动那条路同一个道理：压完立刻补一次沉淀（绕过节流），
-    # 别让"刚被折进摘要的这一段"在记忆里也查不到。
-    _maybe_capture_memory(services, payload.conversation_id, caller=caller, force=True)
     return _CommandResult(
         name="compact",
         text=f"已把 {count} 条较早的消息压成摘要；之后的问答仍记得它们，但上下文短了。",

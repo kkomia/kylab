@@ -36,7 +36,9 @@ from app.api.v1.schemas import (
     MemoryBudgetOut,
     MemoryChangeOut,
     MemoryChangesOut,
+    MemoryDraftOrganizeOut,
     MemoryDraftOut,
+    MemoryDraftSuggestionOut,
     MemoryEntryOut,
     MemoryFileDetailOut,
     MemoryFileOut,
@@ -44,7 +46,6 @@ from app.api.v1.schemas import (
     MemoryGroupOut,
     MemoryGroupRenameIn,
     MemoryHitOut,
-    MemoryLinkOut,
     MemoryMigrationOut,
     MemoryOverviewOut,
     MemoryRecallIn,
@@ -95,42 +96,24 @@ def _file_out(record) -> MemoryFileOut:  # type: ignore[no-untyped-def]
         tags=list(record.tags),
         size_bytes=record.size_bytes,
         modified_at=record.modified_at,
-        links=list(record.links),
-        retrievable=record.retrievable,
         # "会被注入"是**那几份设定文件**的专属性质（每轮进 system prompt，见 §5.1），
         # 名字清单由记忆层给（`INJECTED_FILES`）：v0.56 起 `MEMORY.md` **不在里面**
         # ——它已经退场（§7.2），界面上它显示成"旧记忆（只读）"。
         injected=record.path in INJECTED_FILES,
-        consolidated=record.consolidated,
     )
 
 
-def _status_out(record, files) -> MemoryStatusOut:  # type: ignore[no-untyped-def]
-    """状态 + 由文件列表算出的一个计数。
-
-    ``unconsolidated_count`` 在这里算（而不是让前端数）：**"哪些还没被整合"的判据
-    在服务层**（``MemoryFile.consolidated`` 怎么来的只有那边知道），前端只该显示数字。
-    其余三个数字（几份文件、可召回几份、可召回几条）来自服务层的本地统计，
-    与召回用的是同一个切块口径。
-
-    **当天索引页不算"待整合"**：它是 ``refresh_day_index`` 现扫出来的派生物
-    （当天各条会话笔记的目录），永远不会被整合。算进去的话，每过一天那枚标记
-    就白涨一个，慢慢变成一个没人再看的数字。
+def _status_out(record) -> MemoryStatusOut:  # type: ignore[no-untyped-def]
+    """状态 → 响应。**全是服务层数出来的本地数字**（几份文件、上次改动），
+    界面只该显示数字：这些数的口径（哪些目录算记忆、什么算一份）只有服务层知道。
     """
     return MemoryStatusOut(
         enabled=record.enabled,
         workspace=record.workspace,
         core_file_exists=record.core_file_exists,
         file_count=record.file_count,
-        retrievable_count=record.retrievable_count,
-        entry_count=record.entry_count,
         last_changed_at=record.last_changed_at,
         detail=record.detail,
-        unconsolidated_count=sum(
-            1
-            for item in files
-            if item.kind == "daily" and not item.consolidated and not item.is_day_index
-        ),
     )
 
 
@@ -146,7 +129,7 @@ def get_memory(
     """
     scope = _scope(caller)
     files = services.memory.files(scope)
-    status_out = _status_out(services.memory.status(scope), files)
+    status_out = _status_out(services.memory.status(scope))
     return MemoryOverviewOut(
         status=status_out,
         files=[_file_out(item) for item in files],
@@ -169,10 +152,7 @@ def read_memory_file(
     detail = services.memory.file_text(path, _scope(caller))
     base = _file_out(services.memory.describe(detail.path, _scope(caller)))
     return MemoryFileDetailOut(
-        # ``consolidated`` 是**跨文件**才知道的事（要看书里有没有 digest 链过来），
-        # 而读一个文件不该去扫整个工作区。这里显式给 None = "这次没算"，
-        # 而不是留一个恒为 False 的值让界面显示成"未整合"——那是在说假话。
-        **{**base.model_dump(), "consolidated": None},
+        **base.model_dump(),
         content=detail.content,
         meta=detail.meta,
         truncated=detail.truncated,
@@ -195,7 +175,7 @@ def recall_memory(
     以为"没有相关记忆"，然后基于错误前提继续。启用着而真的没有相关记录时，
     返回空列表才是诚实的答案（那时检索确实跑过了）。
     """
-    hits, links = services.memory.recall(
+    hits = services.memory.recall(
         payload.query, limit=payload.limit, user_id=_scope(caller)
     )
     return MemoryRecallOut(
@@ -211,10 +191,6 @@ def recall_memory(
                 source=item.source,
             )
             for item in hits
-        ],
-        links=[
-            MemoryLinkOut(path=item.path, direction=item.direction, name=item.name)
-            for item in links
         ],
         note=RECALL_NOTE,
     )
@@ -422,6 +398,32 @@ def migrate_memory(
         archive_changed=report.archive_changed,
         draft_entries=report.draft_entries,
         per_source=list(report.per_source),
+    )
+
+
+@router.post(
+    "/draft/organize",
+    response_model=MemoryDraftOrganizeOut,
+    summary="整理迁移草稿（一次模型调用，只给建议）",
+)
+def organize_memory_draft(
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> MemoryDraftOrganizeOut:
+    """跑一次模型，把 ``import-draft.md`` 里的旧条目改写成画像条目（§8.3）。
+
+    **用户显式点一次才发生**（"会花钱的默认关"），而它**一个字都不写**：
+    返回的是预览建议，用户确认之后前端逐条打 ``POST /memory/remember``——
+    于是这一次模型调用不可能绕过预算、顶替判据与变更流（§3.3–§3.4），
+    每一条的回执也仍然是从那一处文案来的。
+
+    **失败与"没整理出东西"都如实报错**（映射成可读的错误信封）：
+    这一次是花过钱的，静默返回空列表会让用户以为"点了没反应"。
+    """
+    items = services.memory.organize_draft(_scope(caller))
+    return MemoryDraftOrganizeOut(
+        items=[MemoryDraftSuggestionOut(text=item.text, section=item.section) for item in items],
+        note="这些还只是建议，确认之后才会写进档案。",
     )
 
 

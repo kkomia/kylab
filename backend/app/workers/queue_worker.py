@@ -90,7 +90,6 @@ class TaskWorker:
         sync_source: Callable[[str], object] | None = None,
         compile_wiki: Callable[[str], object] | None = None,
         summarize_gap: Callable[[], object] | None = None,
-        capture_memory: Callable[[list[dict[str, str]], str, str], object] | None = None,
         run_scheduled: Callable[[str], object] | None = None,
         due_schedules: Callable[[], object] | None = None,
         schedule_interval: float = DEFAULT_SCHEDULE_INTERVAL,
@@ -118,8 +117,6 @@ class TaskWorker:
         # Wiki 重建（v24）。同样是可选回调：没接上时 WIKI 任务明确失败，
         # 而不是被静默丢掉
         self._compile_wiki = compile_wiki
-        #: 记忆沉淀回调（v0.14）。签名 (messages, session_id)
-        self._capture_memory = capture_memory
         # 补文档摘要（v25）。同样是可选回调：不接上就没有这个动作，
         # 而不是"静默什么都不做"——它由组合根显式传入。
         self._summarize_gap = summarize_gap
@@ -463,26 +460,6 @@ class TaskWorker:
             if not kb_id:
                 raise ValueError(f"任务 {task.id} 缺少 kb_id")
             self._compile_wiki(kb_id)
-            return
-        if task.kind is TaskKind.MEMORY:
-            # 记忆沉淀既没有 document_id 也没有 kb_id：payload 直接带那一轮的消息。
-            # 与其它分支一样**没接线就明确报错**，不静默跳过——
-            # 静默跳过会让人以为"记忆开着却什么都没记住"，那是最难查的一类症状。
-            if self._capture_memory is None:
-                raise NotImplementedError("记忆沉淀尚未接线")
-            messages = task.payload.get("messages")
-            session_id = str(task.payload.get("session_id") or "")
-            if not isinstance(messages, list) or not session_id:
-                raise ValueError(f"任务 {task.id} 缺少 messages / session_id")
-            # 账号随 payload 走（v0.15）：worker 没有调用者上下文，
-            # 事后也无从推断这条记忆该落到谁名下。空串 = 共享桶。
-            user_id = str(task.payload.get("user_id") or "")
-            self._capture_memory(messages, session_id, user_id)
-            # **这一行 return 不能省**：MEMORY 不在 ``DOCUMENT_KINDS`` 里，
-            # 掉到下面那条 ``not in DOCUMENT_KINDS`` 会抛 NotImplementedError，
-            # 而它在 ``NON_RETRYABLE`` 里 → 任务被判 FAILED。
-            # 原先漏了这一行，症状是"记忆条目确实写进去了，任务中心却每次都记一条失败"
-            # ——副作用已经发生，所以看起来像功能正常，只有翻任务列表才看得出。
             return
         if task.kind is TaskKind.SCHEDULED:
             # 定时任务（v0.33）：payload 里是 scheduled_id，没有 document_id。

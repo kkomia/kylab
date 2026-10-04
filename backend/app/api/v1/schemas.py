@@ -2591,20 +2591,12 @@ class MemoryFileOut(BaseModel):
     tags: list[str] = Field(default_factory=list)
     size_bytes: int = 0
     modified_at: str = ""
-    links: list[str] = Field(default_factory=list)
-    retrievable: bool = False
-    """``recall`` 找不找得到它。
-
-    **必须显示出来**：只有 ``daily/`` 与 ``digest/`` 在召回池里；
-    ``MEMORY.md`` / ``SOUL.md`` 走注入。用户改完一个不参与召回的文件却搜不到时，
-    界面得能解释"这是位置决定的"，而不是让他怀疑检索坏了。
-    """
 
     injected: bool = False
-    """每轮对话会不会被注入 system prompt（只有两个核心文件）。"""
+    """每轮对话会不会被注入 system prompt（`SOUL.md` / 档案 / `AGENTS.md`）。
 
-    consolidated: bool = False
-    """``daily`` 专有：有没有被 ``digest/`` 里的文件链到（= 是否已被整合）。"""
+    ``MEMORY.md`` **不在里面**：它已经退场（§7.2），内容折进了档案；
+    界面上它据此显示成"旧记忆（只读）"。"""
 
 
 class MemoryFilesOut(BaseModel):
@@ -2616,15 +2608,11 @@ class MemoryFilesOut(BaseModel):
 
 class MemoryFileDetailOut(MemoryFileOut):
     content: str = ""
-    """原文，**含 frontmatter**：编辑器要能逐字存回去，不能因为我们"顺手格式化"
+    """原文，**含 frontmatter**：只读展示要逐字还原，不能因为我们"顺手格式化"
     而丢掉用户手写的东西。"""
 
     meta: dict[str, Any] = Field(default_factory=dict)
     truncated: bool = False
-    consolidated: bool | None = None
-    """**这里恒为 None**（= "没算"）：整合状态要跨文件才知道，而读单个文件不该
-    扫整个工作区。覆盖父类的同名布尔字段，就是为了不让界面把一个"恒 False"
-    显示成"未整合"——那是在说假话。列表接口里它是真值。"""
 
 
 class MemoryStatusOut(BaseModel):
@@ -2642,18 +2630,8 @@ class MemoryStatusOut(BaseModel):
     file_count: int = 0
     """工作区里的记忆文件份数。"""
 
-    retrievable_count: int = 0
-    """其中进入召回池的份数（``daily/`` 与 ``digest/``）。"""
-
-    entry_count: int = 0
-    """**可召回的条数**（按行切出来的块数，与召回同一个口径）。"""
-
     last_changed_at: str = ""
-    """记忆内容最后一次改动的时间。没有索引也就没有"索引时间"，
-    这里的含义就是界面上写的"上次更新"。"""
-
-    unconsolidated_count: int = 0
-    """``daily/`` 里还没被 ``digest/`` 链到的条数——"哪些还没被整合"（设计文档三期）。"""
+    """记忆内容最后一次改动的时间（界面上写的"上次更新"）。"""
 
 
 class MemoryOverviewOut(BaseModel):
@@ -2677,32 +2655,22 @@ class MemoryHitOut(BaseModel):
     不是归一化的量——所以界面上不要拿它当"相关度百分比"读。"""
 
     coverage: float | None = None
-    """命中判据：查询里的实词有多少比例出现在这一块（0–1）。
+    """命中判据：查询里的字对有多少比例在这条记录里出现过（0–1）。
 
     与分数量纲不同，这个是**归一化**的：它决定"算不算命中"
-    （见 ``memory_files.MIN_TERM_COVERAGE``），分数只决定排在第几条。
-
-    **语义那一路单独命中时它是 0**（那一侧没有"覆盖率"，判据是余弦下限），
-    所以界面上不要一律把它读成"命中率"——先看 ``source``。
+    （见 ``archive.MIN_CHANGE_COVERAGE``），分数只决定排在第几条。
     """
 
     source: str = "text"
-    """这条是怎么被找到的：``text`` / ``vector``（按意思找到的）/ ``both``。
+    """这条是怎么被找到的：**变更流里永远是 ``text``**。
 
-    v0.50 加的。它存在的唯一理由是**别让界面把 0 当成"没命中"**：
-    语义那一路没有覆盖率这个概念，界面该说"按意思找到的"。"""
-
-
-class MemoryLinkOut(BaseModel):
-    path: str
-    direction: Literal["out", "in"]
-    name: str = ""
+    字段留着是因为 REST 与外部客户端一直按同一个形状读（v0.50 起它用来区分
+    词面命中与语义命中，而语义那一路已随档案制退场）。"""
 
 
 class MemoryRecallOut(BaseModel):
     query: str
     hits: list[MemoryHitOut] = Field(default_factory=list)
-    links: list[MemoryLinkOut] = Field(default_factory=list)
     note: str = ""
     """一句话提醒这是记忆而不是知识库原文（与 MCP 那份同口径）。"""
 
@@ -2792,6 +2760,25 @@ class MemoryDraftOut(BaseModel):
     exists: bool = False
     path: str = ""
     entries: int = 0
+
+
+class MemoryDraftSuggestionOut(BaseModel):
+    """「整理初稿」给出的一条建议（§8.3）：**只是建议，还没有写进档案**。"""
+
+    text: str
+    section: str = ""
+
+
+class MemoryDraftOrganizeOut(BaseModel):
+    """一次「整理初稿」的结果。
+
+    **这一步不写任何东西**：它只跑一次模型、把草稿里的旧条目改写成画像条目并把
+    归区建议带回来，用户在界面上确认之后才逐条走 ``POST /memory/remember``
+    ——于是这一次模型调用**不可能绕过预算与变更流**（§3.3–§3.4）。
+    """
+
+    items: list[MemoryDraftSuggestionOut] = Field(default_factory=list)
+    note: str = ""
 
 
 class MemoryArchiveOut(BaseModel):

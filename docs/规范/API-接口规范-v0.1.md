@@ -306,7 +306,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **209** 条端点。
+共 **210** 条端点。
 
 ### `api-keys`
 
@@ -497,6 +497,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/memory` | 记忆状态与文件列表 |
 | `GET` | `/api/v1/memory/archive` | 档案卡（分区、条目、读数） |
 | `GET` | `/api/v1/memory/changes` | 变更流（倒序） |
+| `POST` | `/api/v1/memory/draft/organize` | 整理迁移草稿（一次模型调用，只给建议） |
 | `GET` | `/api/v1/memory/files/{path}` | 读一个记忆文件 |
 | `POST` | `/api/v1/memory/forget` | 忘掉一条 |
 | `POST` | `/api/v1/memory/group` | 项目组改名 |

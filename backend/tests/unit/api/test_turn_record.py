@@ -157,23 +157,21 @@ def test_memory_is_asked_only_after_a_real_record(
     为什么单独钉这一条：边车写回的轮次与人在网页里问的那一轮在库里长得一模一样 ✓，
     不在这里接一下 ✗，这些轮次就**永远不进长期记忆** ✗ —— 而"记忆里少了边车那几轮"
     是用户事后才发现、且补不回来的那类丢失 ✓。反过来，幂等命中再叫一次 ✗
-    等于同一轮重复入队（`_maybe_capture_memory` 自己只做**节流**、不做去重 ✓，
-    见 `chat.py` 那个函数的说明）——所以「只在成功那一次叫」这件事必须钉住 ✓。
+    等于同一轮重复判一次（`_capture_implicit` 自己只认信号词与服务层开关、
+    不做跨轮去重 ✓，见 `chat.py` 那个函数的说明）——所以「只在成功那一次叫」必须钉住 ✓。
 
-    默认档下记忆是**关**的 ✓（`memory.enabled`），所以这里用替身看"叫没叫" ✓，
+    默认档下隐式捕获是**关**的 ✓（`memory.capture`），所以这里用替身看"叫没叫" ✓，
     不去真的落一条记忆 ✗。
     """
     import app.api.v1.chat as chat_module
 
-    calls: list[str | None] = []
+    calls: list[str] = []
 
-    def _spy(
-        services: Any, conversation_id: str | None, *, caller: Any, force: bool = False
-    ) -> None:
-        _ = services, caller, force
-        calls.append(conversation_id)
+    def _spy(services: Any, query: str, *, caller: Any) -> None:
+        _ = services, caller
+        calls.append(query)
 
-    monkeypatch.setattr(chat_module, "_maybe_capture_memory", _spy)
+    monkeypatch.setattr(chat_module, "_capture_implicit", _spy)
     conversation = _new_conversation(admin_client)
     body = {
         "conversation_id": conversation,
@@ -184,11 +182,11 @@ def test_memory_is_asked_only_after_a_real_record(
 
     first = admin_client.post(RECORD, json=body)
     assert first.status_code == 200 and first.json()["recorded"] is True, first.text
-    assert calls == [conversation], "落库成功之后应当叫一次"
+    assert calls == ["这一轮要沉淀"], "落库成功之后应当叫一次，把这一轮的问句交给它"
 
     second = admin_client.post(RECORD, json=body)
     assert second.json()["recorded"] is False
-    assert calls == [conversation], "幂等命中不该再叫一次（否则同一轮重复入队）"
+    assert calls == ["这一轮要沉淀"], "幂等命中不该再叫一次"
 
 
 def test_a_conversation_that_is_not_yours_is_a_404(admin_client: TestClient) -> None:

@@ -5,25 +5,28 @@
 引用会脏、溯源会断。所以记忆召回是独立的一路（MCP 上是 `recall`，与 `search` 分开），
 结果永不合并——而且**两条路连索引都不共用**。
 
-**这一层现在的形状**（期二把档案接进了对话链路）：
+**这一层现在的形状**：
 
 - **档案**（``PROFILE.md``，四个固定分区）= 这一层的本体，落在
   ``data/memory/<账号>/``。它由 :class:`~app.services.archive.ArchiveService`
   读写（分区、预算、机械顶替、变更流都在那里），**本模块是门面**：开关、注入块、
-  工具接线；
+  三条写入路与工具接线；
 - **注入**（§5.1–5.2）：每轮**现读现拼**整份档案（不挑选、不摘要、不排序），
   挂在人设那一档、但**是独立的一个贡献者**（自己的开关 ``memory.enabled``、
   不与人设共用配置）。硬顶 6000 字，超限在提示词里说出来；
 - **recall**（§5.3）：池子只剩 ``changes.md``（变更流）——档案已经全量注入，
   再召回一次就是把同一段内容进两次上下文。它回答"这条以前是什么、什么时候改的"，
   排序是纯字面判据（:func:`app.services.archive.search_changes`）；
-- **写入**（§4.1）：`remember` / `forget` 是**显式**那条路，判定与落盘都是机械的，
-  **零额外模型调用**；``memory.enabled`` 关着也能写（编辑不看开关）。
+- **三条写入路**（§4.1）：① 显式的 `remember` / `forget`（判定与落盘都是机械的，
+  **零额外模型调用**）；② 隐式的信号捕获（:meth:`MemoryService.capture_implicit`，
+  **默认关**，全链路上唯一会自动花钱的地方）；③ 界面上按条目编辑
+  （走 ``api/v1/memory.py`` 那几个端点）。三条路写的是同一份档案、同一个服务、
+  同一套预算，只有来源标注不同。
 
 **默认零额外模型调用**（§7.3）：``memory.enabled`` 默认 **true**（行为变更——旧设计
-默认关是因为打开它会启动定时捕获，现在注入与捕获已经拆成两个开关），而**旧的定时
-捕获在链路上已废**（§4.1：它是"固定节奏的花钱"，期四换成只在信号出现的那一轮判定）。
-所以默认配置下，注入、显式写入、recall **一次模型调用都不新增**。
+默认关是因为打开它会启动定时捕获，现在注入与捕获已经拆成两个开关），而隐式捕获
+``memory.capture`` **默认 false**。所以默认配置下，注入、显式写入、recall
+**一次模型调用都不新增**。
 
 **关着时一律明确报错，不返回空**：返回空会让模型以为"没有相关记忆"，
 然后基于错误前提继续推理——那是比报错更坏的一种失败。（**开着时**返回空才是
@@ -32,24 +35,20 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from app.core.exceptions import InvalidRequestError
-from app.models.enums import TaskKind, TaskState
 from app.services import archive_files as af
-from app.services import archive_migration, memory_files, memory_index
+from app.services import archive_migration, memory_files
 from app.services.archive import (
     INJECTION_LIMIT_CHARS,
     SECTION_PREFERENCES,
     SINGLE_ENTRY_CHARS,
+    SOURCE_IMPLICIT,
     TOTAL_CHARS,
     TOTAL_ENTRIES,
     ArchiveEntry,
@@ -58,25 +57,26 @@ from app.services.archive import (
 )
 from app.services.archive_migration import MigrationReport, classify_text
 from app.services.llm import ChatMessage, OpenAICompatChat
-from app.services.memory_files import MemoryFile, MemoryFileDetail, MemoryGraph
+from app.services.memory_files import MemoryFile, MemoryFileDetail
 from app.services.runtime_config import RuntimeConfigService
-from app.storage.base import StoreBundle, TaskRecord
 
 __all__ = [
     "ARCHIVE_FILE",
+    "CAPTURE_SIGNALS",
     "CORE_MEMORY_FILE",
     "MAX_ENTRY_CHARS",
     "MAX_RECALL",
     "PERSONA_FILES",
     "SOUL_FILE",
     "WRITABLE_PERSONA_FILES",
+    "CaptureOutcome",
+    "DraftSuggestion",
     "MemoryFile",
     "MemoryFileDetail",
-    "MemoryGraph",
     "MemoryHit",
-    "MemoryLink",
     "MemoryService",
     "MemoryStatus",
+    "matched_signal",
 ]
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ PERSONA_ORDER_DEFAULT = ",".join(name for name, _label in PERSONA_FILES)
 #: 语法），以及删掉与外部平台相关的措辞（我们没有 Discord/Slack 那类通道）。
 #:
 #: frontmatter 用我们自己的措辞而不是照抄那句"SOUL.md 工作区模板"：`summary`
-#: 是给检索与注入看的，写"这份文件是干什么的"比写"它叫什么名字"有用。
+#: 是给注入看的，写"这份文件是干什么的"比写"它叫什么名字"有用。
 _SOUL_TEMPLATE = """---
 summary: "Agent 的人格：身份、准则与说话方式"
 read_when:
@@ -335,18 +335,8 @@ read_when:
 #: 一次召回最多取几条。与检索工具同一口径：给模型"够用"的几条，
 #: 而不是它说要多少就给多少（上下文预算是有限的）。
 MAX_RECALL = 20
-#: 服务层不另立一个默认值：默认条数只在文件层定一次（少一处会对不上的数）。
-DEFAULT_RECALL = memory_files.DEFAULT_RECALL
-
-#: 捕获节流的默认值：每几个用户回合沉淀一次。
-#: 5 是 ReMe/QwenPaw 的默认（见设计文档 §2.4），这里保持一致——
-#: 换成别的数没有依据，而它有：那条默认值来自它们的实际使用经验。
-#:
-#: **期二起没有任何地方读它**（§4.1：定时轮询退场，见 ``_capture_due``）。
-#: 常量与 ``memory.capture_every`` 那个设置键一起留到**期五**删除——留着是因为
-#: 界面上的设置项还在（删键要连界面一起改），而"读了它却没有效果"比"看得见一个
-#: 尚待清理的键"更糟。
-DEFAULT_CAPTURE_EVERY = 5
+#: 默认取几条（池子只有变更流里那几十到几百条记录，默认给个位数）。
+DEFAULT_RECALL = 6
 
 #: ``remember`` 这条通道的**传输上限**（协议层与这里同源：``api/v1/schemas.py`` 的
 #: ``MemoryRememberIn`` 直接引这个常量）。
@@ -357,168 +347,109 @@ DEFAULT_CAPTURE_EVERY = 5
 #: 让它在协议层就 422，别白读一遍再拒。
 MAX_ENTRY_CHARS = 500
 
-#: 一次捕获最多写几条。一轮对话能沉淀出的"长期事实"通常一到两条，
-#: 5 是护栏：模型偶尔会把整段对话拆成十条"事实"，而记忆不是流水账。
-MAX_CAPTURED_ITEMS = 5
+#: 一次隐式捕获最多写几条。一轮对话能沉淀出的"画像事实"通常一到两条，
+#: 2 是护栏：这里的方向是"宁可漏不可滥"，多写一条就是每轮多付一份上下文成本。
+MAX_CAPTURED_ITEMS = 2
 
-#: 送进捕获提示词的"已经记过的条目"条数上限（取最近的这些条）。
-#: 不设上限的话，这个提示词会随着记忆增长越来越贵——而它每次捕获都要发一遍。
-KNOWN_ENTRIES_IN_PROMPT = 60
+#: 一次"整理初稿"最多送进模型的旧条目数（§8.3）。
+#: 草稿可能有几十条，而这次调用是用户显式点的一次——超出的部分留在草稿里，
+#: 由用户决定要不要再点一次（报告里如实说"只整理了前 N 条"）。
+MAX_DRAFT_ITEMS = 40
 
-#: 单条消息送进捕获提示词的字数上限。一轮对话里助手的回答可能很长，
-#: 但"值得长期记"的决定与结论通常首尾都有，所以取头也取尾（见 ``_transcript``）。
-CAPTURE_MESSAGE_CHARS = 2000
-
-#: 一次捕获最多带多少轮对话（用户 + 助手两条算一轮）。
+#: **隐式捕获的机械前置筛**（§4.1 第②路）：用户消息里出现这些词才发起那一次判定。
 #:
-#: **为什么要有上限**：整段 payload 要进 ``tasks`` 表的一行 JSON。一个中间一直
-#: 没沉淀的会话（记忆关着、或连续失败）累积几百轮并不稀奇，而"把四百条消息塞进
-#: 一行 JSON"是那种平时看不出、出事时很难查的形状。
-#: 超出时**从头取**、水位线只推进到真正送出去的那一条：剩下的下一轮接着补，
-#: 于是"落后很多"是逐渐追上的，不是静默丢掉的。
-CAPTURE_BATCH_TURNS = 20
-
-#: 会话笔记 ``summary`` 的长度上限（模型给的摘要，或用第一条兜底，见 ``_note_summary``）。
-#: 它是列表与召回里显示的那一句，太长会把列表撑成一段话。
-NOTE_SUMMARY_CHARS = 80
-
-#: 会话笔记 ``title`` 的长度上限（v0.51，模型给的「主题」那行）。
-#: 它进 frontmatter 的 ``title``，是**显示名**（``memory_files._title_of`` 优先取它），
-#: 所以短一点：它是列表里的一行，不是正文标题。
-NOTE_TITLE_CHARS = 40
-
-#: 捕获只认对话的两侧。``ConversationService.append`` 也能写别的 role，
-#: 那些不是"谁说了什么"，交给捕获只会污染提示词。
-_CAPTURE_ROLES = ("user", "assistant")
-
-#: 捕获水位线在 ``app_settings`` 里的键前缀（**每个会话一行**）。
+#: 这是全篇**唯一一处词表**（设计 §10 第 5 条），也是最该被真实使用推翻的一处——
+#: 它必然脆，但它的代价只是**漏**（下次用户说「记住」就补上了），方向与
+#: "宁可漏不可滥"一致。宽泛的词（「别」「不要」「以后」）会带来一些多余的判定调用；
+#: 真正确认"这条值不值得进档案"的是下面那两问，多一次调用不产生错误写入。
 #:
-#: 与 ``document.<id>.original_path`` 那批同一个用法：按实体生成、由写入方
-#: **直接**落库，不进运行期配置的已知键集合——进去了就会读到自己写的值被缓存
-#: 延迟最多两秒的旧值（见 ``runtime_config`` 关于"哪些键可以缓存"的说明）。
-_CAPTURED_KEY = "memory.captured."
+#: ``不用`` 代表设计文档里那个「不用…了」的说法（"以后不用给我加总结了"）。
+CAPTURE_SIGNALS: tuple[str, ...] = (
+    "记住",
+    "以后",
+    "下次都",
+    "每次都",
+    "别",
+    "不要",
+    "我们的项目",
+    "目标是",
+    "必须是",
+    "已决定",
+    "不用",
+)
 
-#: 去重判据：去掉空白与标点后的**字符二元组重合度**下限（Jaccard）。
-#:
-#: 阈值定得偏高（0.7）是**故意偏保守**：漏过一条改写（写重了一条记忆）是看得见的，
-#: 用户扫一眼文件就能删；而误判"新事实与旧条目是同一件事"会静默丢掉一条真事实。
-#: 两者不对等，所以宁可少拦。另外两条更硬的判据在 ``_similar`` 里：
-#: 指纹相同（只差标点空白），以及"短的那条是长的那条的整段、且只多出几个字"。
-DUP_SIMILARITY = 0.7
-
-#: 包含关系算重复时，长的那条最多能比短的多几个字（见 ``_similar``）。
-#:
-#: **为什么要有个数**：没有它，"设备名是 nas"与"设备名是 nas，地址是 192.168.1.10"
-#: 会被判成重复，而后者多出来的地址就**永远不落盘**了——捕获是"先落盘、后整理"这条
-#: 链路的**入口**，在这里拦下来，后面的整理（``dream``）根本没有机会看到它。
-#: 只差几个字的才是"同一句话的标点级改写"，那才该拦。
-CONTAINMENT_SLACK = 6
-
-#: 指纹用：去重比对前把空白与标点抹掉（只留字与数字）。
-#: ``\w`` 在 Python 3 里按 Unicode 匹配，汉字也算字，所以中文不受影响。
-_NON_WORD = re.compile(r"[\W_]+", re.UNICODE)
-#: 数字串（判"数字变了 = 不是同一件事"用，见 ``_similar``）。
-_DIGIT_RUN = re.compile(r"\d+")
-#: 模型输出里认得出是"一条"的行：项目符号或编号开头。
+#: 模型输出里认得出是"一条"的行：项目符号或编号开头（它会自己加记号）。
 _ENTRY_LINE = re.compile(r"^\s*(?:[-*+•]|\d+[.、)])\s*")
 #: 代码围栏（模型爱把输出包起来）。
 _FENCE = re.compile(r"^\s*```")
 
-#: 捕获用的系统提示词。**留的是 ReMe/QwenPaw 那份"什么值得记"的清单**
-#: （设计文档 §2.4 抄下来的那几条），因为那是这一层最见功力的地方：
-#: 写"识别以后仍可能有用的事"，模型就会把整轮对话都抄下来。
+
+def matched_signal(text: str) -> str:
+    """用户消息命中了哪个信号词；一个都没命中就返回空串（§4.1）。
+
+    **只做字面包含**：不加分词、不做语义——这一步存在的意义是"零成本地挡掉绝大多数
+    无信号的轮次"，判据要能被一行读明白、被真实使用推翻。
+    """
+    flat = text or ""
+    return next((word for word in CAPTURE_SIGNALS if word in flat), "")
+
+
+#: 隐式捕获那一次判定的系统提示词（§4.2 的**画像双问** + 三条否决）。
 #:
-#: 最后两条是安全与卫生，且必须写在提示词里：**敏感信息不进记忆**是
-#: MEMORY.md 模板里就有的约定，而这里是我们唯一会"自动写入"的入口。
+#: 为什么把判据写成提示词而不是代码判据：这两问要的是"这句话在说这个人是谁、
+#: 他长期在意什么吗"，那是语义；机械判据（字面相似度）在这里没有用武之地。
+#: 而**裁决规则是"拿不准就不写"**：这里要的不是召回率，是精确率——
+#: 漏一条，用户下次说一句「记住」就行；滥一条，之后每一轮都在付它的上下文成本。
 _CAPTURE_SYSTEM = (
-    "你在把一轮对话里**值得长期留下的事**挑出来，写进这个人的长期记忆。\n"
-    "值得记的：稳定的偏好与工作方式、项目背景与长期约束、已经确认的决定（连同原因）、"
-    "当前进展与阻塞、可复用的做法。\n"
-    "不值得记的：一次性的问答内容、从资料里查到的知识（那是知识库的事）、"
-    "寒暄与客套、与已有条目重复的内容。\n"
-    "**绝不记录密码、令牌、密钥、证件号这类敏感信息**，哪怕对话里提到了。\n"
-    "输出格式：**先两行**——「主题：<这份笔记在讲什么，一个短句>」与"
-    "「摘要：<一句话，以后靠它认这份笔记>」（这两行**能写就写**）；"
-    "**然后**每条一行，以「- 」开头，一句话说清一件事（不超过 60 字）。"
-    "没有值得记的就**什么也不要输出**，不要写「没有」这类说明。"
+    "你在判断一轮对话里有没有**该长期留在用户档案里的一件事**，并把这件事写成一句话。\n"
+    "\n"
+    "## 两问（两问都答不上来就不写）\n"
+    "1. 这说的是**用户是谁**吗？（称呼、角色、语言、环境、拥有什么）\n"
+    "2. 这说的是**用户长期在意什么**吗？（偏好、雷点、项目目标与约束、"
+    "已定的决定与理由、产出规范）\n"
+    "\n"
+    "## 三条否决（命中任何一条都不写）\n"
+    "- **下次对话仍然成立**吗？只对今天有效的、一次性的任务细节，不写；\n"
+    "- **是用户说的**吗？你自己推断出来的一律不写；\n"
+    "- **不含敏感信息**吗？密码、令牌、密钥、证件号一律不写，哪怕对方直接贴过来。\n"
+    "\n"
+    "**拿不准就不写。** 这里要的是准确，不是多记。\n"
+    "\n"
+    "## 写法\n"
+    "- **一条一句话，主语是用户**（写「用户要求先给结论」，不写「我会先给结论」）；\n"
+    "- **自足**：单看这一条就能懂，不出现「这个」「上次那个」这类指代；\n"
+    "- **不带时间戳**；**不写「用户说」这类外框**；\n"
+    "- 只写这一轮里**新出现**的事；最多两条。\n"
+    "\n"
+    "## 输出\n"
+    "每条一行，格式是「分区｜一句话」，分区只能是这四个之一："
+    "身份与称呼 / 长期偏好与风格 / 进行中的项目 / 工具与环境。\n"
+    "没有值得写的就**什么也不要输出**（不要写「没有」这类说明）。"
 )
 
-#: **整理**（Auto-Dream 的等价物）那一次的提示词。
+#: 「整理初稿」那一次改写的系统提示词（§8.3 的可选一次模型整理）。
 #:
-#: 为什么需要它（照 QwenPaw 的 ``dream/integrate.yaml`` 抄它的机制）：捕获把对话变成
-#: **现场**——一天一条、按时间堆着、只增不并。现场越堆越长，而"以后要用的是结论，
-#: 不是流水"。整理就是那个把现场沉淀成**按主题归并的长期知识**（``digest/``）的动作。
-#:
-#: **四类三桶都是照抄 QwenPaw 的**（``digest/{personal,procedure,wiki}`` 与
-#: ``CREATE/CORROBORATE/REFINE/CORRECT``），因为那两处的划分经得起用：
-#: 三个桶回答"这条是什么"，四个动作回答"拿它怎么办"。
-#:
-#: **一处刻意的偏离**：QwenPaw 把"挑出值得沉淀的单元"（extract）与"与已有知识整合"
-#: （integrate，要带 node_search 召回）拆成两次模型调用，我们**合成一次**——
-#: 现有长期知识的**目录**（路径 + 摘要）本来就不大，一次给全，模型自己挑目标。
-#: 代价是它不能像 QwenPaw 那样对每个单元宽召回 20–30 条；在当前量级
-#: （几份到几百份、几百 KB）目录本身就是那份"宽召回"。
-_DREAM_SYSTEM = (
-    "你在把一个人的**现场记忆**（每天从对话里沉淀下来的条目）整理成**长期知识**。\n"
-    "现场是流水：一条一条按时间堆着。长期知识是**按主题归并**出来的——"
-    "以后要用的是后者。\n\n"
-    "## 三个类别\n"
-    "- personal：偏好、关注范围、长期约定（「他喜欢先看结论」）\n"
-    "- procedure：可复用的做法与步骤（「发布前先跑门禁脚本」）\n"
-    "- wiki：概念、事实、原则、心智模型（「锂价下跌压低正极材料成本」）\n\n"
-    "## 四个动作（每条只能说一个）\n"
-    "- CREATE：现有长期知识里没有这一条，新建一条\n"
-    "- CORROBORATE：已有那条又出现了一次——补一条来源就行，正文不用改\n"
-    "- REFINE：已有那条要补前提、边界、失败模式或步骤\n"
-    "- CORRECT：已有那条**错了**（顺序不对、缺关键步骤、结论被推翻）\n\n"
-    "## 纪律\n"
-    "- **只写以后还会用到的**。一次性的过程、寒暄、已经过时的进展，不要写。\n"
-    "- **只写长期知识这一侧**：现场那几份文件一个字都不要动（也不在你的输出里）。\n"
-    "- **同一个主题要归到同一条上**：别为它的每次出现都新建一条。要更新已有那条时，"
-    "名字就用目录里那个名字。\n"
-    "- 名字是**简短的中文短语**（它会被当成文件名）：不要带日期、不要带斜杠。\n"
-    "- **绝不记录密码、令牌、密钥、证件号这类敏感信息**，哪怕现场里写着。\n\n"
-    "## 输出格式（严格照这个来）\n"
-    "每个条目长这样——以「=== 」开头的一行是头部，以单独一行「===」结束。"
-    "下面这个块只是**格式示例**：里面的「动作」「类别」「名字」是**占位符**，"
-    "不是要你原样输出的字。\n\n"
-    "=== 动作｜类别｜名字\n"
-    "摘要：一句话说清这条是什么\n"
-    "关联：[[另一个主题的名字]]\n"
-    "正文：\n"
-    "这条的正文，可以多行\n"
-    "===\n\n"
-    "**只输出条目块**，此外一个字都不要写：不要解释你做了什么、"
-    "不要复述这段格式说明、**不要写你的思考过程或自我检查**。\n"
-    "「关联」那一行没有就留空。没有值得沉淀的就**什么也不要输出**。"
+#: 它**改写**机械折叠的结果（把旧条目改成"主语是用户"的一句话、剔除噪音、
+#: 给出归区建议），所以它只由用户在迁移报告/草稿区**显式点一次**——
+#: "会花钱的默认关"这条口径在这里同样成立。
+_DRAFT_SYSTEM = (
+    "你在整理一份**用户档案的初稿**：下面是从旧记忆里机械搬过来的条目，"
+    "语气不统一、有的主语不是用户、有的不是画像事实。\n"
+    "\n"
+    "请逐条判断并改写：\n"
+    "1. **留下真正属于画像的**：说的是用户是谁、他长期在意什么"
+    "（偏好、雷点、项目目标与约束、已定的决定与理由、产出规范）；\n"
+    "2. **改写成一句话，主语是用户**、自足、不带时间戳、不写「用户说」这类外框；\n"
+    "3. **不属于画像的直接丢掉**：一次性任务细节、从资料里抄来的知识、"
+    "寒暄与客套、过时的进展；\n"
+    "4. **绝不输出密码、令牌、密钥、证件号**这类敏感信息，哪怕草稿里有；\n"
+    "5. 同一件事的几条合并成一条，最多 {limit} 条。\n"
+    "\n"
+    "## 输出\n"
+    "每条一行，格式是「分区｜一句话」，分区只能是这四个之一："
+    "身份与称呼 / 长期偏好与风格 / 进行中的项目 / 工具与环境。\n"
+    "没有值得留下的就**什么也不要输出**。"
 )
-
-#: 一次整理最多处理几份"变了样的"现场文件（照 QwenPaw 的 ``max_units``）。
-#: 超出的留到下一轮——与捕获的水位线同一个取舍：**逐渐追上，而不是一次做完**。
-DREAM_MAX_FILES = 5
-
-#: 送进整理提示词的单个现场文件上限（字符）。整理要看的是"这一天里有什么值得沉淀"，
-#: 不需要逐字读完一份很长的流水。
-DREAM_FILE_CHARS = 3000
-
-#: 三个类别（照 QwenPaw 的 ``digest/{personal,procedure,wiki}``）。
-DREAM_BUCKETS: tuple[str, ...] = ("personal", "procedure", "wiki")
-
-#: 类别 → frontmatter 里的 ``kind``（照 QwenPaw 的约定：procedure→procedure、
-#: personal→preference、wiki→concept）。它是给以后的检索与界面分类用的。
-_DREAM_KINDS = {"personal": "preference", "procedure": "procedure", "wiki": "concept"}
-
-#: 四个动作（照 QwenPaw 的 integrate 提示词）。
-DREAM_ACTIONS: tuple[str, ...] = ("CREATE", "CORROBORATE", "REFINE", "CORRECT")
-
-#: 整理水位线在 ``app_settings`` 里的键前缀（**每份工作区一行**）。
-_DREAMED_KEY = "memory.dreamed."
-
-#: 文件名里不许出现的字符（类别名与主题名都会进路径）。
-_ILLEGAL_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
-
-#: 现场文件在 ``digest/`` 那一侧的落点（照 QwenPaw 的目录名）。
-_DIGEST_DIR_NAME = memory_files.DIGEST_DIR
 
 #: **档案块的两句边界话**（§5.1）。
 #:
@@ -622,29 +553,6 @@ _BOOTSTRAP = (
     "只要档案还是空的，这一段每轮都会出现；写进第一条之后它自己就没了。"
 )
 
-#: 新建**会话笔记**时的骨架。文件名是 ``daily/<日期>/<会话 slug>.md``
-#: （见 ``memory_files.session_note_path``）——**一个会话一天一条**，同一天再
-#: 沉淀就是更新这一条，而不是往一个平铺文件里继续追加。
-#:
-#: ``session_id`` 进 frontmatter 而**不是**写成 wikilink：它是我们认领"这份笔记
-#: 属于哪次对话"的键（QwenPaw 的 Auto-Memory 正是用 ``session_id`` 精确匹配来判
-#: "更新已有还是新建"），而链接形式会指向一个不存在的文件，把图谱的悬空链接数
-#: 弄脏——这条纪律原先那个平铺文件就已经在守了。
-#:
-#: 日期**用本地日期**而不是 UTC：这是给人看的"今天的现场"，而人的日期感是本地
-#: 时间（用 UTC 会让东八区早上 8 点前的对话记到"昨天"）。
-_DAILY_TEMPLATE = """---
-summary: "{summary}"
-{title_line}session_id: "{session_id}"
----
-
-# {date} 现场
-
-{entries}
-
-<!-- 来源会话：{session_id}（本文件由对话自动沉淀，只增不改） -->
-"""
-
 
 @dataclass(frozen=True, slots=True)
 class MemoryStatus:
@@ -661,17 +569,6 @@ class MemoryStatus:
     file_count: int = 0
     """工作区里的记忆文件份数。"""
 
-    retrievable_count: int = 0
-    """其中进入**旧召回池**的份数（``daily/`` 与 ``digest/``）。
-
-    **它已经不是一个有意义的读数**（期二起 ``recall`` 只查变更流，§5.3）：
-    这两个数字随 ``memory_files.stats`` 一起等期五重做（那时 ``daily/``/``digest/``
-    整层退场）。留着它是因为界面还没改（期三），而删一个界面在读的字段比留一个
-    待清理的字段更糟。"""
-
-    entry_count: int = 0
-    """旧召回池切出来的**块数**（``memory_files.stats`` 的口径）——同上，等期五。"""
-
     last_changed_at: str = ""
     """记忆内容最后一次改动的时间（ISO，UTC）。没有索引也就没有"索引时间"，
     这里的含义就是"上次更新"。"""
@@ -679,18 +576,42 @@ class MemoryStatus:
     detail: str = ""
 
 
-#: 召回结果的记录类型**直接用文件层那一个**：片段与出处本来就是在那里算出来的，
-#: 服务层只转发——再拷一层就多一处"字段对不上"的机会。
-MemoryHit = memory_files.MemoryMatch
+@dataclass(frozen=True, slots=True)
+class MemoryHit:
+    """查证的一条命中（形状与变更流那条记录的命中一致：文本 + 出处 + 行号 + 分数）。"""
+
+    text: str
+    path: str
+    start_line: int | None = None
+    end_line: int | None = None
+    score: float = 0.0
+    coverage: float = 0.0
+    source: str = "text"
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryLink:
-    """命中文档的邻接边（wikilink 图谱）。``direction`` 是 ``out`` / ``in``。"""
+class CaptureOutcome:
+    """一次隐式捕获的结果（§4.1 第②路）：命中的信号词 + 写入结果。
 
-    path: str
-    direction: str
-    name: str = ""
+    ``results`` 为空表示"模型判定这轮没有值得进档案的东西"——那是**正常结果**，
+    不是失败（与"模型调用失败"要分得开：后者由调用方吞掉并记日志）。
+    """
+
+    signal: str
+    results: tuple[WriteResult, ...] = ()
+
+    @property
+    def receipt(self) -> str:
+        """给对话过程面用的一句回执：**与显式那条路同一份文案来源**（§4.4）。"""
+        return "；".join(item.receipt for item in self.results)
+
+
+@dataclass(frozen=True, slots=True)
+class DraftSuggestion:
+    """「整理初稿」给出的一条建议（§8.3）：**只是建议，还没有写进档案**。"""
+
+    text: str
+    section: str
 
 
 def _ordered_entries(
@@ -739,17 +660,97 @@ def _fitted_body(
     return body, kept
 
 
+def _capture_prompt(query: str) -> list[ChatMessage]:
+    """隐式捕获那一次判定的两条消息。
+
+    **只给用户这一轮说的话**，不给助手的回答：判据里有一条"**是用户说的**吗"，
+    把助手的回答摆进来只会给模型多一份它不该依据的材料（它会从助手的话里
+    推断出"用户大概喜欢…"，而那正是要否决的）。
+    """
+    return [
+        ChatMessage(role="system", content=_CAPTURE_SYSTEM),
+        ChatMessage(role="user", content=f"用户这一轮说的是：\n\n{query.strip()}"),
+    ]
+
+
+def _draft_prompt(draft: str, limit: int) -> list[ChatMessage]:
+    """「整理初稿」那一次改写的两条消息。"""
+    return [
+        ChatMessage(role="system", content=_DRAFT_SYSTEM.format(limit=limit)),
+        ChatMessage(
+            role="user",
+            content=f"## 迁移草稿里的旧条目\n\n{draft}\n\n请按系统提示词里那个格式输出。",
+        ),
+    ]
+
+
+def _split_label(line: str) -> tuple[str, str]:
+    """``分区｜一句话`` → ``(分区, 一句话)``；不是这个形状就是 ``("", 整行)``。
+
+    两条分寸：
+
+    - ``｜`` / ``|`` 是**我们要求模型用的分隔符**，所以哪怕分区名写错（模型偶尔写成
+      「长期偏好」而不是「长期偏好与风格」），也认它是标签并把正文取回来——
+      分区名不该让一条真事实落不了盘，归区有机械词表兜底；
+    - ``：`` 只在**逐字命中四个固定分区之一**时才切：模型会把一句话写成
+      ``2026 计划：先做 A`` 这种形状，按冒号无脑切会把正文切坏。
+    """
+    for sep in ("｜", "|"):
+        head, found, tail = line.partition(sep)
+        if found and tail.strip() and 0 < len(head.strip()) <= 12:
+            name = head.strip()
+            return (name if name in af.KNOWN_SECTIONS else ""), tail.strip()
+    head, found, tail = line.partition("：")
+    if found and head.strip() in af.KNOWN_SECTIONS:
+        return head.strip(), tail.strip()
+    return "", line
+
+
+def _has_bar_label(line: str) -> bool:
+    """这一行带没带 ``标签｜正文`` 那个分隔符（分区名认不出来也算带）。"""
+    for sep in ("｜", "|"):
+        head, found, tail = line.partition(sep)
+        if found and tail.strip() and 0 < len(head.strip()) <= 12:
+            return True
+    return False
+
+
+def _parse_lines(raw: str, *, limit: int) -> list[tuple[str, str]]:
+    """把模型输出解析成 ``[(分区, 一句话)]``（最多 ``limit`` 条）。
+
+    **宽容读取、严格丢弃**：模型爱加项目符号、爱把输出包在围栏里、分区名也可能写成
+    「长期偏好」这种近似说法（那就按内容机械归区，见 ``classify_text``）。
+    但**散文一律丢掉**——它只认三种形状：带项目符号的行、``标签｜正文``、
+    以及分区名逐字对得上的行。理由：写进档案的东西每轮都在付上下文成本，
+    宁少一条也不错一条；而模型回一句「这一轮没有值得记的」正是要表达这个意思。
+    """
+    out: list[tuple[str, str]] = []
+    for raw_line in (raw or "").splitlines():
+        if _FENCE.match(raw_line):
+            continue
+        line = raw_line.strip()
+        bullet = bool(_ENTRY_LINE.match(line))
+        if bullet:
+            line = _ENTRY_LINE.sub("", line).strip()
+        section, text = _split_label(line)
+        if not (bullet or section or _has_bar_label(line)):
+            continue
+        text = " ".join(text.split()).strip()
+        if not text or len(text) > MAX_ENTRY_CHARS:
+            continue
+        out.append((section, text))
+        if len(out) >= limit:
+            break
+    return out
+
+
 class MemoryService:
     """记忆的实现。**内容全在本地**：读写的都是 ``data/memory/`` 下的 Markdown。
 
-    两个动作会出网，都是**可选的**、都有开关：
-
-    - 捕获时问一次对话模型（``capture``）——那不是"记忆服务"，而是我们自己的模型
-      通道，模型没配好时它明确报错（见 ``_ask_model``）。**期二起它在链路上已废**
-      （见 ``_capture_due``），于是默认配置一次调用都不发生；
-    - 向量那一路（``memory.vector_enabled``）把记忆块嵌入一次做本地索引
-      （``sync_index`` / ``memory_index``）——默认关，而且 ``recall`` 已经不吃它了
-      （池子只剩变更流）。
+    只有隐式捕获这一个动作会出网，而且**默认关**（``memory.capture``）：
+    开着时它在信号出现的那一轮问一次对话模型（那不是"记忆服务"，而是我们自己的
+    模型通道，模型没配好时它明确报错，见 ``_ask_model``）。于是默认配置下一次调用
+    都不发生。
     """
 
     def __init__(
@@ -757,26 +758,38 @@ class MemoryService:
         runtime: RuntimeConfigService,
         data_dir: Path,
         *,
-        stores: StoreBundle | None = None,
         ask: Callable[[list[ChatMessage]], str] | None = None,
-        embed: memory_index.EmbeddingSource | None = None,
     ) -> None:
         self._runtime = runtime
         self._data_dir = data_dir
-        #: 存储（可选）：**只有入队捕获任务时才需要**。不给它也能用——
-        #: recall / remember / 注入都不碰数据库，测试与脚本因此可以轻量构造。
-        self._stores = stores
         #: 问模型的能力（可选）：不给就用运行期配置里绑定的对话模型（见 ``_ask_model``）。
-        #: 测试注入它来跑"捕获"这条链路，不必真连一个模型。
+        #: 测试注入它来跑隐式捕获与整理初稿，不必真连一个模型。
         self._ask = ask
-        #: 嵌入能力（可选）：不给就没有向量那一路（词面那一路本来就是完整的）。
-        self._embed = embed
 
     # ------------------------------------------------------------------ 配置
 
     @property
     def enabled(self) -> bool:
         return self._runtime.get_bool("memory.enabled")
+
+    @property
+    def capture_enabled(self) -> bool:
+        """隐式捕获的总开关（``memory.capture``，**默认 false**，§4.1 第②路）。
+
+        **不看 ``memory.enabled``**：与 `remember` 同一条纪律——档案的写入不看那道闸，
+        那道闸管的是"它进不进这一轮的上下文、`recall` 能不能用"。两个开关各管一件事，
+        合成一个判据的后果是"关掉注入之后，用户显式打开的自动记也不明不白地停了"。
+        """
+        return self._runtime.get_bool("memory.capture")
+
+    @property
+    def capture_model(self) -> str:
+        """判定用哪个模型（``memory.capture_model``）；**空 = 用运行中的对话模型**。
+
+        默认留空是刻意的（§4.2）：不引入新的必填配置，也不引入"没配记忆模型 →
+        记忆功能不可用"这种半死状态。允许绑一个更便宜的模型来做判定。
+        """
+        return (self._runtime.get("memory.capture_model") or "").strip()
 
     def workspace_for(self, user_id: str | None = None) -> Path:
         """某个账号的记忆工作区（**agent 按账号隔离的落点**，v0.15）。
@@ -791,7 +804,7 @@ class MemoryService:
         原地继续用——升级不该让一个人的记忆"消失"。
 
         为什么"一个账号一个目录"就是"一个账号一个 agent"：这个目录里放着它的
-        ``SOUL.md``（人格）与 ``MEMORY.md``（长期记忆），
+        ``SOUL.md``（人格）与 ``PROFILE.md``（档案），
         而这两份东西每轮都进 system prompt。**分开它们，Agent 才真的是"我的"**。
 
         **native 之后这条隔离是精确的**：召回只扫"这个账号自己的目录"，
@@ -928,6 +941,73 @@ class MemoryService:
         """项目段的组改名（§3.1 第 2 条）。同样不看开关。"""
         return self.archive(user_id).rename_group(section, old, new)
 
+    # ------------------------------------------------------------ 隐式捕获（§4.1 ②）
+
+    def capture_implicit(
+        self, message: str, *, user_id: str | None = None
+    ) -> CaptureOutcome | None:
+        """**隐式**那条路：用户消息命中信号词时，跑一次判定，写进档案。
+
+        三道闸，**先便宜的先过**（与旧实现同一条取舍）：
+
+        1. ``memory.capture``（默认关）——关着时这个方法**一次模型都不调**，
+           连信号词都不看；
+        2. **机械前置筛**（:func:`matched_signal`）：没命中信号词就返回 ``None``，
+           这一轮零成本；
+        3. 都没有才问模型一次，用的是 :attr:`capture_model`（空 = 运行中的对话模型）。
+
+        判据与安全由两处一起保证：**提示词**里是 §4.2 的画像双问与三条否决，
+        **落盘**那一侧是 :meth:`ArchiveService.add` 的预算、机械顶替与敏感信息否决——
+        模型不听话时（比如把密码写进来）最后的闸门仍然拦得住。
+
+        返回值两种"空"要分清：``None`` = 这条路没跑（关着 / 没信号）；
+        ``CaptureOutcome(results=())`` = 跑了，但判定"这轮没有值得写的"。
+
+        **抛出的异常由调用方处置**：判定调用失败不能影响一轮已经成功的问答，
+        但也不该被静默吞掉——调用方记日志（见 ``api/v1/chat._implicit_capture_step``）。
+        """
+        if not self.capture_enabled:
+            return None
+        query = " ".join((message or "").split()).strip()
+        signal = matched_signal(query)
+        if not signal:
+            return None
+        raw = self._ask_model(_capture_prompt(query), model_pk=self.capture_model)
+        items = _parse_lines(raw, limit=MAX_CAPTURED_ITEMS)
+        if not items:
+            return CaptureOutcome(signal=signal)
+        archive = self.archive(user_id)
+        results: list[WriteResult] = []
+        for section, entry in items:
+            target = section if section in af.KNOWN_SECTIONS else classify_text(
+                entry, default=SECTION_PREFERENCES
+            )
+            results.append(archive.add(entry, target, source=SOURCE_IMPLICIT))
+        return CaptureOutcome(signal=signal, results=tuple(results))
+
+    def _ask_model(self, messages: list[ChatMessage], *, model_pk: str = "") -> str:
+        """问一次模型。
+
+        默认用的是运行期配置里**绑定给「对话生成」的那个模型**（与对话同一条模型通道），
+        而不是另配一套：记忆是对话的副产品，没有理由让它用一个必须存在的第二模型。
+        ``model_pk`` 非空时（``memory.capture_model``）用那个指定的注册模型——
+        允许绑一个更便宜的模型来做判定（§4.2）。没绑定时报可读错误。
+
+        **关掉思考**（``enable_thinking=False``）：``llm.py`` 的模块注释里就写着这条
+        ——抽取类任务要显式关。实测（真模型 + 真数据，2026-09-27）开着思考时模型的
+        **推理过程会混进正文**：那次的整理输出里中英文夹着"等等，第二个条目没有内容，
+        不应该输出…Let me reconsider and produce clean output"，于是解析器只认得出半条。
+        记忆判定是"从一段话里挑出事实"，不是推理题，那些 token 只会添乱。
+        """
+        if self._ask is not None:
+            return self._ask(messages)
+        config = self._runtime.llm_for(model_pk or None)
+        if not config.is_configured:
+            raise InvalidRequestError(
+                "没有可用的对话模型，记忆判定需要一个能用的模型（设置 → 模型）"
+            )
+        return OpenAICompatChat(replace(config, enable_thinking=False)).complete(messages)
+
     # ------------------------------------------------------------------ 迁移
 
     def migration_available(self, user_id: str | None = None) -> bool:
@@ -953,6 +1033,40 @@ class MemoryService:
         """``import-draft.md`` 里还有几条旧条目没进档案（§8.2 的界面提示）。"""
         path = self.workspace_for(user_id) / af.IMPORT_DRAFT_FILENAME
         return len(af.bullet_lines(af.read_text(path)))
+
+    def organize_draft(self, user_id: str | None = None) -> list[DraftSuggestion]:
+        """跑一次模型，把 ``import-draft.md`` 里的旧条目改写成画像条目（§8.3）。
+
+        **只返回建议，一个字都不写**：结果先给用户看（界面上是预览），他确认之后
+        才逐条走 `remember` 那条正规的路——同一套预算、同一套顶替判据、
+        同一份回执文案。这样这一次模型调用**不可能**绕过 §3.3–§3.4 的任何一条。
+
+        失败与"没整理出东西"都**如实抛错**（调用方转成可读的错误回执）：
+        静默返回空列表会让用户以为"点了没反应"，而这一次是花过钱的。
+        """
+        path = self.workspace_for(user_id) / af.IMPORT_DRAFT_FILENAME
+        items = [text for _heading, text in af.bullet_lines(af.read_text(path))]
+        if not items:
+            raise InvalidRequestError("草稿里没有可整理的条目")
+        sent = items[:MAX_DRAFT_ITEMS]
+        draft = "\n".join(f"- {item}" for item in sent)
+        raw = self._ask_model(
+            _draft_prompt(draft, MAX_DRAFT_ITEMS), model_pk=self.capture_model
+        )
+        parsed = _parse_draft(raw)
+        if not parsed:
+            raise InvalidRequestError(
+                "模型这一轮没有给出可用的条目（草稿没有改动，可以再点一次）"
+            )
+        return [
+            DraftSuggestion(
+                text=entry,
+                section=section
+                if section in af.KNOWN_SECTIONS
+                else classify_text(entry, default=SECTION_PREFERENCES),
+            )
+            for section, entry in parsed
+        ]
 
     # ------------------------------------------------------------------ 读取
 
@@ -998,7 +1112,6 @@ class MemoryService:
                 # 按字节写：`write_text` 在 Windows 上会把换行改成 CRLF
                 # （与 memory_files 同一处踩过的坑）
                 path.write_bytes(template.encode("utf-8"))
-                memory_files.invalidate(path)
             except OSError:
                 logger.warning("人设文件写不出来：%s", path, exc_info=True)
                 continue
@@ -1008,24 +1121,19 @@ class MemoryService:
     def _upgrade_untouched_template(self, path: Path, name: str, template: str) -> bool:
         """把**从没被改过的旧模板**换成新模板；返回是否换了。
 
-        为什么需要这一步：v0.21 把三份模板换成了 QwenPaw 那套有内容的写法，
-        而 ``seed_persona`` 的原则是"已存在的一律不动"——于是**已经在用的部署
-        永远看不到新模板**，除非用户自己去删文件（而他并不知道该删）。
-        v0.56 的 ``PROFILE.md`` 又是一次换形状（散文 → 四区档案骨架），同一个问题
-        再来一遍：``_LEGACY_TEMPLATES`` 里一份文件可以对好几个历史模板。
-
-        判据是**逐字节相同**：那意味着这份文件还是我们当初写下去的那一份，
-        用户一个字都没动（连换行都没动过）。差一个字节就不碰——那是他的东西，
-        哪怕他只是把标题改成了自己的话。宁可漏升级，不可误覆盖。
+        判据是**逐字节相同**（见 ``profile_is_untouched`` 的说明）：只要用户动过一个
+        字符，这份文件就是他的，我们一个字都不改。这一条是"升级不该改用户的东西"
+        的落点，所以宁可漏判（继续用旧模板）也不要误判。
         """
-        legacy = _LEGACY_TEMPLATES.get(name)
-        if not legacy or template in legacy:
+        known = {template, *_LEGACY_TEMPLATES.get(name, ())}
+        try:
+            current = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if current not in known or current == template:
             return False
         try:
-            if path.read_text(encoding="utf-8") not in legacy:
-                return False
             path.write_bytes(template.encode("utf-8"))
-            memory_files.invalidate(path)
         except OSError:
             logger.warning("人设模板升级失败：%s", path, exc_info=True)
             return False
@@ -1141,11 +1249,10 @@ class MemoryService:
         """当前状态：**数一遍工作区，不连任何东西**。
 
         为什么连计数都在这里算（而不是让界面 filter）：这些数字的含义都压在
-        "召回池是哪几个目录""什么算一条"这些判断上，而它们只在这一层知道。
-        界面只该显示数字。
+        "什么算一个记忆文件"这些判断上，而它们只在这一层知道。界面只该显示数字。
 
         成本：一次目录遍历 + 读那几个文件。这是"个人长期记忆"的量级
-        （几份到几百份、几百 KB），所以不另做缓存——不缓存就没有"缓存过期"
+        （几十份文件、几百 KB），所以不另做缓存——不缓存就没有"缓存过期"
         这个新问题。
         """
         space = self.workspace_for(user_id)
@@ -1155,8 +1262,6 @@ class MemoryService:
             workspace=str(space),
             core_file_exists=self.core_file_for(user_id).exists(),
             file_count=stats.file_count,
-            retrievable_count=stats.retrievable_count,
-            entry_count=stats.entry_count,
             last_changed_at=stats.last_changed_at,
             detail=""
             if self.enabled
@@ -1167,7 +1272,7 @@ class MemoryService:
 
     def recall(
         self, query: str, *, limit: int | None = None, user_id: str | None = None
-    ) -> tuple[list[MemoryHit], list[MemoryLink]]:
+    ) -> list[MemoryHit]:
         """在**变更流**里查证（§5.3）：这条以前是什么、什么时候改的。
 
         三条口径：
@@ -1177,17 +1282,13 @@ class MemoryService:
         - **排序是纯字面的**（:func:`app.services.archive.search_changes`）：
           归一化子串命中数 + 二元组覆盖率，不依赖分词、不建索引、不走向量；
         - **"没搜到"只有一个含义**：变更流里确实没有相关的话。
-
-        返回 ``(命中, 链接)`` 与旧形状一致（调用的 REST 与工具都按它读），
-        但**链接永远是空的**：wikilink 图谱属于 ``daily/``/``digest/`` 那一层，
-        本期的池子里没有它（期五随那些目录一起退场）。
         """
         self._require_enabled()
         text = query.strip()
         if not text:
             raise InvalidRequestError("缺少参数：query")
         count = max(1, min(int(limit or DEFAULT_RECALL), MAX_RECALL))
-        hits = [
+        return [
             MemoryHit(
                 text=hit.text,
                 path=hit.path,
@@ -1199,677 +1300,16 @@ class MemoryService:
             )
             for hit in self.archive(user_id).changes_hits(text, limit=count)
         ]
-        return hits, []
-
-    def _vector_on(self) -> bool:
-        """向量那一路开着吗：**开关 + 有没有嵌入能力**，两样都要。
-
-        没接嵌入能力（比如 MCP 那条只读通道）时不算开着——那种情形下报"开关打开了
-        但没有嵌入模型"没有意义，词面那一路本来就是完整的。
-        """
-        return self._embed is not None and self._runtime.get_bool("memory.vector_enabled")
-
-    # ------------------------------------------------------------------ 向量索引
-
-    def sync_index(
-        self, user_id: str | None = None, *, force: bool = False
-    ) -> dict[str, Any]:
-        """让向量索引与当前块对齐（嵌入**只在内容真的变了时**才发生）。
-
-        挂在 worker 的空闲分支上（见 ``core/services.py`` 的 ``_maintain``），
-        **不在召回路径上**：嵌入是一次网络调用，放进召回就等于让每次检索都赌一次
-        上游的延迟。代价是索引可能落后一轮——所以查询时只认当前确实存在的块
-        （见 ``memory_index`` 的说明第 1 条）。
-        """
-        if self._embed is None:
-            return {"skipped": "没有嵌入能力"}
-        if not force and not self._runtime.get_bool("memory.vector_enabled"):
-            return {"skipped": "向量那一路关着"}
-        space = self.workspace_for(user_id)
-        if not space.is_dir():
-            return {"skipped": "工作区不存在"}
-        return memory_index.sync(space, self._embed)
-
-    def sync_index_all(self, *, force: bool = False) -> dict[str, Any]:
-        """每一份工作区都对齐一遍（**给 worker 的空档维护用的**）。
-
-        一份失败不影响别的：挨个 try，与 ``dream_all`` 同一条取舍。
-        """
-        done: dict[str, Any] = {}
-        for user_id in self.workspaces():
-            try:
-                result = self.sync_index(user_id, force=force)
-            except Exception:
-                logger.warning("对齐记忆向量索引失败，跳过：%s", user_id or "共享桶", exc_info=True)
-                continue
-            if result.get("embedded") or result.get("dropped"):
-                done[user_id or "-"] = result
-        return done
-
-    # ------------------------------------------------------------------ 捕获
-
-    def capture(
-        self, messages: list[dict[str, str]], *, session_id: str, user_id: str | None = None
-    ) -> dict[str, Any]:
-        """把一轮对话沉淀成记忆条目（**我们自己的实现**，v0.46 起）。
-
-        三步：让对话模型挑出"值得长期留下"的条目 → 与工作区里已有的条目去重
-        → 写进**这个会话当天的那一条笔记**（``daily/<日期>/<会话>.md``），
-        并刷新当天的索引页。
-
-        **为什么一个会话一天一条，而不是往一个平铺的当天文件里追加**（本轮改的
-        结构）：一个会话一天会沉淀很多次，平铺文件里既分不清哪些条目属于哪次
-        对话、也没有地方可以"更新"——于是只能越堆越长，而"记忆只增不并"正是
-        那么来的。照 QwenPaw 的 Auto-Memory：**按 ``session_id`` 认领笔记**，
-        命中就续写那一条。
-
-        为什么落 daily 而不是 ``MEMORY.md``（设计文档 §1 的两层分工）：
-        ``MEMORY.md`` 是那几份**每轮整份注入上下文**的核心文件，自动沉淀直接写进去
-        等于机器替人决定"什么该长期占着上下文窗口"；而 daily 是按需召回的现场，
-        只增不并——**整理是另一件事**（``dream``，v0.49 落地）：它按节拍把现场
-        沉淀成 ``digest/`` 里的长期知识，而现场那份永远不改。
-
-        去重有两道：提示词里把那句话说出来（模型自己先别重复），以及
-        机械比对（``_similar``）兜底——模型并不总是听话。
-
-        失败一律抛出去：它跑在队列上（``TaskKind.MEMORY``），由 worker 按重试语义
-        处置；在这里吞掉的话，"记忆开着却什么都没记住"会变成一个查不出原因的现象。
-        """
-        self._require_enabled()
-        if not messages:
-            raise InvalidRequestError("没有可沉淀的消息")
-        for index, item in enumerate(messages):
-            if not (item.get("role") and item.get("content")):
-                raise InvalidRequestError(f"第 {index + 1} 条消息缺少 role / content")
-        if not session_id.strip():
-            raise InvalidRequestError("缺少参数：session_id（记忆要靠它回溯来源对话）")
-
-        space = self.workspace_for(user_id)
-        known = memory_files.entry_texts(space)
-        raw = self._ask_model(_capture_prompt(messages, known))
-        title, summary = _capture_headline(raw)
-        fresh = _select_new(raw, known)
-        if not fresh:
-            # 没有值得记的**也是一次正常结果**（ReMe 那边同样不产生空记忆）：
-            # 返回 created=false 而不是报错，调用方据此不必报告"记下了"。
-            return {
-                "created": False,
-                "path": "",
-                "entries": [],
-                "summary": "这一轮没有值得新记的内容",
-                "messages": len(messages),
-            }
-
-        path = self._write_capture(
-            space, fresh, session_id=session_id, title=title, summary=summary
-        )
-        return {
-            "created": True,
-            "path": path,
-            "entries": fresh,
-            "summary": f"记下了 {len(fresh)} 条：" + "；".join(fresh)[:200],
-            "messages": len(messages),
-        }
-
-    def _ask_model(self, messages: list[ChatMessage]) -> str:
-        """问一次对话模型。
-
-        用的是运行期配置里**绑定给「对话生成」的那个模型**（与对话同一条模型通道），
-        而不是另配一套：记忆沉淀是对话的副产品，没有理由让它用别的模型。
-        没绑定时报可读错误（同 ``ChatService`` 的口径），由队列去重试。
-
-        **关掉思考**（``enable_thinking=False``）：``llm.py`` 的模块注释里就写着这条
-        ——抽取类任务要显式关。实测（真模型 + 真数据，2026-09-27）开着思考时模型的
-        **推理过程会混进正文**：那次的整理输出里中英文夹着"等等，第二个条目没有内容，
-        不应该输出…Let me reconsider and produce clean output"，于是解析器只认得出半条。
-        记忆沉淀是"从一段话里挑出事实"，不是推理题，那些 token 只会添乱。
-        """
-        if self._ask is not None:
-            return self._ask(messages)
-        config = self._runtime.llm()
-        if not config.is_configured:
-            raise InvalidRequestError(
-                "没有配置对话模型，记忆沉淀需要一个能用的对话模型（设置 → 模型）"
-            )
-        return OpenAICompatChat(replace(config, enable_thinking=False)).complete(messages)
-
-    def _write_capture(
-        self,
-        space: Path,
-        entries: list[str],
-        *,
-        session_id: str,
-        title: str = "",
-        summary: str = "",
-    ) -> str:
-        """把条目写进**这个会话当天的那一条笔记**，并刷新当天索引页。
-
-        **三个纪律**：
-
-        - 落到谁的目录由调用方给（``space``），文件里不留任何跨账号信息；
-        - 来源会话写成一行 HTML 注释（``<!-- 来源会话 conv_x -->``）：
-          渲染出来看不见（不打扰正文），又能回答"这条是哪次对话来的"。
-          不写成 wikilink——那会连到不存在的文件上，把图谱的悬空链接数弄脏；
-        - **同一天同一会话写进同一份笔记**：认领的键是 ``session_id``（写进了
-          frontmatter，所以下一次沉淀找得回来），而不是靠内容相似度去猜。
-        """
-        day = datetime.now().strftime("%Y-%m-%d")
-        relative = memory_files.session_note_path(session_id, day=day)
-        # 路径由我们自己拼，但仍然过一遍同一套安全解析：文件名里带着会话 id，
-        # 而"绝不会越界"这件事该有唯一一处判据，不该靠"这个 id 是我们生成的"。
-        target = memory_files.safe_path(space, relative)
-        block = "\n".join(f"- {entry}" for entry in entries)
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                body = target.read_bytes().decode("utf-8", errors="replace").rstrip("\n")
-                content = f"{body}\n{block}\n{_source_note(session_id)}\n"
-            else:
-                content = _DAILY_TEMPLATE.format(
-                    summary=_frontmatter_value(summary or _note_summary(entries)),
-                    title_line=(
-                        f'title: "{_frontmatter_value(title)}"\n' if title.strip() else ""
-                    ),
-                    session_id=_frontmatter_value(session_id),
-                    date=day,
-                    entries=block,
-                )
-            # 按字节写：``write_text`` 在 Windows 上把 ``\n`` 翻成 ``\r\n``
-            # （与 memory_files 同一处坑），而这份文件用户也会用别的编辑器改
-            target.write_bytes(content.encode("utf-8"))
-            # 我们自己写的要显式失效（理由见 `memory_files.invalidate`）：捕获落的
-            # 就是召回池里的东西，不能等 mtime 那一层——网络文件系统的时间戳
-            # 精度可能只有一秒上下。
-            memory_files.invalidate(target)
-        except OSError as exc:
-            raise InvalidRequestError(f"写不了当天的记忆笔记：{exc}") from exc
-        try:
-            memory_files.refresh_day_index(space, day=day)
-        except InvalidRequestError:
-            # 索引页是**派生物**：刷不出来只是"当天目录少一行"，笔记本身已经落盘。
-            # 不让它把一次成功的沉淀变成失败——下一次沉淀会再刷一遍。
-            logger.warning("当天记忆索引页刷不出来：%s", day, exc_info=True)
-        return relative
-
-    # ------------------------------------------------------------------ 整理
-    #
-    # 捕获把对话变成**现场**（``daily/``），整理把现场沉淀成**长期知识**（``digest/``）。
-    # 这一节是 QwenPaw 的 Auto-Dream 在 KYLAB 的落点，第一条纪律与它一致：
-    # **只写 digest/，绝不回头改现场**——现场是"当时到底发生了什么"的不可变记录。
-
-    def workspaces(self) -> list[str | None]:
-        """所有记忆工作区：共享桶（``None``）与每个账号一份。
-
-        判据是**这个目录里有那四份核心文件里的至少一份**（``seed_persona`` 会铺它们）：
-        ``daily/`` / ``digest/`` 这些子目录不会命中，所以不必另立一张
-        "哪些账号有工作区"的表——工作区本来就是目录。
-        """
-        root = self.workspace_for(None)
-        out: list[str | None] = [None]
-        try:
-            children = sorted(item for item in root.iterdir() if item.is_dir())
-        except OSError:
-            return out
-        for child in children:
-            if any((child / name).exists() for name in memory_files.CORE_FILES):
-                out.append(child.name)
-        return out
-
-    def dream(self, user_id: str | None = None, *, force: bool = False) -> dict[str, Any]:
-        """跑一次**整理**：把变了样的现场沉淀进 ``digest/``。
-
-        **不看第二个开关**（设计文档 §2.3 那条纪律：记忆的开关只能有一个判据）：
-        整理是"记忆开着"这件事的一部分，节拍由 ``memory.dream_after_hours`` 定，
-        调成 0 就是不做——不另立一个"启用整理"。
-
-        三道闸按代价从低到高，**先便宜的先过**：
-
-        1. 开关与节拍（读配置，几微秒）；
-        2. **有没有变了样的现场**（读目录 mtime）——没有就**一次模型都不调**
-           （照 QwenPaw 的"No changed dream input"提前返回）；
-        3. 都没有才问模型。
-
-        ``force`` 给测试与手工触发用：跳过开关与节拍，但**仍然只看"有没有变化"**
-        ——没有变化还去调模型，那是白花钱。
-        """
-        if self._stores is None:
-            return {"skipped": "没有接存储"}
-        if not force:
-            if not self.enabled:
-                return {"skipped": "未启用长期记忆"}
-            hours = self._runtime.get_int("memory.dream_after_hours")
-            if hours <= 0:
-                return {"skipped": "整理已关闭（节拍为 0）"}
-            if not _dream_due(self._dream_state(user_id), hours):
-                return {"skipped": "还没到节拍"}
-        space = self.workspace_for(user_id)
-        if not space.is_dir():
-            return {"skipped": "工作区不存在"}
-        state = self._dream_state(user_id)
-        changed = self._changed_daily(space, state)
-        if not changed:
-            # 没有变化：不调模型，但把时间往前推，免得每一轮空档都重新扫一遍
-            self._save_dream_state(
-                user_id, {"at": datetime.now(UTC).isoformat(), "files": state.get("files") or {}}
-            )
-            return {"skipped": "现场没有变化", "units": 0}
-        picked = changed[:DREAM_MAX_FILES]
-        messages = [
-            ChatMessage(role="system", content=_DREAM_SYSTEM),
-            ChatMessage(
-                role="user",
-                content=_dream_prompt(
-                    [(path, body) for path, body, _stamp in picked], self._digest_index(space)
-                ),
-            ),
-        ]
-        raw = self._ask_model(messages)
-        units = _parse_dream(raw)
-        if raw.strip() and not units:
-            # 模型**说了话，但我们一条都认不出来**：这不是"没有值得沉淀的"，
-            # 是这一轮没成事。此时**绝不能推进水位线**——推了那份现场就永远不会
-            # 再被整理，而且**不会报错**。真跑（2026-09-27）两次都栽在这里：
-            # 一次把格式里的占位符原样吐回来，一次把推理过程写进了正文。
-            logger.warning(
-                "整理输出一条都认不出来，这一批现场留到下一轮：%r", raw[:200]
-            )
-            # **时钟走、内容不记**：``at`` 往前推（免得每个空闲周期都去问一次模型，
-            # 那是拿钱换一个已知会失败的结果），``files`` 一个都不记（那份现场
-            # 下一轮还会出现在"变了样的"里面）。
-            self._save_dream_state(
-                user_id,
-                {"at": datetime.now(UTC).isoformat(), "files": state.get("files") or {}},
-            )
-            return {
-                "units": 0,
-                "created": [],
-                "updated": [],
-                "failed": [],
-                "skipped": "模型输出认不出来",
-            }
-        applied = self._apply_dream(
-            space,
-            units,
-            sources=[path for path, _body, _stamp in picked],
-            day=datetime.now().strftime("%Y-%m-%d"),
-        )
-        files = {
-            path: stamp
-            for path, stamp in (state.get("files") or {}).items()
-            if (space / path).exists()
-        }
-        # **只有这一批全落盘了才写回水位线**（QwenPaw 的 dream catalog 那条规矩：
-        # 失败路径绝不回写 checkpoint，否则那份现场**永远不会再被整理**，
-        # 而且不会报错）。一条没落盘就整批留到下一轮——重试是安全的，
-        # 因为 `_append_dream` 对"正文已经在里面了"是幂等的（见它自己的说明）。
-        if applied["failed"]:
-            logger.warning(
-                "整理里有 %d 条没落盘，这一批现场留到下一轮重试：%s",
-                len(applied["failed"]),
-                applied["failed"],
-            )
-        else:
-            for path, _body, stamp in picked:
-                files[path] = stamp
-        self._save_dream_state(user_id, {"at": datetime.now(UTC).isoformat(), "files": files})
-        return {"units": len(units), **applied}
-
-    def dream_all(self, *, force: bool = False) -> dict[str, Any]:
-        """**给 worker 的空档维护用的**：每一份工作区都看一遍。
-
-        为什么挂在空档而不是上 cron（QwenPaw 用 apscheduler 的 ``0 23 * * *``）：
-        KYLAB 没有常驻调度器，而 worker 已经有一个"没活可干时"的分支（补文档摘要
-        就挂在那里）。节拍由 ``memory.dream_after_hours`` 定，实际精度就是那个空闲
-        间隔——对"整理"这件事够用，而**少一个依赖**。
-
-        **一份工作区失败不影响别的**：挨个 try，与"补摘要失败不该带走消费者"同一条取舍。
-        """
-        done: dict[str, Any] = {}
-        for user_id in self.workspaces():
-            try:
-                result = self.dream(user_id, force=force)
-            except Exception:
-                logger.warning("整理工作区失败，跳过：%s", user_id or "共享桶", exc_info=True)
-                continue
-            if result.get("created") or result.get("updated"):
-                done[user_id or "-"] = result
-        return done
-
-    def _dream_state(self, user_id: str | None) -> dict[str, Any]:
-        """整理的水位线：``{"at": 上次跑的时间, "files": {相对路径: mtime_ns}}``。
-
-        存成一行 JSON（``app_settings`` 是文本仓，与 ``memory.captured.*`` 同一个用法）。
-        """
-        if self._stores is None:
-            return {}
-        raw = self._stores.meta.get_setting(_DREAMED_KEY + (user_id or "-"))
-        if not raw:
-            return {}
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            logger.warning("整理水位线读不动，当成没有：%s", user_id or "共享桶")
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    def _save_dream_state(self, user_id: str | None, state: dict[str, Any]) -> None:
-        if self._stores is None:
-            return
-        try:
-            self._stores.meta.set_setting(
-                _DREAMED_KEY + (user_id or "-"), json.dumps(state, ensure_ascii=False)
-            )
-        except Exception:
-            # 水位线写不进去只是下一轮重做一次整理（结果一样），不该让这一轮失败
-            logger.warning("整理水位线写不进去：%s", user_id or "共享桶", exc_info=True)
-
-    def _changed_daily(self, space: Path, state: dict[str, Any]) -> list[tuple[str, str, int]]:
-        """**变了样的**现场文件：``[(相对路径, 正文, mtime_ns)]``。
-
-        只认 ``daily/``——整理只吃现场，``digest/`` 是自己写的那一侧（改它的是
-        用户和 ``write_memory``）。判据是 mtime 与水位线里记的那一份不同，缺的也算变了。
-        """
-        known = state.get("files") or {}
-        directory = space / memory_files.DAILY_DIR
-        out: list[tuple[str, str, int]] = []
-        if not directory.is_dir():
-            return out
-        for target in sorted(directory.rglob("*.md")):
-            try:
-                stamp = target.stat().st_mtime_ns
-                rel = memory_files.to_relative(space, target)
-                text = target.read_bytes().decode("utf-8", errors="replace")
-            except (OSError, ValueError):
-                logger.warning("读现场文件失败，跳过：%s", target, exc_info=True)
-                continue
-            if known.get(rel) == stamp:
-                continue
-            out.append((rel, text[:DREAM_FILE_CHARS], stamp))
-        return out
-
-    def _digest_index(self, space: Path) -> str:
-        """现有长期知识的目录：``- 路径：摘要``，给模型挑"这条该并到哪一份上"。
-
-        只给**路径与摘要**、不给正文：给正文会让这次调用的成本跟着长期知识的规模
-        一起涨。QwenPaw 那侧靠向量宽召回挑候选（``node_search``，limit=20–30），
-        我们靠"目录本来就不大"——量级是几份到几百份，整份目录仍然比召回的预算小。
-        摘要缺了就退回标题：**一行也不能空着**，模型会以为那份文件是空的。
-        """
-        lines: list[str] = []
-        for entry in memory_files.scan(space):
-            if entry.kind != memory_files.DIGEST_KIND:
-                continue
-            lines.append(f"- {entry.path}：{entry.summary or entry.title}")
-        return "\n".join(lines)
-
-    def _apply_dream(
-        self,
-        space: Path,
-        units: list[_DreamUnit],
-        *,
-        sources: list[str],
-        day: str,
-    ) -> dict[str, Any]:
-        """把整理结果写进 ``digest/``。**只写这一侧，绝不回头改现场。**
-
-        - ``CREATE`` 落 ``digest/<类别>/<名字>.md``；名字撞上已有文件时**当成更新**
-          （模型说 CREATE 而那个主题已经在了，并进去比重建它安全）；
-        - ``CORROBORATE`` / ``REFINE`` / ``CORRECT`` 找**已有那一份**：三个类别目录里
-          按名字找（照 QwenPaw 的"UPDATE may target any bucket"）——模型给类别时未必
-          和当初建那条时选的一样，而"同一个主题"比"同一个类别"重要。找不到就退回新建：
-          那说明模型把动作说错了，而"新建"是可恢复的，覆盖不是。
-        """
-        created: list[str] = []
-        updated: list[str] = []
-        failed: list[str] = []
-        for unit in units:
-            slug = _dream_slug(unit.name)
-            rel = self._find_digest(space, slug) or (
-                f"{_DIGEST_DIR_NAME}/{unit.bucket}/{slug}.md"
-            )
-            body = _with_links(unit.body, unit.links)
-            existing = ""
-            if (space / rel).exists():
-                try:
-                    existing = (space / rel).read_bytes().decode("utf-8", errors="replace")
-                except OSError:
-                    logger.warning("读不了那份长期知识，跳过这一条：%s", rel, exc_info=True)
-                    failed.append(rel)
-                    continue
-            if existing.strip():
-                text = _append_dream(existing, body=body, sources=sources, day=day)
-                if text == existing:
-                    # 幂等：这一条已经在里面了（上一轮其实写成功过），这次是重试
-                    continue
-                landed = updated
-            else:
-                text = _compose_dream(
-                    unit.name,
-                    summary=unit.summary,
-                    kind=_DREAM_KINDS[unit.bucket],
-                    body=body,
-                    sources=sources,
-                )
-                landed = created
-            try:
-                memory_files.write_file(space, rel, text)
-            except InvalidRequestError:
-                # 写不进去（超长、被占）只跳过这一条：其余条目照常落盘，
-                # 而这一批现场**整批**留在"变了样的"里面，下一轮重试
-                logger.warning("整理结果写不进去，跳过这一条：%s", rel, exc_info=True)
-                failed.append(rel)
-                continue
-            if rel not in landed:
-                landed.append(rel)
-        # **Auto-Link 的另一半**：模型只在写入那一刻给它知道的关联；两份长期知识
-        # 之间的边要等它们都存在之后才看得出来。放在这一层（而不是提示词里）是因为
-        # 它**不用再问一次模型**——用同一套词面判据就能找同类主题。
-        linked = self._autolink(space, [*created, *updated])
-        return {"created": created, "updated": updated, "failed": failed, "linked": linked}
-
-    def _autolink(self, space: Path, touched: list[str]) -> dict[str, list[str]]:
-        """给刚碰过的那几份长期知识补「另见」（Auto-Link 的另一半）。
-
-        QwenPaw 的 Auto-Link 在整合那一步里顺带做（同一次模型调用里让模型给关联名字）；
-        我们**不调模型**：用与召回同一套词面判据找同类主题，只是判据更严
-        （``LINK_MIN_COVERAGE``）——一条错链接会被用户当成"这两件事有关"，而一次
-        召回的误命中只是多给一条参考。
-
-        **双向**：A 补一条指向 B 时，B 也补一条指向 A（QwenPaw 的 backlink）。
-        图谱的"入链"那一半因此才有东西可显示。
-        """
-        if not touched:
-            return {}
-        entries = {item.path: item for item in memory_files.scan(space)}
-        digest = {
-            path for path, item in entries.items() if item.kind == memory_files.DIGEST_KIND
-        }
-        added: dict[str, list[str]] = {}
-        for rel in dict.fromkeys(touched):
-            if rel not in digest:
-                continue
-            title = entries[rel].title.strip()
-            if not title:
-                continue
-            peers: list[tuple[str, str]] = []
-            for hit in memory_files.search(space, title, limit=10, per_file=1):
-                if hit.path == rel or hit.path not in digest or hit.coverage < LINK_MIN_COVERAGE:
-                    continue
-                peers.append((hit.path, Path(hit.path).stem))
-                if len(peers) >= LINK_MAX:
-                    break
-            mine = Path(rel).stem
-            for peer_path, peer_name in peers:
-                if self._link_up(space, rel, [peer_name]):
-                    added.setdefault(rel, []).append(peer_name)
-                if self._link_up(space, peer_path, [mine]):
-                    added.setdefault(peer_path, []).append(mine)
-        return added
-
-    def _link_up(self, space: Path, rel: str, names: list[str]) -> bool:
-        """往一份长期知识里补「另见」；返回**是否真的改了它**。"""
-        try:
-            text = memory_files.safe_path(space, rel).read_bytes().decode("utf-8", "replace")
-        except OSError:
-            logger.warning("读不了那份长期知识，跳过补链：%s", rel, exc_info=True)
-            return False
-        updated = _append_see_also(text, names)
-        if updated == text:
-            return False
-        try:
-            memory_files.write_file(space, rel, updated)
-        except InvalidRequestError:
-            logger.warning("补链写不进去，跳过：%s", rel, exc_info=True)
-            return False
-        return True
-
-    def _find_digest(self, space: Path, slug: str) -> str | None:
-        """三个类别目录里找这个名字那份；没有就 ``None``。"""
-        for bucket in DREAM_BUCKETS:
-            rel = f"{_DIGEST_DIR_NAME}/{bucket}/{slug}.md"
-            if (space / rel).exists():
-                return rel
-        return None
-
-    # ------------------------------------------------------------------ 记住
-    #
-    # 显式写入（`remember` / `forget`）在「档案」那一节（见上面 `remember` / `forget`），
-    # 它写的是 `PROFILE.md` 四个分区，走 `archive.ArchiveService` 的同一套预算与变更流。
-
-    def enqueue_capture(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        session_id: str,
-        turn_count: int,
-        user_id: str | None = None,
-    ) -> bool:
-        """**已废**：把一次"对话沉淀"排进队列（§4.1）。这一支恒返回 False。
-
-        旧口径是"每 ``memory.capture_every`` 个用户回合沉淀一次"：它花的是**固定
-        节奏的钱**（一次捕获就是一次模型调用），换来的是一堆"值得记但不该进档案"的
-        东西。设计 §4.1 把它整个退场，改成"只在**信号出现的那一轮**判定"——
-        而那条路是期四的活。
-
-        于是本期这一支**一次模型都不调**：这是"默认配置下每轮零额外模型调用"
-        （§9.2 第 1、9 条）在服务层的落点。方法本身留到与 ``daily/`` 一起清理（期五）。
-        """
-        del messages, session_id, turn_count, user_id
-        return False
-
-    def _capture_due(self, turn_count: int) -> bool:
-        """这一轮该不该沉淀——**期二起一律不该**（§4.1：定时轮询退场）。
-
-        期四会把它换成"``memory.capture`` 开着 + 用户消息里有强信号词"的判定，
-        算法与词表都在那一步；在那之前，**这一支恒为 False** 是有意的：
-        拦截点留在服务层（而不是把调用方删干净），是因为"要不要花钱"这件事
-        只该有一处答案——期四把那处答案改掉，链路自然就通了。
-        """
-        del turn_count
-        return False
-
-    def capture_due(self, turn_count: int) -> bool:
-        """这一轮**会不会真的入队**（此刻恒 False，见 :meth:`_capture_due`）。
-
-        与 ``_capture_due`` 分开，是为了让"要不要给用户看那一步"能问**同一处判据**
-        （见 ``api/v1/chat._memory_handoff_step``）：两处各算一遍的话，迟早会漂成
-        "界面上说会沉淀、其实不会"。现在它恒 False，于是那一步也不会出现——
-        **这一次两边是同一个答案**。
-        """
-        return self._stores is not None and self._capture_due(turn_count)
-
-    def _enqueue(
-        self,
-        stores: StoreBundle,
-        messages: list[dict[str, str]],
-        *,
-        session_id: str,
-        user_id: str | None,
-    ) -> None:
-        stores.meta.enqueue_task(
-            TaskRecord(
-                id=f"task_{uuid.uuid4().hex[:12]}",
-                kind=TaskKind.MEMORY,
-                state=TaskState.PENDING,
-                payload={
-                    "messages": messages,
-                    "session_id": session_id,
-                    # 捕获是**异步**的（走队列），所以"落到谁的记忆里"必须随任务带走：
-                    # worker 那边没有调用者上下文，事后也无从推断。
-                    "user_id": user_id or "",
-                },
-            )
-        )
-
-    def capture_turn(
-        self,
-        conversation_id: str,
-        *,
-        turn_count: int = 0,
-        user_id: str | None = None,
-        force: bool = False,
-    ) -> bool:
-        """一轮问答收尾时该做的事——**期二起什么也不做**（一律返回 False）。
-
-        它原先承担"每 N 个用户回合把累积的对话排进队列"（含 ``force``：上下文压缩
-        那一刻绕过节的流）。设计 §4.1 把这条定时路径整个退场了：
-
-        > 旧设计的"每 5 个用户回合判一次"退场（它花的是固定节奏的钱，换来的是一堆
-        > "值得记但不该进档案"的东西）。
-
-        现在的自动写入只有一条路：**信号出现的那一轮**（期四，默认关）。
-        在那之前，自动捕获在链路上不存在——于是"默认配置下每轮零额外模型调用"
-        （§9.2 第 1、9 条）不是靠默认配置，而是**结构上**成立：这条路径没有调用点，
-        方法本身也恒返回 False。方法与 ``capture``（队列消费端）一起留到期五，
-        随 ``daily/`` 那一层清理。
-        """
-        del conversation_id, turn_count, user_id, force
-        return False
-
-    def _backlog(
-        self, stores: StoreBundle, conversation_id: str
-    ) -> tuple[list[dict[str, str]], str]:
-        """上次捕获以来的对话（按时间序）；返回 ``(消息, 最后一条的 id)``。
-
-        三条判断：
-
-        1. **水位线以后的部分**才算新的。水位线是一条消息 id，存在 ``app_settings``
-           里（见 ``_CAPTURED_KEY``）。用 id 而不是"第几条"：``/rewind`` 会删消息，
-           序号会整体前移，而 id 不会。
-        2. **水位线找不到**（那一条被 rewind 删掉了，或换了会话）时取**最近**
-           ``CAPTURE_BATCH_TURNS`` 轮、而不是从头：从头等于把整段会话重记一遍，
-           而其中绝大部分早就记过了。取最近这一段，重复的部分由捕获自身的去重兜住。
-        3. **条数上限** ``CAPTURE_BATCH_TURNS``（理由见那个常量）。超限时从头取，
-           水位线只推进到真正送出去的这一条，剩下的下一轮接着补。
-        """
-        records = stores.meta.list_messages(conversation_id)
-        marker = stores.meta.get_setting(f"{_CAPTURED_KEY}{conversation_id}")
-        start = 0
-        if marker:
-            ids = [item.id for item in records]
-            start = (
-                ids.index(marker) + 1
-                if marker in ids
-                else max(0, len(records) - CAPTURE_BATCH_TURNS * 2)
-            )
-        window = records[start : start + CAPTURE_BATCH_TURNS * 2]
-        backlog = [
-            {"role": item.role, "content": item.content}
-            for item in window
-            if item.role in _CAPTURE_ROLES and item.content.strip()
-        ]
-        # 推进到**窗口的最后一条**（哪怕它的正文是空的）：不推进的话，
-        # 一条空消息会把水位线永久卡住，后面每一轮都从它重新往后送。
-        return backlog, (window[-1].id if window else "")
 
     # ------------------------------------------------------------------ 文件
     #
-    # 浏览/编辑走**本地目录**：这几个方法**不要求 ``memory.enabled``**——
-    # 记忆关着的时候，用户依然该能打开自己的记忆文件看看写了什么、把不对的改掉。
-    # 要求"先打开一个开关才能读自己的文本文件"是没道理的。
+    # 只读：浏览走**本地目录**，这几个方法**不要求 ``memory.enabled``**——
+    # 记忆关着的时候，用户依然该能打开自己的记忆文件看看写了什么。
+    # 写那一侧（PUT/DELETE /memory/files/{path}）已经随档案制退场（§6.3）：
+    # 留在那里就是一个绕过预算与变更流的后门。
 
     def files(self, user_id: str | None = None) -> list[MemoryFile]:
-        """列出这个账号工作区里的记忆文件（分类、摘要、出链、是否已整合）。"""
+        """列出这个账号工作区里的 Markdown 文件（分类、摘要、大小、时间）。"""
         return memory_files.scan(self.workspace_for(user_id))
 
     @property
@@ -1883,508 +1323,15 @@ class MemoryService:
         return memory_files.describe(self.workspace_for(user_id), path)
 
     def file_text(self, path: str, user_id: str | None = None) -> MemoryFileDetail:
-        """读一个文件的原文（含 frontmatter，供编辑器逐字还原）。"""
+        """读一个文件的原文（含 frontmatter）——档案卡右下角的「原文」与迁移草稿用它。"""
         return memory_files.read_file(self.workspace_for(user_id), path)
 
-    def write_file(self, path: str, content: str, user_id: str | None = None) -> MemoryFileDetail:
-        """写一个文件。
 
-        **保存路径上什么都不做**（v0.46 之后连"什么都不做"都不必解释了）：
-        召回是每次按需扫工作区，改完下一句问话就能搜到——原先这里要交代
-        ReMe 的文件守护会不会跟上、``reindex`` 为什么是白调（见设计文档 §3.3），
-        那类问题随第二个进程一起消失了。
-        """
-        return memory_files.write_file(self.workspace_for(user_id), path, content)
+def _parse_draft(raw: str) -> list[tuple[str, str]]:
+    """把「整理初稿」的输出解析成 ``[(分区, 一句话)]``。
 
-    def delete_file(self, path: str, user_id: str | None = None) -> None:
-        """删一个文件。索引同上：没有索引要追。"""
-        memory_files.delete_file(self.workspace_for(user_id), path)
-
-    def graph(self, user_id: str | None = None) -> MemoryGraph:
-        """wikilink 图谱（本地算，见 ``memory_files.graph_of`` 的说明）。
-
-        **REST 上的 ``GET /memory/graph`` 期二已删**（§6.3：图谱退场）。方法本身留到
-        期五——它算的是 ``daily/``/``digest/`` 那一层的结构，那一层还没清理。
-        """
-        return memory_files.graph_of(self.files(user_id))
-
-
-# --------------------------------------------------------------- 捕获的纯函数
-#
-# 下面这些都是纯的（输入 → 输出，不碰文件、不连模型），所以"模型输出怎么解析"
-# 与"什么算重复"这两件最容易出错的事可以单独测。
-
-
-def _capture_prompt(messages: list[dict[str, str]], known: list[str]) -> list[ChatMessage]:
-    """拼捕获用的两条消息。
-
-    **把已有的条目给模型看一份**（只给最近的 ``KNOWN_ENTRIES_IN_PROMPT`` 条）：
-    这是我们能做的最省的去重——让模型自己就别重复。全给不行：条目会一直长，
-    那这个提示词会越来越贵，而它每次捕获都要发一遍。机械去重仍然兜底（``_select_new``）。
-
-    ``name`` 可选：缺省按 role 说"用户／助手"。原先它是**必须**的，
-    因为 ReMe 收的是 agentscope 的 ``Msg``、缺 ``name`` 会被它自己的校验拒掉；
-    那个校验随 ReMe 一起没了，我们只需要"谁说的"——``role`` 已经给了。
+    与隐式捕获同一套宽容读取，但**上限宽松得多**（:data:`MAX_DRAFT_ITEMS`）：
+    这一次的目标是把几十条草稿整理成一份可用的初稿，不再受"一轮最多两条"的约束
+    ——那个上限是给隐式捕获的"宁可漏不可滥"定的。
     """
-    transcript = "\n".join(
-        f"{item.get('name') or ('用户' if item['role'] == 'user' else '助手')}："
-        f"{_one_line(item['content'])}"
-        for item in messages
-    )
-    body = f"这一轮的对话：\n\n{transcript}\n"
-    if known:
-        recent = known[-KNOWN_ENTRIES_IN_PROMPT:]
-        listed = "\n".join(f"- {item}" for item in recent)
-        body += f"\n已经记过的内容（不要重复）：\n{listed}\n"
-    body += "\n请只输出值得新记的条目。"
-    return [
-        ChatMessage(role="system", content=_CAPTURE_SYSTEM),
-        ChatMessage(role="user", content=body),
-    ]
-
-
-def _one_line(text: str) -> str:
-    """一条消息压成一段：长回答**掐中间留两头**（结论与决定常常在首尾）。"""
-    flat = " ".join((text or "").split())
-    if len(flat) <= CAPTURE_MESSAGE_CHARS:
-        return flat
-    head = CAPTURE_MESSAGE_CHARS * 3 // 5
-    tail = CAPTURE_MESSAGE_CHARS - head
-    return f"{flat[:head]}……{flat[-tail:]}"
-
-
-def _note_summary(entries: list[str]) -> str:
-    """新笔记的 ``summary`` 兜底：**取第一条**（截到一句话的量）。
-
-    从 v0.51 起它只是**兜底**：提示词会先让模型产出「主题」与「摘要」两行
-    （照 QwenPaw 抽取那一步的 ``name`` 与 ``description``），模型给了就用模型给的。
-    留着兜底是因为模型不一定照格式来——而"没有摘要"比"摘要是第一条条目"更糟
-    （界面上那一列会空着）。
-    """
-    return entries[0][:NOTE_SUMMARY_CHARS] if entries else ""
-
-
-def _capture_headline(raw: str) -> tuple[str, str]:
-    """从捕获输出里取「主题」与「摘要」两行（v0.51）。
-
-    它们是**这份笔记**的名字与一句话说明（照 QwenPaw 抽取那一步的 ``name`` 与
-    ``description``）：界面列表、召回时的标题加权都用它。在此之前摘要只能取第一条
-    条目——那处降级写在 ``_note_summary`` 里。
-
-    **宽容到"认不出就当没有"**：冒号全角半角都认、标签前有项目符号也认、
-    近义说法（标题/描述）也认。这两行本来就是可选的，模型不写不该让条目落不了盘。
-    要求**必须带冒号**：不然 `- 主题是深色` 这种条目会被当成标题行读走。
-    """
-    title = ""
-    summary = ""
-    for raw_line in raw.splitlines():
-        line = raw_line.strip().lstrip("-*# ").strip()
-        for label in ("主题", "标题", "题目"):
-            value = _after_label(line, label)
-            if value and not title:
-                title = value[:NOTE_TITLE_CHARS]
-        for label in ("摘要", "描述", "概要"):
-            value = _after_label(line, label)
-            if value and not summary:
-                summary = value[:NOTE_SUMMARY_CHARS]
-    return title, summary
-
-
-def _after_label(line: str, label: str) -> str:
-    """``主题：xxx`` / ``主题: xxx`` → ``xxx``；不是这一行就返回空串。"""
-    for colon in ("：", ":"):
-        prefix = f"{label}{colon}"
-        if line.startswith(prefix):
-            return line[len(prefix) :].strip().strip("「」\"'")
-    return ""
-
-
-def _source_note(session_id: str) -> str:
-    """来源会话那一行：**HTML 注释**，不是 wikilink（理由见 ``_DAILY_TEMPLATE``）。"""
-    return f"<!-- 来源会话：{session_id} -->"
-
-
-def _frontmatter_value(text: str) -> str:
-    """放进 frontmatter 双引号里的安全形式。
-
-    **必须转义**：``summary`` 取自模型产出的第一条，里面可能有引号、反斜杠或
-    换行。不转义就会写出一份 YAML 坏掉的 frontmatter——而 ``parse_frontmatter``
-    对坏 YAML 的处理是"退回空 frontmatter"，于是这份笔记在列表里没有摘要、
-    也读不到 ``session_id``，下一次沉淀就认不出它、**再建一条新的**。
-    """
-    flat = " ".join((text or "").split())
-    return flat.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _select_new(raw: str, known: list[str]) -> list[str]:
-    """从模型的输出里取出**值得新写**的条目（解析 + 去重 + 上限）。
-
-    只认**带项目符号或编号的行**：模型偶尔会回一句散文（"这轮没有值得记的"），
-    把它当成一条记忆写进去是最坏的结果——而"什么都没解析到"正好等于它的本意。
-    """
-    fresh: list[str] = []
-    for line in (raw or "").splitlines():
-        if _FENCE.match(line):
-            continue
-        if not _ENTRY_LINE.match(line):
-            continue
-        entry = " ".join(_ENTRY_LINE.sub("", line).split())
-        if not entry or len(entry) > MAX_ENTRY_CHARS:
-            # 超过上限的丢掉而不是截断：半条记忆比没有更糟（它会被当成完整事实读）
-            continue
-        if any(_similar(entry, old) for old in known):
-            continue
-        if any(_similar(entry, other) for other in fresh):
-            continue
-        fresh.append(entry)
-        if len(fresh) >= MAX_CAPTURED_ITEMS:
-            break
-    return fresh
-
-
-def _fingerprint(text: str) -> str:
-    """去重比对用的指纹：大小写、空白、标点、标签都不参与比较。"""
-    return _NON_WORD.sub("", _normalize(text))
-
-
-def _loose(text: str) -> str:
-    """比"包含关系"用的形态：大小写归一、空白压成一个空格，**标点留着**。
-
-    标点在这里是**词边界**：中文没有空格，「用户偏好简短回答，不要长篇大论」
-    只有在逗号处才算"补了半句"；把标点也抹掉的指纹做不到这件事。
-    """
-    return " ".join(_normalize(text).split())
-
-
-def _contains(shorter: str, longer: str) -> bool:
-    """``shorter`` 整段出现在 ``longer`` 里，且**两端都落在词边界上**。
-
-    边界这一条是给 ASCII 词留的：「项目代号叫 kylab」是「项目代号叫 kylab2 代」
-    的子串，但那说的是另一个版本，不是同一件事——"kylab" 后面紧跟"2"，
-    不算边界。
-    """
-    start = longer.find(shorter)
-    while start >= 0:
-        end = start + len(shorter)
-        before = longer[start - 1] if start else " "
-        after = longer[end] if end < len(longer) else " "
-        if not (before.isalnum() or after.isalnum()):
-            return True
-        start = longer.find(shorter, start + 1)
-    return False
-
-
-def _similar(one: str, other: str) -> bool:
-    """两条记忆是不是**同一件事**（见 ``DUP_SIMILARITY`` 那段取舍）。
-
-    三条判据，从硬到软：
-
-    1. **指纹相同**：只差大小写、标点、空白（「设备名是 nas。」与「设备名是nas」）；
-    2. **整段包含且只多出几个字**（``CONTAINMENT_SLACK``）：同一句话的标点级改写，
-       多出来的那几个字不足以让拦下来变成丢信息；
-    3. **字符二元组重合度够高**：接住"换了词的同一句话"与语序调换。
-
-    两条**否决**（先于上面第 2、3 条）：
-
-    - **数字不同就不是同一件事**：版本号、地址、数量、日期都是数字，数字变了
-      就是变了（「代号叫 kylab」与「代号叫 kylab2」不能被当成重复）。
-      没有这一条，短句上"只差两个字"的相似度天然很高，新版本会被静默丢掉；
-    - 其中一条是空的（没有可比的内容）。
-
-    这一层**拦得住**：完全一样、只差标点空白、语序调换、同一句话补几个字、
-    数字不变的近似改写。**拦不住**：换了说法的同一件事——实测
-    「发布顺序固定为：先跑门禁 → 再打标签 → 最后推镜像。」与
-    「发布顺序是门禁、打标签、推镜像」的二元组重合度只有 0.33，判不出来。
-    那种情况靠的是**提示词那一侧的纪律**（把已有条目给模型看，让它自己别重复，
-    实测有效），以及以后若做了整理机制，由它去合并同类条目。
-    机械化地判"两句话说的是不是一回事"要的是语义，不是字面——那正是这一层不做的事。
-    """
-    first, second = _fingerprint(one), _fingerprint(other)
-    if not first or not second:
-        return False
-    if first == second:
-        return True
-    if _DIGIT_RUN.findall(first) != _DIGIT_RUN.findall(second):
-        return False
-    loose_one, loose_two = _loose(one), _loose(other)
-    shorter, longer = sorted((loose_one, loose_two), key=len)
-    if (
-        shorter
-        and len(longer) - len(shorter) <= CONTAINMENT_SLACK
-        and _contains(shorter, longer)
-    ):
-        return True
-    grams_first = {first[index : index + 2] for index in range(len(first) - 1)}
-    grams_second = {second[index : index + 2] for index in range(len(second) - 1)}
-    if not grams_first or not grams_second:
-        return False
-    return len(grams_first & grams_second) / len(grams_first | grams_second) >= DUP_SIMILARITY
-
-
-def _normalize(line: str) -> str:
-    """比"是不是同一条"时用的规范化形式：去掉标签与空白差异。
-
-    只删标签（``#xxx``）不删正文——正文不同就是两条记忆，不该被当成重复。
-    """
-    body = line.lstrip("- ").split(" #")[0]
-    return " ".join(body.split()).lower()
-
-
-# --------------------------------------------------------------- 整理的纯函数
-#
-# 与"捕获的纯函数"同一层意思：输入 → 输出，不碰文件、不连模型。整理这条链路上
-# **最容易出错的是解析**（模型给的格式随时会飘一点），所以把它单独拎出来测。
-
-
-@dataclass(frozen=True, slots=True)
-class _DreamUnit:
-    """模型给出的一个整理单元（格式见 ``_DREAM_SYSTEM``）。"""
-
-    action: str
-    bucket: str
-    name: str
-    summary: str
-    body: str
-    links: tuple[str, ...]
-
-
-def _dream_due(state: dict[str, Any], hours: int) -> bool:
-    """距上次整理够久了吗。**读不动的时间戳一律算"够久"**：宁可多整理一次，
-    也不要因为一行坏 JSON 让整理永远不再发生（那种坏法是查不出来的）。"""
-    at = state.get("at")
-    if not isinstance(at, str) or not at:
-        return True
-    try:
-        last = datetime.fromisoformat(at)
-    except ValueError:
-        return True
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=UTC)
-    return (datetime.now(UTC) - last) >= timedelta(hours=hours)
-
-
-def _dream_prompt(changed: list[tuple[str, str]], index: str) -> str:
-    """这一次整理要看的东西：**变了样的现场** + **现有长期知识的目录**。"""
-    parts = [
-        "## 现有长期知识（目录：路径与摘要）",
-        index or "（还没有长期知识：全部走 CREATE）",
-        "## 现场（变了样的那一部分）",
-    ]
-    parts.extend(f"### {path}\n\n{body}" for path, body in changed)
-    parts.append("请按系统提示词里那个格式输出。")
-    return "\n\n".join(parts)
-
-
-def _parse_dream(raw: str) -> list[_DreamUnit]:
-    """把整理提示词的输出解析成单元。**认不出的一律丢掉并记日志**，不猜。
-
-    **宽容读取、严格校验**：模型多写一句解释、少一个字段，都不该让整份输出作废；
-    但动作或类别认不出来就丢掉那一条——写进 ``digest/`` 的东西是要长期留着的，
-    宁少一条也不错一条。``正文`` 那个标记缺失时，把剩下的行都当正文
-    （模型偶尔会漏掉标记，而漏掉的那部分恰恰是内容）。
-    """
-    out: list[_DreamUnit] = []
-    header: str | None = None
-    lines: list[str] = []
-
-    def flush() -> None:
-        nonlocal header, lines
-        if header is not None:
-            unit = _dream_unit_of(header, lines)
-            if unit is not None:
-                out.append(unit)
-        header, lines = None, []
-
-    for raw_line in raw.splitlines():
-        stripped = raw_line.strip()
-        if stripped.startswith("```"):
-            continue  # 模型爱把输出包在围栏里
-        if stripped.startswith("==="):
-            rest = stripped.lstrip("=").strip()
-            flush()
-            if rest:
-                header = rest
-            continue
-        if header is not None:
-            lines.append(raw_line.rstrip())
-    flush()
-    return out
-
-
-def _dream_unit_of(header: str, lines: list[str]) -> _DreamUnit | None:
-    """一条的头 + 它的若干行 → 单元；不合法就 ``None``（并记一条日志说明为什么）。"""
-    parts = [item.strip() for item in re.split(r"[|｜]", header)]
-    if len(parts) != 3:
-        logger.warning("整理输出里认不出头部，跳过：%r", header[:60])
-        return None
-    action, bucket, name = parts[0].upper(), parts[1].lower(), parts[2]
-    if action not in DREAM_ACTIONS or bucket not in DREAM_BUCKETS or not name:
-        logger.warning("整理输出里的动作/类别/名字不合法，跳过：%r", header[:60])
-        return None
-    summary = ""
-    links: tuple[str, ...] = ()
-    body_lines: list[str] = []
-    in_body = False
-    for line in lines:
-        stripped = line.strip()
-        if not in_body and re.match(r"^摘要[：:]", stripped):
-            summary = re.sub(r"^摘要[：:]\s*", "", stripped)
-            continue
-        if not in_body and re.match(r"^关联[：:]", stripped):
-            links = tuple(re.findall(r"\[\[([^\]]+)\]\]", stripped))
-            continue
-        if not in_body and re.match(r"^正文[：:]?", stripped):
-            in_body = True
-            rest = re.sub(r"^正文[：:]\s*", "", stripped)
-            if rest:
-                body_lines.append(rest)
-            continue
-        body_lines.append(line)
-    body = "\n".join(body_lines).strip()
-    if not body:
-        logger.warning("整理输出里这一条没有正文，跳过：%r", name[:40])
-        return None
-    return _DreamUnit(
-        action=action,
-        bucket=bucket,
-        name=name,
-        summary=summary or body.splitlines()[0][:NOTE_SUMMARY_CHARS],
-        body=body,
-        links=links,
-    )
-
-
-def _dream_slug(name: str) -> str:
-    """主题名 → 文件名主干。
-
-    三件事同时要成立：能在 ``[[...]]`` 里被链上、在 Windows 上合法、
-    **同名就是同一个主题**（那正是 CORROBORATE/REFINE 的意思）。
-    所以这里**不缀哈希**——与捕获那边按 ``session_id`` 命名刻意相反：那里同名是撞车，
-    这里同名是"同一件事该并到一起"。
-
-    **顺序要紧**：先抹掉模型可能给出的路径前缀（``digest/wiki/x.md`` 或 ``wiki/x.md``）、
-    再删非法字符。反过来的话，``/`` 会先被删掉、前缀就再也认不出来，
-    于是文件会叫「digestwiki锂价敏感性」。
-    """
-    clean = name.strip()
-    clean = re.sub(rf"^{_DIGEST_DIR_NAME}/[^/]+/", "", clean)
-    clean = re.sub(rf"^({'|'.join(DREAM_BUCKETS)})/", "", clean)
-    clean = re.sub(r"\.md$", "", clean, flags=re.IGNORECASE)
-    clean = _ILLEGAL_NAME.sub("", clean).strip().strip(".")
-    return re.sub(r"\s+", "-", clean)[:60] or "未命名"
-
-
-def _with_links(body: str, links: tuple[str, ...]) -> str:
-    """把模型给的关联接成正文末尾的一句话。
-
-    **不能让它变成裸链接行**（照 QwenPaw 的硬规定）：裸的 ``[[x]]`` 在这个仓库的
-    别处被当成"关系字段"，而正文里孤零零一行链接读起来像一句没写完的话。
-    收成"另见 A、B。"既保住链接、又是人话。
-    """
-    clean = body.strip()
-    if not links:
-        return clean
-    return f"{clean}\n\n另见 " + "、".join(f"[[{item}]]" for item in links) + "。"
-
-
-def _compose_dream(
-    name: str, *, summary: str, kind: str, body: str, sources: list[str]
-) -> str:
-    """新建一份长期知识。
-
-    ``## Sources`` 指回**现场**，它有两个作用：回答"这条是从哪次对话来的"，
-    以及让那份现场在 ``_with_consolidation`` 眼里变成"已整合"——界面上那枚
-    「待整合」标记因此才真的在说事（在此之前它永远只是涨）。
-    """
-    text = (
-        "---\n"
-        f'summary: "{_frontmatter_value(summary)}"\n'
-        f"kind: {kind}\n"
-        "---\n\n"
-        f"# {name}\n\n{body}\n"
-    )
-    if sources:
-        text += "\n## Sources\n" + "".join(f"\n- [[{item}]]" for item in sources) + "\n"
-    return text
-
-
-def _append_dream(existing: str, *, body: str, sources: list[str], day: str) -> str:
-    """并进已有那份长期知识。
-
-    **只增**：新的正文作为一节插在 ``## Sources`` **之前**（来源那节始终在末尾），
-    来源里已有的链接不重复加。**不做模型驱动的分节重写**——那要第二次模型调用，
-    代价与收益我判断不划算（与捕获那边"机械比对而不是再问一次模型"同一取舍），
-    所以这里如实写着：它能追加与改错，但不会把旧内容重写成一篇。
-
-    **幂等**：正文已经在里面了就原样返回。这是重试安全的前提——上一轮有一条没落盘时
-    整批现场会留到下一轮，而那一轮里已经写成功过的条目会再被算一次。
-    """
-    if body.strip() and body.strip() in existing:
-        return existing
-    text = existing.rstrip("\n")
-    section = f"## 更新（{day}）\n\n{body.strip()}"
-    marker = "\n## Sources"
-    if marker in text:
-        head, _, tail = text.partition(marker)
-        kept = [line for line in tail.splitlines() if line.strip()]
-        known = set(re.findall(r"\[\[([^\]]+)\]\]", tail))
-        for item in sources:
-            if item not in known:
-                kept.append(f"- [[{item}]]")
-                known.add(item)
-        return f"{head.rstrip()}\n\n{section}\n\n## Sources\n" + "\n".join(kept) + "\n"
-    lines = "".join(f"\n- [[{item}]]" for item in sources)
-    tail = f"\n\n## Sources{lines}\n" if sources else "\n"
-    return f"{text}\n\n{section}{tail}"
-
-
-#: 「另见」最多**自动**加几条（照 QwenPaw 的克制：链接多了等于没链接）。
-#: 它只管自动补的那些；模型自己在 ``关联：`` 里给的链接不占这个额度。
-LINK_MAX = 2
-
-#: 自动补链的判据：**比召回更严**。召回错了只是多给一条参考；链接错了是在图谱上
-#: 写下一句"这两件事有关"，而用户会信它。所以复用同一套覆盖率判据
-#: （``memory_files.MIN_TERM_COVERAGE`` 是 1/3），这里要 0.5。
-LINK_MIN_COVERAGE = 0.5
-
-#: 「另见」那一行的前缀（``_with_links`` 与 ``_append_see_also`` 必须同一个）。
-SEE_ALSO_PREFIX = "另见 "
-
-
-def _append_see_also(existing: str, names: list[str]) -> str:
-    """把 ``names`` 并进这份长期知识的「另见」那一行（没有就新起一行）。
-
-    **并进已有的那一行**而不是再起一行：``_with_links`` 在写入时就会给一条
-    「另见 A。」，``_append_dream`` 的更新节也可能以它收尾——一文件里堆出三行
-    「另见」读起来像三份不同的文档拼在一起。
-
-    只在**正文末尾**那一行上动（``## Sources`` 之前）：来源那一节是"这条从哪来的"，
-    而「另见」是"还该看什么"，两者不是一回事。
-
-    幂等：已经在那一行里的名字不会重复出现——重试（上一轮有一条没落盘时整批留到
-    下一轮）因此是安全的。
-    """
-    clean = [name.strip() for name in names if name.strip()]
-    if not clean:
-        return existing
-    marker = "\n## Sources"
-    head, sep, tail = existing.partition(marker)
-    lines = head.rstrip("\n").split("\n")
-    # 从末尾往前找那一行「另见 …」：它可能是上一轮写下的，也可能在更新节里
-    at = len(lines) - 1
-    while at >= 0 and not lines[at].strip():
-        at -= 1
-    if at >= 0 and lines[at].strip().startswith(SEE_ALSO_PREFIX):
-        known = re.findall(r"\[\[([^\]]+)\]\]", lines[at])
-        fresh = [name for name in clean if name not in known]
-        if not fresh:
-            return existing
-        merged = [*known, *fresh[:LINK_MAX]]
-        lines[at] = SEE_ALSO_PREFIX + "、".join(f"[[{name}]]" for name in merged) + "。"
-    else:
-        fresh = clean[:LINK_MAX]
-        lines.append(SEE_ALSO_PREFIX + "、".join(f"[[{name}]]" for name in fresh) + "。")
-    rebuilt = "\n".join(lines)
-    # ``sep`` 那一节连着它自己的空行与正文一起原样接回去：**来源那节的位置与格式
-    # 不该因为补了一条链接而变**（它是机器维护的，用户也可能手改过）
-    return f"{rebuilt}\n\n## Sources{tail}" if sep else f"{rebuilt}\n"
+    return _parse_lines(raw, limit=MAX_DRAFT_ITEMS)
