@@ -1,5 +1,5 @@
 r"""**边车入口**（Phase B · P3，2026-09-29）：把循环 + 工具 + 工作区 + 沙箱放进**本地进程**，
-KB 与模型经 P2 的两个**远端客户端**接出去 ✓ —— 同一份循环代码、两个装配点里的第二个 ✓。
+KB 经提供者客户端接出去 ✓、**模型本机直连** ✓ —— 同一份循环代码、两个装配点里的第二个 ✓。
 
 ## 跑法
 
@@ -13,11 +13,18 @@ python -m app.sidecar --port 8765
 | 这一侧 | 边车模式 | 服务器模式（今天 ✓） |
 | --- | --- | --- |
 | KB | `KnowledgeProviderClient`（M3 起收编检索与入库 ✓） | `ChatService.retrieve_sources` ✓ |
-| 模型 | `RemoteModelClient`（`model-proxy/*` ✓） | `OpenAICompatChat` ✓ |
+| 模型 | **本机直连** `OpenAICompatChat` ✓（2026-10-04 拍板，key 在本机 ✓） | `OpenAICompatChat` ✓ |
 | 工具 / 工作区 / 沙箱 | **本地** ✓（`isolation.py` / `sandbox.py` ✓； | 服务器进程内 ✓ |
 | | **没有隔离就拒绝执行** ✗ 这条不绕过 ✓） | |
 
 （KB 那一件的落点是 `services/knowledge_provider.py` ✓ —— 握手 / 检索 / 入库都在它身上。）
+
+**模型这一格从 2026-10-04 起不是"远端"了**（产品负责人拍板：**推理搬回本机**，本机自己持
+key 直连模型服务 ✗ 不再经 NAS 的 `/model-proxy` ✗）。落点是 :class:`_LocalModel`：它每建一次
+客户端就问一次 `services.runtime.llm()`（模型身份与凭据都从**本机**的模型注册表来，
+key 在本机档由 Windows 凭据管理器持有，见 `services/secrets.py`）。**服务器档一个字没动**：
+`/model-proxy` 那条路照旧挂在那台 NAS 上（`api/v1/model_proxy.py` 与 `api/v1/router.py`
+都没碰 ✓）——它今天仍服务"客户端不带 key"的那些部署。
 
 `if` 只出现在 `build_clients()` 这一处 ✓ —— **循环不复制** ✗。
 
@@ -52,7 +59,8 @@ python -m app.sidecar --port 8765
 | --- | --- |
 | 会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置 | **本机**：`<data_dir>/kylab.db` |
 | 知识库（检索、入库）| **NAS** ✗（M3 收成**提供者**：客户端在 `services/knowledge_provider.py` ✓）|
-| 模型 | NAS 的模型代理 ✗（key 不下发）|
+| 模型 | **本机** ✓（2026-10-04 起：本机持 key 直连模型服务，见上面的装配表）|
+| 技能目录 / 插件目录 / MCP 配置 | **本机** ✓（2026-10-04 起工具面也接真服务，见下）|
 
 （工作区记录同样在本机库里；产物与文件区的字节在本机对象存储 / 用户的真实目录。）
 
@@ -62,9 +70,9 @@ python -m app.sidecar --port 8765
    `KYLAB_DATABASE_URL` 压成空串 + `KYLAB_DATA_DIR` 指向本次的数据目录。
    **不给环境继承的机会** ✗ ——"边车误连服务器库"是最糟的失败形态（不报错、写错库）；
 2. **服务图就是本机档的组合根**（`build_local_services`）：会话 / 产物 / 笔记 / 记忆 /
-   设置全部走 `get_services()` 那一份（**与本机后端端点是同一个对象**——同一张审批登记表、
-   同一个运行期配置、同一批会话），只有技能目录与 MCP 两处按"这台机器上没有那个能力"
-   盖掉；知识库那条（检索 + 入库）的换线在**组合根一处**（M3 阶段 3，
+   设置 / **技能 / 插件 / MCP** 全部走 `get_services()` 那一份（**与本机后端端点是同一个
+   对象**——同一张审批登记表、同一个运行期配置、同一批会话、**同一份技能与 MCP 清单**）；
+   知识库那条（检索 + 入库）的换线在**组合根一处**（M3 阶段 3，
    `core/services.py::build_services`），不在这里 —— 笔记与产物各持一份真
    `IngestService`，`dataclasses.replace` 换不到它们对象内部的引用（方案 §5.1）；
 3. **写回落本机**（`_record_turn` → `ConversationService.record_turn`）：HTTP 写回那一半
@@ -112,11 +120,10 @@ from app.services.knowledge_provider import (
     STATE_READY,
     KnowledgeProviderClient,
 )
-from app.services.llm import ChatMessage, ToolSpec
-from app.services.remote_clients import (
-    RemoteClientError,
-    RemoteModelClient,
-)
+from app.services.llm import ChatError, ChatMessage, LLMDelta, OpenAICompatChat, ToolSpec
+from app.services.mcp_client import split_qualified
+from app.services.remote_clients import RemoteClientError
+from app.services.runtime_config import RuntimeConfigService
 from app.services.tool_loop import ToolLoop
 from app.workers.local_worker import bind_local_scheduler, run_local_scheduler
 
@@ -295,41 +302,60 @@ def _inside_repo(path: Path) -> bool:
         return False
 
 
-class _EmptySkills:
-    """**本机没有技能目录**：如实回空 ✓（别假装有 ✗）。
+class _LocalModel:
+    """**本机档的模型直连**（2026-10-04 产品负责人拍板：推理搬回本机）。
 
-    为什么不是"扫一遍本机 `skills/`"：那会让边车与服务器各有一份技能目录，
-    而技能目录的权威今天仍在服务器那一侧（本机档的白名单里也**没有挂** `skills.router`，
-    M2 §4.2 把这一件列为"可后续加、不阻塞"）——这一轮**不接**，并把这件事写在响应里 ✓
-    （见 `/turn` 的 `notes` ✓）。
+    在这之前本机档的对话链把模型请求转给 NAS 的 `/model-proxy`（`RemoteModelClient`：
+    请求出本机、由 NAS 持 key 发出去）。现在**本机自己持 key 直连模型服务** ——
+    用的就是进程内那条链一直在用的那份客户端（`llm.OpenAICompatChat` ✓，
+    服务器档的 `/model-proxy` 也是它的包装，见 `api/v1/model_proxy.py::_chat`）：
+    **不重写、不加依赖** ✗。
+
+    **为什么是"每建一次客户端"而不是构造时建一个**：模型身份（地址 / key / 模型名）
+    与采样参数都从 `runtime.llm()` 现取，而那份运行期配置是**设置页可改**的
+    （本机档的设置就在本机库 `app_settings` 里）。构造时定一份会让"改完设置要重启边车"
+    变成一条没人记得的隐含前提，与 `provider`（知识库那一头）同一条口径。
+    建对象本身廉价，昂贵的是 HTTP 调用。
+
+    **key 从哪来**：`model_providers` 那一行的凭据。本机档（Windows）上它由
+    `services/secrets.use_keychain` 判定为"钥匙串是凭据的家"——注册表服务读的时候
+    从 Windows 凭据管理器取（`kylab:model_provider:<id>`），**库里那一列是空的** ✗
+    （见 `services/model_registry.py` 的 `_with_key` / `_for_db`）。
+    所以这里一个字都不碰凭据：**没有把 key 带进日志、也没有第二处凭据来源** ✗。
+
+    **失败路径如实报** ✗（两道，都带下一步动作）：
+    - 还没配（没绑「对话生成」/没填 key）→ ``ChatError(reason="not_configured")``，
+      与服务器那条链**同一句话**（`services/chat.py::_config`）；
+    - 配了但上游拒（401 / 404 / 5xx）→ `OpenAICompatChat` 自己抛的 `ChatError`
+      （"对话端点鉴权失败（401）：请检查 API Key"这类），照原样上抛。
+    两者都被 `/turn` 与 `/turn/stream` 收下、变成一句人话 ✗ 不是空回答、也不是 500 ✗。
     """
 
-    def list(self) -> list[Any]:
-        return []
+    def __init__(self, runtime: RuntimeConfigService) -> None:
+        self._runtime = runtime
 
-    def read(self, name: str) -> tuple[Any, str]:
-        raise NotFoundError(f"边车这一侧没有技能目录（读不到技能：{name}）")
+    def _chat(self) -> OpenAICompatChat:
+        """现取一次运行期配置 → 一个直连客户端（没配就在这一行报可读的错）。"""
+        config = self._runtime.llm()
+        if not config.is_configured:
+            # 措辞与 `services/chat.py::_config` 逐字一致：同一个"没配"在两个装配点上
+            # 必须说同一句话，否则用户会把同一种状态当成两种毛病
+            raise ChatError(
+                "尚未配置对话模型，请到设置 → 模型配置里填写 API Key 与模型 ID",
+                reason="not_configured",
+            )
+        return OpenAICompatChat(config)
 
+    def complete(self, messages: Sequence[ChatMessage]) -> str:
+        return self._chat().complete(messages)
 
-class _NoMcp:
-    """边车这一侧**没有接 MCP 服务**：清单回空 ✓（工具表里因此不会出现 `mcp__*`）。
+    def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]:
+        return self._chat().stream(messages)
 
-    与 `_EmptySkills` 同一类：本机档的服务图里 MCP 服务是**真的存在**的（配置表就在本机
-    库里），但边车的工具面这一轮**没接**它 —— 回空比"摆一批调不通的 `mcp__*` 工具"老实
-    （见 `SIDECAR_TOOL_NAMES` 的口径）。
-    """
-
-    def available_tools(self, *, user_id: str | None = None) -> list[Any]:
-        return []
-
-    def list(self, *, user_id: str | None = None) -> list[Any]:
-        return []
-
-    def decide(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotFoundError("边车这一侧没有接 MCP 服务")
-
-    def call(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotFoundError("边车这一侧没有接 MCP 服务")
+    def stream_events(
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec] | None = None
+    ) -> Iterator[LLMDelta]:
+        return self._chat().stream_events(messages, tools)
 
 
 class _LocalConversations:
@@ -396,28 +422,30 @@ class _LocalWorkspaces:
 
 
 def build_local_services(base: Services, *, workspace: Path) -> Services:
-    """边车这一侧的 `Services`：**就是本机档的组合根那一份**，只换掉两处（M2 阶段 3）。
+    """边车这一侧的 `Services`：**就是本机档的组合根那一份**，只补两个截面（M2 阶段 3）。
 
     与旧版"影子 Services"（只有十几个属性、缺的一律没有）的区别在这里：现在
-    **会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置 / 工作区全都是 `get_services()`
-    那一份真服务**（本机 SQLite），而它与本机后端端点是**同一个对象** ——
-    同一张审批登记表、同一份运行期配置、同一批会话。于是"边车这一轮跑出来的账"
-    与"界面上读到的账"必然是同一份 ✓（旧版做不到这件事：会话在服务器上）。
+    **会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置 / 工作区 / 技能 / 插件 / MCP
+    全都是 `get_services()` 那一份真服务**（本机 SQLite + 本机目录），而它与本机后端
+    端点是**同一个对象** —— 同一张审批登记表、同一份运行期配置、同一批会话、
+    **同一份技能与 MCP 清单**。于是"边车这一轮跑出来的账"与"界面上读到的账"必然是
+    同一份 ✓（旧版做不到这件事：会话在服务器上）。
 
-    换掉的两处，每一处都因为**这台机器上没有那个能力/那个权威**：
+    **2026-10-04 起这里不再盖掉任何东西**：技能目录、插件目录与 MCP 配置的权威
+    本来就在本机（`<data_dir>/skills`、`<data_dir>/plugins`、仓库 `skills/`、
+    `~/.agents/skills`，启停状态写在**本机** `app_settings`），而 `local_router`
+    也早就把 `/skills`、`/plugins`、`/mcp-servers` 挂在了**同一个进程**上
+    （见 `api/v1/router.py` 的 `local_router` 那一段）。所以边车的工具面这一侧
+    不该再是"如实回空"：那会让界面里看得见、agent 手里摸不着的两副面孔并存。
+    此前那两处（`_EmptySkills` / `_NoMcp`）已随这一条结论删除 ✗。
 
-    | 字段 | 换成 | 为什么 |
-    | --- | --- | --- |
-    | `skills` | `_EmptySkills` | 技能目录的权威今天仍在服务器（M2 §4.2 列为可后续加）|
-    | `mcp` | `_NoMcp` | 边车的工具面这一轮没接 MCP |
-
-    `ingest` / `documents` 那两处**已经不在这一层了**（M3 阶段 3）：本机档的入库
+    `ingest` / `documents` 那两处**不在这一层**（M3 阶段 3）：本机档的入库
     整条换线在**组合根一处**（`core/services.py::build_services` 里 `ingest_for_kb` /
     `enqueue_documents` 那一对）——因为 `notes` / `artifacts` 各自持有一份真
     `IngestService`，`dataclasses.replace` 换不到它们对象内部的引用（方案 §5.1）。
     所以这一层现在只补"边车特有的两个截面"，接缝换线只有一个落点。
 
-    另外两处**不是"换掉"而是"补一侧"**（真记录仍优先，见各自的类说明）：
+    那两处**不是"换掉"而是"补一侧"**（真记录仍优先，见各自的类说明）：
 
     - `conversations`：真会话优先；**没挂工作区**的会话落回本机工作区；
     - `workspaces`：本机工作区那个替身 id 由这一层答，其余走真服务。
@@ -429,8 +457,6 @@ def build_local_services(base: Services, *, workspace: Path) -> Services:
     """
     return dataclasses.replace(
         base,
-        skills=_EMPTY_SKILLS,
-        mcp=_NO_MCP,
         conversations=_LocalConversations(
             base.conversations, fallback_workspace_id=LOCAL_WORKSPACE_ID
         ),
@@ -438,15 +464,13 @@ def build_local_services(base: Services, *, workspace: Path) -> Services:
     )
 
 
-_EMPTY_SKILLS = _EmptySkills()
-_NO_MCP = _NoMcp()
-
 #: 这一轮边车**真的能服务**的工具 ✓（其余不摆给模型 ✗ —— 摆上去只会撞一句"内部错误" ✗）。
 #:
 #: - `search` 走**远端 KB** ✓（只有这一轮给了 `kb_ids` 才出现 ✓，与服务器同口径 ✓）；
 #: - 文件三件 + `run_command` 是**本地执行的主体** ✓（沙箱与隔离探测都在本机 ✓）；
 #: - 联网两件在 `tools.py` 里实现 ✓，不依赖仓储 ✓；
-#: - 技能两件**如实回空** ✓（`list_skills` 会说"这台机器上还没有安装技能" ✓）；
+#: - 技能两件**走本机技能目录** ✓（2026-10-04 起：`list_skills` 列真的技能、
+#:   `read_skill` 读得到正文；启停状态读本机 `app_settings` 的 `chat.disabled_skills` ✓）；
 #: - **导出三件**（2026-09-30 起 ✓，**M2 阶段 3 改落本机** ✓）：产出物**本地生成、
 #:   落本机对象存储**（`ArtifactService.save`：挂了工作区就落用户的真实目录）——
 #:   这是"要一份文件"那一类请求在**桌面与本机跑**的链上唯一缺过的一环 ✓。
@@ -493,6 +517,15 @@ SIDECAR_TOOL_NAMES = frozenset(
         "ingest_file",
     }
 )
+
+#: `mcp__<服务>__<工具>` 那一族**不在上面的名单里**（名字由外部服务定，写不进 frozenset），
+#: 所以按**限定名的形状**放行（2026-10-04）：判据复用 `mcp_client.split_qualified`
+#: ——"什么算外部工具名"只有那一处实现 ✗（在这里自己写一遍 `startswith("mcp__")`
+#: 就是第二处规则，前缀一改就漏）。
+#:
+#: 这一条与 `build_local_services` 里"不再盖掉 `mcp`"是**同一件事的两半**：
+#: 光把 `services.mcp` 换成真服务，`agent_tools._mcp_specs` 产出的工具仍会被上面那张
+#: 白名单筛掉 ✗ —— 表现就是"配置页里那三台 MCP 服务好好的，agent 手里一个 `mcp__*` 都没有"。
 
 #: 提供者**不 ready 时一个都不摆**的工具（方案 §3.2 的"失败降级"那一行，阶段 2 落地）。
 #:
@@ -657,11 +690,65 @@ def _approval_payload(event: ApprovalEvent) -> dict[str, Any]:
     }
 
 
+def _skills_note(clients: Clients) -> str:
+    """技能目录那一条：**当场数**，数不出来就如实说数不出来 ✓。
+
+    `SkillService.list()` 带上"被用户关掉的"（它们 `used_by_prompt=False`），
+    所以这里把两个数都报出来 —— 只说一个"共 N 个"会让"关掉一个之后 agent 还看得见"
+    这件事变得没法判断 ✗。**读失败不拦这一轮**（技能目录读不出来不该让对话起不来）：
+    那句话说清楚"没数出来"并与"真是 0 个"分开 ✗（两者混起来正是最误导的形态）。
+    """
+    try:
+        records = clients.services.skills.list()
+    except Exception:  # 目录读不出来：如实说，不假装没有技能
+        logger.warning("读本机技能目录失败（只影响这一句说明）", exc_info=True)
+        return "本机技能目录这次没读出来（详情见边车日志）——不代表没有技能。"
+    usable = [item for item in records if item.used_by_prompt]
+    off = len(records) - len(usable)
+    detail = f"，其中 {off} 个被用户停用" if off else ""
+    return (
+        f"技能目录在本机（{len(records)} 个技能{detail}）："
+        "`<数据目录>/skills`、仓库自带的 `skills/`、`~/.agents/skills` 三处都扫，"
+        "启停状态存在本机设置里（`chat.disabled_skills`）——agent 侧用 "
+        "`list_skills` / `read_skill` 读的就是这一份。"
+    )
+
+
+def _mcp_note(clients: Clients) -> str:
+    """外部 MCP 服务那一条（**只查本机库里的配置**，不去连它们 ✓）。
+
+    为什么不在这里调 `available_tools`：那会把"这一句话"变成"给每台服务一次握手"，
+    而没连上的服务每次都要等一个超时 ✗ —— `/turn` 的说明文字不该拖慢这一轮。
+    工具表那边该连的已经连过了（`tool_specs` → `_mcp_specs`，它自带 5 分钟缓存）。
+    """
+    try:
+        records = clients.services.mcp.list(user_id=None)
+    except Exception:
+        logger.warning("读本机 MCP 配置失败（只影响这一句说明）", exc_info=True)
+        return "本机 MCP 服务清单这次没读出来（详情见边车日志）。"
+    enabled = [item for item in records if item.enabled]
+    if not records:
+        return "本机没有登记外部 MCP 服务（配了就会以 `mcp__<服务>__<工具>` 出现在工具表里）。"
+    return (
+        f"外部 MCP 服务 {len(records)} 台（{len(enabled)} 台启用）："
+        "启用的那些的工具以 `mcp__<服务>__<工具>` 摆进工具表，"
+        "调用前仍受服务自己的策略（允许 / 要确认 / 拒绝）约束。"
+    )
+
+
 def _notes(clients: Clients) -> list[str]:
-    """响应里那几句**如实说明** ✓（"这一侧有什么、没有什么" ✗ 不假装有 ✓）。"""
+    """响应里那几句**如实说明** ✓（"这一侧有什么、没有什么" ✗ 不假装有 ✓）。
+
+    三句话各自回答一个排障问题：**技能在哪**（`_skills_note`）、
+    **外部工具有没有**（`_mcp_note`）、**数据和模型落在哪一头**。
+    技能与 MCP 两句是 2026-10-04 接上真服务之后补的 —— 在那之前这里写的是
+    "本机无内置技能目录"（那时确实没有）。
+    """
     return [
-        "本机无内置技能目录：技能目录的权威在服务器，边车这一侧如实回空。",
+        _skills_note(clients),
+        _mcp_note(clients),
         f"本地执行：工作区 {clients.workspace}；沙箱在 {clients.data_dir / 'sandbox'} 下。",
+        "模型在本机直连（key 在本机；本机没有可用的对话模型时会明确报「没配」）。"
         f"这一轮的账落在本机库（{clients.data_dir / LOCAL_DB_NAME}）；"
         "知识库（检索与入库）在 NAS 上。",
     ]
@@ -686,15 +773,17 @@ def _check_workspace(raw: str | None) -> Path:
 
 
 class Clients:
-    """**装配点**：远端两端 + 本地那一侧（P3）✓（服务器模式的装配在 `core/services.py` ✓）。
+    """**装配点**：KB 远端 + 模型本机直连 + 本地那一侧（P3）✓
+
+    （服务器模式的装配在 `core/services.py` ✓。）
 
     | 件 | 边车这一侧 | 怎么来 |
     | --- | --- | --- |
     | KB（检索 + 入库）| **远端** ✓ | `KnowledgeProviderClient` ✓（M3 阶段 3 起整条在组合根上）|
-    | 模型 | **远端** ✓ | `RemoteModelClient` ✓（key 不下发 ✓）|
+    | 模型 | **本机直连** ✓（2026-10-04 起）| `_LocalModel` → `OpenAICompatChat` ✓（key 在本机 ✓）|
     | 循环 / 工具 / 沙箱 / 审批 | **本地** ✓ | `ToolLoop` + `build_runner` ✓（同一份代码 ✓）|
     | 会话 / 产物 / 笔记 / 记忆 / 设置 | **本地** ✓（阶段 3）| `get_services()` 那一份 ✓ |
-    | 技能目录 | **没有** ✗ | 如实回空 ✓（`/turn` 的 `notes` 里说清 ✓）|
+    | 技能目录 / 插件 / MCP | **本地** ✓（2026-10-04 起工具面也接上）| `get_services()` 那一份 ✓ |
     | 入库 | **远端** ✓ | 组合根换线那一处（`core/services.py`，知识库在 NAS）✓ |
 
     ⚠️ **本类手上那个 provider 就是服务图里跑着的那个**（M3 阶段 5 收成一个实例）：
@@ -706,6 +795,11 @@ class Clients:
     在阶段 2/3 是能发生的——那时是两份缓存）。
     `provider=` 那个入参仍是**用例的注入接缝**（塞一个假实现进去验三态门控），
     给了它本类就用手上这一份、**换不动服务图里那一个**——那是用例的形态，不是运行形态。
+
+    `model=` 同理是**用例的注入接缝**（假模型，避免打真网络）：给了就用它，
+    不给就是 `_LocalModel`（本机直连）。**它不再默认打 NAS 的 `/model-proxy`** ✗
+    —— 那一条（`RemoteModelClient`）留在 `services/remote_clients.py` 里，
+    服务的是"客户端不带 key、由服务端代发"的那些部署，本机档不用它。
     """
 
     def __init__(
@@ -721,23 +815,26 @@ class Clients:
         services: Services | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        #: 用户会话令牌：远端两端（KB 与模型代理）都要它。
+        #: 用户会话令牌：**知识库那一头**要它（模型这一头不要——key 在本机 ✓）。
         self.token = token
         #: 打服务器自己的健康端点（探活很便宜，不占用模型的额度 ✓）
         self.health_url = self.base_url.rsplit("/api/v1", 1)[0] + "/api/v1/health"
-        # 两端可注入（用例给假实现 ✓）——**默认就是 P2/P3 的远端实现** ✓。
-        self.model = model if model is not None else RemoteModelClient(self.base_url, token=token)
         self.workspace = workspace
         self.data_dir = data_dir
         data_dir.mkdir(parents=True, exist_ok=True)
 
         # **本地那一侧 = 本机档的组合根那一份**（M2 阶段 3）：
-        # 会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置全部是 SQLite 里的真服务 ✓，
-        # 而且与挂在同一个 app 上的 `/api/v1/*` 端点是**同一个对象** ✓ ——
-        # 于是"边车跑完写下的账"与"界面读到的账"必然是同一份。
+        # 会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置 / 技能 / 插件 / MCP 全是
+        # 本机那份真服务 ✓，而且与挂在同一个 app 上的 `/api/v1/*` 端点是**同一个对象** ✓
+        # —— 于是"边车跑完写下的账"与"界面读到的账"必然是同一份。
         # 装配要求：调用方**先**钉死档位（`pin_local_deployment`，见那里的说明），
         # 否则 `get_services()` 会按服务器档去连 PG（那是"误连服务器库"那条路）。
         base_services = services if services is not None else get_services()
+
+        # 模型可注入（用例给假实现 ✓）；**默认是本机直连** ✓ —— 它每建一次客户端就问
+        # 一次本机的运行期配置（模型身份与凭据都在本机，见 `_LocalModel` 的说明），
+        # 所以放在 `base_services` 之后：那一份运行期配置就是它要读的东西。
+        self.model = model if model is not None else _LocalModel(base_services.runtime)
 
         #: **知识库提供者的客户端**（M3 阶段 2 起有它）。**默认就是服务图上那一个**
         #: （`Services.provider`，阶段 5 收成一个实例）：地址与钥匙**每次调用现取**
@@ -777,6 +874,19 @@ class Clients:
         self.ingest = self.services.ingest
         self.documents = self.services.documents
 
+    def model_configured(self) -> bool:
+        """**本机**有没有配好对话模型（`/health` 那一格读它，见那里的说明）。
+
+        只看配置（`LLMConfig.is_configured`：有 key、有模型名），**不真发一次请求**：
+        健康检查不该花用户的钱、也不该为了探活去撞一次限流。配了但上游会拒（key 无效）
+        在真跑一轮时报出来（`ChatError` → `/turn` 的一句人话）。
+
+        ⚠️ 这一条只对**本机直连**成立（2026-10-04 起 `_LocalModel` 是默认）：
+        `model=` 注入了假实现（用例）时，这里报的还是本机注册表的状态 ——
+        那个"假模型"不是本机配置的一部分。用例要断言这一格请直接看 `clients.model`。
+        """
+        return self.services.runtime.llm().is_configured
+
     def tool_specs(self, *, kb_ids: Sequence[str] = ()) -> list[ToolSpec]:
         """这一轮摆给模型的工具：**只摆本地真能服务的那些** ✓（见 `SIDECAR_TOOL_NAMES`）。
 
@@ -787,13 +897,27 @@ class Clients:
         2. M3 阶段 2 追加的**提供者状态**：``state != ready`` 时那三个真正要知识库的工具
            一个都不摆（方案 §3.2 的"失败降级"）——给了又拒只会白花一个来回。
 
+        **技能与外部 MCP 走的是同一张表、同一个执行器**（2026-10-04）：
+        `agent_tools.tool_specs` 已经把技能目录（`services.skills`）与外部服务
+        （`services.mcp`，含启停与策略）算进去了，这里只做**白名单筛**——
+        名单里的名字 + `mcp__<服务>__<工具>` 那族（外部名字写不进名单，
+        按形状放行，见 `SIDECAR_TOOL_NAMES` 下面那段说明）。
+
         ⚠️ 第 2 条**只在 `scope` 非空时才去问提供者**（`kb_ids` 为空时那三个本来就已被
         第 1 条摘掉）：否则**每一轮对话**都会先探一次握手，而 R1 要的恰恰是
         "交互路径不被握手拖慢"（没选库的会话根本用不到提供者，不该为它等一次 NAS 往返）。
+
+        ⚠️ 本机档**没有归属过滤**（`owner_id=None`）：这台机器只有一个主人，
+        "别人登记的 MCP 服务"这个场景不存在（与 `/mcp-servers` 端点那条 `LOCAL_CALLER`
+        同一口径）。而 `available_tools` 仍按 `record.enabled` 与 `policy` 收口 ✓。
         """
         scope = [str(item) for item in kb_ids if str(item).strip()]
         specs = agent_tools.tool_specs(self.services, owner_id=None, kb_ids=scope or None)
-        specs = [spec for spec in specs if spec.name in SIDECAR_TOOL_NAMES]
+        specs = [
+            spec
+            for spec in specs
+            if spec.name in SIDECAR_TOOL_NAMES or split_qualified(spec.name) is not None
+        ]
         if scope and self.provider.status().state != STATE_READY:
             specs = [spec for spec in specs if spec.name not in KB_PROVIDER_TOOLS]
         return specs
@@ -814,11 +938,15 @@ class Clients:
         #:   `approval_id` ✓）→ 交给循环的 `UNAVAILABLE` 那条路 ✓，回给模型的是"待确认" ✓。
         interactive: bool = True,
     ) -> ToolLoop:
-        """把**远端两端 + 本地那一侧**拼成一个 `ToolLoop` ✓（循环本体一行不改 ✗）。
+        """把**两头的接缝 + 本地那一侧**拼成一个 `ToolLoop` ✓（循环本体一行不改 ✗）。
 
         三处口径与服务器那条链路逐条对齐：工具表（`tool_specs` ✓）、执行器
         （`build_runner` ✓）、档位（`chat.mode` / `chat.permission` 从**本机**运行期配置读 ✓，
         与 `chat.tool_loop` 同一读法 ✓）。
+
+        `client_factory` 给的是 `self.model`（本机直连）——**工厂形式**而不是一个现成的
+        客户端：循环每一步都会现要一个，而 `_LocalModel` 每建一次就问一次运行期配置，
+        所以用户在设置页换了模型/填了 key，**下一轮就生效**（不必重启边车 ✓）。
         """
         scope = [str(item) for item in kb_ids if str(item).strip()]
         # `Caller(is_admin=True)`：这是**本机主人**在 `agent_exec` 那道闸上的形状
@@ -950,14 +1078,20 @@ class TurnOut(BaseModel):
     error: str = Field(
         default="",
         description=(
-            "非空 = **这一轮没有正常作答**（可判定的标记 ✓）：远端不可用/被拒、或模型没产出正文。"
+            "非空 = **这一轮没有正常作答**（可判定的标记 ✓）：知识库那头不可用/被拒、"
+            "本机模型没配或被上游拒、或模型没产出正文。"
             "**空 `answer` 绝不等于成功** ✗ —— 调用方据此区分「成功」与「空」✓。"
         ),
     )
 
 
 class HealthOut(BaseModel):
-    """**如实报**两端可达性 ✗（不许假装健康 ✓）。"""
+    """**如实报**两个"能用吗" ✗（不许假装健康 ✓）。
+
+    - `kb_reachable`：NAS 的知识库这一头真探一次（打不通会带原因进 `note`）；
+    - `model_reachable`：**本机**有没有配好对话模型（2026-10-04 起模型不走 NAS，
+      所以这一格不再等于上面那一格，见 `/health` 的说明）。
+    """
 
     version: str
     workspace: str
@@ -1209,24 +1343,39 @@ def create_app(
     app.include_router(local_router, prefix=f"/api/{API_VERSION}")
     register_exception_handlers(app)
 
-    @app.get("/health", response_model=HealthOut, summary="健康 + 两端可达性")
+    @app.get("/health", response_model=HealthOut, summary="健康 + 知识库可达性 + 本机模型配置")
     def health() -> HealthOut:
+        """**两个"能用吗"分开答** ✓（都不许假装健康 ✗）。
+
+        - `kb_reachable`：真去打一次 NAS 的知识库健康端点 ✓ —— 打不通就如实报不可达，
+          **带上原因** ✗（网络层不可达 vs 端点非 2xx 分开，见 `_probe_health`）；
+        - `model_reachable`：**本机**有没有配好对话模型（2026-10-04 起模型不走 NAS ✗，
+          所以这里不再拿知识库的可达性当模型的健康 —— 那是两个独立的失败面：
+          "NAS 连不上但本机模型好好的"与"NAS 好好的但本机没配模型"都要能一眼看出来）。
+          判的是**配置**（`is_configured`）而不是真发一次请求：探活不该花用户的钱、
+          也不该为了一个健康检查去撞一次上游限流 ✓。配好了但上游会拒（key 无效）
+          在真跑一轮时才报出来（见 `_LocalModel` 的失败路径）。
+        """
         kb_ok, why = _probe_health(clients.health_url)
+        model_ok = clients.model_configured()
+        if not model_ok:
+            hint = "本机还没有配好对话模型：「设置 → 模型注册」里登记供应商、填 Key、绑定对话生成"
+            why = f"{why}；{hint}" if why else hint
         return HealthOut(
             version=SIDECAR_VERSION,
             workspace=str(workspace),
             kb_reachable=kb_ok,
-            model_reachable=kb_ok,  # 同一个后端；模型是否**可用**要看它的档位配置 ✓
+            model_reachable=model_ok,
             # **如实报原因** ✗（网络不可达 vs 端点非 2xx 分开 ✓ —— 别吞成一句"不可达" ✗）
             note=why,
         )
 
-    @app.post("/turn", response_model=TurnOut, summary="走一轮（模型与 KB 远端；工具在本机跑）")
+    @app.post("/turn", response_model=TurnOut, summary="走一轮（模型本机直连；工具在本机跑）")
     def turn(payload: TurnIn) -> TurnOut:
-        """**同一个 `ToolLoop`** ✓：远端模型 + 远端 KB + 本地工具/沙箱/审批 ✓。
+        """**同一个 `ToolLoop`** ✓：本机直连模型 + 远端 KB + 本地工具/沙箱/审批 ✓。
 
         顺序与服务器那条链路逐条对齐（见 `api/v1/chat.py` 的同名循环）：
-        取正文以收尾那条 `DoneEvent` 为准 ✓、步骤逐条收 ✓、远端失败**如实报** ✗。
+        取正文以收尾那条 `DoneEvent` 为准 ✓、步骤逐条收 ✓、失败**如实报** ✗。
         """
         target = _check_workspace(payload.workspace) if payload.workspace else workspace
         notes = _notes(clients)
@@ -1282,8 +1431,14 @@ def create_app(
                             "result": "",
                         }
                     )
-        except RemoteClientError as exc:
-            # **失败分档照旧** ✓：远端不可用/被拒都要如实说出来 ✗（不当成"空回答" ✓）
+        except (RemoteClientError, ChatError) as exc:
+            # **失败分档照旧** ✓：两头都要如实说出来 ✗（不当成"空回答" ✓）。
+            # `RemoteClientError` = 知识库那一头的接缝（远端不可用/被拒）；
+            # `ChatError` = 模型这一头（2026-10-04 起模型在本机直连）：
+            # "还没配模型"（reason=not_configured）与"上游拒了"（401/404/5xx）
+            # 都从它来，文案里带着下一步动作（见 `_LocalModel`）。
+            # 两条都不许变成空回答 ✗、也不该冒成 500 ✗ —— 前者用户看不出出了什么事，
+            # 后者会把这句人话吞进"服务端出错了"里。
             return TurnOut(
                 answer=f"（边车报告：{exc}）",
                 workspace=str(target),
@@ -1365,7 +1520,8 @@ def create_app(
 
         护栏与 `/turn` **一字不差** ✓：
         - **正文为空绝不当成功** ✗✗ → 先发 `error`（`empty-answer: …` ✓）再发 `done`（如实说明 ✓）；
-        - 远端不可用/被拒 → `error` + 如实的 `answer` ✓（不当成"空回答" ✗）；
+        - 知识库那头不可用/被拒、或模型这头没配/被上游拒 → `error` + 如实的 `answer` ✓
+          （不当成"空回答" ✗）；
         - `done.answer` 与流出去的 `delta` 拼起来的是**同一份** ✓（前端兜底不会与增量打架 ✓）。
 
         与 `/turn` 唯一有意的差别：`/turn` 末尾会往 `notes` 里加一句"这一轮没有调用任何工具" ✗，
@@ -1415,8 +1571,9 @@ def create_app(
                         # **不进 `steps`** ✗：这是一句还没被回答的问题，不是"做过的一步" ✓
                         # （服务器那条链同样把它排除在快照之外 ✓）。
                         yield _sse({"type": "approval", **_approval_payload(event)})
-            except RemoteClientError as exc:
-                # **失败如实报** ✗（分档照旧：不可用 / 被拒 ✓，不伪装成空回答 ✓）
+            except (RemoteClientError, ChatError) as exc:
+                # **失败如实报** ✗（分档照旧：KB 那头不可用 / 被拒、模型这头没配或上游拒了 ✓，
+                # 不伪装成空回答 ✓）。两族异常的含义见 `/turn` 那一处的说明。
                 yield _sse({"type": "error", "message": str(exc)})
                 yield _sse({"type": "done", "answer": f"（边车报告：{exc}）"})
                 return
@@ -1517,13 +1674,15 @@ def create_app(
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="KYLAB 本地边车（循环本地、KB 与模型远端）")
+    parser = argparse.ArgumentParser(
+        description="KYLAB 本地边车（循环 / 工具 / 模型都在本机；知识库在 NAS）"
+    )
     parser.add_argument("--host", default="127.0.0.1", help="**只监听本机**（默认 127.0.0.1）")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
         "--server",
         default=os.environ.get("KYLAB_SERVER_URL", "http://127.0.0.1:8000/api/v1"),
-        help="服务器 API 基址（KB 与模型代理都在它下面）",
+        help="服务器 API 基址（**知识库**那一头在它下面；模型不走它）",
     )
     parser.add_argument("--token", default=os.environ.get("KYLAB_TOKEN", ""), help="用户会话令牌")
     parser.add_argument(

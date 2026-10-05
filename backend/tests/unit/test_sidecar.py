@@ -37,7 +37,8 @@ from app.services.knowledge_provider import (
     STATE_UNCONFIGURED,
     KnowledgeProviderClient,
 )
-from app.services.llm import ChatMessage, LLMDelta, ToolCallDelta, ToolSpec
+from app.services.llm import ChatError, ChatMessage, LLMDelta, ToolCallDelta, ToolSpec
+from app.services.model_client import ModelClient
 from app.services.remote_clients import RemoteUnavailableError
 from app.services.tool_loop import ToolLoop, ToolOutcome
 
@@ -172,6 +173,55 @@ def _client(  # type: ignore[no-untyped-def]
 
     app = sidecar.create_app("http://server.test/api/v1", "t", tmp_path / "ws")
     return TestClient(app)
+
+
+def _in_memory_keychain(monkeypatch):  # type: ignore[no-untyped-def]
+    """把**系统钥匙串**换成进程内那一把（用例里绝不碰用户的凭据管理器 ✓）。
+
+    换的是组合根里那个 `platform_store`（`core.services`）——**必须在建服务图之前换**
+    （`get_services()` 是 `lru_cache`：建完再换，那两个服务拿的还是真钥匙串）。
+    与 `tests/unit/api/test_local_backup_api.py` 用的是同一手法。
+    """
+    from app.core import services as services_module
+    from app.services.secrets import InMemorySecretStore
+
+    store = InMemorySecretStore()
+    monkeypatch.setattr(services_module, "platform_store", lambda: store)
+    return store
+
+
+def _configure_a_chat_model(client: TestClient, *, base_url: str = "http://model.test/v1"):  # type: ignore[no-untyped-def]
+    """走**本机后端那三个端点**配好一个对话模型，返回 `(provider_id, model_pk)`。
+
+    与用户在界面上点的是同一条路（`/model-registry/providers` → `/models` → `/slots/chat`
+    ——前端 `api/modelRegistry.ts` 全走 `requestLocal` ✓）：于是这条用例顺带证明
+    "本机档的 key 能从界面填、填完就生效"，而**不是**只证明"我们记得调某个函数"。
+    """
+    created = client.post(
+        "/api/v1/model-registry/providers",
+        json={
+            "kind": "llm",
+            "name": "本机测试供应商",
+            "base_url": base_url,
+            "api_key": "sk-local-test",
+        },
+    )
+    assert created.status_code == 201, created.text
+    provider_id = str(created.json()["id"])
+    registered = client.post(
+        "/api/v1/model-registry/models",
+        json={
+            "provider_id": provider_id,
+            "model_id": "local-test-model",
+            "label": "本机测试模型",
+            "capabilities": ["chat"],
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    model_pk = str(registered.json()["id"])
+    bound = client.put("/api/v1/model-registry/slots/chat", json={"model_pk": model_pk})
+    assert bound.status_code == 200, bound.text
+    return provider_id, model_pk
 
 
 def _no_network(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -328,8 +378,11 @@ def test_turn_runs_a_round_with_a_fake_model(tmp_path, monkeypatch) -> None:  # 
     }
     # 步骤现在来自 `ToolLoop` ✓（组织回答那一步 ✓）——不再是"恒为空"✗
     assert any(step["phase"] == "answer" for step in payload["steps"])
-    # **如实说明**：本机没有技能目录 ✓
-    assert any("技能目录" in note for note in payload["notes"])
+    # **如实说明**：技能目录在**本机** ✓（2026-10-04 起：边车这一侧扫的就是这台机器上
+    # 那三处 —— 仓库自带 `skills/`、`<数据目录>/skills`、`~/.agents/skills`），
+    # 所以这句话里要带着**数出来的条数** ✗ 不是一句"没有技能" ✗。
+    skill_note = next(note for note in payload["notes"] if "技能目录" in note)
+    assert "在本机" in skill_note and "个技能" in skill_note, skill_note
     assert payload["sse"] is False
 
 
@@ -441,14 +494,39 @@ def test_health_reports_unreachable_when_the_server_is_down(tmp_path, monkeypatc
     assert "不可达" in payload["note"]
 
 
-def test_health_is_honest_when_everything_is_up(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_health_answers_the_two_questions_separately(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`kb_reachable` 与 `model_reachable` 是**两个独立的失败面**（2026-10-04）。
+
+    模型搬回本机之后，"NAS 连不上"与"本机没配模型"必须一眼分得开：
+    旧口径把后者写成 `model_reachable=kb_ok`（同一台后端），而今天本机的模型请求
+    根本不经过 NAS ✗ —— 照旧写法会出现"NAS 好好的，于是界面说模型一切正常，
+    可每一轮对话都回一句没配模型"这种最难查的形态。
+
+    这一条同时钉住**本机档的凭据从哪来**：走本机后端的 `/model-registry` 填进
+    供应商与 key（本机档这个 router 挂着 ✓，与界面用的是同一批端点），
+    写进**系统钥匙串**（用例里换成进程内那一把），`model_reachable` 随即转真。
+    """
+    store = _in_memory_keychain(monkeypatch)
     client = _client(tmp_path, monkeypatch, _FakeModel(), health_ok=True)
 
+    # ① NAS 好好的、本机还没配模型：两个数是**一个真一个假** ✓
     payload = client.get("/health").json()
+    assert payload["kb_reachable"] is True
+    assert payload["model_reachable"] is False
+    assert "还没有配好对话模型" in payload["note"], payload["note"]
 
+    # ② 走界面那条路把那三件事配齐（供应商 → 模型 → 绑定「对话生成」）
+    provider_id, model_pk = _configure_a_chat_model(client)
+
+    payload = client.get("/health").json()
+    assert payload["model_reachable"] is True
     assert payload["kb_reachable"] is True
     assert payload["note"] == ""
-    assert payload["version"] == sidecar.SIDECAR_VERSION
+    # **key 落在钥匙串里、库里那一列是空的** ✗（M5 收编那条口径在本机档成立）
+    assert store.get(f"kylab:model_provider:{provider_id}") == "sk-local-test"
+    assert model_pk  # 绑定成功（下面那条断言它真的绑上了）
+    slots = client.get("/api/v1/model-registry/slots").json()
+    assert {slot["slot"]: slot.get("bound_model_pk") for slot in slots}["chat"] == model_pk
 
 
 def test_workspace_refuses_system_directories() -> None:
@@ -493,7 +571,7 @@ def test_workspace_fallbacks_never_land_inside_the_repo(monkeypatch) -> None:  #
 
 
 def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """装配出来的两端**就是远端实现** ✓（"循环本地、KB 与模型远端"落在这一行 ✓）。
+    """装配出来的两头**各是各的实现** ✓（"循环本地、知识库远端、模型本机"落在这一行 ✓）。
 
     同时钉住本地那一侧的三条口径：默认**无隔离时直接执行**（`require_isolation` 默认 `false` ✓，
     不装 Docker 也要能跑 ✓），但**用户显式要求严格时必须被尊重** ✓（闸可开、不可被偷偷绕 ✗）、
@@ -502,6 +580,10 @@ def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[n
     M3 阶段 2 起 KB 那一件是**提供者客户端**（`KnowledgeProviderClient`）✓ —— 它同时是
     `KnowledgeClient` 协议的一份实现（`retrieve_sources` 签名逐字一致 ✓），所以
     "循环本地"那条链一个字不用改 ✓。
+
+    **模型那一件 2026-10-04 起是本机直连** ✓（`_LocalModel`：每建一次客户端就问一次
+    本机的运行期配置）——它不再是 `RemoteModelClient`（那条路要把模型请求发去 NAS 的
+    `/model-proxy`，与"推理搬回本机"这条裁定相反 ✗）。
     """
     clients = sidecar.build_clients(
         "http://server.test/api/v1", "t", workspace=tmp_path / "ws", data_dir=tmp_path / "data"
@@ -510,7 +592,17 @@ def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[n
     assert isinstance(clients.knowledge, KnowledgeProviderClient)
     assert isinstance(clients.knowledge, KnowledgeClient)
     assert clients.knowledge is clients.provider
-    assert isinstance(clients.model, sidecar.RemoteModelClient)
+    # **模型：本机直连** ✓ —— 结构性满足 `ModelClient`（循环那一侧只认协议 ✓），
+    # 而且**不是**打 `/model-proxy` 的那个远端实现 ✗。
+    assert isinstance(clients.model, ModelClient)
+    assert isinstance(clients.model, sidecar._LocalModel)
+    assert not isinstance(clients.model, remote_clients.RemoteModelClient)
+    # 没配模型时它**明确报"没配"**（不是空回答、也不是 500 ✓）——失败路径的第一档。
+    # ⚠️ 直接在客户端上叫一次（不经过 `/turn`）：`client_factory` 每次现建，
+    # 所以这一下与循环里那一下走的是同一段代码 ✓。
+    with pytest.raises(ChatError) as excinfo:
+        clients.model.complete([ChatMessage(role="user", content="在吗")])
+    assert "尚未配置对话模型" in str(excinfo.value)
     assert clients.base_url == "http://server.test/api/v1"
     # 探活打的是后端自己的 health（不花模型额度 ✓）
     assert clients.health_url == "http://server.test/api/v1/health"

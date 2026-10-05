@@ -1993,6 +1993,17 @@ def _render_skills(services: Any, args: dict[str, Any] | None = None) -> str:
             usable = f"已丢弃（{reason}）"
         elif record.used_by_prompt:
             usable = "可用"
+        elif getattr(record, "flagged", ()):
+            # **有原因就照原因说**（2026-10-04）：`used_by_prompt=False` 至少有三种来路
+            # ——被同名技能遮蔽、被用户**关掉**（D23 的 `chat.disabled_skills`）、
+            # 以及将来别的"不进提示词"的理由。全写成"被同名技能遮蔽"会让模型
+            # （和照它转述的用户）拿到一个**错的**原因：明明是自己关的，
+            # 却被告知"有同名技能挡住了"——下一步就去找一个不存在的重名技能。
+            # `SkillService.list()` 已经把这些理由写进 `flagged` 了，这里只是别丢掉它们。
+            reasons = getattr(record, "flagged", ()) or ()
+            if isinstance(reasons, str):  # 假记录（用例）可能给的是字符串
+                reasons = (reasons,)
+            usable = "、".join(str(item) for item in reasons)
         else:
             usable = "被同名技能遮蔽（不进提示词）"
         lines.append(f"- {record.name}（{usable}）：{record.description}")
