@@ -289,8 +289,14 @@ def test_the_local_face_is_a_whitelist_not_the_whole_api(tmp_path, monkeypatch) 
 
     用 `app.main.create_app()`（本机档）验 —— 它就是边车挂的那个 app 的另一半入口：
     本机后端面（`/api/v1/*`）与桌面壳那条路走的是**同一张路由表**。
-    判据两端都要有：**该在的在**（会话 / 笔记 / 设置 / 记忆 / `/local/status`）、
-    **该不在的不在**（文档 / 知识库 / 检索 / 任务 / 搜索 / `chat/stream`）。
+    判据两端都要有：**该在的在**（会话 / 笔记 / 设置 / 记忆 / 技能 / 插件 / 沙箱 /
+    站点图标 / `/local/status` / 用量那一条）、
+    **该不在的不在**（文档 / 知识库 / 检索 / 任务 / 驾驶舱 / 回收站 / 账号 / 前端包 / 模型代理）。
+
+    **2026-10-04 那次"补全"改过这张清单**（当时把技能 / 插件 / 沙箱 / 站点图标 /
+    `/stats/usage` 补挂上本机档）：判据是"实现已经在后端里，且它的数据落本机
+    （SQLite / data_dir / 本机进程）"，逐域的理由写在 `api/v1/router.py` 的
+    `local_router` 那一段。原来那版断言把 `/sandbox` 也列在"该不挂"里——它改了。
     """
     monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
     monkeypatch.setenv("KYLAB_DATABASE_URL", "")
@@ -314,17 +320,32 @@ def test_the_local_face_is_a_whitelist_not_the_whole_api(tmp_path, monkeypatch) 
         assert body["database_bytes"] > 0
         # 本机主人短路：不带凭据也建得出会话 ✓
         assert client.post("/api/v1/conversations", json={}).status_code == 201
-        # 该挂的挂着
-        for path in ("/api/v1/health", "/api/v1/notes", "/api/v1/settings", "/api/v1/memory"):
-            assert client.get(path).status_code in (200, 422), (path, client.get(path).text)
-        # 该不挂的没挂（知识库那半在本机档**没有数据源**）
+        # 该挂的挂着（后五个是 2026-10-04 补上的：数据全在本机那几件）
         for path in (
-            "/api/v1/documents",
+            "/api/v1/health",
+            "/api/v1/notes",
+            "/api/v1/settings",
+            "/api/v1/memory",
+            "/api/v1/skills",
+            "/api/v1/plugins",
+            "/api/v1/sandbox",
+            "/api/v1/stats/usage",
+        ):
+            assert client.get(path).status_code in (200, 422), (path, client.get(path).text)
+        # 该不挂的没挂（数据或能力不在这台机器上，逐域理由见 router.py 那一段）
+        for path in (
+            "/api/v1/documents/doc_x",
             "/api/v1/knowledge-bases",
             "/api/v1/search",
             "/api/v1/tasks",
-            "/api/v1/stats",
-            "/api/v1/sandbox",
+            "/api/v1/stats/dashboard",
+            "/api/v1/trash",
+            "/api/v1/maintenance/storage",
+            "/api/v1/webhooks",
+            "/api/v1/users",
+            "/api/v1/api-keys",
+            "/api/v1/app/frontend/manifest",
+            "/api/v1/model-proxy/complete",
         ):
             assert client.get(path).status_code == 404, (path, client.get(path).text)
         # `chat.router` 只重声明了那两条只读端点，`/chat/stream` 不在

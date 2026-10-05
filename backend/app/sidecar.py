@@ -74,11 +74,13 @@ python -m app.sidecar --port 8765
 from __future__ import annotations
 
 import argparse
+import asyncio
 import dataclasses
 import json
 import logging
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -93,6 +95,7 @@ from app.api.v1.router import local_router
 from app.api.v1.schemas import ChatSourceOut
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import NotFoundError, register_exception_handlers
+from app.core.logging import setup_logging
 from app.core.services import Services, get_services, reset_services
 from app.core.storage import LOCAL_DB_NAME, reset_stores
 from app.services import agent_tools, plan_gate
@@ -115,6 +118,7 @@ from app.services.remote_clients import (
     RemoteModelClient,
 )
 from app.services.tool_loop import ToolLoop
+from app.workers.local_worker import bind_local_scheduler, run_local_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -1090,6 +1094,48 @@ def _seed_local_files(clients: Clients) -> None:
             logger.info("记忆/人设模板已就位：%s", "、".join(created))
 
 
+def _lifespan(clients: Clients) -> Any:
+    """边车进程的生命周期（2026-10-04 起有内容：**本机消费者**）。
+
+    与 `app/main.py` 的 lifespan 同一件事、同一把开关（`KYLAB_RUN_WORKER`）：
+    起那个消费者——定时任务到点跑 + 本机库空闲维护，落点与安全边界写在
+    `workers/local_worker.py` 的模块头。
+
+    **为什么这里也要起一份**：桌面壳起的是**这个进程**
+    （`python -m app.sidecar`，见 `desktop/src-tauri/src/sidecar.rs`），而界面打的
+    `/api/v1/scheduled-tasks*` 就是打在它上面的。不在这儿起，"到点跑"在本机永远不会
+    发生，而 `POST /scheduled-tasks/{id}/run` 会撞上 NAS 的队列表（本机档没有那张表）
+    ——那正是"摆出来的端点点不通"那条老毛病。
+
+    两个进程同时起来也只会跑一遍：认领是一次 CAS（`MetaStore.arm_scheduled_task`），
+    第二个人要么认领失败，要么在下一轮看到 `next_run_at` 已经推到下一个周期。
+
+    **摄取那条消费者不在这里**：它领的活全在 NAS 上（队列表 / 文档 / 切块 / 向量），
+    本机起了只会每隔几秒撞一次不可用的库（M2 §4.1 那条结论对**它**仍然成立）。
+    """
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        stop = asyncio.Event()
+        tasks: list[asyncio.Task[None]] = []
+        if get_settings().run_worker:
+            scheduler = bind_local_scheduler(clients.services)
+            tasks = [asyncio.create_task(run_local_scheduler(scheduler, stop))]
+            logger.info("边车：已启动本机消费者（定时任务到点跑 + 本机库空闲维护）")
+        else:
+            logger.warning("KYLAB_RUN_WORKER=false：边车未起消费者，定时任务到点不会跑")
+        try:
+            yield
+        finally:
+            # 置位即可退出（两条循环都在 `wait_for(stopping.wait(), …)` 上，
+            # 立刻醒来返回，不会多等一个间隔）——与 `main.py` 的收尾同一套语义
+            stop.set()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    return lifespan
+
+
 def create_app(
     base_url: str,
     token: str,
@@ -1129,7 +1175,7 @@ def create_app(
     )
     clients = build_clients(base_url, token, workspace=workspace, data_dir=data_dir)
     _seed_local_files(clients)
-    app = FastAPI(title="kylab sidecar", version=SIDECAR_VERSION)
+    app = FastAPI(title="kylab sidecar", version=SIDECAR_VERSION, lifespan=_lifespan(clients))
 
     # **壳的页面要跨源直连边车**（2026-09-30 实测补上）：界面从 `http://app.localhost`
     # （自定义 scheme 在 Windows 上的映射，见 `resources.rs::app_url`）调本机边车，
@@ -1507,6 +1553,14 @@ def main(argv: list[str] | None = None) -> None:
 
     workspace = _check_workspace(args.workspace)
     data_dir = Path(args.data_dir).expanduser().resolve() if args.data_dir else None
+    # **控制台日志要配一次**（2026-10-04 补，起本机消费者那一批）：不配的话根日志器是
+    # WARNING，`logger.info` 全部丢掉——"定时任务到点跑了一条"这类**正常发生**的事
+    # 在壳抓的那份日志里一个字都看不到，只剩失败时才有痕迹（而"它到底跑没跑"正是
+    # 排障时第一个要回答的问题）。与 `app/main.py` 的 lifespan 同一个口径与同一个函数，
+    # 级别也取同一份设置（`KYLAB_LOG_LEVEL`）。
+    # **不挂文件处理器**：壳已经把这一个进程的 stdout 收进它自己的日志文件了
+    # （`desktop/src-tauri/src/logfile.rs`），再挂一份会变成两个日志文件。
+    setup_logging(get_settings().log_level)
     import uvicorn  # 局部导入：用例 import 本模块时不必拉起 uvicorn ✓
 
     uvicorn.run(

@@ -11,7 +11,10 @@
    会话首次运行时才建（没跑过的任务不该先占一条会话）；
 2. **执行走任务队列**（``TaskKind.SCHEDULED``）：调度侧只做"到点把活放进队列"，
    剩下的租约、心跳、失败重试、进程崩溃后回收**全部复用已有那一套**。
-   在调度侧自己实现一遍，等于把队列已经解决过的问题再做一次（而且更差）；
+   在调度侧自己实现一遍，等于把队列已经解决过的问题再做一次（而且更差）。
+    ⚠️ **本机档没有那张队列表**（``TaskQueueRepo`` 属知识库域，见 ``ScheduleRunner``
+    的说明）：那一档把"入队 + 消费者认领"换成**就地跑**（``bind_runner`` + ``run_due``），
+    而"到点判定 / CAS 认领 / 下一次时刻"两档共用同一段（``_arm``）；
 3. **时区按服务器本地时间**：用户说的"每天 9 点"是他钟表上的 9 点。
    容器默认是 UTC，所以部署里显式设了 ``TZ``（见 ``deploy/docker-compose.yml``），
    接口也会把当前时区回给界面显示——"9 点"到底是哪个 9 点，得让人看得见。
@@ -25,13 +28,14 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Protocol
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.models.enums import TaskKind, TaskState
 from app.services import cron as cron_service
 from app.storage.base import ScheduledTaskRecord, StoreBundle, TaskRecord
 
-__all__ = ["KIND_CRON", "KIND_ONCE", "ScheduleService"]
+__all__ = ["KIND_CRON", "KIND_ONCE", "ScheduleRunner", "ScheduleService"]
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +57,45 @@ DUE_BATCH = 5
 SCHEDULED_MAX_ATTEMPTS = 2
 
 
+class ScheduleRunner(Protocol):
+    """**本机档**的"就地跑一条"接缝（服务器档没有它，走队列）。
+
+    为什么需要它：服务器那半条链是"到点入队（``TaskKind.SCHEDULED``）→ 消费者认领 →
+    ``schedule_runner.run_scheduled_task``"（见模块头第 2 条）。而**本机档没有任务表**
+    ——``TaskQueueRepo`` 属知识库域，在本机档由 ``RemoteMetaStore`` 整体抛
+    （`enqueue_task` / `claim_task` 都不在本机库里，见
+    `app/storage/split_impl/remote_meta.py` 的模块头："本机档不启动消费者，没有队列可管"）。
+    于是本机档"到点就跑"这条链缺的正是`入队 + 认领`那一环：把它换成一个**直接跑的接缝**，
+    调度的"到点判定 / CAS 认领 / 下一次时刻"照旧走本类（一份 cron 逻辑，不抄第二遍）。
+
+    一个方法：``submit`` **立刻返回**一个运行 id，真跑在后台线程里。两条调用路径共用它
+    ——"到点自动"（``run_due``）与"立即跑一次"（``run_now``）：两者都不能被几分钟的一轮
+    问答按在原处（前者会把调度循环堵住，后者会让界面转圈等到超时），所以接缝这一侧
+    **只有"排队"，没有"等它跑完"**。
+    """
+
+    def submit(self, scheduled_id: str) -> str:
+        """把一条排进本机运行队列，返回这次运行的标识（**不阻塞**）。"""
+        ...
+
+
 class ScheduleService:
     """定时任务的增删改查 + 到点入队。**不跑问答**（那是 ``schedule_runner`` 的事）。"""
 
     def __init__(self, stores: StoreBundle) -> None:
         self._stores = stores
+        #: 本机档的"就地跑"接缝（组合根后挂一次，见 ``bind_runner``）。服务器档恒 ``None``。
+        self._runner: ScheduleRunner | None = None
+
+    def bind_runner(self, runner: ScheduleRunner | None) -> None:
+        """挂上"就地跑"接缝（**本机档专属**，服务器档恒不调）。
+
+        手法与 ``RemoteMetaStore.bind_reader`` 逐字相同：后挂一次、只在装配期发生。
+        为什么是后挂而不是构造参数——接缝要的是一份**装配好的 ``Services``**
+        （工具表、执行器、会话都从它上面取），而它要到组合根末尾才存在
+        （组合根里那个 ``runner_slot`` 也记着同一件事）。
+        """
+        self._runner = runner
 
     # ------------------------------------------------------------------ 读
 
@@ -216,19 +254,66 @@ class ScheduleService:
         count = 0
         for record in self._stores.schedules.due_scheduled_tasks(now=moment, limit=limit):
             try:
-                if self._arm_and_enqueue(record, now=moment):
+                if self._arm(record, now=moment):
+                    self._enqueue(record, manual=False)
                     count += 1
             except Exception:
                 logger.warning("定时任务 %s 入队失败，跳过", record.id, exc_info=True)
         return count
 
+    def run_due(self, *, now: datetime | None = None, limit: int = DUE_BATCH) -> int:
+        """**本机档**那条"到点就跑"：扫一遍、认领、交给接缝直接跑，返回跑了几条。
+
+        与 ``enqueue_due`` 是同一件事的两半（到点的判定、CAS 认领、下一次时刻**共用**
+        ``_arm`` 那一段），差别只在认领之后干什么：服务器档把活放进队列（消费者去领，
+        于是"跑得慢"不会把调度也堵住），本机档没有队列，就当场交给 ``ScheduleRunner``
+        （它把活丢进后台线程，所以这里**不会**被一轮问答按在原处）。
+
+        没挂接缝时**一条都不跑**（如实回 0）：那是"这台机器没有执行口"的形态，
+        静默地把活丢掉比不跑更糟——所以它由调用方（本机消费者）在启动时挂上，
+        而不是在这里编一个默认实现。
+        """
+        runner = self._runner
+        if runner is None:
+            return 0
+        moment = now or datetime.now(UTC)
+        count = 0
+        for record in self._stores.schedules.due_scheduled_tasks(now=moment, limit=limit):
+            try:
+                if self._arm(record, now=moment):
+                    runner.submit(record.id)
+                    count += 1
+            except Exception:
+                logger.warning("定时任务 %s 排进本机运行队列失败，跳过", record.id, exc_info=True)
+        return count
+
     def run_now(self, scheduled_id: str, *, owner_id: str | None) -> TaskRecord:
-        """「立即跑一次」：入队，**不动下次时间**（它是一次手动的，不改变周期）。"""
+        """「立即跑一次」：入队，**不动下次时间**（它是一次手动的，不改变周期）。
+
+        本机档（挂了 ``runner`` 时）改走"就地跑"：交给接缝、立刻返回一个**这次运行的标识**。
+        那个 ``TaskRecord`` 不是队列表里的一行（本机没有那张表）——它承载的只是"这一次运行
+        叫什么"，而端点回给界面的正是它（``ScheduledTaskRunOut.task_id``）。
+        **两种档都不动 ``next_run_at``**：手动跑不改变周期。
+        """
         record = self.get(scheduled_id, owner_id=owner_id)
+        if self._runner is not None:
+            run_id = self._runner.submit(record.id)
+            return TaskRecord(
+                id=run_id,
+                kind=TaskKind.SCHEDULED,
+                state=TaskState.RUNNING,
+                payload={"scheduled_id": record.id, "manual": True},
+                max_attempts=SCHEDULED_MAX_ATTEMPTS,
+            )
         return self._enqueue(record, manual=True)
 
-    def _arm_and_enqueue(self, record: ScheduledTaskRecord, *, now: datetime) -> bool:
-        """认领 + 入队。**先认领再入队**：反过来的话，认领失败就留下一条白跑的队列任务。"""
+    def _arm(self, record: ScheduledTaskRecord, *, now: datetime) -> bool:
+        """认领这条到点的记录：推进 ``next_run_at``（CAS），返回"认领到了没有"。
+
+        **先认领再干活**：反过来的话，认领失败就留下一次白跑（服务器档表现为多一条
+        队列任务，本机档表现为多花一轮问答的钱）。两档共用这一段，所以"下一次时刻怎么算"
+        只有一处实现。
+        """
         if record.kind == KIND_ONCE:
             # 一次性任务：跑过就不再跑（``next_run_at`` 留着不动，界面要显示它是什么时候跑的）
             following, enabled = record.next_run_at, False
@@ -242,7 +327,6 @@ class ScheduleService:
         ):
             logger.debug("定时任务 %s 已被别人认领，本次跳过", record.id)
             return False
-        self._enqueue(record, manual=False)
         return True
 
     def _enqueue(self, record: ScheduledTaskRecord, *, manual: bool) -> TaskRecord:

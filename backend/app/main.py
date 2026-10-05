@@ -16,6 +16,7 @@ from app.core.logging import add_file_handler, log_file_for, setup_logging
 from app.core.services import get_services
 from app.core.storage import close_stores
 from app.storage.base import IMPORT_UNFINISHED_STATES
+from app.workers.local_worker import bind_local_scheduler, run_local_scheduler
 from app.workers.queue_worker import TaskWorker
 
 logger = logging.getLogger(__name__)
@@ -54,12 +55,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     stop = asyncio.Event()
     worker_tasks: list[asyncio.Task[None]] = []
-    # **本机档不起消费者**（M2 §4.1）：消费者跑的是摄取流水线（解析 / 切块 / 嵌入 /
-    # 向量索引），而本机根本没有那些表——知识库在 NAS 上（本机是它的客户端）。
-    # 起了它，
+    # **本机档的消费者与服务器档不是同一个**（M2 §4.1 + 本节）：
+    # 服务器那个跑的是摄取流水线（解析 / 切块 / 嵌入 / 向量索引），而本机根本没有那些表
+    # ——知识库在 NAS 上（本机是它的客户端）。起了它，
     # 表现是"进程里有个协程每隔几秒去撞一次不可用的库"，日志天天刷错却什么也做不成。
+    #
+    # 但**本机档确实需要消费者**：定时任务的记录与"到点"判定都在本机库里
+    # （队列表在 NAS 上，所以那一档换成就地跑），而"入库/回收站"那几件收尾也都是
+    # NAS 自己的事。两件事的落点与边界写在 `workers/local_worker.py` 的模块头。
     if settings.deployment == "local":
-        logger.info("本机档：不启动任务消费者（摄取流水线在 NAS 上，本机没有那些表）")
+        if settings.run_worker:
+            scheduler = bind_local_scheduler(services)
+            worker_tasks = [asyncio.create_task(run_local_scheduler(scheduler, stop))]
+            logger.info("本机档：已启动本机消费者（定时任务到点跑 + 本机库空闲维护）")
+        else:
+            logger.warning("KYLAB_RUN_WORKER=false：本机档未起消费者，定时任务到点不会跑")
         # R1 的"启动时看一眼"：上次旧会话导入要是被杀在半路，账在库里（状态是
         # planned/running）。**只报不重试**——重跑是用户的决定（来源可能都不在了），
         # 而"重跑同一个来源就接着往下走"这条承诺由会话级幂等兜着（见 services/legacy_import.py）。

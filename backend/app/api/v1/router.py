@@ -138,20 +138,61 @@ local_router.include_router(schedules.router)
 local_router.include_router(mcp_servers.router)
 # 记忆本体本来就在 `data_dir/memory`
 local_router.include_router(memory.router)
+# 技能目录 = `<data_dir>/skills/` + 仓库自带 `skills/` + `~/.agents/skills`（v0.15）：
+# 三处都在**这台机器**上，而启停状态存在本地 `app_settings`（`chat.disabled_skills`）。
+# 所以它不是一个"服务器能力"——`SkillService` 的目录随 `settings.data_dir` 走，
+# 本机档的 data_dir 就是本机的那个（见 `core/services.py` 的组合根）。
+local_router.include_router(skills.router)
+# 插件包（v0.43）：目录 = `<data_dir>/plugins/` + 仓库自带 `plugins/`，
+# 启停/屏蔽写在本地 `app_settings`（`plugins.enabled.*`）——同上，权威在本机的 data_dir。
+local_router.include_router(plugins.router)
+# 沙箱（v0.16）：**它就是"在这台机器上执行"**（隔离探测 / 策略闸 / 工作区三样都在本机，
+# 见 api/v1/sandbox.py 与 services/isolation.py）。边车的工具面早就在本机跑命令了，
+# 这一组只是把同一件事给界面一个直接入口——三道闸（管理员 / 策略 / 隔离）一道没绕。
+local_router.include_router(sandbox.router)
+# 站点图标（D11-②）：抓取与 30 天磁盘缓存都在本机（`<data_dir>/site-icons/`，见
+# services/site_icons.py）——它本来就是"本机代浏览器去取"，服务器那一档才是顺带。
+local_router.include_router(site_icons.router)
 # 本机档专属：`/local/status`（导入的 `/local/import*` 与知识库提供者的
 # `/local/provider` 都在这个 router 上——三样都是"只在本机档成立"的东西，见 local.py）
 local_router.include_router(local.router)
-# 两条薄重声明的只读端点（事件日志 / 上下文用量）——**不整 include `chat.router`**：
-# 那个 router 还有服务器专属的 `/chat/stream`，摆出来就是一条会 500 的路。
-# 理由与做法见 `api/v1/local.py` 的模块头。
+# 几条薄重声明的只读端点（事件日志 / 上下文用量 / 用量面板）——**不整 include
+# `chat.router` 或 `stats.router`**：那两个 router 里还有服务器专属的端点
+# （`/chat/stream` 要检索与模型代理；`/stats/dashboard` 数的是知识库的文档与任务），
+# 摆出来就是一条会 503 的路。理由与做法见 `api/v1/local.py` 的模块头。
 local_router.include_router(local.chat_reads)
+local_router.include_router(local.stats_reads)
 
-# **明确不挂**（每一条都因为"数据或能力不在这台机器上"）：`documents` /
-# `knowledge_bases` / `search` / `chunks` / `folders` / `wiki` / `stats` / `tasks` /
-# `tabular` / `data_sources` / `shares` / `api_keys` / `users` / `auth` / `avatars` /
-# `lifecycle` / `maintenance` / `webhooks` / `frontend` / `model_proxy` / `sandbox` /
-# `site_icons` / `skills` / `plugins` / `provider`（后几个若要方便可以后续加，M2 不阻塞）。
-# 本机档的会话事件与上下文用量在 `local.chat_reads` 上，不靠 include `chat`。
+# **明确不挂**（每一条都因为"数据或能力不在这台机器上"）。按**域**逐个说清，
+# 因为这个判定的依据不是"这个文件属于谁"，而是"那个域的表在本机库里有没有"：
+#
+# - **知识库那一整族**（`documents` / `knowledge_bases` / `search` / `chunks` /
+#   `folders` / `wiki` / `tabular` / `data_sources` / `shares`）：那几张表都不在本机
+#   （`app/storage/sqlite_impl/schema.sql` 里没有），KB 域的方法在本机档由
+#   `RemoteMetaStore` **整体抛** `KnowledgeBaseUnavailable`（逐族的理由见
+#   `app/storage/split_impl/remote_meta.py` 的模块头）——挂上来就是一片 503；
+# - `tasks` / `lifecycle` / `webhooks` / `maintenance`：**它们数的都是知识库那边的家当**
+#   ——`TaskQueueRepo`（"本机档不启动消费者，没有队列可管"）、`TrashRepo`（回收站里是
+#   NAS 上删掉的文档）、`WebhookRepo`（三个事件全是 `document.*`，见 `services/webhook.py`
+#   的 `EVENTS`）、`MaintenanceService.overview()` 要读向量分区（`UnavailableVectorStore`）
+#   ——同一条：数据不在本机，挂了没有一条答得出话。
+#   `maintenance` 里那两个真属于本机的方法（`storage_stats` / `vacuum`）**不外露成一个
+#   端点**：本机库自己的空间数字在 `/local/status` 上已经给了（`database_bytes` 等）；
+# - `users` / `auth` / `api_keys` / `avatars`：**账号体系**。本机档不设门禁——
+#   `users` / `sessions` / `api_keys` 三张表都不在本机库里，调用主体由
+#   `api/auth.py::current_caller` 短路成"本机主人"（`api_key.LOCAL_CALLER`）。
+#   映射它们的仓储等于给本机装第二套鉴权，`IdentityRepo` / `ApiKeyRepo` 的说明里
+#   已经写死不许（见 `remote_meta.py`）；头像要的 `users` + `ImageRepo` 同此；
+# - `frontend`（`/app/frontend/*`）：那是"**服务器把新前端发出去**"的那一半，
+#   壳是接收方（`v0.56` 的承诺就是"服务器发了新前端、客户端下次启动自动用上"）。
+#   本机档挂它只会让壳从"本机自带的这一份"取——那正是壳手里已有的东西；
+# - `model_proxy`（`/model-proxy/*`）：那是"**服务器用自己的 key 调模型**"的那一半
+#   （key 不下发）。本机侧那条链是 `sidecar.py::Clients` 里的 `RemoteModelClient`
+#   ——它**打的就是服务器那条代理**，所以本机挂一份只会多出一条没人调的路
+#   （本机自己的模型凭据在本机的 `model_registry` 里，那条路走的是别处）。
+#
+# 本机档的会话事件、上下文用量与**用量面板**在 `local.chat_reads` / `local.stats_reads`
+# 上（薄重声明），不靠 include `chat` / `stats`。
 #
 # `provider`（M3 阶段 1）单独说一句：**知识库提供者是那台 NAS**，
 # 本机侧是它的**客户端**——它调 `/provider/handshake`，不提供它（方案 §9-1）。
