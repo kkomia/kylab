@@ -22,7 +22,7 @@
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ShieldCheck } from 'lucide-react'
+import { Check, Eye, Hand, ShieldCheck, Zap, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import { getSettings, updateSettings } from '@/api/settings'
@@ -35,19 +35,32 @@ import { CONTROL_TRIGGER, MENU_CHECK, MENU_ITEM, MENU_PANEL } from './DropdownSh
 const KEY = 'chat.permission'
 
 /**
- * 四档的名字与那一句人话。
+ * 四档的名字、那一句人话，与**自己那一枚图标**。
  *
  * **与后端 `services/modes.PERMISSION_DEFS` 同源**（那边的 `describe_permissions()`
  * 供设置页的下拉项用）：这里这一份是**控件自己那份**——两者的 label 必须一字不差，
  * 否则"胶囊上写着默认、设置页里写着别的"就会同时出现在两张截图上。
  * 取值与顺序也照它（由严到松：仅查看 → 手动批准 → 默认 → 全自动）。
+ *
+ * **四档四颗图标，互不相同**（2026-10-05 用户原话："几个模式的图标怎么没有区别？"）：
+ * 原先四档共用一颗盾，菜单摊开是四行一模一样的图形，扫一眼分不出"这几个模式有什么区别"。
+ * 选的图形要对得上那一档的松紧：`view → Eye`（只看不动）、`manual → Hand`（每条都要先停一下）、
+ * `smart → ShieldCheck`（有闸：常规动作放行、越界的拦）、`full → Zap`（放行、不再问）。
  */
-const LEVELS: { value: string; label: string; hint: string }[] = [
-  { value: 'view', label: '仅查看', hint: '只看不动：不改文件、不跑命令' },
-  { value: 'manual', label: '手动批准', hint: '每条都问你：写与命令都要先问一次' },
-  { value: 'smart', label: '默认', hint: '只读与工作区内直接做；越界、联网、删除、危险命令要问' },
-  { value: 'full', label: '全自动', hint: '写与命令都放行、也不再问' },
+const LEVELS: { value: string; label: string; hint: string; icon: LucideIcon }[] = [
+  { value: 'view', label: '仅查看', hint: '只看不动：不改文件、不跑命令', icon: Eye },
+  { value: 'manual', label: '手动批准', hint: '每条都问你：写与命令都要先问一次', icon: Hand },
+  {
+    value: 'smart',
+    label: '默认',
+    hint: '只读与工作区内直接做；越界、联网、删除、危险命令要问',
+    icon: ShieldCheck,
+  },
+  { value: 'full', label: '全自动', hint: '写与命令都放行、也不再问', icon: Zap },
 ]
+
+/** 菜单里本档那一枚图标的格子**永远占着**（与勾同一手法）：四行的档名左边缘才对得齐。 */
+const MENU_LEVEL_ICON = 'inline-flex w-[14px] shrink-0'
 
 /**
  * 当前权限档与写入动作。
@@ -117,10 +130,16 @@ export function usePermission(): {
  * 而"权限"两个字在每一帧里都在，用户要的只是档名（原话："这个权限按钮不要加权限俩字"）。
  * **"这是什么"不能丢**，所以它挪到了无障碍名字上（`aria-label`）——
  * 屏幕阅读器与用例读到的仍是完整语义，屏幕上只剩档名。
+ *
+ * **图标跟着当前档走**（原来四档恒定一颗盾）：文字给的是**档名**（"默认"这种词本身
+ * 看不出松紧），图形给的是**这一档的松紧**——不点开菜单也要能一眼认出"现在是哪一档、
+ * 有多严"。所以这里按 `current` 取那一档自己的图标，而不是写死一颗。
+ * 四档各自用哪一枚见 `LEVELS`。
  */
 export function PermissionControl() {
   const { ready, label, current, saving, choose } = usePermission()
   if (!ready) return null
+  const Icon = LEVELS.find((item) => item.value === current)?.icon ?? ShieldCheck
 
   return (
     <DropdownMenu.Root>
@@ -131,28 +150,34 @@ export function PermissionControl() {
           aria-label={`权限：${label}`}
           title="这一轮它能碰多少"
         >
-          <ShieldCheck size={14} />
+          <Icon size={14} />
           <span className="max-w-[168px] truncate">{label}</span>
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content side="top" align="start" sideOffset={6} className={MENU_PANEL}>
           <DropdownMenu.RadioGroup value={current ?? ''} onValueChange={(value) => choose(value)}>
-            {LEVELS.map((item) => (
-              <DropdownMenu.RadioItem
-                key={item.value}
-                value={item.value}
-                disabled={saving}
-                title={item.hint}
-                data-permission={item.value}
-                className={`${MENU_ITEM} data-[disabled]:cursor-default data-[disabled]:opacity-60`}
-              >
-                <span className={MENU_CHECK}>
-                  {item.value === current ? <Check size={14} /> : null}
-                </span>
-                <span>{item.label}</span>
-              </DropdownMenu.RadioItem>
-            ))}
+            {LEVELS.map((item) => {
+              const LevelIcon = item.icon
+              return (
+                <DropdownMenu.RadioItem
+                  key={item.value}
+                  value={item.value}
+                  disabled={saving}
+                  title={item.hint}
+                  data-permission={item.value}
+                  className={`${MENU_ITEM} data-[disabled]:cursor-default data-[disabled]:opacity-60`}
+                >
+                  <span className={MENU_LEVEL_ICON}>
+                    <LevelIcon size={14} />
+                  </span>
+                  <span className={MENU_CHECK}>
+                    {item.value === current ? <Check size={14} /> : null}
+                  </span>
+                  <span>{item.label}</span>
+                </DropdownMenu.RadioItem>
+              )
+            })}
           </DropdownMenu.RadioGroup>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

@@ -1529,6 +1529,114 @@ describe('停止与回到最新', () => {
     )
   })
 
+  /**
+   * 本机档 + 没有账号 = 这台机器的主人（`useIsAdmin` 那一条：有账号按角色、
+   * 没有账号按**这一份有没有本机后端**）——权限那几节都用这一份起手。
+   */
+  function asLocalOwner(): void {
+    setLocalBackendForTest('local')
+    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
+  }
+
+  /** `/settings` 里的那一份 `chat.permission`（下面几条要把档位换着摆）。 */
+  function permissionSettings(value: string) {
+    return {
+      groups: [
+        {
+          key: 'chat',
+          label: '聊天',
+          fields: [{ key: 'chat.permission', label: '权限', type: 'select', value }],
+        },
+      ],
+    } as never
+  }
+
+  /** 本机档那一份挂着一条真会话的对话页（等待的锚点是那句回答）。 */
+  async function renderWithPermission(value: string) {
+    asLocalOwner()
+    vi.mocked(getSettings).mockResolvedValueOnce(permissionSettings(value))
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    const view = renderPage()
+    await screen.findByTestId('reply-text')
+    return view
+  }
+
+  /**
+   * 2026-10-05 用户原话："几个模式的图标怎么没有区别？"——四档原先共用一颗盾，
+   * 菜单摊开是四行一模一样的图形。现在**文字给档名、图形给这一档的松紧**：
+   * 胶囊上的图标跟着 `chat.permission` 走（四档四颗，见 `LEVELS`）。
+   *
+   * lucide 给每枚图标带一个 `lucide-<名字>` 的类名，那串类名就是它的身份
+   * （与 `tests/chat-trace-icons.test.tsx` 同一个手法）。
+   */
+  it('胶囊上的图标跟着当前档：默认 → 盾、仅查看 → 眼睛', async () => {
+    const first = await renderWithPermission('smart')
+    const smart = await screen.findByRole('button', { name: '权限：默认' })
+    expect(smart.querySelector('svg.lucide-shield-check')).not.toBeNull()
+    // 一次挂载只认一颗（同一个按钮名出现两个的话 `findByRole` 会当场报红）
+    first.unmount()
+
+    await renderWithPermission('view')
+    const view = await screen.findByRole('button', { name: '权限：仅查看' })
+    expect(view.querySelector('svg.lucide-eye')).not.toBeNull()
+    // 换档换的是图标本身，不是"多叠一颗"
+    expect(view.querySelector('svg.lucide-shield-check')).toBeNull()
+  })
+
+  it('菜单四项各带自己那一枚图标：四颗互不相同，档名左边缘对齐', async () => {
+    await renderWithPermission('smart')
+    const pill = await screen.findByRole('button', { name: '权限：默认' })
+    const user = userEvent.setup()
+    await user.click(pill)
+    await screen.findByRole('menuitemradio', { name: '仅查看' })
+
+    const rows = [
+      { value: 'view', icon: 'lucide-eye', label: '仅查看' },
+      { value: 'manual', icon: 'lucide-hand', label: '手动批准' },
+      { value: 'smart', icon: 'lucide-shield-check', label: '默认' },
+      { value: 'full', icon: 'lucide-zap', label: '全自动' },
+    ]
+    const names = rows.map((one) => {
+      const row = document.querySelector(`[data-permission="${one.value}"]`) as HTMLElement
+      expect(row).not.toBeNull()
+      const iconSlot = row.children[0] as HTMLElement
+      const checkSlot = row.children[1] as HTMLElement
+      // 图标在**这一行的最左边**
+      const iconClass = iconSlot.querySelector('svg')?.getAttribute('class') ?? ''
+      expect(iconClass).toContain(one.icon)
+      // 两格宽度都写死 14px：四行的图标列与档名左边缘才对得齐
+      expect(iconSlot.className).toContain('w-[14px]')
+      // 勾那一格的位置与样式照旧（`MENU_CHECK` 一个字没动），勾只有当前那一档有
+      expect(checkSlot.className).toContain('inline-flex w-[14px]')
+      expect(checkSlot.className).toContain('text-[var(--accent)]')
+      expect(checkSlot.querySelector('svg.lucide-check') !== null).toBe(one.value === 'smart')
+      expect(row.lastElementChild?.textContent).toBe(one.label)
+      return iconClass
+    })
+    // 四颗互不相同：菜单里任选一行，认得出这是哪一档
+    expect(new Set(names).size).toBe(4)
+  })
+
+  it('点一档之后，胶囊上的图标跟着换（还是走 updateSettings 那一条）', async () => {
+    await renderWithPermission('smart')
+    const pill = await screen.findByRole('button', { name: '权限：默认' })
+    expect(pill.querySelector('svg.lucide-shield-check')).not.toBeNull()
+
+    const user = userEvent.setup()
+    await user.click(pill)
+    await user.click(await screen.findByRole('menuitemradio', { name: '全自动' }))
+    await waitFor(() =>
+      expect(updateSettings).toHaveBeenCalledWith([{ key: 'chat.permission', value: 'full' }]),
+    )
+
+    // 档名与图标一起换成新那一档
+    const after = await screen.findByRole('button', { name: '权限：全自动' })
+    expect(after.querySelector('svg.lucide-zap')).not.toBeNull()
+    expect(after.querySelector('svg.lucide-shield-check')).toBeNull()
+  })
+
   it('服务器档 + 没有账号：这一颗不在，而且**一条设置都不去读**', async () => {
     // 反面：没有本机后端（NAS 网页端那一份）时 `currentUser` 为 null 意味着"还没验出身份"
     // ——那不是管理员。读的那一趟只会拿到 401/404，所以连问都不问（`enabled: isAdmin`）。
