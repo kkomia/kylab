@@ -49,14 +49,37 @@ const CapabilitiesPage = lazy(PAGES.capabilities)
 const DashboardPage = lazy(PAGES.dashboard)
 const NotFoundPage = lazy(PAGES.notFound)
 
-const queryClient = new QueryClient({
+/**
+ * 查询客户端。**导出是为了让用例钉住这份网络策略**（`tests/app-query-network.test.tsx`）：
+ * 策略写在这里，用例读的必须是**壳真正挂给 Provider 的那一个**，否则改回默认值也能绿。
+ */
+export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       // 自托管的局域网服务：失败多半是"服务没起来"或"令牌过期"，两次足够让抖动自愈
       retry: 2,
       staleTime: 30_000,
       refetchOnWindowFocus: false,
+      /*
+       * **不因浏览器自报"离线"就停摆**（2026-10-04 修）。
+       *
+       * react-query 的默认值 `'online'` 看的是 `navigator.onLine`：浏览器/系统只要自认为
+       * 没有外网，查询就停在 `paused`——那时 `isLoading` 与 `isError` **同为 false**，
+       * 界面既不报错也不加载，看上去就是"一直没有数据"（「能力」页实测到过，它为此把判据
+       * 改成"手里有没有 `data`"；`data ?? []` 那种写法还会把它画成一个 0）。
+       *
+       * 但这个前端主要跟**本机后端**说话（`/api` 反代到 127.0.0.1:8000，桌面壳里是
+       * 127.0.0.1:8100）：**"有没有外网"与"本机后端在不在"根本不是一回事**，断网时
+       * 本机后端照常在跑。查询照发，成败交给响应说话——连不上就是一条真的错误态。
+       *
+       * 将来真接远端服务的那些查询，请在**自己的调用点**上写 `networkMode: 'online'`，
+       * 不要改这里的默认值：这一条是全站的兜底。
+       */
+      networkMode: 'always',
     },
+    // 写路径是同一个病：默认值下离线时 `mutate` 挂起——调了、promise 不落地、
+    // 界面既不成功也不报错（保存就是这样静默丢失的）。本机服务照样照发为上。
+    mutations: { networkMode: 'always' },
   },
 })
 
