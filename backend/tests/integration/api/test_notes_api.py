@@ -1,23 +1,31 @@
-"""笔记端点的集成测试（真实 SQLite，管理员会话）。
+"""笔记端点的集成测试（真实本机 SQLite，**本机档**）。
 
 镜像同构：``app/api/v1/notes.py`` → ``tests/integration/api/test_notes_api.py``。
+
+## 为什么这一份打**本机档**（NAS 网页端退役，2026-10-05）
+
+``/notes`` 那一族**只在本机档存在**：笔记落本机库（见 `api/v1/router.py` 的
+`local_router` 那一段），服务器档那张表里已经没有它——NAS 上那份笔记数据不迁移、
+直接丢。所以 `client` 就是 `conftest.local_client`：**不带凭据**（本机档不设门禁，
+调用主体由 `api/auth.py::current_caller` 短路成"本机主人"）。
+
+**摘掉的三条**（原判据与理由都留在下面那一节）：
+``test_attach_note_to_knowledge_base`` / ``test_attach_unknown_kb_is_404`` /
+``test_notes_require_credentials``。
 """
+
+from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import admin_client as admin_session
+pytestmark = pytest.mark.local
 
 
 @pytest.fixture
-def client():
-    with admin_session() as test_client:
-        yield test_client
-
-
-@pytest.fixture
-def kb_id(client: TestClient) -> str:
-    return client.post("/api/v1/knowledge-bases", json={"name": "笔记库"}).json()["id"]
+def client(local_client: TestClient) -> TestClient:
+    """本机档客户端（`conftest.local_client`；笔记只在本机档存在）。"""
+    return local_client
 
 
 def test_notes_crud_roundtrip(client: TestClient) -> None:
@@ -105,43 +113,22 @@ def test_list_search_and_tags(client: TestClient) -> None:
     assert {item["tag"] for item in tags} == {"眼科", "杂记"}
 
 
-def test_attach_note_to_knowledge_base(client: TestClient, kb_id: str) -> None:
-    """加入知识库 = 走现有摄入流水线生成一份 Markdown 文档，并回填 doc_id。"""
-    note = client.post(
-        "/api/v1/notes", json={"title": "眼轴小结", "content_md": "# 眼轴\n每三个月测一次"}
-    ).json()
-
-    response = client.post(f"/api/v1/notes/{note['id']}/attach", json={"kb_id": kb_id})
-
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["kb_id"] == kb_id
-    assert body["doc_id"]
-
-    documents = client.get(
-        f"/api/v1/knowledge-bases/{kb_id}/documents"
-    ).json()["items"]
-    assert any(item["id"] == body["doc_id"] for item in documents)
-    assert documents[0]["source_kind"] == "upload"
-
-
-def test_attach_unknown_kb_is_404(client: TestClient) -> None:
-    note = client.post("/api/v1/notes", json={"title": "t", "content_md": "正文"}).json()
-
-    assert (
-        client.post(f"/api/v1/notes/{note['id']}/attach", json={"kb_id": "kb_missing"}).status_code
-        == 404
-    )
-
-
-def test_notes_require_credentials() -> None:
-    """没有令牌访问笔记应当 401——笔记是私有内容，不是公开数据。"""
-    from fastapi.testclient import TestClient as PlainClient
-
-    from app.main import app
-
-    with PlainClient(app) as anon:
-        assert anon.get("/api/v1/notes").status_code == 401
+# ------------------------------------------------- 摘掉的三条（2026-10-05）
+#
+# 1. ``test_attach_note_to_knowledge_base``（原判据：`POST /notes/{id}/attach` 走现有摄入
+#    流水线生成一份 Markdown 文档、回填 ``doc_id``，并能在
+#    `GET /knowledge-bases/{kb}/documents` 里看到它）——**本机档无法验证**：知识库那一整族
+#    不在本机档（那几张表都不在本机库里，读它们整体抛 `KnowledgeBaseUnavailable`），
+#    attach 那一半要经提供者客户端打 NAS。本机档里没有可用的 NAS，所以这条判据在
+#    "本机档"里没有观察点；覆盖由 `tests/unit/services/test_notes.py`（笔记 → 摄入那条
+#    服务链）与 `tests/integration/api/test_local_kb_cache_api.py`（本机 → 提供者那条链）承接。
+# 2. ``test_attach_unknown_kb_is_404``：同一条（不存在的库在本机档由"KB 域不可用"先拦下，
+#    拿不到 404 这个观察点）。"库不存在 → 404"的判据由服务器档那条 KB 端点自己覆盖
+#    （`tests/integration/api/test_rest_api.py::test_upload_to_unknown_kb_fails`）。
+# 3. ``test_notes_require_credentials``（原判据：没有令牌访问笔记应当 401）——**只对
+#    有账号体系的那一档成立**：本机档不挂 `/auth/*`，`users` / `sessions` / `api_keys`
+#    三张表都不在本机库里，主体恒为"本机主人"，没有"没有令牌"这个状态。而笔记只在本机档
+#    存在，所以这条没有一个装机形态能承接——鉴权本身由 `test_auth_api.py` 覆盖。
 
 
 # ------------------------------------------------- AI 处理与配图（v20.2）

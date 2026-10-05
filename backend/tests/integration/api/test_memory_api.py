@@ -16,6 +16,16 @@
 **没有"测试连接"这类端点了**（v0.46 删）：记忆跑在我们自己的进程里，
 没有第二个进程可连。所以这一份里也不再有任何 ``monkeypatch`` 打桩的 HTTP——
 本地实现不需要假装别的东西活着，这本身就是那次改动的价值。
+
+## 为什么这一份打**本机档**（NAS 网页端退役，2026-10-05）
+
+这一份里有两族端点，它们的档在今天**只可能是本机档**：
+
+- ``/memory*``：记忆本体在 ``<data_dir>/memory``（本机目录），**两档都有**；
+- ``/settings``：开关走运行期配置，而那张表（``app_settings``）**只在本机档**
+  （NAS 上那份设置页随网页端一起退役）。
+
+所以用 `conftest.local_client`：**不带凭据**（本机档不设门禁，主体短路成"本机主人"）。
 """
 
 from __future__ import annotations
@@ -24,13 +34,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
-from tests.conftest import admin_client as admin_session
+
+pytestmark = pytest.mark.local
 
 
 @pytest.fixture
-def client():
-    with admin_session() as test_client:
-        yield test_client
+def client(local_client: TestClient) -> TestClient:
+    """本机档客户端（记忆 + 它的开关都只在本机档成立）。"""
+    return local_client
 
 
 _ARCHIVE = """---

@@ -9,11 +9,18 @@
    而是"在这台机器上执行代码"。与设置页同一档；
 2. **策略闸**（``ExecutionPolicy``）：``ask`` 时未确认回 409，界面确认后带
    ``approved=true`` 重调；``deny`` 直接 403；
-3. **内核隔离**（``services/isolation.py``）：有真隔离就用它；没有时**默认降级为直接
-   执行并如实标注"未隔离"**（v0.55，见 ``isolation.direct_isolation``），
-   只有设置里开了「无隔离时拒绝执行」才按纪律拒绝。
+3. **内核隔离**（``services/isolation.py``）：有真隔离就用它；没有时**按
+   ``sandbox.require_isolation`` 那一项判**——这一项是**开**就按纪律拒绝执行，
+   是**关**才降级为直接执行并如实标注"未隔离"（v0.55，见 ``isolation.direct_isolation``）。
 
-第 3 条为什么默认降级而不是一律拒绝：Windows 上没有 bwrap / sandbox-exec 的原生等价物、
+第 3 条的那一项**出厂值是"关"**（`services/runtime_config.py` 的 ``DEFAULTS`` 里
+``"sandbox.require_isolation": "false"``，2026-09-30 用户裁定：不装 Docker 也要能跑命令），
+所以**默认形态是降级直执**；要严格拒绝就显式把它打开。
+读侧还有一层兜底：``services/sandbox.py::require_isolation`` 的默认参数是 ``True``
+——库 / ``.env`` / ``DEFAULTS`` **三层都取不到值**（例如那一列为空串）时按"拒绝"算，
+宁可少跑一条命令，也不悄悄裸跑。
+
+为什么默认是"降级"而不是"一律拒绝"：Windows 上没有 bwrap / sandbox-exec 的原生等价物、
 容器里也常没挂 docker，一律拒绝会让**本地源码启动与容器部署两边都跑不了命令**。
 降级那一档**不是沙箱**，所以它把"未隔离"写在明面上（详情与给模型的话里都写），
 而不是让"用户点了同意"被误读成"在一个沙箱里跑"。

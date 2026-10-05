@@ -57,6 +57,49 @@ ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "correct horse battery"
 
 
+@pytest.fixture
+def local_client(tmp_path, monkeypatch) -> Iterator[TestClient]:
+    """**本机档**的 HTTP 客户端（`KYLAB_DEPLOYMENT=local`，**不登录**）。
+
+    为什么要有它（NAS 网页端退役那一轮）：会话 / 笔记 / 设置 / 工作区 / 定时任务 /
+    MCP 那几族**只在**本机档存在（`api/v1/router.py` 那两张表），而本机档不设门禁
+    ——调用主体由 `api/auth.py::current_caller` 短路成"本机主人"
+    （`api_key.LOCAL_CALLER`），`/auth/*` 在这张表上根本没挂。所以它不走
+    `admin_client()` 那一套（那会 404），也不带任何 ``Authorization`` ✓。
+
+    **它就是一个真的本机档**：`app.main.create_app()` + 本机 SQLite（`tmp_path`）+
+    本机目录，与桌面壳里那条链是**同一张路由表**
+    （见 `api/v1/router.py` 模块头那两张表）。判据与 `test_local_backend.py` 里那条
+    "白名单不是整个 API" 逐字相同，只是这里把它做成了可复用的夹具。
+
+    ``KYLAB_DEPLOYMENT`` / ``KYLAB_DATABASE_URL`` 在这里显式设：前者的兜底是
+    `isolated_data_dir` 里那个 "server"，后者在跑 PG 用例时被指到测试库——本机档
+    这两样都必须压掉（"边车误连服务器库"是这一档最糟的失败形态）。
+    """
+    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
+    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
+    get_settings.cache_clear()
+    reset_services()
+    reset_stores()
+    from app.main import create_app
+
+    with TestClient(create_app()) as client:
+        yield client
+    reset_services()
+    reset_stores()
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def fake_local_chat(local_client) -> FakeChatModel:
+    """在本机档的服务图里装一个**假对话模型**（不打网络）。
+
+    必须**依赖** `local_client`：那个夹具会 `reset_services()` 重建服务图，
+    先装的话会被它抹掉（顺序反了的表现是"模型又变回没配"，看着像用例写错了）。
+    """
+    return install_fake_chat()
+
+
 def login_admin(client) -> str:  # type: ignore[no-untyped-def]
     """首次初始化管理员并把会话令牌塞进 ``client.headers``，返回令牌。
 

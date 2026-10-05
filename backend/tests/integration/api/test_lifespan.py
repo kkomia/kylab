@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.core.storage import STORAGE_SUBDIRS, reset_stores
-from app.services.memory import AGENTS_FILE, CORE_MEMORY_FILE, PROFILE_FILE, SOUL_FILE
+from app.services.memory import AGENTS_FILE, PROFILE_FILE, SOUL_FILE
 
 
 def _assert_storage_ready(pg_database) -> None:
@@ -80,10 +80,18 @@ def test_lifespan_lays_down_the_memory_templates(wired_app, pg_database) -> None
     ``/data/memory``，与其余数据一起持久化。
 
     第二次启动**不许覆盖用户改过的内容**——那份文件可能已经是他写了几天的东西。
+
+    **v0.56 起只铺三份**（`SOUL.md` / `PROFILE.md` / `AGENTS.md`）：`MEMORY.md`
+    随"记忆档案"退场（档案制 §7.2）——不再被播种、也不再被注入或写入
+    （见 `services/memory.py::seed_persona`）。旧盘上已有的那份仍然在、仍然读得到，
+    但那是"旧记忆（只读）"，不是"新装好的桌面第一次打开有什么"。
+    **这一条更新于 2026-10-05**：它原来断言四份（含 ``MEMORY.md``），
+    而代码在 v0.56 就只铺三份了——那是一次**漏改的期望**，与退役那一轮无关，
+    顺手在这里对齐（`test_local_backend.py` 里早就写着"v0.56 起只种三份"）。
     """
     app, data_dir = wired_app
     workspace = data_dir / "memory"
-    expected = {SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE}
+    expected = {SOUL_FILE, PROFILE_FILE, AGENTS_FILE}
 
     with TestClient(app):
         assert {item.name for item in workspace.iterdir()} == expected
@@ -94,7 +102,8 @@ def test_lifespan_lays_down_the_memory_templates(wired_app, pg_database) -> None
 
     with TestClient(app):
         assert (workspace / SOUL_FILE).read_text(encoding="utf-8") == "我自己写的人格"
-        assert (workspace / CORE_MEMORY_FILE).exists()
+        # 第二次启动不该多铺也不该少铺（`AGENTS.md` 是 v0.56 补进来的那一份）
+        assert {item.name for item in workspace.iterdir()} == expected
 
 
 def test_data_directory_is_respected(monkeypatch, tmp_path, pg_database) -> None:

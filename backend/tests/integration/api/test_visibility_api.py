@@ -107,83 +107,26 @@ def test_member_cannot_upload_into_others_kb(two_users) -> None:  # type: ignore
     assert upload.status_code == 403
 
 
-# --------------------------------------------------------------------- 会话
-
-
-def test_conversations_are_private(two_users) -> None:  # type: ignore[no-untyped-def]
-    client, admin, member = two_users
-    conv = client.post("/api/v1/conversations", json={}, headers=_as(admin["token"])).json()
-
-    # 成员列表里没有它
-    visible = client.get("/api/v1/conversations", headers=_as(member["token"])).json()["items"]
-    assert visible == []
-
-    # 详情/改名/删除：越主一律 404，不暴露"这条会话存在"
-    for method in ("get", "patch", "delete"):
-        response = getattr(client, method)(
-            f"/api/v1/conversations/{conv['id']}",
-            headers=_as(member["token"]),
-            **({"json": {"title": "改名"}} if method == "patch" else {})
-    )
-        assert response.status_code == 404, f"{method} 暴露了别人的会话"
-
-    # 自己的会话照常
-    own = client.post("/api/v1/conversations", json={}, headers=_as(member["token"])).json()
-    assert client.get(
-        f"/api/v1/conversations/{own['id']}", headers=_as(member["token"])
-    ).status_code == 200
-
-
-def test_member_cannot_chat_with_others_conversation(two_users) -> None:  # type: ignore[no-untyped-def]
-    """拿别人的会话 id 提问 = 把整段历史读走，必须 404。
-
-    kb_ids 带成员**自己的**库：否则先撞库范围检查（403），测不到会话守卫。
-    """
-    client, admin, member = two_users
-    conv = client.post("/api/v1/conversations", json={}, headers=_as(admin["token"])).json()
-    own_kb = client.post(
-        "/api/v1/knowledge-bases", json={"name": "成员的库"}, headers=_as(member["token"])
-    ).json()
-
-    response = client.post(
-        "/api/v1/chat",
-        json={"query": "继续", "kb_ids": [own_kb["id"]], "conversation_id": conv["id"]},
-        headers=_as(member["token"])
-    )
-    assert response.status_code == 404
-
-
-def test_member_cannot_branch_from_others_conversation(two_users) -> None:  # type: ignore[no-untyped-def]
-    """**分叉 = 把整段历史复制一份**，所以越权一次比"看"更严重：必须 404。
-
-    与上面那条同一个道理（不暴露存在性），但这里多一层——分叉出来的是**他自己名下的
-    新会话**，给出去就等于把别人的历史搬到了他的列表里。
-    """
-    from app.core.services import get_services
-
-    client, admin, member = two_users
-    conv = client.post("/api/v1/conversations", json={}, headers=_as(admin["token"])).json()
-    # 造一轮真历史（直接落库，不走模型）：分叉要有东西可抄，才测得出"抄没抄到"
-    services = get_services()
-    services.conversations.append(conv["id"], role="user", content="管理员的私事")
-    services.conversations.append(conv["id"], role="assistant", content="管理员才看得到的回答")
-
-    stolen = client.post(
-        f"/api/v1/conversations/{conv['id']}/branch",
-        json={"turn": 1},
-        headers=_as(member["token"])
-    )
-
-    assert stolen.status_code == 404
-    # 成员名下一条新会话都不该多出来
-    assert client.get("/api/v1/conversations", headers=_as(member["token"])).json()["items"] == []
-    # 管理员那条会话一个字节没动
-    assert (
-        client.get(f"/api/v1/conversations/{conv['id']}", headers=_as(admin["token"])).json()[
-            "message_count"
-        ]
-        == 2
-    )
+# 摘掉的：会话那三条（2026-10-05）
+#
+# 原用例名与判据：
+#
+# - ``test_conversations_are_private``（成员列表里看不到别人的会话，详情/改名/删除
+#   越主一律 404，自己的会话照常）；
+# - ``test_member_cannot_chat_with_others_conversation``（拿别人的会话 id 提问 = 把整段
+#   历史读走，必须 404）；
+# - ``test_member_cannot_branch_from_others_conversation``（分叉 = 把整段历史复制一份，
+#   所以越权比"看"更严重，必须 404，而且成员名下不该多出新会话）。
+#
+# **为什么在本机档没有意义**：**会话面只在本机档**（NAS 网页端退役，服务器档那张表里
+# 只剩 `/conversations/export`），而本机档的主体恒为"本机主人"——不挂 `/auth/*` 与
+# `/users`，`users` / `sessions` 两张表也不在本机库里（见 `api/v1/router.py` 里
+# "明确不挂"那一段）。于是"别人的会话"这件事在两个档里都不存在可观察的形态：
+# 服务器档没有会话端点，本机档没有第二个身份。
+#
+# 归属判定本身（`ConversationService.get_for_owner` 与
+# `chat.py::_require_visible_conversation` 那份口径）**一个字没改**，
+# 由 `tests/unit/services/test_conversation.py` 按服务层覆盖。
 
 
 # --------------------------------------------------------------------- 任务与统计
@@ -225,10 +168,15 @@ def test_member_tasks_and_dashboard_are_scoped(two_users) -> None:  # type: igno
 
 
 def test_member_cannot_touch_console_endpoints(two_users) -> None:  # type: ignore[no-untyped-def]
-    """设置页/密钥管理/用户名册对成员是 403（与外部 API Key 同一档待遇）。"""
+    """密钥管理/用户名册对成员是 403（与外部 API Key 同一档待遇）。
+
+    原来这一条里还有 ``/api/v1/settings``：它随 NAS 网页端退役**只在本机档**了
+    （2026-10-05），服务器档上那是 404 而不是 403，所以从这张表里去掉了——
+    管理员档那一半由 `api/v1/settings.py` 上的 ``WriteDep`` 自己保证，
+    而它现在只挂在"没有第二个身份"的那一档上（见 `router.py` 里 `local_router` 那一段）。
+    """
     client, _admin, member = two_users
     for method, path in (
-        ("get", "/api/v1/settings"),
         ("get", "/api/v1/api-keys"),
         ("post", "/api/v1/api-keys")
     ):
@@ -259,49 +207,13 @@ def test_member_sees_own_task_and_dashboard_counts(two_users) -> None:  # type: 
     assert dashboard["total_knowledge_bases"] == 1
 
 
-def test_member_chats_with_own_conversation(two_users) -> None:  # type: ignore[no-untyped-def]
-    """成员带自己的 conversation_id 调 /chat 应正常工作（守卫只拦越主的）。"""
-
-    # 假模型 + 注册表里绑一个对话模型（不绑的话 ChatService 先报"未配置"，测不到守卫之后的路）
-    from tests.conftest import install_fake_chat
-
-    install_fake_chat("这是回答。")
-
-    client, _admin, member = two_users
-    kb = client.post(
-        "/api/v1/knowledge-bases", json={"name": "成员的库"}, headers=_as(member["token"])
-    ).json()
-    conv = client.post(
-        "/api/v1/conversations", json={"kb_ids": [kb["id"]]}, headers=_as(member["token"])
-    ).json()
-
-    response = client.post(
-        "/api/v1/chat",
-        json={"query": "你好", "kb_ids": [kb["id"]], "conversation_id": conv["id"]},
-        headers=_as(member["token"])
-    )
-    assert response.status_code == 200, response.text
-
-
-def test_admin_session_sees_conversations_from_other_channels(two_users) -> None:  # type: ignore[no-untyped-def]
-    """跨账号回归：管理员建的会话，管理员用网页会话必须看得到。
-
-    这正是第一版实现踩中的坑：只看 ``caller.user is not None`` 会把管理员会话
-    也当成成员过滤，于是别人的/无主会话在管理员眼前消失。
-    """
-    client, admin, _member = two_users
-    # v0.11 起没有控制台令牌通道；"无主会话"改由另一条管理员会话创建，
-    # 验的性质不变：管理员用网页会话必须看得到它。
-    conv = client.post("/api/v1/conversations", json={}, headers=_as(admin["token"])).json()
-
-    listing = client.get("/api/v1/conversations", headers=_as(admin["token"])).json()["items"]
-    assert conv["id"] in [item["id"] for item in listing]
-    assert (
-        client.get(
-            f"/api/v1/conversations/{conv['id']}", headers=_as(admin["token"])
-        ).status_code
-        == 200
-    )
+# 摘掉的两条（2026-10-05）：``test_member_chats_with_own_conversation``（成员带自己的
+# conversation_id 调 ``/chat`` 应正常）与
+# ``test_admin_session_sees_conversations_from_other_channels``（管理员用网页会话要
+# 看得到跨账号建的会话）——两条都打在**已经退役的会话链路**上（``/chat`` 与
+# ``/conversations`` 都不在服务器档，而这一份是服务器档、带账号的那一份）。
+# 本机档的对话由**边车**的 ``/turn*`` 承接，会话面的正向路径由
+# `tests/integration/api/test_conversation_api.py`（本机档）覆盖。
 
 
 # --------------------------------------------------------------------- 分享（v10）

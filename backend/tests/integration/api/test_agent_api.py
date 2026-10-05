@@ -1,15 +1,31 @@
-"""工作区 / 技能 / MCP 端点（v0.15）。
+"""工作区 / 技能 / MCP / 沙箱端点（v0.15）。
 
-镜像同构：``app/api/v1/workspaces.py`` + ``skills.py`` + ``mcp_servers.py`` → 本文件。
+镜像同构：``app/api/v1/workspaces.py`` + ``skills.py`` + ``mcp_servers.py`` +
+``sandbox.py`` → 本文件。
 
-三组端点各有一条"只能靠接口层才发现"的断言：
+四组端点各有一条"只能靠接口层才发现"的断言：
 
 1. **工作区**：归属（越权与不存在都是 404）与 `root_path` 的三道校验——
    校验在服务层，但**用户看到的是接口的报错**，所以要在这一层确认文案与状态码；
 2. **技能**：磁盘上真有一份 `skills/kylab-knowledge-base/SKILL.md`，
    接口要能列出它并给出正文（不是打桩的假技能）；
 3. **MCP**：**凭据不回显**——这条只有对着接口看才知道有没有漏；
-   以及策略闸在接口层回 409 而不是 403。
+   以及策略闸在接口层回 409 而不是 403；
+4. **沙箱**：两道闸（策略 / 隔离）与准入规则那几条的**结论**。
+
+## 两档分用（NAS 网页端退役，2026-10-05）
+
+这一份整体打**本机档**（`pytestmark = pytest.mark.local`）：工作区是机器本地的路径、
+技能与插件目录在本机、MCP 配置属于这台机器，**这几族只在本机档存在**。
+
+唯一的例外是 `POST /sandbox/exec`（含准入规则那几条）——那一条**只在服务器档**
+（2026-10-05 起本机档**不挂**它：一条裸 HTTP 执行口、没有任何调用方，见
+`api/v1/router.py` 里 `_sandbox_local` 那一段），而一个 `pytestmark` 里混不了两档，
+所以它们搬去了 `test_sandbox_api.py`（同一个模块的镜像文件）。
+
+配套的两处改动：``_set_rules`` 原来走 `PATCH /settings`，而 `/settings` **只在本机档**
+——两种端点要同时用，所以它改走**服务层**（`runtime.set` 就是那个端点内部调的同一个
+方法）。**摘掉的一批**（`member_token` 那类多用户 / 权限档断言）逐条写在下面原处。
 """
 
 from __future__ import annotations
@@ -19,40 +35,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.security import hash_password
 from app.core.services import get_services
-from app.models.enums import UserRole
 from app.services.skill_categories import CATEGORIES
-from app.storage.base import UserRecord
-from tests.conftest import admin_client as admin_session
+
+pytestmark = pytest.mark.local
 
 
 @pytest.fixture
-def client():
-    with admin_session() as test_client:
-        yield test_client
-
-
-@pytest.fixture
-def member_token(client: TestClient) -> str:
-    """一个普通成员，用来验归属隔离（直接落库造账号，与 test_visibility_api 同一套）。"""
-    meta = get_services().auth._stores.meta
-    existing = meta.find_user_by_username("member_ws")
-    if existing is not None:
-        meta.delete_user(existing.id)
-    meta.create_user(
-        UserRecord(
-            id="user_member_ws",
-            name="成员",
-            username="member_ws",
-            password_hash=hash_password("member pass 123"),
-            role=UserRole.MEMBER,
-        )
-    )
-    body = client.post(
-        "/api/v1/auth/login", json={"username": "member_ws", "password": "member pass 123"}
-    ).json()
-    return str(body["token"])
+def client(local_client: TestClient) -> TestClient:
+    """本机档客户端（工作区 / 技能 / MCP / 沙箱只读那两条都在这张表上）。"""
+    return local_client
 
 
 def _as(token: str) -> dict[str, str]:
@@ -65,6 +57,13 @@ DEVICE_NAME_HEADER = "X-Kylab-Device-Name"
 #: 两台"电脑"的标识（壳生成的是 UUID v4，这里给两个形状相同的常量）。
 DEVICE_A = "11111111-1111-4111-8111-111111111111"
 DEVICE_B = "22222222-2222-4222-8222-222222222222"
+
+#: 工作区里绑的知识库 id：一个**占位值**。
+#:
+#: 本机档**没有知识库**（KB 在 NAS 上，`/knowledge-bases` 不挂本机档），而 `kb_ids`
+#: 在工作区与会话这两层都只是**一串 id**（不校验它存在）。这里的判据是"绑上了、继承到了"，
+#: 不是"这个库在不在"。
+KB_ID = "kb_local"
 
 
 def _device(device_id: str, name: str = "DESKTOP-A") -> dict[str, str]:
@@ -180,13 +179,14 @@ def test_other_device_looks_like_not_found(client: TestClient, tmp_path: Path) -
     assert mine.status_code == 200, mine.text
 
 
-def test_device_all_is_admin_only(
-    client: TestClient, member_token: str, tmp_path: Path
-) -> None:
-    """``?device=all`` 是**管理员**的跨机清理通道；成员传它回 422 并如实说明。
+def test_device_all_is_admin_only(client: TestClient, tmp_path: Path) -> None:
+    """``?device=all`` 是**管理员**的跨机清理通道；设备那一维照样说清。
 
-    422 而不是 404：这不是"有没有"的问题，是一条明确的权限口径——
-    悄悄退化成"只看自己的"会让调用方以为手里是跨设备的清单。
+    **这条用例改了形态**（2026-10-05）：原来后半段是"成员传它回 422"——本机档没有
+    第二个身份（见模块头那一段），所以那半段摘掉了（`member_token` 那一批一起摘，
+    理由见下面 `# 摘掉的：账号体系那一批`）。留下的是**跨设备那一维**：
+    `device=all` 把三台（A 机 / B 机 / 服务器端）都列出来，而 `device=all` 之外的值
+    当场 422、不传时仍按设备头的三态走。
     """
     desktop_a = client.post(
         "/api/v1/workspaces",
@@ -207,13 +207,6 @@ def test_device_all_is_admin_only(
     assert everything.status_code == 200, everything.text
     ids = {item["id"] for item in everything.json()["items"]}
     assert {desktop_a["id"], desktop_b["id"], server["id"]} <= ids
-
-    # 成员：拒，并说清为什么
-    rejected = client.get(
-        "/api/v1/workspaces", params={"device": "all"}, headers=_as(member_token)
-    )
-    assert rejected.status_code == 422, rejected.text
-    assert "管理员" in rejected.json()["message"]
 
     # device 只认 all：别的值当场拒（静默忽略会让"传了没生效"变成一个要查很久的现象）
     other = client.get("/api/v1/workspaces", params={"device": DEVICE_A})
@@ -555,47 +548,41 @@ def test_rename_refuses_a_workspace_root(client: TestClient) -> None:
     assert folder.is_dir(), "被拒时不该动到目录"
 
 
-def test_directory_writes_are_admin_only(
-    client: TestClient, member_token: str, tmp_path: Path
-) -> None:
-    folder = tmp_path / "proj"
-    folder.mkdir()
-    assert (
-        client.post(
-            "/api/v1/workspaces/dirs",
-            json={"parent": str(folder), "name": "x"},
-            headers=_as(member_token),
-        ).status_code
-        == 403
-    )
-    assert (
-        client.patch(
-            "/api/v1/workspaces/dirs",
-            json={"path": str(folder), "name": "y"},
-            headers=_as(member_token),
-        ).status_code
-        == 403
-    )
-
-
-def test_browse_is_admin_only(client: TestClient, member_token: str) -> None:
-    """**管理员专属**：目录名本身就是信息（谁的项目叫什么、备份在哪），
-    而成员建工作区只需要填一个路径——不为了顺手而扩权。"""
-    response = client.get("/api/v1/workspaces/browse", headers=_as(member_token))
-    assert response.status_code == 403
+# 摘掉的：账号体系那一批（2026-10-05）
+#
+# 原用例名与判据（都靠 `/users` + `/auth/login` 造成员，或靠管理员档位）：
+#
+# - ``test_directory_writes_are_admin_only``（目录写是管理员专属，成员 403）；
+# - ``test_browse_is_admin_only``（`/workspaces/browse` 是管理员专属，成员 403）；
+# - ``test_workspaces_are_owner_scoped``（成员只列得到自己的项目，别人的 404）；
+# - ``test_member_cannot_bind_a_conversation_into_someone_elses_workspace``（成员不能把
+#   会话挂进别人的项目，404 而不是 403）；
+# - ``test_mcp_servers_are_owner_scoped``（MCP 服务按归属隔离，成员看不到别人的）；
+# - ``test_sandbox_capability_is_admin_only``（`GET /sandbox` 是管理员专属，成员 403）。
+#
+# **为什么在本机档没有意义**：本机档**不挂账号体系**——`users` / `sessions` /
+# `api_keys` 三张表都不在本机库里、`/auth/*` 与 `/users` 都不在那张表上
+# （见 `api/v1/router.py` 里"明确不挂"那一段），调用主体由
+# `api/auth.py::current_caller` 短路成"本机主人"（`api_key.LOCAL_CALLER`）。
+# 没有第二个身份 ⇒ 没有一个"成员"可以扮演，"成员看不到 / 改不动别人的东西"这件事
+# 在本机档**不存在这个语义**（不是"没实现"，是"只有一个主体"）。
+# 而这些端点（工作区 / MCP / 沙箱）**只在本机档**，所以也没有别的装机形态能承接它们。
+#
+# 归属判定本身（`user_id` 那条路）与档位判定（`require_admin`）都留在代码里没动：
+# 前者由 `tests/unit/services/` 里工作区与 MCP 那两份按服务层覆盖，
+# 后者（`api/auth.py::check_access`）由 `tests/integration/api/test_auth_api.py` 覆盖。
 
 
 def test_workspace_binds_knowledge_bases(client: TestClient, tmp_path: Path) -> None:
     folder = tmp_path / "proj2"
     folder.mkdir()
-    kb = client.post("/api/v1/knowledge-bases", json={"name": "库"}).json()
 
     workspace = client.post(
         "/api/v1/workspaces",
-        json={"name": "带库的", "root_path": str(folder), "kb_ids": [kb["id"]]},
+        json={"name": "带库的", "root_path": str(folder), "kb_ids": [KB_ID]},
     ).json()
 
-    assert workspace["kb_ids"] == [kb["id"]]
+    assert workspace["kb_ids"] == [KB_ID]
 
 
 def test_conversation_inherits_the_workspace_knowledge_bases(
@@ -604,13 +591,15 @@ def test_conversation_inherits_the_workspace_knowledge_bases(
     """**"知识库与 Agent 天生融合"落到行为上的样子**：进入项目，资料范围就定了。
 
     ``kb_ids`` 留空时继承工作区的库——这是用户不必每开一次会话重勾一遍的原因。
+
+    库 id 用占位值（`KB_ID`）：本机档没有知识库（KB 在 NAS 上），而两处都只把它当
+    **一串 id**——这一条要验的是"继承"，不是"这个库在不在"。
     """
     folder = tmp_path / "proj3"
     folder.mkdir()
-    kb = client.post("/api/v1/knowledge-bases", json={"name": "项目资料"}).json()
     workspace = client.post(
         "/api/v1/workspaces",
-        json={"name": "项目", "root_path": str(folder), "kb_ids": [kb["id"]]},
+        json={"name": "项目", "root_path": str(folder), "kb_ids": [KB_ID]},
     ).json()
 
     conversation = client.post(
@@ -618,7 +607,7 @@ def test_conversation_inherits_the_workspace_knowledge_bases(
     ).json()
 
     assert conversation["workspace_id"] == workspace["id"]
-    assert conversation["kb_ids"] == [kb["id"]]
+    assert conversation["kb_ids"] == [KB_ID]
 
 
 def test_deleting_a_workspace_keeps_its_conversations(client: TestClient, tmp_path: Path) -> None:
@@ -642,48 +631,6 @@ def test_deleting_a_workspace_keeps_its_conversations(client: TestClient, tmp_pa
     assert still_there.json()["workspace_id"] is None
     ungrouped = client.get("/api/v1/conversations?ungrouped=true").json()["items"]
     assert conversation["id"] in [item["id"] for item in ungrouped]
-
-
-def test_workspaces_are_owner_scoped(client: TestClient, member_token: str, tmp_path: Path) -> None:
-    folder = tmp_path / "proj5"
-    folder.mkdir()
-    mine = client.post(
-        "/api/v1/workspaces", json={"name": "管理员的", "root_path": str(folder)}
-    ).json()
-
-    # 成员看不到别人的，而且**越权与不存在一样是 404**（403 会暴露 id 存在）
-    listed = client.get("/api/v1/workspaces", headers=_as(member_token)).json()
-    assert listed["items"] == []
-    detail = client.get(f"/api/v1/workspaces/{mine['id']}", headers=_as(member_token))
-    assert detail.status_code == 404
-    assert (
-        client.patch(
-            f"/api/v1/workspaces/{mine['id']}", json={"name": "抢"}, headers=_as(member_token)
-        ).status_code
-        == 404
-    )
-
-
-def test_member_cannot_bind_a_conversation_into_someone_elses_workspace(
-    client: TestClient, member_token: str, tmp_path: Path
-) -> None:
-    """否则任何人都能把会话"挂进"别人的工作区——挂进去之后，
-    那个工作区的主人就会在侧栏看到它。"""
-    folder = tmp_path / "proj6"
-    folder.mkdir()
-    foreign = client.post(
-        "/api/v1/workspaces", json={"name": "别人的", "root_path": str(folder)}
-    ).json()
-    # 管理员通道没有归属过滤，所以这条要拿成员的身份来试
-    member_conversation = client.post(
-        "/api/v1/conversations", json={"kb_ids": []}, headers=_as(member_token)
-    ).json()
-    response = client.patch(
-        f"/api/v1/conversations/{member_conversation['id']}",
-        json={"workspace_id": foreign["id"]},
-        headers=_as(member_token),
-    )
-    assert response.status_code == 404, response.text
 
 
 def test_conversation_can_move_back_to_ungrouped(client: TestClient, tmp_path: Path) -> None:
@@ -892,28 +839,13 @@ def test_mcp_probe_reports_failure_without_5xx(client: TestClient) -> None:
     assert body["tools"] == []
 
 
-def test_mcp_servers_are_owner_scoped(client: TestClient, member_token: str) -> None:
-    mine = client.post(
-        "/api/v1/mcp-servers",
-        json={"name": "管理员的", "transport": "stdio", "target": "python"},
-    ).json()
-
-    assert client.get("/api/v1/mcp-servers", headers=_as(member_token)).json()["items"] == []
-    assert (
-        client.get(f"/api/v1/mcp-servers/{mine['id']}", headers=_as(member_token)).status_code
-        == 404
-    )
+# **摘掉两条**（见下面 `# 摘掉的：账号体系那一批` 的说明）：
+# ``test_mcp_servers_are_owner_scoped``（成员看不到别人的 MCP 服务）与
+# ``test_sandbox_capability_is_admin_only``（`GET /sandbox` 管理员专属，成员 403）——
+# 两条都要"第二个身份"，而本机档只有一个（"本机主人"）。
 
 
 # ------------------------------------------------------------------ 沙箱
-
-
-def test_sandbox_capability_is_admin_only(client: TestClient, member_token: str) -> None:
-    """沙箱执行是这个产品里权限最大的动作（在用户机器上跑代码），
-    与设置页同档：**管理员专属**。"""
-    response = client.get("/api/v1/sandbox", headers=_as(member_token))
-
-    assert response.status_code == 403
 
 
 def test_sandbox_capability_reports_something(client: TestClient) -> None:
@@ -940,221 +872,39 @@ def test_sandbox_plan_shows_what_would_run(client: TestClient) -> None:
     assert body["workdir"]
 
 
-def test_sandbox_exec_requires_approval_under_manual_policy(client: TestClient) -> None:
-    """「手动批准」那一档：未确认回 **409**（不是 403）——不是"你不能做"，
-    是"要先确认"。界面据此弹确认框，确认后带 approved 重调。
+# **执行口那一批搬到隔壁了**（2026-10-05）：`POST /sandbox/exec` 与准入规则那十条
+# 打的是**服务器档**（本机档白名单里已经摘掉那条裸 HTTP 执行口，见
+# `api/v1/router.py` 的 `_sandbox_local`），而这一份整体打本机档——两档不能混在
+# 一个 `pytestmark` 下，所以它们搬去了 `test_sandbox_api.py`（同模块的镜像文件）。
+#
+# 留在本文件里的两条沙箱用例是**只读**的（`GET /sandbox` / `POST /sandbox/plan`），
+# 两条都在本机档；下面那条 MCP 规则的用例要写运行期配置，所以带上这个小助手。
 
-    ⚠️ 2026-09-29 四档化：原来这条钉的是旧值 ``workspace``（如今映射到「默认（智能）」），
-    而智能档按"工作区内不问"判，`python -c print(1)` 不会问 ✗ —— 所以**钉住会问的那一档**
-    （手动批准）。断言强度不变：**没确认就必须 409，且说的是"要确认"**。
+
+def _set_rules(**values: str) -> None:
+    """把这几项运行期配置写进去（服务层）——与 `test_sandbox_api.py` 里那个同一份做法。
+
+    为什么不走 `PATCH /settings`：`/settings` **只在本机档**，而这条用例要验的规则层
+    判定同时服务两档；直接调 `runtime.set`（那个端点内部调的就是它）。
     """
-    client.patch(
-        "/api/v1/settings",
-        json={"values": [{"key": "chat.permission", "value": "manual"}]},
-    )
-
-    response = client.post("/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"]})
-
-    assert response.status_code == 409, response.text
-    assert "确认" in response.json()["message"]
-
-
-def test_sandbox_exec_refuses_when_isolation_is_required(client: TestClient) -> None:
-    """**严格模式**（设置里打开「无隔离时拒绝执行」）下，没有内核级隔离就拒绝，不回退裸跑。
-
-    这条钉的是那一项设置的行为；默认是**降级为直接执行**，见下一条。
-    """
-    from app.services import isolation
-
-    found = isolation.detect()
-    if found.available:  # pragma: no cover - 有隔离的机器上这条不适用
-        pytest.skip("这台机器有可用的隔离后端，拒绝路径不适用")
-
-    client.patch(
-        "/api/v1/settings",
-        json={
-            "values": [
-                {"key": "chat.permission", "value": "full"},
-                {"key": "sandbox.require_isolation", "value": "true"},
-            ]
-        },
-    )
-    response = client.post(
-        "/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"], "approved": True}
-    )
-
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "unsupported_content"
-    assert "拒绝执行" in response.json()["message"]
-
-
-def test_sandbox_exec_degrades_to_direct_without_isolation(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**默认降级为直接执行**（v0.55）：没有 bwrap / docker 的机器也要能跑命令。
-
-    与上一条是一对：默认那一档要让"本地源码启动与容器部署"两边都能执行工具
-    （用户报的"明明指定了工作区，还是不能执行工具"）。降级时后端如实报 ``direct``。
-    """
-    from app.services import isolation
-
-    found = isolation.detect()
-    if found.available:  # pragma: no cover - 有隔离的机器上这条不适用
-        pytest.skip("这台机器有可用的隔离后端，降级路径不适用")
-
-    monkeypatch.setattr(
-        isolation,
-        "run_isolated",
-        lambda argv, **kwargs: isolation.ExecutionResult(
-            exit_code=0, stdout="1\n", stderr="", truncated=False, backend="direct"
-        ),
-    )
-    client.patch(
-        "/api/v1/settings",
-        json={
-            "values": [
-                {"key": "chat.permission", "value": "full"},
-                {"key": "sandbox.require_isolation", "value": "false"},
-            ]
-        },
-    )
-    response = client.post(
-        "/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"], "approved": True}
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["backend"] == "direct"
-
-
-def test_sandbox_exec_respects_view_permission(client: TestClient) -> None:
-    """「仅查看」这一档：命令**不跑**，而且回的话要说清是权限档拦的。
-
-    2026-09-27：这一档原来是设置里的「命令执行策略 = 拒绝」（`sandbox.exec_policy`），
-    那一项已折进权限轴，所以现在推到的是 `chat.permission = view`。
-    """
-    client.patch(
-        "/api/v1/settings",
-        json={"values": [{"key": "chat.permission", "value": "view"}]},
-    )
-
-    response = client.post("/api/v1/sandbox/exec", json={"argv": ["ls"], "approved": True})
-
-    assert response.status_code == 403
-    assert "仅查看" in response.json()["message"]
-
-
-def test_sandbox_exec_rejects_an_empty_command(client: TestClient) -> None:
-    assert client.post("/api/v1/sandbox/exec", json={"argv": []}).status_code == 422
-
-
-# ------------------------------------------------------------- 准入规则（v0.17）
-
-
-def _set_rules(client: TestClient, **values: str) -> None:
-    response = client.patch(
-        "/api/v1/settings",
-        json={"values": [{"key": key, "value": value} for key, value in values.items()]},
-    )
-    assert response.status_code == 200, response.text
-    assert response.json()["rejected"] == []
-
-
-def test_exec_deny_rule_wins_over_a_broader_allow(client: TestClient) -> None:
-    """**deny 永远优先**，而且要能通过接口看到这个结论。
-
-    少了这一条，用户"我加了一条 deny"会被一条更宽的 allow 静默盖掉——
-    而用户以为自己已经禁掉了。
-    """
-    _set_rules(
-        client,
-        **{
-            "chat.permission": "full",
-            "sandbox.rules_allow": "Bash(git push:*)",
-            "sandbox.rules_deny": "Bash(git push --force:*)",
-        },
-    )
-
-    allowed = client.post("/api/v1/sandbox/plan", json={"argv": ["git", "push", "origin", "main"]})
-    assert allowed.status_code == 200
-
-    blocked = client.post(
-        "/api/v1/sandbox/exec", json={"argv": ["git", "push", "--force", "origin", "main"]}
-    )
-    assert blocked.status_code == 403, blocked.text
-    assert "拒绝规则" in blocked.json()["message"]
-
-
-def test_allow_rule_skips_the_confirmation(client: TestClient) -> None:
-    """放行清单里的命令**不再问**——这正是规则存在的意义（同一个动作问一遍就够）。"""
-    _set_rules(
-        client,
-        **{
-            "chat.permission": "workspace",
-            "sandbox.rules_allow": "Bash(git status:*)",
-            # **把隔离模式显式钉成严格**（v0.55 起默认是"没有真隔离就用降级档 direct 直接跑"，
-            # 见 `test_sandbox_exec_degrades_to_direct_without_isolation`）。不钉的话，
-            # 这条用例的期望取决于**跑它的机器有没有内核隔离**：有隔离时 409、
-            # 没有时 200 且命令真的跑掉——同一条用例两种结果，那不是在测行为，是在测环境。
-            "sandbox.require_isolation": "true",
-        },
-    )
-
-    # 命中放行规则 → **不再问确认**；严格模式下没有内核隔离就由隔离层拒绝
-    # （code=unsupported_content）——用这个区分两件事：
-    # "准入已通过、卡在隔离" 与 "准入没过、卡在确认"。
-    response = client.post("/api/v1/sandbox/exec", json={"argv": ["git", "status", "--short"]})
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "unsupported_content"
-
-
-def test_command_outside_the_rules_still_asks(client: TestClient) -> None:
-    """没命中任何规则时回到默认档（ask）——**默认放行等于规则表形同虚设**。"""
-    _set_rules(client, **{"chat.permission": "workspace", "sandbox.rules_allow": "Bash(ls)"})
-
-    response = client.post("/api/v1/sandbox/exec", json={"argv": ["curl", "https://x.test"]})
-
-    assert response.status_code == 409
-    assert "确认" in response.json()["message"]
-
-
-def test_remember_writes_a_word_prefix_rule(client: TestClient) -> None:
-    """「以后都允许」写进放行清单的是**词前缀**，不是完整命令——
-    记住完整命令等于没记住（下次参数就不同了）。"""
-    _set_rules(client, **{"chat.permission": "workspace", "sandbox.rules_allow": ""})
-
-    client.post(
-        "/api/v1/sandbox/exec",
-        json={"argv": ["git", "status", "--short"], "approved": True, "remember": True},
-    )
-
-    # 设置的读回形状是 `groups[].fields[]`（**不是** `values`）——
-    # 密钥那一类只给掩码，这里读的是明文配置项
-    view = client.get("/api/v1/settings").json()
-    values = {field["key"]: field["value"] for group in view["groups"] for field in group["fields"]}
-    assert values["sandbox.rules_allow"].strip() == "Bash(git:*)"
-
-
-def test_remember_does_not_duplicate(client: TestClient) -> None:
-    _set_rules(client, **{"chat.permission": "workspace", "sandbox.rules_allow": "Bash(git:*)"})
-
-    client.post(
-        "/api/v1/sandbox/exec",
-        json={"argv": ["git", "commit"], "approved": True, "remember": True},
-    )
-
-    view = client.get("/api/v1/settings").json()
-    values = {field["key"]: field["value"] for group in view["groups"] for field in group["fields"]}
-    assert values["sandbox.rules_allow"].count("Bash(git:*)") == 1
+    runtime = get_services().runtime
+    runtime.set(dict(values))
+    for key, value in values.items():
+        assert runtime.get(key) == value, (key, runtime.get(key))
 
 
 def test_mcp_deny_rule_blocks_an_external_tool(client: TestClient) -> None:
     """规则层**对 MCP 工具同样生效**（用限定名匹配）：外部工具与本地命令是同一类
-    "以用户名义执行的动作"，两处各写一套判定就会出现"这边能拦、那边拦不住"。"""
+    "以用户名义执行的动作"，两处各写一套判定就会出现"这边能拦、那边拦不住"。
+
+    （这一条在本机档：`/mcp-servers` 只在本机档，而它判定的是 `/mcp-servers/{id}/call`
+    ——不经过 `/sandbox/exec`。配置那一半同样走 `_set_rules`。）
+    """
     server = client.post(
         "/api/v1/mcp-servers",
         json={"name": "外部服务", "transport": "stdio", "target": "python"},
     ).json()
-    _set_rules(client, **{"sandbox.rules_deny": "mcp__外部服务__danger"})
+    _set_rules(**{"sandbox.rules_deny": "mcp__外部服务__danger"})
 
     response = client.post(
         f"/api/v1/mcp-servers/{server['id']}/call",

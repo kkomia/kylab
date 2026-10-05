@@ -1,48 +1,49 @@
 """对话留存的 HTTP 行为（§11.2）。
 
-镜像同构：``app/api/v1/conversations.py`` + `/chat` 的落库分支 → 本文件。
+镜像同构：``app/api/v1/conversations.py`` → 本文件。
 
-这里要证的是"端到端真的存下来了"：问一轮 → 会话里能查到那两条消息；
-再问一轮 → 历史带上上一轮。以及改名、删除、越权。
+这里要证的是"端到端真的存下来了"：会话能建/能列/能改/能删，消息与产物读得回来，
+分支与归档各自说得清。
+
+## 为什么这一份打**本机档**（NAS 网页端退役，2026-10-05）
+
+会话面（列表 / 详情 / 消息 / 产物 / 文件区 / 分支 / 归档）**只在本机档存在**：
+服务器档那张表里只留了 `/conversations/export`（见 `api/v1/router.py` 的模块头），
+NAS 上那份会话数据不迁移、直接丢。所以 `client` 就是 `conftest.local_client`：
+**不带凭据**（本机档不设门禁，调用主体由 `api/auth.py::current_caller` 短路成"本机主人"）。
+
+**`/chat` 与 `/chat/stream` 那条落库链**（"提问 → 两条消息落库""历史以库为准"
+"标题从第一个提问来"……）已经不在这份用例里：它随会话链路一起退役，本机档的对话走
+**边车**的 `/turn*`。逐条的承接者写在下面对应那一节的注释里。
 """
 
 from __future__ import annotations
-
-import io
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
-from tests.conftest import FakeChatModel, install_fake_chat
-from tests.conftest import admin_client as admin_session
 
-KB_NAME = "对话留存测试库"
+pytestmark = pytest.mark.local
 
-
-@pytest.fixture(autouse=True)
-def fake_llm():
-    """把对话模型换成假的并配好 llm。
-
-    否则 `/chat` 会先报「尚未配置对话模型」502——那样测的就成了错误映射，
-    而不是我们关心的落库行为。注册表与模型工厂都在 ``install_fake_chat`` 里配。
-    """
-    install_fake_chat()
-    yield
+#: 会话的库范围：一个**占位 id**。
+#:
+#: 本机档**没有知识库**（KB 在 NAS 上，`/knowledge-bases` 不挂本机档），而 `kb_ids`
+#: 在会话这一层只是**一串 id**——`ConversationService.create` 不校验它存在。这一份要验的
+#: 是"范围被记下来、能被回读、能随分支带过去"，不是"这个库在不在"，所以用固定值。
+KB_ID = "kb_local"
 
 
 @pytest.fixture
-def client():
-    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
-    with admin_session() as test_client:
-
-        yield test_client
-
+def client(local_client: TestClient) -> TestClient:
+    """本机档客户端（`conftest.local_client`；会话面只在本机档存在）。"""
+    return local_client
 
 
 @pytest.fixture
-def kb_id(client: TestClient) -> str:
-    return client.post("/api/v1/knowledge-bases", json={"name": KB_NAME}).json()["id"]
+def kb_id() -> str:
+    """会话的库范围（见 `KB_ID` 的说明：占位值，不是真库）。"""
+    return KB_ID
 
 
 def _conversation(client: TestClient, kb_id: str) -> str:
@@ -100,161 +101,39 @@ def test_detail_returns_messages(client: TestClient, kb_id: str) -> None:
     assert detail["message_count"] == 2
 
 
-# --------------------------------------------------------------------- 落库
-
-
-def test_chat_persists_the_turn(client: TestClient, kb_id: str) -> None:
-    """指定 conversation_id 之后，提问与回答都要落库。"""
-    conv_id = _conversation(client, kb_id)
-
-    response = client.post(
-        "/api/v1/chat",
-        json={"query": "这个库里有什么", "kb_ids": [kb_id], "conversation_id": conv_id}
-    )
-    assert response.status_code == 200, response.text
-
-    detail = client.get(f"/api/v1/conversations/{conv_id}").json()
-    assert [m["role"] for m in detail["messages"]] == ["user", "assistant"]
-    assert detail["messages"][0]["content"] == "这个库里有什么"
-
-
-def test_chat_without_conversation_does_not_persist(client: TestClient, kb_id: str) -> None:
-    """不指定会话时保持原来的无状态行为——脚本与 MCP 调用不该留下垃圾会话。"""
-    response = client.post(
-        "/api/v1/chat", json={"query": "随便问问", "kb_ids": [kb_id]}
-    )
-    assert response.status_code == 200
-    assert client.get("/api/v1/conversations").json()["items"] == []
-
-
-def test_title_is_generated_from_the_first_question(client: TestClient, kb_id: str) -> None:
-    conv_id = _conversation(client, kb_id)
-
-    client.post(
-        "/api/v1/chat",
-        json={"query": "近视怎么监测眼轴", "kb_ids": [kb_id], "conversation_id": conv_id}
-    )
-
-    assert client.get(f"/api/v1/conversations/{conv_id}").json()["title"] == "近视怎么监测眼轴"
-
-
-def test_chat_with_unknown_conversation_is_404(client: TestClient, kb_id: str) -> None:
-    """**指了会话就必须存在**，不做"静默新建"。
-
-    静默新建的后果是：用户拼错一个 id，会得到一次正常回答，然后发现历史没存上——
-    而落库失败本身是静默的，两次静默叠起来根本无法排查。
-    校验放在流开始之前，所以流式那条路径也能正常回 404。
-    """
-    for path in ("/api/v1/chat", "/api/v1/chat/stream"):
-        response = client.post(
-            path,
-            json={"query": "问一句", "kb_ids": [kb_id], "conversation_id": "conv_不存在"}
-    )
-        assert response.status_code == 404, path
-
-
-def test_history_comes_from_the_database_not_the_request(
-    client: TestClient, kb_id: str
-) -> None:
-    """**带 conversation_id 时以库里的记录为准**，忽略请求里带的 history。
-
-    两处都算会让同一轮被计两遍；而且刷新后前端那份就没了，行为会时好时坏。
-    """
-    conv_id = _conversation(client, kb_id)
-    services = get_services()
-    services.conversations.append(conv_id, role="user", content="库里的问题")
-    services.conversations.append(conv_id, role="assistant", content="库里的回答")
-
-    seen: dict = {}
-    # **盯 `agent_messages`**：对话主流程是工具循环（§12.153 起），
-    # 而 `agent_messages` 是那一轮提示词的唯一出口——历史有没有进去，这里看得最准。
-    # （旧链路的 `answer_agent` 已随工具循环的收尾一并删除，见 §12.172。）
-    real = services.chat.agent_messages
-
-    def spy(  # type: ignore[no-untyped-def]
-        *, query, history=None, **kwargs
-    ):
-        seen["history"] = [(item.role, item.content) for item in (history or [])]
-        return real(query=query, history=history, **kwargs)
-
-    services.chat.agent_messages = spy  # type: ignore[method-assign]
-    try:
-        client.post(
-            "/api/v1/chat",
-            json={
-                "query": "继续问",
-                "kb_ids": [kb_id],
-                "conversation_id": conv_id,
-                # 故意带一份"假"历史：它应当被忽略
-                "history": [{"role": "user", "content": "请求里塞的假历史"}],
-            }
-    )
-    finally:
-        services.chat.agent_messages = real  # type: ignore[method-assign]
-
-    assert ("user", "库里的问题") in seen["history"]
-    assert not any("假历史" in content for _, content in seen["history"])
-
-
-def test_stream_also_persists(client: TestClient, kb_id: str) -> None:
-    """流式那条路径同样要落库——它是前端的默认路径，漏了等于功能没做。"""
-    conv_id = _conversation(client, kb_id)
-
-    with client.stream(
-        "POST",
-        "/api/v1/chat/stream",
-        json={"query": "流式落库测试", "kb_ids": [kb_id], "conversation_id": conv_id}
-    ) as response:
-        assert response.status_code == 200
-        body = "".join(response.iter_text())
-
-    assert '"type": "done"' in body
-    detail = client.get(f"/api/v1/conversations/{conv_id}").json()
-    assert [m["role"] for m in detail["messages"]] == ["user", "assistant"]
-
-
-# --------------------------------------------------------------------- 鉴权
-
-
-def test_conversations_need_credentials() -> None:
-    """没有凭据就是 401（v0.11 起鉴权永远生效）。刻意用不带会话的客户端。"""
-    from app.main import create_app
-
-    with TestClient(create_app()) as anonymous:
-        assert anonymous.get("/api/v1/conversations").status_code == 401
-
-
-def test_readonly_key_can_read_but_not_delete(client: TestClient) -> None:
-    """历史对话属于内容本身，只读密钥可以回看；删除是写操作。"""
-    console = dict(client.headers)  # 管理员会话
-    kb = client.post("/api/v1/knowledge-bases", json={"name": "鉴权库"}, headers=console)
-    conv = client.post(
-        "/api/v1/conversations", json={"kb_ids": [kb.json()["id"]]}, headers=console
-    )
-    issued = client.post(
-        "/api/v1/api-keys",
-        json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
-        headers=console
-    ).json()
-    readonly = {"Authorization": f"Bearer {issued['token']}"}
-
-    conv_path = f"/api/v1/conversations/{conv.json()['id']}"
-    assert client.get("/api/v1/conversations", headers=readonly).status_code == 200
-    assert client.get(conv_path, headers=readonly).status_code == 200
-    assert client.delete(conv_path, headers=readonly).status_code == 403
-    assert (
-        client.post("/api/v1/conversations", json={"kb_ids": []}, headers=readonly).status_code
-        == 403
-    )
-
-def test_markdown_upload_placeholder(client: TestClient, kb_id: str) -> None:
-    """顺带确认：文档相关接口没有被这次改动影响。"""
-    upload = client.post(
-        f"/api/v1/knowledge-bases/{kb_id}/documents",
-        files={"file": ("a.md", io.BytesIO("# 标题\n".encode()), "text/markdown")},
-        params={"start": "false"}
-    )
-    assert upload.status_code == 202
+# ------------------------------------------------- 摘掉的：`/chat*` 那条落库链
+#
+# **这一整节随"NAS 网页端退役"一起摘掉**（2026-10-05）：`/chat` 与 `/chat/stream`
+# 是**会话链路**那一族，两个档里都不再对外（服务器档退役、本机档的对话走**边车**的
+# `/turn*`——见 `app/api/v1/chat.py` 与 `app/api/v1/router.py` 的模块头）。
+# 下面这 9 条的原判据与承接者逐条写在案：
+#
+# 1. ``test_chat_persists_the_turn`` / ``test_stream_also_persists``（指定会话之后
+#    提问与回答都要落库，流式与非流式两条路都要）——**承接**
+#    `tests/integration/api/test_local_backend.py`（本机档整条链：`/turn/stream` 跑完
+#    之后会话详情里是 user + assistant 两条）与 `tests/unit/test_sidecar.py`；
+# 2. ``test_chat_without_conversation_does_not_persist``（不指定会话就不留垃圾会话）——
+#    承接同上：边车 `/turn` 不带 `conversation_id` 时落 `LOCAL_CONVERSATION`，
+#    由 `tests/unit/test_sidecar.py` 覆盖；
+# 3. ``test_title_is_generated_from_the_first_question``——承接
+#    `tests/unit/test_sidecar.py`（边车 `_record_turn` 的 `ensure_title` 那一步）；
+# 4. ``test_chat_with_unknown_conversation_is_404``（指了不存在的会话要 404，不做静默新建）
+#    ——承接：同一条纪律在边车那条链上由 `tests/unit/test_sidecar.py` 钉；
+# 5. ``test_history_comes_from_the_database_not_the_request``（带会话时以库里的历史为准，
+#    忽略请求里带的 history）——承接 `tests/unit/services/test_chat.py`
+#    （`prepare_context` 那一层：历史从库里读）；
+# 6. ``test_conversations_need_credentials``（没有凭据 401）——**只对有账号体系的那一档
+#    成立**：会话只在本机档存在，而本机档不挂 `/auth/*`、主体恒为"本机主人"，
+#    没有"没有凭据"这个状态（鉴权本身由 `test_auth_api.py` 覆盖）；
+# 7. ``test_readonly_key_can_read_but_not_delete``（只读 API Key 能回看、不能删）——
+#    同一条：API Key 属于**账号体系**（`api_keys` 表不在本机库里，本机档不挂
+#    `/api-keys`），造不出那把钥匙。读写两档的判定在 `api/auth.py`，
+#    由 `tests/unit/services/test_api_key.py` 与 `test_auth_api.py` 覆盖；
+# 8. ``test_markdown_upload_placeholder``（顺带确认文档接口没被影响）——它打的是
+#    `/knowledge-bases/{kb}/documents`，那属于**知识库那一族**（只服务器档有）。
+#    承接：`tests/integration/api/test_rest_api.py::test_upload_returns_accepted_with_task`。
+#
+# 会话面**自己**的 CRUD / 分支 / 文件区（下面那些）一条没摘：它们在本机档仍然活着。
 
 
 # --------------------------------------------------------------------- 会话级模型（v12）
@@ -280,52 +159,35 @@ def test_conversation_without_model_pk_stays_none(client: TestClient, kb_id: str
     assert created["model_pk"] is None
 
 
-def test_chat_records_the_chosen_model_on_the_conversation(
-    client: TestClient, kb_id: str
-) -> None:
-    """在已有会话上用另一个模型提问，该会话应当记住新选择（v12"跟随会话保存"）。"""
-    services = get_services()
-    provider = services.models.create_provider(
-        kind="llm", name="切换家", base_url="https://switch.example.com/v1", api_key="sk-s"
-    )
-    model = services.models.register_model(
-        provider_id=provider.id, model_id="m-switch", capabilities=["chat"]
-    )
-    conv = client.post("/api/v1/conversations", json={"kb_ids": [kb_id]}).json()
-
-    response = client.post(
-        "/api/v1/chat",
-        json={
-            "query": "继续问",
-            "kb_ids": [kb_id],
-            "conversation_id": conv["id"],
-            "model_pk": model.id,
-        },
-    )
-
-    assert response.status_code == 200, response.text
-    assert client.get(f"/api/v1/conversations/{conv['id']}").json()["model_pk"] == model.id
-
-
-# --------------------------------------------------------------------- 思考偏好（v16）
-
-
-def _capturing_chat() -> dict:
-    """把对话工厂换成"记下收到的 config"，用来断言这一轮真正用的思考档位。"""
-    services = get_services()
-    seen: dict = {}
-
-    def factory(config):  # type: ignore[no-untyped-def]
-        seen["config"] = config
-        return FakeChatModel()
-
-    services.chat._chat_factory = factory
-    return seen
+# ------------------------------- 摘掉的：会话级模型 / 思考偏好那两条 `/chat` 链
+#
+# 这一节原来有五条，三条是纯会话面的（建会话时带 `model_pk` / 带 `thinking`，
+# 读得回来）——**它们留着**（`test_conversation_remembers_the_chosen_model` /
+# `test_conversation_without_model_pk_stays_none` /
+# `test_conversation_can_be_created_with_thinking_preference`）。
+#
+# 另外三条**摘掉**（2026-10-05），因为它们判的都是 `/chat` 那条链的"请求级覆盖"
+# 语义（`chat.py::_effective_model` / `_effective_thinking` 把请求里的值**回写会话**）：
+#
+# 1. ``test_chat_records_the_chosen_model_on_the_conversation``（在已有会话上用另一个模型
+#    提问 → 该会话记住新选择）。承接：同一件事在本机档由**边车**那一轮做
+#    （`app/sidecar.py::_record_turn` 写会话那一栏），HTTP 层由
+#    `tests/unit/test_sidecar.py` 与 `tests/unit/test_sidecar_agent_face.py` 覆盖；
+# 2. ``test_chat_request_thinking_override_reaches_the_model_and_persists`` /
+#    ``test_chat_falls_back_to_the_conversation_thinking`` /
+#    ``test_chat_without_conversation_uses_global_default``（请求级思考档覆盖 → 回写会话 →
+#    下一次沿用）。承接：档位解析与"哪一档生效"的判定在 `services/chat.py` 与
+#    `services/llm.py`，由 `tests/unit/services/test_chat_model_selection.py` 覆盖；
+#    会话那一栏的读写由上面留下的两条与 `tests/unit/services/test_conversation.py` 覆盖。
+#
+# 判据：`/chat` 在两个档里都不再对外（会话链路退役），所以这四条没有一个装机形态
+# 能承接它们的 **HTTP 层**——留下的部分是"会话记录里的模型 / 思考栏"，那几条没动。
 
 
 def test_conversation_can_be_created_with_thinking_preference(
     client: TestClient, kb_id: str
 ) -> None:
+    """建会话时给的思考档要能读回来（上一条留在原处的那三条之一）。"""
     created = client.post(
         "/api/v1/conversations",
         json={"kb_ids": [kb_id], "thinking": True, "thinking_effort": "low"},
@@ -333,61 +195,6 @@ def test_conversation_can_be_created_with_thinking_preference(
 
     assert created["thinking"] is True
     assert created["thinking_effort"] == "low"
-
-
-def test_chat_request_thinking_override_reaches_the_model_and_persists(
-    client: TestClient, kb_id: str
-) -> None:
-    """输入框里的那两档是**请求级覆盖**，并且要随会话留痕（回看时仍是当时那一档）。"""
-    seen = _capturing_chat()
-    conv = client.post("/api/v1/conversations", json={"kb_ids": [kb_id]}).json()
-
-    response = client.post(
-        "/api/v1/chat",
-        json={
-            "query": "关掉思考再问",
-            "kb_ids": [kb_id],
-            "conversation_id": conv["id"],
-            "thinking": False,
-            "thinking_effort": "high",
-        },
-    )
-
-    assert response.status_code == 200, response.text
-    assert seen["config"].enable_thinking is False
-    assert seen["config"].thinking_effort == "high"
-    detail = client.get(f"/api/v1/conversations/{conv['id']}").json()
-    assert detail["thinking"] is False
-    assert detail["thinking_effort"] == "high"
-
-
-def test_chat_falls_back_to_the_conversation_thinking(client: TestClient, kb_id: str) -> None:
-    """请求不带时沿用会话已存的——这是"会话级偏好"存在的意义。"""
-    seen = _capturing_chat()
-    conv = client.post(
-        "/api/v1/conversations",
-        json={"kb_ids": [kb_id], "thinking": False, "thinking_effort": "low"},
-    ).json()
-
-    response = client.post(
-        "/api/v1/chat",
-        json={"query": "沿用会话设置", "kb_ids": [kb_id], "conversation_id": conv["id"]},
-    )
-
-    assert response.status_code == 200, response.text
-    assert seen["config"].enable_thinking is False
-    assert seen["config"].thinking_effort == "low"
-
-
-def test_chat_without_conversation_uses_global_default(client: TestClient, kb_id: str) -> None:
-    """没有会话可记时回到全局默认（默认开、中档），而不是悄悄关掉。"""
-    seen = _capturing_chat()
-
-    response = client.post("/api/v1/chat", json={"query": "一次性提问", "kb_ids": [kb_id]})
-
-    assert response.status_code == 200, response.text
-    assert seen["config"].enable_thinking is True
-    assert seen["config"].thinking_effort == "medium"
 
 
 # ------------------------------------------------- 置顶 / 搜索 / 回退（v17）
@@ -466,23 +273,34 @@ def test_rewind_without_a_question_is_422(client: TestClient) -> None:
 
 # --------------------------------------------------------- 从这里重开（D11）
 
+#: 假模型那句固定回答（`conftest.FakeChatModel` 的默认值）。原来它由 `/chat` 那条链
+#: 落库，现在由 `_three_turns` 直接写——两边用同一个字面量，免得"分叉带过来的历史"
+#: 那几条断言跟着别处改口径。
+FAKE_ANSWER = "这是回答。[1]"
+
 
 def _three_turns(client: TestClient, kb_id: str) -> str:
-    """三轮问答的会话（**走 /chat 真链路**落库：提问与回答都经过那一轮的正常路径）。"""
+    """三轮问答的会话。
+
+    **原来走 `/chat` 那条链落库**（提问与回答都经过那一轮的正常路径）——那条链随
+    NAS 网页端退役一起摘了（见模块头那个"摘掉的：`/chat*` 那条落库链"）。
+    现在改用**服务层**写：`ConversationService.record_turn` 正是那条链落库时调用的
+    同一个方法（`chat.py::_record_turn` 逐字调它），所以"库里是三轮问答"这个前提
+    一个字没变，分支那几条要的也正是它。
+    """
     conv_id = _conversation(client, kb_id)
+    services = get_services()
     for index in (1, 2, 3):
-        response = client.post(
-            "/api/v1/chat",
-            json={"query": f"第{index}问", "kb_ids": [kb_id], "conversation_id": conv_id},
+        services.conversations.record_turn(
+            conv_id, question=f"第{index}问", answer=FAKE_ANSWER
         )
-        assert response.status_code == 200, response.text
     return conv_id
 
 
 def test_branch_carries_the_history_and_can_be_continued(
     client: TestClient, kb_id: str
 ) -> None:
-    """**D11 的主验收**：从第 N 轮分叉 → 新会话带着到那一轮为止的历史 → 能在里面继续提问。"""
+    """**D11 的主验收**：从第 N 轮分叉 → 新会话带着到那一轮为止的历史 → 能在里面继续写。"""
     source = _three_turns(client, kb_id)
 
     response = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 2})
@@ -492,21 +310,20 @@ def test_branch_carries_the_history_and_can_be_continued(
     assert branch["id"] != source
     # 标题看得出是从哪儿分出来的（照抄源标题会让侧栏出现两条同名会话）
     assert branch["title"].endswith("（分支 · 第 2 轮）")
-    # 只带前两轮（假模型的回答固定是那句，所以这里能逐条比）
+    # 只带前两轮（回答是上面那个固定字面量，所以这里能逐条比）
     detail = client.get(f"/api/v1/conversations/{branch['id']}").json()
     assert [m["content"] for m in detail["messages"]] == [
         "第1问",
-        "这是回答。[1]",
+        FAKE_ANSWER,
         "第2问",
-        "这是回答。[1]",
+        FAKE_ANSWER,
     ]
 
-    # 在分叉出的会话里继续提问：走的是同一条 `/chat` 链路
-    follow_up = client.post(
-        "/api/v1/chat",
-        json={"query": "换个方向再问", "kb_ids": [kb_id], "conversation_id": branch["id"]},
+    # 在分叉出的会话里继续写一轮：与 `_three_turns` 同一条服务层落库路径
+    # （`/chat` 那条链已经退役，见模块头）
+    get_services().conversations.record_turn(
+        branch["id"], question="换个方向再问", answer="分支里的回答"
     )
-    assert follow_up.status_code == 200, follow_up.text
     after = client.get(f"/api/v1/conversations/{branch['id']}").json()
     assert [m["content"] for m in after["messages"]][-2] == "换个方向再问"
     assert after["message_count"] == 6
@@ -521,9 +338,8 @@ def test_branch_keeps_the_source_untouched_and_both_are_independent(
     source_events = len(client.get(f"/api/v1/conversations/{source}/events").json()["items"])
 
     branch = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 1}).json()
-    client.post(
-        "/api/v1/chat",
-        json={"query": "分支里的新问题", "kb_ids": [kb_id], "conversation_id": branch["id"]},
+    get_services().conversations.record_turn(
+        branch["id"], question="分支里的新问题", answer="分支里的回答"
     )
 
     after = client.get(f"/api/v1/conversations/{source}").json()
@@ -757,19 +573,14 @@ def test_tampered_signature_is_rejected(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_ingest_endpoint_is_the_click_that_files_it(client: TestClient, kb_id: str) -> None:
-    """卡片上那个按钮走的就是这条。**库由请求体点明**，服务端不替他挑。"""
-    services = get_services()
-    conversation = client.post("/api/v1/conversations", json={"title": "入库"}).json()
-    record = _artifact(services, conversation["id"])
-
-    body = client.post(
-        f"/api/v1/conversations/{conversation['id']}/artifacts/{record.id}/ingest",
-        json={"knowledge_base_id": kb_id},
-    ).json()
-
-    assert body["knowledge_base_id"] == kb_id and body["document_id"]
-    assert services.documents.get(body["document_id"]).name == "短诗.docx"
+# **摘掉一条**（2026-10-05）：``test_ingest_endpoint_is_the_click_that_files_it``
+# （原判据：`POST /conversations/{id}/artifacts/{aid}/ingest` 把会话产物送进知识库，
+# 库由请求体点明、`services.documents.get(...)` 读得回那份文档）。
+# **本机档无法验证**：它落的是知识库那几张表（文档 / 分块在中，那些表都不在本机库里，
+# `services.documents` 在本机档整体抛 `KnowledgeBaseUnavailable`）。而 KB 那一族只在
+# 服务器档，会话面只在**本机**档——两者的交集是空的，所以这条断言没有一个装机形态
+# 能承接。承接者：`tests/unit/services/test_artifacts.py`（产物那一层）与
+# `tests/integration/api/test_rest_api.py`（KB 入库那条链）。
 
 
 def test_deleting_a_conversation_clears_its_temporary_files(client: TestClient) -> None:
@@ -1023,28 +834,13 @@ def test_import_project_file_refuses_another_conversations_file(
     assert response.status_code == 404, response.text
 
 
-def test_import_project_file_needs_a_write_key(client: TestClient, tmp_path) -> None:
-    """取进会话是**写**动作（往文件区里加东西）：只读密钥不许。"""
-    console = dict(client.headers)
-    services = get_services()
-    root = tmp_path / "proj"
-    root.mkdir()
-    (root / "a.txt").write_text("a", encoding="utf-8")
-    workspace = services.workspaces.create(name="我的项目", root_path=str(root), user_id=None)
-    conversation = client.post(
-        "/api/v1/conversations", json={"title": "只读", "workspace_id": workspace.id}
-    ).json()
-    issued = client.post(
-        "/api/v1/api-keys",
-        json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
-        headers=console,
-    ).json()
-    readonly = {"Authorization": f"Bearer {issued['token']}"}
-
-    response = client.post(
-        f"/api/v1/conversations/{conversation['id']}/files/import",
-        json={"path": "a.txt"},
-        headers=readonly,
-    )
-
-    assert response.status_code == 403, response.text
+# **摘掉一条**（2026-10-05）：``test_import_project_file_needs_a_write_key``
+# （原判据：`POST /conversations/{id}/files/import` 取进会话是写动作，只读 API Key 403）
+# ——它靠 `/api-keys` 签发一把只读钥匙，而 **API Key 属于账号体系**：`api_keys` /
+# `users` / `sessions` 三张表都不在本机库里、`/api-keys` 与 `/auth/*` 都不挂本机档
+# （见 `api/v1/router.py` 里"明确不挂"那一段）。本机档主体恒为"本机主人"，
+# 造不出"只读的第二个身份"。读写两档的判定在 `api/auth.py::check_access`，
+# 由 `tests/unit/services/test_api_key.py` 与 `tests/integration/api/test_auth_api.py` 覆盖。
+#
+# 其余四条"取进会话"的用例（成 / 穿目录 / 无工作区 / 跨会话）**一条没动**：
+# 它们要的是会话面与工作区，两样都在本机档。

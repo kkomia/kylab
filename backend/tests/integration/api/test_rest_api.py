@@ -466,21 +466,11 @@ def test_create_kb_without_an_embedding_model_is_rejected(monkeypatch) -> None:
     assert "模型注册" in response.json()["message"]
 
 
-def test_settings_reports_whether_embedding_is_configured(client: TestClient) -> None:
-    """设置页要能区分"没配"与"配了"：前端据此决定建库入口能不能点。"""
-    body = client.get("/api/v1/settings").json()
-
-    # 测试环境显式开着开发兜底，因此没绑定注册模型 → 未配置
-    assert body["embedding_configured"] is False
-    assert body["embedding_is_development"] is True
-    # 模型身份不在设置页分组里了（v0.8）：那里只剩行为参数。
-    # `embedding.protocol` 也是行为参数（"这个端点说哪套协议"），所以它在这一组里；
-    # 地址 / 密钥 / 模型名 / 维度仍然只在注册表里，一个都不许漏到这一层。
-    embedding_group = next(g for g in body["groups"] if g["key"] == "embedding")
-    assert [f["key"] for f in embedding_group["fields"]] == [
-        "embedding.batch_size",
-        "embedding.protocol",
-    ]
+# **搬走一条**（2026-10-05）：``test_settings_reports_whether_embedding_is_configured``
+# （原判据：`GET /settings` 要能区分"没配"与"配了"，前端据此决定建库入口能不能点）——
+# 它打的是 ``/settings``，而那一族随 NAS 网页端退役**只在本机档**了（运行期配置表
+# 在本机 SQLite 里）。所以它搬去 `test_settings_api.py`（本机档那一份，同一条判据
+# 一个字没改）。
 
 
 # ------------------------------------------------- 切分参数可调（v17）

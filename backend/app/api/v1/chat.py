@@ -35,6 +35,36 @@ seq，见 ``services/live_turns`` 的模块头），所以"补发"与"读日志"
 事件形状新增一位 ``seq``（可缺省）：不带会话的调用（脚本、MCP 的 ``history`` 那条路）
 没有可补发的地方，那些响应里就不带它。前端只认自己认识的 ``type``，
 多一个键不会有影响（见 ``frontend/src/api/chat.ts`` 的 ``emit``）。
+
+## NAS 网页端退役（2026-10-05）：这一族**在两个档里都不再对外**
+
+产品的那个网页端退役之后，本模块这一族**整条都不再是"装机形态会服务的东西"**：
+它们全都钉在**会话面**上（读会话历史、写会话消息与事件日志），而会话面本身
+已经从服务器档摘掉（`api/v1/router.py` 的模块头写着那一步），本机档的对话又走
+**边车**的 `/turn*`（`app/sidecar.py`：同一份 `ToolLoop`、同一批服务、写本机的会话）。
+
+落点（**形态仍是甲：只摘挂载、不删代码、不删表** ✓，把 `api_router` 那一行换回整
+include 就回退了）：
+
+- `/chat/stream`、`/chat`、`/chat/turns/{id}/live`：**没有人**——本机档的对话走边车
+  的 `/turn/stream`；
+- `/conversations/{id}/resume`、`.../steps/{i}/retry`、`/chat/approvals/{id}`：同上
+  （边车那一侧有它自己的审批入口 `/turn/approvals/{id}`）；
+- `/conversations/{id}/events`、`/chat/context-usage`：**本机档**——`local.py` 的
+  `chat_reads` 薄重声明了这两条（只读本机数据）；
+- `/chat/turns/record`：**没有人**——边车写回本机那一半早删了（`sidecar::_record_turn`）；
+- `/chat/commands`、`/chat/suggested-questions`：**服务器档照旧**（`_chat_survivors`）
+  ——它们不碰会话面，而前端今天仍从服务器读它们。
+
+**这一族在本模块里的代码一个字没删**（可回退、也免得下次要用时从 git 里捞）——
+它现在是一座"无人挂载的端点库"：读它的时候记住上表，别把"没挂"当成"没实现"。
+
+**它的 HTTP 用例也一起摘了**：`tests/integration/api/test_chat_*.py` 那六份
+（`api` / `commands` / `live` / `resume` / `step_retry` / `approvals`，共 107 条）
+打的就是上表里"没有人服务"的那几条，所以整份删掉了——逐条的承接者写在新加的
+`tests/integration/api/test_retired_nas_web_face.py` 里（那一份同时把"哪张表上有什么"
+钉成了断言）。**要把上面那一行 include 换回来（回退），就得连那六份用例一起从
+git 历史里捞回来**——否则回退之后的链路没有任何 HTTP 用例。
 """
 
 from __future__ import annotations

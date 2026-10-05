@@ -6,10 +6,54 @@
 
 **两张路由表，按部署档挂哪一张**（M2 §4.1，`app/main.py` 判档）：
 
-- ``api_router``：**服务器档**（默认）的全量端点，一位行为不变；
+- ``api_router``：**服务器档**（默认）那张表——知识库 + 备份提供者 + 健康探针，
+  外加本机档要调的那几条（导出 / 握手 / 前端资源包）；
 - ``local_router``：**本机档**（桌面壳的边车）那张**白名单**——只挂"数据在本机、
   本机服务得了"的那些。白名单而不是黑名单：本机没有知识库数据源（在 NAS 上），
   黑名单意味着"新加的端点默认挂上去"，而它们会在第一次被点到时才 500 ✗。
+
+## NAS 网页端退役（2026-10-04）：服务器档不再提供**会话面**
+
+NAS 上的网页端与桌面端共用同一套前端，而浏览器里没有壳 → 会话 / 笔记 / 设置 /
+工作区 / 定时任务 / MCP 那几页读的是 NAS 的 PG（`app/api/sidecar.ts` 的
+`resolveLocalBase` 在"无壳"那一支直接回 `API_BASE`）。产品判定：**那一个网页端退役**，
+NAS 上那份会话数据不迁移、直接丢；服务器档从此只对外提供**知识库管理台 + 备份 +
+健康**（架构设计 v0.3 §2：会话面归本机，服务器侧保留的浏览器界面只该是知识库管理台）。
+
+落地形态是**甲：只删挂载，不删表、不写 Migration、不动 `app/storage/**`**——
+可回退（把下面那六行 include 加回来即可），也不动 NAS 的 PG 数据。
+
+**唯一保留的一条会话面端点是 `/conversations/export`**：它是"想再迁就有路"的那一份
+（M2 阶段 5 的迁移来源，`services/legacy_import.py::HttpExportSource` 只认它；
+按点恢复走的是快照那一条 `SnapshotFileSource`，与它无关）。删掉它等于把
+"以后还能把 NAS 上那份会话搬进来"这条路一起删掉，而留着它只是只读一条流。
+它的挂法见下面 `_export_only`——**只带这一个端点**，不整 include 那个 router。
+
+## `/chat/*` 那一族的处置（2026-10-05，同一轮退役）
+
+`api/v1/chat.py` 里那一族（`/chat/stream`、`/chat`、`/chat/turns/{id}/live`、
+`/conversations/{id}/resume`、`.../steps/{i}/retry`、`/chat/approvals/{id}`、
+`/chat/turns/record`、`/conversations/{id}/events`、`/chat/context-usage`）**同样从服务器档退掉**：
+它们整条链路都钉在会话面上（读会话历史、写会话消息与事件日志），而会话面上面已经摘了
+——留着就是一片"点得到、点下去 404/500"的路 ✗。
+
+**本机档的对话不靠它** ✓：桌面那条链走**边车**的 `/turn*`（`app/sidecar.py`，
+同一份 `ToolLoop` 与同一批服务，写的是本机的会话），所以这一族在**两个档里都不再对外**
+——这正是"它唯一的消费者（NAS 网页端）退役"的直接后果。形态仍是**甲**：只摘挂载，
+不删代码、不删表 ✓（把下面 `_chat_survivors` 换成整 include 就回退了）。
+
+**两条例外照旧挂着**，它们不与会话面耦合：
+
+- ``GET /chat/commands``：命令目录（`/` 菜单吃它）。它读的是**进程自己的**目录
+  （`data/commands/` + 仓库命令 + 技能），与本机档那两张目录表无关。
+  **它现在也在本机档**（2026-10-05，见下面 `local_router` 那一条挂载）：命令与技能
+  在这台机器上、桌面真正执行那一轮的是边车 ⇒ **目录与执行同源**，前端那一半
+  （`LOCAL_PATHS` + `listCommands` 走 `requestLocal`）同一轮改完。服务器这一份照旧留着：
+  浏览器那一档没有本机后端时它就是那份目录（统一走 `requestLocal` 的调用点会落到
+  `API_BASE`），而"不把 `/` 菜单打成空"仍是要守的那条；
+- ``GET /chat/suggested-questions``：推荐问题从**知识库**里已存的分段问题来
+  （`services/suggested_questions.py`）——那是 NAS 上的数据，服务器档正是它的家，
+  而且**只有这一档有它**（本机档的知识库在别处，问题清单得问提供者）。
 """
 
 from fastapi import APIRouter
@@ -70,15 +114,37 @@ api_router.include_router(provider.router)
 # 备份提供者（M5 阶段 1）：同样**服务器档专属**——NAS 侧持 S3 凭据收快照（路 B），
 # 本机档是客户端角色（它调 `/backup/*`，不提供它们），见 `api/v1/backup.py` 的模块头
 api_router.include_router(backup.router)
-api_router.include_router(chat.router)
-api_router.include_router(settings.router)
+# 会话链路那一族**从服务器档退掉**（见模块头"`/chat/*` 那一族的处置"）：
+# 用"只带上幸存的那两条"而不是整 include，理由与下面 `_export_only` 逐字同一条——
+# 路径、依赖、响应模型、OpenAPI 说明还是原来那些对象，**不另写一份实现**，
+# 于是"下次改这两个端点时漏掉一边"这件事不可能发生。
+#
+# 留下的两条**与"不摆注定失败的路"这条规矩不冲突**：它们读的分别是这台服务器自己的
+# 命令目录与 NAS 库里的分段问题，一个字节都不碰会话面 ✓（逐条理由见模块头）。
+_chat_survivors = APIRouter()
+_chat_survivors.routes.extend(
+    route
+    for route in chat.router.routes
+    if getattr(route, "path", "") in ("/chat/commands", "/chat/suggested-questions")
+)
+api_router.include_router(_chat_survivors)
 api_router.include_router(stats.router)
 api_router.include_router(tasks.router)
-# 定时任务（v0.33）：界面上归在任务中心那一页里（分段），但它是独立的一组端点
-api_router.include_router(schedules.router)
 api_router.include_router(api_keys.router)
-api_router.include_router(conversations.router)
-api_router.include_router(notes.router)
+# 会话面里**只留导出这一条**（见模块头那一段）：它是 NAS → 本机那条迁移唯一的来源，
+# 也是"想再迁就有路"的那份保障。**不整 include `conversations.router`** ——
+# 那会把列表 / 详情 / 消息 / 产物 / 文件区一起挂出来，那些就是这一轮要退掉的东西。
+#
+# 用"过滤出这一个端点"而不是"另写一份导出实现"：路径、依赖（`require_read`）、
+# 响应模型、OpenAPI 说明全部还是那一个对象，两处实现分叉的风险为零（写第二份
+# 只会在下一次改导出格式时漏掉一边）。
+_export_only = APIRouter()
+_export_only.routes.extend(
+    route
+    for route in conversations.router.routes
+    if getattr(route, "path", "") == "/conversations/export"
+)
+api_router.include_router(_export_only)
 api_router.include_router(chunks.router)
 api_router.include_router(model_registry.router)
 api_router.include_router(users.router)
@@ -94,15 +160,11 @@ api_router.include_router(maintenance.router)
 api_router.include_router(wiki.router)
 # 记忆（v0.14 三期）：与知识库是**两个池子**，所以单独一组 /memory
 api_router.include_router(memory.router)
-# 工作区（v0.15）：Agent 的项目，会话挂在它下面
-api_router.include_router(workspaces.router)
 # 技能（v0.15）：磁盘上的 SKILL.md，目录进提示词、正文按需展开
 api_router.include_router(skills.router)
 # 插件包（v0.43）：插件 = 一个目录 + plugin.json，目录即本地市场；
 # 与上面那组「插件」（MCP 服务）是两件事——那是外部服务，这是磁盘上的能力包
 api_router.include_router(plugins.router)
-# MCP 客户端（v0.15）：接外部工具进来（此前只有服务端的一半）
-api_router.include_router(mcp_servers.router)
 # 沙箱执行（v0.16）：内核级隔离 + 策略闸（管理员专属）
 api_router.include_router(sandbox.router)
 # 站点图标（D11-②）：浏览器不直连第三方站点，图标由本机缓存代理
@@ -123,6 +185,8 @@ local_router = APIRouter()
 # 探活：桌面壳与界面都要能问一句"本机后端在不在"
 local_router.include_router(health.router, tags=["health"])
 # 会话 / 消息 / 事件 / 产物 / 文件区全在本机（`/files*` 走本机对象存储）
+# —— NAS 网页端退役之后，这一组（连同下面笔记 / 设置 / 工作区 / 定时任务 / MCP）
+# **只在本机档存在**：服务器档那张表里只留了 `/conversations/export`（见模块头）。
 local_router.include_router(conversations.router)
 # 笔记落本机
 local_router.include_router(notes.router)
@@ -149,7 +213,26 @@ local_router.include_router(plugins.router)
 # 沙箱（v0.16）：**它就是"在这台机器上执行"**（隔离探测 / 策略闸 / 工作区三样都在本机，
 # 见 api/v1/sandbox.py 与 services/isolation.py）。边车的工具面早就在本机跑命令了，
 # 这一组只是把同一件事给界面一个直接入口——三道闸（管理员 / 策略 / 隔离）一道没绕。
-local_router.include_router(sandbox.router)
+#
+# **只挂两条，不挂 `POST /sandbox/exec`**（2026-10-05）：那是一条**裸 HTTP 执行口**
+# （一个 body 里写命令就执行），今天**没有任何前端/客户端调用它**——界面上那条链是
+# `GET /sandbox`（看这台机器有什么隔离）+ `POST /sandbox/plan`（只算不跑，先把 argv
+# 摆出来给人看），而 Agent 真正要执行时走的是**进程内**的 `services/agent_exec.py`
+# （工具调用那条路，带模式闸 / 权限档 / 计划门闸 + 审批），不经过这个 HTTP 口。
+# 它同时缺三样一般做法都要求的东西：**Origin / Host 校验**（MCP 规范对本地服务是
+# `MUST`；Jupyter / code-server / Ollama 那类本机执行口都带令牌或 Host 校验）、
+# **本地令牌**、以及 `approved` 由**请求方自填**（自己说"我批准了"就过闸）。
+# 留着它=在本机开一个"任何人（含浏览器里任意页面通过 CSRF 打回环）都能执行命令"
+# 的洞，而它服务的那一件事已经在别处有了更严的入口。
+# 服务器档**照旧有它**（管理员在 NAS 上执行，见 `api_router` 那一行）：这一条只管
+# 本机档那张白名单。
+_sandbox_local = APIRouter()
+_sandbox_local.routes.extend(
+    route
+    for route in sandbox.router.routes
+    if getattr(route, "path", "") in ("/sandbox", "/sandbox/plan")
+)
+local_router.include_router(_sandbox_local)
 # 站点图标（D11-②）：抓取与 30 天磁盘缓存都在本机（`<data_dir>/site-icons/`，见
 # services/site_icons.py）——它本来就是"本机代浏览器去取"，服务器那一档才是顺带。
 local_router.include_router(site_icons.router)
@@ -157,11 +240,23 @@ local_router.include_router(site_icons.router)
 # `/local/provider` 都在这个 router 上——三样都是"只在本机档成立"的东西，见 local.py）
 local_router.include_router(local.router)
 # 几条薄重声明的只读端点（事件日志 / 上下文用量 / 用量面板）——**不整 include
-# `chat.router` 或 `stats.router`**：那两个 router 里还有服务器专属的端点
-# （`/chat/stream` 要检索与模型代理；`/stats/dashboard` 数的是知识库的文档与任务），
-# 摆出来就是一条会 503 的路。理由与做法见 `api/v1/local.py` 的模块头。
+# `chat.router` 或 `stats.router`**：那两个 router 里还有别的域与服务器专属的端点
+# （`/chat/stream` 是会话链路那条流、`/stats/dashboard` 数的是知识库的文档与任务），
+# 摆出来就是一条会 404/503 的路。理由与做法见 `api/v1/local.py` 的模块头。
 local_router.include_router(local.chat_reads)
 local_router.include_router(local.stats_reads)
+# 命令目录（`GET /chat/commands`，2026-10-05 从"只挂服务器档"挪进来）：它读的是
+# **这台机器上的**命令与技能（`data/commands/` + 仓库命令 + `<data_dir>/skills/`），
+# 而桌面真正执行那一轮的是**边车** —— 目录与执行必须同源，否则壳里列出来的
+# 与真正能被执行的不是同一批（同一个端点也就有了两个答案）。
+#
+# 手法与上面那几条薄重声明逐字相同：**按原路径重挂同一个端点函数**（`chat.list_commands`，
+# 函数体一个字不重写、鉴权依赖与响应模型都还是原来那份），只是换一个 router 注册。
+_chat_commands_local = APIRouter()
+_chat_commands_local.routes.extend(
+    route for route in chat.router.routes if getattr(route, "path", "") == "/chat/commands"
+)
+local_router.include_router(_chat_commands_local)
 
 # **明确不挂**（每一条都因为"数据或能力不在这台机器上"）。按**域**逐个说清，
 # 因为这个判定的依据不是"这个文件属于谁"，而是"那个域的表在本机库里有没有"：

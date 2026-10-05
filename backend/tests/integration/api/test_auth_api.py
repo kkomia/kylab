@@ -12,6 +12,20 @@
 v0.11 起还有第二条契约：**鉴权永远生效**。没有控制台令牌，也没有
 "还没配凭据所以先放行"——第一次打开时唯一能调的是 ``/auth/status`` 与
 ``/auth/setup``，其余一律 401。
+
+## NAS 网页端退役之后的改动（2026-10-05）
+
+``/settings`` 那一族**只在本机档存在**了（NAS 上那份设置页随网页端退役），
+所以这一份里三处随它改了：
+
+- "哪些端点要 401" 那张参数表里的 ``/settings`` 换成 ``/api/v1/memory``
+  （同样是服务器档的服务端端点，同样要求凭据）；
+- ``test_external_api_key_cannot_touch_settings`` **摘掉**：那条风险现在**结构性不存在**
+  ——能用 API Key 的那一档（服务器）没有 ``/settings``，有 ``/settings`` 的那一档
+  （本机）不认 API Key（主体恒为"本机主人"，见 `api/auth.py::current_caller`）。
+  理由写在原来那条用例的位置上；
+- ``test_setup_then_login_then_me`` 里那处"管理员会话能进设置页"换成能进
+  ``/api/v1/users``（同一件事：管理员会话在服务器档管用的那类端点）。
 """
 
 from __future__ import annotations
@@ -83,7 +97,9 @@ def test_health_stays_open_even_when_locked(locked: TestClient) -> None:
     ("method", "path"),
     [
         ("get", "/api/v1/knowledge-bases"),
-        ("get", "/api/v1/settings"),
+        # 原来是 `/api/v1/settings`——它随 NAS 网页端退役（2026-10-05）只在本机档了，
+        # 服务器档上那是 404（不是 401），换一条同样要求凭据的服务器端点
+        ("get", "/api/v1/memory"),
         ("get", "/api/v1/tasks"),
         ("get", "/api/v1/stats/dashboard"),
     ]
@@ -119,31 +135,23 @@ def test_non_bearer_scheme_is_rejected(locked: TestClient) -> None:
 # --------------------------------------------------------------------- 凭据窃取路径
 
 
-def test_external_api_key_cannot_touch_settings(locked: TestClient) -> None:
-    """**本文件最重要的一条**。
-
-    外部 API Key 若能 PATCH /settings，就能把 base_url 指到自己的服务器上，
-    下一次 embedding 调用就会把用户的 API Key 发过去。必须 403。
-
-    同时验证"只要求读写权限是不够的"——这是一把 **readwrite** 密钥，
-    仍然不能碰设置，说明拦它的是"必须是管理员会话"而不是权限档位。
-    """
-    issued = _issue(locked, permission=ApiKeyPermission.READWRITE.value)
-    external = {"Authorization": f"Bearer {issued['token']}"}
-
-    # 读设置也不行：设置响应里就是打码后的凭据与全部 base_url
-    read = locked.get("/api/v1/settings", headers=external)
-    assert read.status_code == 403, "外部密钥读到了设置页"
-
-    write = locked.patch(
-        "/api/v1/settings",
-        json={"values": [{"key": "embedding.base_url", "value": "https://evil.test"}]},
-        headers=external
-    )
-    assert write.status_code == 403, "外部密钥改掉了 base_url —— 凭据窃取路径没封住"
-
-    test_conn = locked.post("/api/v1/settings/test/embedding", headers=external)
-    assert test_conn.status_code == 403
+# **摘掉一条**（2026-10-05）：``test_external_api_key_cannot_touch_settings``
+# （原判据：readwrite 的外部 API Key 读 / 写 / 试连 ``/settings`` 全是 403，
+# 从而封住"把 ``embedding.base_url`` 指到自己的服务器、下一次 embed 调用就把用户的
+# API Key 发过去"那条路）。
+#
+# **为什么在本机档没有意义、在服务器档也不存在这个面**：那条风险的落点是**服务器档的
+# `/settings`**（外部密钥能打进来、而服务器持模型凭据）。NAS 网页端退役之后
+# ``/settings`` **只在本机档**（那张 ``app_settings`` 表在本机 SQLite 里），而本机档
+# **不认 API Key**——它不挂 `/auth/*` 与 `/api-keys`，调用主体由
+# `api/auth.py::current_caller` 短路成"本机主人"，压根没有"外部密钥"这个身份。
+# 换句话说这条路径**结构性消失**了：能用 API Key 的那一档没有设置端点，
+# 有设置端点的那一档没有 API Key。
+#
+# 两边的判定都还在代码里（`api/auth.py::check_access` 的"管理员会话"那一档，
+# 与 `api/v1/settings.py` 上的 `WriteDep`），覆盖它们的用例：
+# `test_api_key_cannot_self_issue`、`test_api_key_cannot_list_users`（本文件，
+# 走仍然挂在服务器档的端点）与 `tests/unit/services/test_api_key.py`。
 
 
 def test_api_key_cannot_self_issue(locked: TestClient) -> None:
@@ -301,9 +309,11 @@ def test_setup_then_login_then_me(app_client: TestClient) -> None:
     # 用户名归一化为小写；显示名保留原样
     assert (setup["user"]["username"], setup["user"]["name"]) == ("admin", "小又")
 
-    # 会话令牌立即可用，且管理员会话能进设置页
+    # 会话令牌立即可用，且管理员会话能进**管理员专属**的那些端点
+    # （原来是 `/api/v1/settings`——它随 NAS 网页端退役只在本机档了，换 `/api/v1/users`：
+    #  同一类"只有管理员会话打得开"的服务器端点）
     session = {"Authorization": f"Bearer {setup['token']}"}
-    assert app_client.get("/api/v1/settings", headers=session).status_code == 200
+    assert app_client.get("/api/v1/users", headers=session).status_code == 200
     assert app_client.get("/api/v1/auth/me", headers=session).json()["username"] == "admin"
 
     # 退出后令牌作废
