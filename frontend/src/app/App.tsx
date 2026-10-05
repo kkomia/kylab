@@ -12,6 +12,19 @@
  *    再看有没有凭据（无 → 登录页 + `redirect`）。`ensureAuthStatus` 失败**不拦**，
  *    否则后端起不来会在守卫里死循环，用户连"后端没起"都看不到。
  *
+ * ## R13：本机档不要求远端登录（2026-10-04）
+ *
+ * M3 / M4 / M5 三次验收与《交接说明》都记着同一条：**远端（NAS）不可达时前端被守卫
+ * 拦回登录页，本机那份进不了界面** —— 而这一档的会话 / 笔记 / 设置 / 记忆**就在本机**
+ * （边车进程里的库），本机后端的账号体系整个不参与（`/auth/*` 压根没挂在那一档的路由表上）。
+ * 把人挡在登录页外面，等于"本机数据看不见"，与"本机权威"直接冲突。
+ *
+ * 于是守卫多一条出路：**远端问不出来（`ensureAuthStatus` 回空）+ 这一档只连本机后端**
+ * （`sessionActions.localOnlyDeployment`，判据是本机后端答不答 `/local/status`）→ 放行，
+ * 并给一条克制的 toast（远端依赖的那几件各有各的降级：知识库走 `ProviderRoute`、
+ * 备份页自己报远端收不收得了快照）。**远端答了话就一个字都不变**——该登录还是要登录，
+ * 门禁不是被拆掉，只是不再拿远端当本机数据的门。
+ *
  * ## M3 阶段 6：知识库那四条路由多一层守卫
  *
  * `ProviderRoute` 包住四条知识库路由（列表 / 库详情 / Wiki / 文档详情）：本机档里
@@ -25,13 +38,14 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from
 
 import { refresh as refreshProvider } from '@/api/provider'
 import { Toaster } from '@/ui/sonner'
-import { ensureAuthStatus, restoreSession } from '@/lib/sessionActions'
+import { ensureAuthStatus, localOnlyDeployment, restoreSession } from '@/lib/sessionActions'
 import { hasCredential, sessionToken, useSessionStore } from '@/lib/session'
 import { loadRoster } from '@/lib/operator'
 import { PAGES } from '@/app/routes'
 import { BackupRoute } from '@/features/backup/BackupRoute'
 import { ProviderRoute } from '@/features/knowledge/ProviderRoute'
 import { AppShell } from '@/features/layout'
+import { notifyWarning } from '@/features/misc/shared/toast'
 
 // 懒加载的**入口函数**都在 `app/routes.ts` 里（侧栏的 hover 预热要用同一批函数，
 // 同一个函数引用 React 才会复用同一个 chunk）。
@@ -101,6 +115,16 @@ const TITLES: Array<[RegExp, string]> = [
 ]
 
 /**
+ * 「本机档、远端连不上」时那句 toast（R13）。
+ *
+ * 克制的口径：**一句话说完**——远端那几件暂时用不上、本机那几件照常。
+ * 不解释机制（为什么、哪台机器、哪条链路），也不劝用户做什么（远端回来时
+ * 知识库与备份各自会把状态说清）。
+ */
+export const OFFLINE_LOCAL_ONLY_NOTICE =
+  '连不上服务器：知识库与备份上传要连上服务器才用得上，会话与笔记照常在本机。'
+
+/**
  * 登录守卫（写在组件里而不是路由 `loader`）：`ensureAuthStatus` 是异步的，
  * 而在渲染之前必须知道"是放行还是跳登录页"，否则会先闪一下目标页再跳走。
  */
@@ -108,6 +132,9 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const location = useLocation()
   const navigate = useNavigate()
   const [ready, setReady] = useState(false)
+  // 「本机档、远端连不上」那一句**一次启动只说一遍**：守卫每次换页都会重跑，
+  // 而这件事没有重说的价值（刷屏反而把它淹掉，与 `ProviderRoute` 那条 toast 同一条理由）。
+  const toldOffline = useRef(false)
 
   useEffect(() => {
     let alive = true
@@ -124,6 +151,19 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         return
       }
       if (status?.needs_setup || !hasCredential()) {
+        // **R13：本机档不要求远端登录**（见文件头那一段）。两个条件同时成立才放行：
+        // ① `status` 空 = **远端问不出来**（远端答了话就照原行为走登录页）；
+        // ② 这一档**只连本机后端**（判据见 `sessionActions.localOnlyDeployment`）。
+        // 放行不等于门禁被拆：远端依赖的那几件（知识库 / 备份上传）各有各的降级。
+        if (status === null && !hasCredential() && (await localOnlyDeployment())) {
+          if (!alive) return
+          if (!toldOffline.current) {
+            toldOffline.current = true
+            notifyWarning(OFFLINE_LOCAL_ONLY_NOTICE)
+          }
+          setReady(true)
+          return
+        }
         navigate(`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`, {
           replace: true,
         })
