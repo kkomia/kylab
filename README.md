@@ -148,7 +148,7 @@ cargo run --release            # 前置：Rust 工具链 + VS 生成工具 + Web
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\dev-backend.ps1     # 后端开发服务
 powershell -ExecutionPolicy Bypass -File scripts\dev-frontend.ps1    # 前端开发服务
-powershell -ExecutionPolicy Bypass -File scripts\dev-sidecar.ps1     # 本机档后端（桌面壳那一档：对话 + 本机数据）
+powershell -ExecutionPolicy Bypass -File scripts\dev-sidecar.ps1     # 本机档后端（桌面壳那一档：对话 + 本机数据；读壳的 config.json，接上 NAS 的知识库与凭据）
 powershell -ExecutionPolicy Bypass -File scripts\lint.ps1            # 规范检查（提交前跑）
 powershell -ExecutionPolicy Bypass -File scripts\ci.ps1              # CI 门禁（规范检查 + 前后端测试）
 ```

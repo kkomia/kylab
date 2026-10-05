@@ -16,9 +16,23 @@
 # 于是同一个库、同一批会话、同一份设置。要一份隔离开的数据（不碰壳里的真实数据）就设
 # `KYLAB_DATA_DIR`。
 #
+# **它现在与壳同一个口径（地址与钥匙）**：启动时读壳的 `config.json`（`server` + `api_key`）
+# → 给边车传 `--server {server}/api/v1` / `--token {api_key}`，于是这一档的知识库提供者
+# （`GET /api/v1/local/provider`）与备份上传都拿得到地址与凭据 —— 与壳拉起它时传的
+# 是同两项（`desktop/src-tauri/src/main.rs:434` 起那个口径）。钥匙串优先、回落
+# `config.json`：`api_key` 被壳收进系统钥匙串的那些机器（M5 阶段 6B 之后是常态），
+# 从 `kylab:nas_token:<地址>` 读同一把（壳的 `Shell::api_key_for` 就是这条链）。
+# 两个环境变量可显式覆盖：`KYLAB_SERVER` / `KYLAB_TOKEN`（排障、连别的 NAS 用，
+# **改了地址就一并给钥匙** —— 钥匙串是按地址归档的）。
+# **密钥纪律**：钥匙只在变量与 argv 里活着 —— 不 echo、不进日志、不进任何提示
+# （argv 同机器可见，见 `desktop/src-tauri/src/sidecar.rs` 的头三条纪律）。
+#
 # **与 dev-backend.sh 的关系**：两个进程可并存，同一份 SQLite 库（定时任务的认领是一次
 # CAS，只会跑一遍，见 backend/app/sidecar.py::_lifespan）。`/api/**` 那条"服务器面"的请求
-# 在浏览器里仍走 Vite 反代到 :8000，只起本机档时它们按各页自己的降级显示。
+# 在浏览器里走 Vite 反代，**默认**仍打到 :8000（那是"服务器档"的开发后端，自己带知识库）；
+# 要接 NAS 就设 `KYLAB_API_TARGET=http://192.168.31.18:8081` —— 那正是桌面壳的形态（壳把
+# `/api/**` 转发到 NAS、`Authorization` 用页面自己的），出处与理由见 frontend/vite.config.ts
+# 的那段注释。不设它时那些请求按各页自己的降级显示。
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -74,7 +88,81 @@ fi
 
 cd "$ROOT/backend"
 
+# ---------------------------------------------------------------- 地址与钥匙
+# **与壳同一个口径**：壳起边车时传的就是 `--server {server}/api/v1` + `--token {壳里那把钥匙}`
+# （desktop/src-tauri/src/main.rs:434 起）。三个来源按下面的顺序取，**明文不进任何输出**：
+#   地址：KYLAB_SERVER → 壳的 config.json 的 server
+#   钥匙：KYLAB_TOKEN → 系统钥匙串 kylab:nas_token:<地址> → config.json 的 api_key
+# （钥匙串排在明文前面是照壳的 `Shell::api_key_for`：钥匙串优先、回落 config.json ——
+#  M5 阶段 6B 把明文收进钥匙串之后，config.json 里那一栏只是"老配置还读得动"。）
+CONFIG=$DATA_DIR/config.json
+
+config_value() {
+    # $1 = config.json 里的键名；文件没有 / JSON 读不动 → 什么都不打印
+    [ -f "$CONFIG" ] || return 0
+    uv run --all-extras python -c 'import json,sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+value = data.get(sys.argv[2])
+print(value.strip() if isinstance(value, str) else "")' "$CONFIG" "$1" 2>/dev/null || true
+}
+
+keychain_value() {
+    # $1 = 地址；成功打印钥匙，没配 / 钥匙串不可用 → 什么都不打印。
+    # 失败时那个 CLI 会往 **stdout** 打一句人话，所以这里按退出码决定要不要它。
+    if ! _key=$(uv run --all-extras python -m app.services.credentials nas-token \
+            --data-dir "$DATA_DIR" --origin "$1" --show 2>/dev/null); then
+        _key=""
+    fi
+    printf '%s' "$_key"
+}
+
+SERVER=${KYLAB_SERVER:-}
+SERVER_SOURCE="KYLAB_SERVER"
+if [ -z "$SERVER" ]; then
+    SERVER=$(config_value server)
+    SERVER_SOURCE="壳的 config.json"
+fi
+
+TOKEN=${KYLAB_TOKEN:-}
+TOKEN_SOURCE="KYLAB_TOKEN"
+if [ -z "$TOKEN" ] && [ -n "$SERVER" ]; then
+    TOKEN=$(keychain_value "$SERVER")
+    TOKEN_SOURCE="系统钥匙串"
+fi
+# **没有地址就一把钥匙都不给**：不给 `--server` 时边车会用自己那档默认地址
+# （`KYLAB_SERVER_URL` / :8000），把 NAS 的钥匙送到那儿去是"钥匙送错门"
+if [ -z "$TOKEN" ] && [ -n "$SERVER" ]; then
+    TOKEN=$(config_value api_key)
+    TOKEN_SOURCE="壳的 config.json"
+fi
+
+# `--server` 要的是**含 /api/v1** 的基址（知识库提供者拿它拼 `/provider/handshake`）；
+# 末尾斜杠先去掉，已经是 /api/v1 结尾的就不再拼一次
+SERVER=$(printf '%s' "$SERVER" | sed 's:/*$::')
+case "$SERVER" in
+    */api/v1) ;;
+    "") ;;
+    *) SERVER=$SERVER/api/v1 ;;
+esac
+
+if [ -n "$SERVER" ]; then
+    if [ -n "$TOKEN" ]; then
+        echo "边车：接上 $SERVER（地址来自 $SERVER_SOURCE，钥匙来自 $TOKEN_SOURCE，不回显）" >&2
+    else
+        echo "边车：接上 $SERVER（地址来自 $SERVER_SOURCE），但没有钥匙——知识库会如实回「凭据缺失」；" >&2
+        echo "      在壳里对那台 NAS 登一次，或给 KYLAB_TOKEN。" >&2
+    fi
+else
+    echo "边车：没找到壳的 config.json（或里面没有 server）—— 这一档不带 NAS 地址与钥匙（知识库与备份上传按各页自己的降级显示）" >&2
+fi
+
 # **--all-extras 不是可选的**：裸 `uv sync` 会把 extras（duckdb / 解析器 / office 这些）卸掉，
 # 而边车启动时就 import duckdb（backend/Dockerfile 与 CI 用的都是 --all-extras，同一条理由）；
 # `uv run` 自己会同步环境，所以不需要单独再 sync 一次。
-exec uv run --all-extras python -m app.sidecar --port "$PORT" --workspace "$WORKSPACE" --data-dir "$DATA_DIR"
+set --
+if [ -n "$SERVER" ]; then set -- "$@" --server "$SERVER"; fi
+if [ -n "$TOKEN" ]; then set -- "$@" --token "$TOKEN"; fi
+exec uv run --all-extras python -m app.sidecar --port "$PORT" --workspace "$WORKSPACE" --data-dir "$DATA_DIR" "$@"
