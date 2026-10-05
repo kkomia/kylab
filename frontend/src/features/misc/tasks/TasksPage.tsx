@@ -10,6 +10,18 @@
  *
  * 缓存口径与旧 store 一致：**列表整份缓存在 query 里**，筛选/分页都在客户端做
  * （任务量级在几百以内）；轮询期间旧数据继续显示，不闪骨架屏。
+ *
+ * ## 「流水线任务」那一半按提供者状态分流
+ *
+ * 这一半（列表 + 负载）数的都是**知识库那边的家当**：`/tasks` 与 `/tasks/load`
+ * 都**不挂本机档**（`backend/app/api/v1/router.py` 的"明确不挂"那一段），没接上时
+ * 发它们只会得到一行 `Not Found` 加一片空白。判据与概览页**同一套**（那里的文件头
+ * 写着两条口径的来路）：`kbReady` 为假时两个查询都不发，内容区换成一块说得清的空态
+ * （原因与下一步用后端那句 `reason`）；还没问出结论时画一个占位（不猜）。
+ *
+ * **「定时任务」那一段不受它管**：那一族的数据在**本机**（`/scheduled-tasks`），
+ * 显隐仍旧只看"有没有本机后端"（`localBackend.present`，见 `VIEWS` 的说明）——
+ * 本机的数据不该因为知识库在别处而藏起来。
  */
 import { TASKS_QUERY_KEY } from '@/features/misc/queryKeys'
 
@@ -19,6 +31,7 @@ import { ChevronLeft, ChevronRight, FileText, RefreshCw } from 'lucide-react'
 import { useNavigate } from 'react-router'
 
 import { useLocalBackend } from '@/api/local'
+import { useKnowledgeProviderStatus } from '@/api/provider'
 import { cancelTasks, getTaskLoad, listTasks, type TaskSummary } from '@/api/tasks'
 import { formatCount, formatDate } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
@@ -145,9 +158,22 @@ export function TasksPage() {
   const views = localBackend.present ? VIEWS : VIEWS.filter((item) => item.value !== 'schedules')
   const activeView: TaskView = view === 'schedules' && localBackend.present ? 'schedules' : 'tasks'
 
+  /**
+   * 「流水线任务」那一半的判据（见文件头那一段；与概览页同一套）。
+   *
+   * 有本机后端时知识库在**提供者**那台，要握手 `ready` 才算接上；没有本机后端时
+   * 知识库就是它自己，`/local/status` 一有结论就算接上。`kbPending` 是"还没问出结论"
+   * ——那时两个查询都不发、内容区画个占位（不猜）。
+   */
+  const provider = useKnowledgeProviderStatus()
+  const kbReady = localBackend.present ? provider.ready : localBackend.settled
+  const kbPending = localBackend.present ? !provider.settled : !localBackend.settled
+
   const list = useQuery({
     queryKey: TASKS_QUERY_KEY,
     queryFn: () => listTasks(),
+    // 没接上就**一条都不发**：`/tasks` 不挂本机档，打过去只会是 404
+    enabled: kbReady,
     // 轮询的**开与关**由"有没有任务在跑"决定：空闲时不发请求是有意的
     // （旧 `usePolling` 的 `active`），切换标签页看不见时 react-query 自己会停表，
     // 切回来立刻刷一次——这正是旧版 `visibilitychange` 那段的手工活。
@@ -168,7 +194,8 @@ export function TasksPage() {
   const load = useQuery({
     queryKey: TASK_LOAD_QUERY_KEY,
     queryFn: getTaskLoad,
-    enabled: isAdmin,
+    // 管理员专属 × 知识库接上了（两个条件都必须成立才发）
+    enabled: isAdmin && kbReady,
     refetchInterval: running ? POLL_INTERVAL_MS : false,
     // 负载读不到不该影响任务列表：它是解释性的附加信息，而列表才是主体
     // （旧版把这里的异常整个吞掉，这里靠"不渲染错误态"表达同一件事）
@@ -325,81 +352,96 @@ export function TasksPage() {
       ) : (
         <div className="page-shell-body">
           {/*
+            知识库接没接上的三态（判据见上面那一小段）：这一半的数据在知识库那边，
+            没接上时一块都画不出来——所以先占位、再给空态，只有接上了才画全套。
+          */}
+          {kbPending ? (
+            <p data-testid="tasks-kb-pending" className="text-text-tertiary">
+              正在确认知识库连接…
+            </p>
+          ) : !kbReady ? (
+            <EmptyState
+              title="知识库还没接上"
+              hint={provider.reason || provider.error || '这台机器还没接上知识库'}
+            />
+          ) : (
+            <>
+              {/*
             运行负载放在最上面：它解释的是"为什么后台慢"，而那正是用户打开这一页时
             的问题——排在列表下方的话，他要先翻过几十行任务才看得到（管理员专属）。
           */}
-          {isAdmin && <LoadPanel load={load.data ?? null} live={running} />}
+              {isAdmin && <LoadPanel load={load.data ?? null} live={running} />}
 
-          {error && <ErrorLine>{error}</ErrorLine>}
-          {loading && <SkeletonBlock variant="list" rows={5} />}
+              {error && <ErrorLine>{error}</ErrorLine>}
+              {loading && <SkeletonBlock variant="list" rows={5} />}
 
-          {!loading && tasks.length === 0 && (
-            <EmptyState
-              title="还没有任务"
-              hint="上传文档后会在这里看到探测、解析、切分、向量化各步骤的进展。"
-            />
-          )}
+              {!loading && tasks.length === 0 && (
+                <EmptyState
+                  title="还没有任务"
+                  hint="上传文档后会在这里看到探测、解析、切分、向量化各步骤的进展。"
+                />
+              )}
 
-          {!loading && tasks.length > 0 && (
-            <>
-              <div className="m-toolbar">
-                <div className="m-filter-select">
-                  <OptionSelect
-                    value={kb}
-                    onValueChange={setKb}
-                    options={kbOptions}
-                    label="按知识库筛选"
-                  />
-                </div>
-                <div className="m-filter-select">
-                  <OptionSelect
-                    value={state}
-                    onValueChange={setState}
-                    options={STATE_OPTIONS}
-                    label="按状态筛选"
-                  />
-                </div>
-                <div className="m-filter-select">
-                  <OptionSelect
-                    value={health}
-                    onValueChange={setHealth}
-                    options={HEALTH_OPTIONS}
-                    label="按健康筛选"
-                  />
-                </div>
-                {/* 已取消默认不显示：给一个显式开关，并如实说藏了多少条。
+              {!loading && tasks.length > 0 && (
+                <>
+                  <div className="m-toolbar">
+                    <div className="m-filter-select">
+                      <OptionSelect
+                        value={kb}
+                        onValueChange={setKb}
+                        options={kbOptions}
+                        label="按知识库筛选"
+                      />
+                    </div>
+                    <div className="m-filter-select">
+                      <OptionSelect
+                        value={state}
+                        onValueChange={setState}
+                        options={STATE_OPTIONS}
+                        label="按状态筛选"
+                      />
+                    </div>
+                    <div className="m-filter-select">
+                      <OptionSelect
+                        value={health}
+                        onValueChange={setHealth}
+                        options={HEALTH_OPTIONS}
+                        label="按健康筛选"
+                      />
+                    </div>
+                    {/* 已取消默认不显示：给一个显式开关，并如实说藏了多少条。
                     右边那个数**不再复述"已取消"**——勾选框的标签已经说过了
                     （原来是「显示已取消 已隐藏 23 条已取消」，同一句说了两遍，2026-09-24 改） */}
-                <CheckRow checked={showCanceled} onCheckedChange={setShowCanceled}>
-                  显示已取消
-                </CheckRow>
-                {hiddenCanceled > 0 && (
-                  <span className="m-toolbar-note">已取消 {formatCount(hiddenCanceled)}</span>
-                )}
-                {hasFilter && (
-                  <Button variant="secondary" size="sm" onClick={clearFilters}>
-                    清除筛选
-                  </Button>
-                )}
-                {/* 唯一能真正"给队列踩刹车"的地方：几十条 pending 堵着时，
+                    <CheckRow checked={showCanceled} onCheckedChange={setShowCanceled}>
+                      显示已取消
+                    </CheckRow>
+                    {hiddenCanceled > 0 && (
+                      <span className="m-toolbar-note">已取消 {formatCount(hiddenCanceled)}</span>
+                    )}
+                    {hasFilter && (
+                      <Button variant="secondary" size="sm" onClick={clearFilters}>
+                        清除筛选
+                      </Button>
+                    )}
+                    {/* 唯一能真正"给队列踩刹车"的地方：几十条 pending 堵着时，
                     逐篇取消文档是做不到的（用户反馈） */}
-                {pendingCount > 0 && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={canceling}
-                    onClick={() => setCancelOpen(true)}
-                  >
-                    取消排队中的任务（{formatCount(pendingCount)}）
-                  </Button>
-                )}
-                <span className="m-toolbar-count tabular">
-                  {formatCount(visibleTasks.length)} / {formatCount(tasks.length)} 项
-                </span>
-              </div>
+                    {pendingCount > 0 && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={canceling}
+                        onClick={() => setCancelOpen(true)}
+                      >
+                        取消排队中的任务（{formatCount(pendingCount)}）
+                      </Button>
+                    )}
+                    <span className="m-toolbar-count tabular">
+                      {formatCount(visibleTasks.length)} / {formatCount(tasks.length)} 项
+                    </span>
+                  </div>
 
-              <div className="panel">
-                {/*
+                  <div className="panel">
+                    {/*
                   表头**逐格对着行内的格子**（评审 T3：原表头 5 格、行内 7 件，且「任务」还带
                   `padding-left: 16px + gap` 去让图标，于是它正好压在每行的类型标签「解析」上，
                   「状态」也比徽章左边缘多出 30px）。
@@ -409,21 +451,21 @@ export function TasksPage() {
                   类型列给了表头「类型」而不是留白：这一列有内容（解析 / 切分 / 向量化），
                   没有表头的话读者只能靠猜它与标题的关系。
                 */}
-                <div className="panel-head m-list-head min-w-[680px]" aria-hidden="true">
-                  <span className="m-head-kind">类型</span>
-                  <span className="m-head-task">任务</span>
-                  <span className="m-head-col-status">状态</span>
-                  <span className="m-head-col-health">健康</span>
-                  <span className="m-head-col-attempts">尝试次数</span>
-                  <span className="m-row-time">更新时间</span>
-                </div>
+                    <div className="panel-head m-list-head min-w-[680px]" aria-hidden="true">
+                      <span className="m-head-kind">类型</span>
+                      <span className="m-head-task">任务</span>
+                      <span className="m-head-col-status">状态</span>
+                      <span className="m-head-col-health">健康</span>
+                      <span className="m-head-col-attempts">尝试次数</span>
+                      <span className="m-row-time">更新时间</span>
+                    </div>
 
-                {visibleTasks.length === 0 ? (
-                  <p className="m-filter-empty">
-                    没有符合筛选条件的任务。换个条件，或点右上角「清除筛选」。
-                  </p>
-                ) : (
-                  /*
+                    {visibleTasks.length === 0 ? (
+                      <p className="m-filter-empty">
+                        没有符合筛选条件的任务。换个条件，或点右上角「清除筛选」。
+                      </p>
+                    ) : (
+                      /*
                     列表有**确定的高度上限**（8 行 ≈ `--row-height * 8`）并自己滚动
                     （评审 T6：此前整页滚，第 13 行被视口从中间切断，翻页器落到折线以下——
                     "还有多少"看不出来）。定高之后：表头留在面板里不动、翻页器回到首屏、
@@ -432,99 +474,103 @@ export function TasksPage() {
                     滚进来，所以这个滚动容器不需要 `tabIndex` 去抢一个焦点位（§8）。
                     底部那层渐隐只在**下面确实还有没露出来的行**时出现。
                   */
-                  <div className="relative min-w-[680px]">
-                    <div
-                      ref={listRef}
-                      onScroll={(event) => setListAtEnd(scrolledToEnd(event.currentTarget))}
-                      className="max-h-[calc(var(--row-height)*8)] overflow-y-auto"
-                    >
-                      <ul className="m-list">
-                        {pagedTasks.map((task) => (
-                          <li key={task.id} className="m-list-item">
-                            <div className="m-task-row panel-row">
-                              <FileText className="m-row-icon" size={16} />
-                              <span className="m-row-kind">{taskKindLabel(task.kind)}</span>
+                      <div className="relative min-w-[680px]">
+                        <div
+                          ref={listRef}
+                          onScroll={(event) => setListAtEnd(scrolledToEnd(event.currentTarget))}
+                          className="max-h-[calc(var(--row-height)*8)] overflow-y-auto"
+                        >
+                          <ul className="m-list">
+                            {pagedTasks.map((task) => (
+                              <li key={task.id} className="m-list-item">
+                                <div className="m-task-row panel-row">
+                                  <FileText className="m-row-icon" size={16} />
+                                  <span className="m-row-kind">{taskKindLabel(task.kind)}</span>
 
-                              {/*
+                                  {/*
                               整行可点是这里最要紧的交互：任务名只有十几个字宽，
                               而"看失败原因"是这一页唯一的深层动作，命中区不该只有一个词那么大。
                               里面是个真 button，所以 Tab 能到、回车能开（§8 键盘可达）。
                               */}
-                              <button
-                                type="button"
-                                className="m-row-main"
-                                aria-label={`查看任务详情：${taskKindLabel(task.kind)} ${documentName(task)}`}
-                                onClick={() => setDetail(task)}
-                              >
-                                <span className="m-row-name">{documentName(task)}</span>
-                                {needsAttention(task) && (
-                                  <span className="m-row-attention">
-                                    {attentionText(task)}
-                                    <ChevronRight size={12} />
-                                  </span>
-                                )}
-                              </button>
+                                  <button
+                                    type="button"
+                                    className="m-row-main"
+                                    aria-label={`查看任务详情：${taskKindLabel(task.kind)} ${documentName(task)}`}
+                                    onClick={() => setDetail(task)}
+                                  >
+                                    <span className="m-row-name">{documentName(task)}</span>
+                                    {needsAttention(task) && (
+                                      <span className="m-row-attention">
+                                        {attentionText(task)}
+                                        <ChevronRight size={12} />
+                                      </span>
+                                    )}
+                                  </button>
 
-                              {/*
+                                  {/*
                                 状态与健康各自包在**固定列宽**里（`.m-col-status` 84 / `.m-col-health` 92，
                                 与表头同宽）：徽章宽度随文案变（「执行中」比「已完成」多一个脉动点），
                                 不固定列宽的话后面的列会跟着徽章一起左右挪，表头永远对不上。
                               */}
-                              <span className="m-col-status">
-                                <StatusTag
-                                  label={taskStateView(task.state).label}
-                                  tone={taskStateView(task.state).tone}
-                                  live={task.state === 'running'}
-                                />
-                              </span>
-                              <span className="m-col-health">{healthCell(task)}</span>
-                              <span className="m-row-attempts">{attemptText(task)}</span>
-                              <span className="m-row-time">{formatDate(task.updated_at)}</span>
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                    {!listAtEnd && (
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[var(--bg-subtle)] to-transparent"
-                      />
+                                  <span className="m-col-status">
+                                    <StatusTag
+                                      label={taskStateView(task.state).label}
+                                      tone={taskStateView(task.state).tone}
+                                      live={task.state === 'running'}
+                                    />
+                                  </span>
+                                  <span className="m-col-health">{healthCell(task)}</span>
+                                  <span className="m-row-attempts">{attemptText(task)}</span>
+                                  <span className="m-row-time">{formatDate(task.updated_at)}</span>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                        {!listAtEnd && (
+                          <div
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[var(--bg-subtle)] to-transparent"
+                          />
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
 
-              {/* 分页：**总数常显、只藏翻页控件**，与文档列表同一套口径 */}
-              {visibleTasks.length > 0 && (
-                <div className="m-pager">
-                  <span className="m-pager-total">共 {formatCount(visibleTasks.length)} 项</span>
-                  {pageCount > 1 && (
-                    <div className="m-pager-controls">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={page <= 1}
-                        onClick={() => setPage((current) => Math.max(1, current - 1))}
-                      >
-                        <ChevronLeft size={14} />
-                        上一页
-                      </Button>
-                      <span className="m-pager-page tabular">
-                        第 {page} / {pageCount} 页
+                  {/* 分页：**总数常显、只藏翻页控件**，与文档列表同一套口径 */}
+                  {visibleTasks.length > 0 && (
+                    <div className="m-pager">
+                      <span className="m-pager-total">
+                        共 {formatCount(visibleTasks.length)} 项
                       </span>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={page >= pageCount}
-                        onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
-                      >
-                        下一页
-                        <ChevronRight size={14} />
-                      </Button>
+                      {pageCount > 1 && (
+                        <div className="m-pager-controls">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={page <= 1}
+                            onClick={() => setPage((current) => Math.max(1, current - 1))}
+                          >
+                            <ChevronLeft size={14} />
+                            上一页
+                          </Button>
+                          <span className="m-pager-page tabular">
+                            第 {page} / {pageCount} 页
+                          </span>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={page >= pageCount}
+                            onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+                          >
+                            下一页
+                            <ChevronRight size={14} />
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
+                </>
               )}
             </>
           )}

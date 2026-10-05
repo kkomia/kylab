@@ -46,11 +46,15 @@ import {
   type ScheduledTask,
 } from '@/api/schedules'
 import { getLocalStatus, resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
+import { resetProviderStore, setProviderStatusForTest, type ProviderStatus } from '@/api/provider'
 import { cancelTasks, getTaskLoad, listTasks, type SystemLoad, type TaskSummary } from '@/api/tasks'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
 import { TasksPage, tasksRefetchInterval } from '@/features/misc/tasks/TasksPage'
 import { useSessionStore } from '@/lib/session'
+
+/** 提供者握手成功的结论（这一页的「流水线任务」那一半按 `provider.ready` 分流）。 */
+const KB_READY: ProviderStatus = { state: 'ready', available: true }
 
 const listTasksMock = vi.mocked(listTasks)
 const getTaskLoadMock = vi.mocked(getTaskLoad)
@@ -181,9 +185,23 @@ function tabShape(trigger: HTMLElement) {
   }
 }
 
+/**
+ * 这一份用例的网络记账器（断言"那一条没发"时看它）。
+ *
+ * 用**直接赋值**而不是 `vi.stubGlobal`：`tests/setup.ts` 那层默认替身靠同一种写法，
+ * 而 `vi.unstubAllGlobals()` 会把那份文件装上的 jsdom 兜底一起撤掉
+ * （`tests/local-backend-gate.test.tsx` 里记着那条教训）。
+ */
+const fetchedUrls: string[] = []
+
 beforeEach(() => {
   vi.clearAllMocks()
   resetToasts()
+  fetchedUrls.length = 0
+  globalThis.fetch = (async (url: string) => {
+    fetchedUrls.push(String(url))
+    throw new TypeError('这一份用例不发真请求')
+  }) as unknown as typeof fetch
   useSessionStore.setState({ token: '', currentUser: null, authStatus: null, reloginCount: 0 })
   listTasksMock.mockResolvedValue({ items: [task()] })
   getTaskLoadMock.mockRejectedValue(new Error('403'))
@@ -192,11 +210,15 @@ beforeEach(() => {
   // 要摆"没有本机后端"的那两条用例自己再摆一次（`setLocalBackendForTest('absent')`）
   localStatusMock.mockRejectedValue(new Error('这一份用例不探本机后端'))
   setLocalBackendForTest('local')
+  // 知识库那一条同理：默认摆成**握手成功**（要摆"没接上"的用例自己再摆一次）
+  setProviderStatusForTest(KB_READY)
 })
 
 afterEach(() => {
-  // 模块级单份状态（`api/local.ts` 的判据）必须由调用方复位，否则会串到下一条用例
+  // 模块级单份状态（`api/local.ts` 与 `api/provider.ts` 各有一份）必须由调用方复位，
+  // 否则会串到下一条用例
   resetLocalBackendForTest()
+  resetProviderStore()
 })
 
 describe('任务中心', () => {
@@ -669,5 +691,59 @@ describe('定时任务分段的显隐（按"有没有本机后端"）', () => {
 
     expect(await screen.findByRole('tab', { name: '定时任务' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '流水线任务' })).toBeInTheDocument()
+  })
+})
+
+/*
+ * 「流水线任务」那一半的知识库分流（见 `TasksPage.tsx` 的文件头）。
+ *
+ * `/tasks` 与 `/tasks/load` 数的都是知识库那边的家当（本机档**不挂**它们，
+ * `backend/app/api/v1/router.py` 的"明确不挂"那一段），没接上时发过去只会是一行 `Not Found`。
+ * 判据与概览页同一套（`kbReady` / `kbPending`，两边各写一处、口径相同）。**「定时任务」
+ * 那一段不受它管**：那一族的数据在本机，显隐仍旧只看"有没有本机后端"——第一条用例专门核这一点。
+ */
+describe('流水线任务：知识库接没接上的分流', () => {
+  const KB_UNCONFIGURED: ProviderStatus = {
+    state: 'unconfigured',
+    available: false,
+    reason: '还没配知识库提供者的地址（到「设置 → 知识库连接」里填一下，或问管理员要）',
+  }
+
+  it('本机档 + 提供者没接上：两个查询都不发、内容区换成空态，「定时任务」那一段照旧在', async () => {
+    // 管理员视角：这样"负载也不发"就只可能是 kbReady 这一条判据挡下来的（而不是非管理员）
+    asAdmin()
+    setProviderStatusForTest(KB_UNCONFIGURED)
+    renderMisc(<TasksPage />)
+
+    expect(await screen.findByText('知识库还没接上')).toBeInTheDocument()
+    expect(screen.getByText(KB_UNCONFIGURED.reason as string)).toBeInTheDocument()
+    expect(listTasksMock).not.toHaveBeenCalled()
+    expect(getTaskLoadMock).not.toHaveBeenCalled()
+    expect(fetchedUrls.filter((url) => url.includes('/api/v1/tasks'))).toEqual([])
+    // 列表那一块一件都不画（也没有"加载失败"那条错误行）
+    expect(screen.queryByText('还没有任务')).toBeNull()
+    expect(document.querySelector('.m-error-line')).toBeNull()
+    // 「定时任务」那一段的判据**一个字没改**：有本机后端 ⇒ 还在
+    expect(screen.getByRole('tab', { name: '定时任务' })).toBeInTheDocument()
+  })
+
+  it('本机档 + 提供者 ready：列表照旧（那一条被请求到）', async () => {
+    renderMisc(<TasksPage />)
+
+    expect(
+      await screen.findByRole('button', { name: /查看任务详情：解析 手册\.pdf/ }),
+    ).toBeInTheDocument()
+    expect(listTasksMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('还没问出提供者结论：只画占位，不画列表、也不提前发请求（不猜）', async () => {
+    setProviderStatusForTest(null)
+    renderMisc(<TasksPage />)
+
+    expect(screen.getByTestId('tasks-kb-pending')).toBeInTheDocument()
+    expect(screen.queryByText('还没有任务')).toBeNull()
+    // 还没结论 ≠ 没接上：空态那句不许提前出现
+    expect(screen.queryByText('知识库还没接上')).toBeNull()
+    expect(listTasksMock).not.toHaveBeenCalled()
   })
 })
