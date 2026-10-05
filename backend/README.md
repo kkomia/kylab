@@ -1,7 +1,8 @@
 # backend
 
 KYLAB 知识库后端：FastAPI（REST）+ MCP Server，共用 `services/` 业务层。
-技术栈与进程模型见《架构设计 v0.2》§2；工程约束见《项目工程规范 v0.4》。
+技术栈与进程模型见《[架构设计 v0.2](../docs/设计/架构设计-v0.2.md)》§2；
+工程约束见《[项目工程规范 v0.6](../docs/规范/项目工程规范-v0.6.md)》。
 
 ## 快速开始
 
@@ -14,7 +15,7 @@ uv run uvicorn app.main:app --reload
 
 打开 http://127.0.0.1:8000/api/v1/docs 查看 OpenAPI 文档；
 `GET /api/v1/health` 为存活探针。数据库需要 **PostgreSQL + pgvector**，
-表结构由启动时的迁移自动补齐（见《部署与运行 v0.2》§2.0）。
+表结构由启动时的迁移自动补齐（见《[部署与运行 v0.4](../docs/规范/部署与运行-v0.4.md)》§2.0 / §2.1）。
 
 > **依赖分层（踩过坑，照实写）**：`jieba`、`argon2-cffi` 在核心依赖里；
 > 但**光 `uv sync` 是起不来的**——`app/core/storage.py` 会无条件构造 DuckDB 表格副本

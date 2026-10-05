@@ -307,7 +307,9 @@ describe('文档列表', () => {
     expect(await screen.findByText('共 2 篇')).toBeInTheDocument()
   })
 
-  it('状态筛选与搜索（防抖后）都把条件下推给接口，并且回第 1 页', async () => {
+  // **放宽这一处**（不是放宽全局 `testTimeout`）：两轮 Radix 下拉开合 + 300ms 防抖 + 三轮清单
+  // 查询都是 CPU 型重活，全量并发时被挤过默认 5s（实测 5226ms）；单跑 1127ms，15s 是并发余量。
+  it('状态筛选与搜索（防抖后）都把条件下推给接口，并且回第 1 页', { timeout: 15_000 }, async () => {
     renderView()
     await screen.findByText('说明书.pdf')
 

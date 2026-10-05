@@ -345,34 +345,40 @@ describe('会话行菜单', () => {
     })
   })
 
-  it('重命名：弹窗里输入新标题，保存调 { title }；空标题不发请求', async () => {
-    const user = userEvent.setup()
-    listConversationsMock.mockResolvedValue({
-      items: [conversation({ id: 'c1', title: '会话 A' })],
-    })
-    updateConversationMock.mockResolvedValue(conversation({ id: 'c1', title: '合同整理' }))
-    renderShell()
+  // **放宽这一处**（不是放宽全局 `testTimeout`）：弹窗两开两合 + 清空/输入/保存三串用户事件，
+  // 全量并发时被挤过默认 5s（实测 5226ms）；单跑 853ms —— 与下方"空态"那条同一处置。
+  it(
+    '重命名：弹窗里输入新标题，保存调 { title }；空标题不发请求',
+    { timeout: 15_000 },
+    async () => {
+      const user = userEvent.setup()
+      listConversationsMock.mockResolvedValue({
+        items: [conversation({ id: 'c1', title: '会话 A' })],
+      })
+      updateConversationMock.mockResolvedValue(conversation({ id: 'c1', title: '合同整理' }))
+      renderShell()
 
-    const menu = await openRowMenu(user)
-    await user.click(within(menu).getByRole('menuitem', { name: '重命名' }))
+      const menu = await openRowMenu(user)
+      await user.click(within(menu).getByRole('menuitem', { name: '重命名' }))
 
-    const input = await screen.findByLabelText('会话标题')
-    // 先清空再保存：空标题不该打接口
-    await user.clear(input)
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    expect(updateConversationMock).not.toHaveBeenCalled()
+      const input = await screen.findByLabelText('会话标题')
+      // 先清空再保存：空标题不该打接口
+      await user.clear(input)
+      await user.click(screen.getByRole('button', { name: '保存' }))
+      expect(updateConversationMock).not.toHaveBeenCalled()
 
-    const menuAgain = await openRowMenu(user)
-    await user.click(within(menuAgain).getByRole('menuitem', { name: '重命名' }))
-    const second = await screen.findByLabelText('会话标题')
-    await user.clear(second)
-    await user.type(second, '合同整理')
-    await user.click(screen.getByRole('button', { name: '保存' }))
+      const menuAgain = await openRowMenu(user)
+      await user.click(within(menuAgain).getByRole('menuitem', { name: '重命名' }))
+      const second = await screen.findByLabelText('会话标题')
+      await user.clear(second)
+      await user.type(second, '合同整理')
+      await user.click(screen.getByRole('button', { name: '保存' }))
 
-    await waitFor(() =>
-      expect(updateConversationMock).toHaveBeenCalledWith('c1', { title: '合同整理' }),
-    )
-  })
+      await waitFor(() =>
+        expect(updateConversationMock).toHaveBeenCalledWith('c1', { title: '合同整理' }),
+      )
+    },
+  )
 
   it('删除要先确认：只点菜单项不发请求，确认后才调删除接口', async () => {
     const user = userEvent.setup()
