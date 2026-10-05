@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from app.core.security import hash_password
 from app.core.services import get_services
 from app.models.enums import UserRole
+from app.services.skill_categories import CATEGORIES
 from app.storage.base import UserRecord
 from tests.conftest import admin_client as admin_session
 
@@ -729,6 +730,37 @@ def test_skills_lists_the_repo_skill(client: TestClient) -> None:
     assert entry["description"]
     # P0-3：每一行都要带"是不是被丢弃了"，能力页靠它把坏技能单独标出来
     assert entry["discarded"] is False
+
+
+def test_the_skill_list_carries_categories_and_the_featured_ones(client: TestClient) -> None:
+    """分类与精选也走**完整链路**（真磁盘 → 服务 → 接口 → 界面字段），v0.61。
+
+    要看的就三件事：每条都带分类、顶层分类清单按页面分组顺序给、精选只标在**能用**的
+    技能上。产品自带那 5 条按名字钉死在「效率与自动化」（4 条）与「文档与办公」（1 条），
+    所以前者一定排得满 2 条，而后者**只有一条就给一条**——不足 2 条不凑数、不报错。
+    """
+    body = client.get("/api/v1/skills").json()
+
+    declared = [item.slug for item in CATEGORIES]
+    assert [group["slug"] for group in body["categories"]] == declared
+    assert all(group["label"] for group in body["categories"])
+    assert all(item["category"] in declared for item in body["items"])
+
+    marks = {item["name"]: item for item in body["items"]}
+    featured: list[str] = []
+    for group in body["categories"]:
+        assert len(group["featured"]) <= 2, f"{group['slug']} 每类最多 2 条"
+        for name in group["featured"]:
+            assert marks[name]["featured"] is True, "清单里的名字要在技能上标出来"
+            assert marks[name]["used_by_prompt"] is True, "精选不推点不开的东西"
+        featured.extend(group["featured"])
+    # 反过来也成立：标成精选的都在清单里（两处是同一份判断，不是各算一遍）
+    assert {name for name, item in marks.items() if item["featured"]} == set(featured)
+
+    productivity = next(group for group in body["categories"] if group["slug"] == "productivity")
+    assert len(productivity["featured"]) == 2
+    documents = next(group for group in body["categories"] if group["slug"] == "documents")
+    assert "kylab-office-export" in documents["featured"]
 
 
 def test_a_broken_skill_is_listed_with_its_reason(client: TestClient, tmp_path) -> None:

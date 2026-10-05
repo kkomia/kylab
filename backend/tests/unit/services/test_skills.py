@@ -26,10 +26,13 @@ from app.services.skills import (
     BUILTIN_DIR_ENV,
     CATALOG_BUDGET_CHARS,
     CATALOG_DESCRIPTION_CHARS,
+    FEATURED_PER_CATEGORY,
     MAX_CATALOG,
     MAX_DESCRIPTION_CHARS,
+    RESIDENT_SKILLS,
     SKILL_FILE,
     SkillService,
+    featured_by_category,
 )
 
 
@@ -976,26 +979,44 @@ def _plain(tmp_path: Path, *names: str, **descriptions: str) -> SkillService:
     )
 
 
-def test_the_core_skills_are_always_in_the_catalog(tmp_path: Path) -> None:
-    """**我们自己那 5 条永远在目录里**——哪怕库里有一堆按名字排在前面的技能。"""
+def test_the_resident_skills_are_always_in_the_catalog(tmp_path: Path) -> None:
+    """**常驻名单里的每一条永远在目录里**——哪怕库里有一堆按名字排在前面的技能。"""
     filler = [f"aaa-{index:03d}" for index in range(skills_module.MAX_CATALOG + 20)]
-    service = _plain(tmp_path, *filler, *skills_module.CORE_SKILLS)
+    service = _plain(tmp_path, *filler, *skills_module.RESIDENT_SKILLS)
     catalog = service.catalog()
 
-    for name in skills_module.CORE_SKILLS:
+    for name in skills_module.RESIDENT_SKILLS:
         assert f"- {name}:" in catalog, f"{name} 必须常驻目录"
 
 
-def test_the_curated_office_skills_are_in_the_catalog(tmp_path: Path) -> None:
-    """策展清单（办公/PPT/表格/文档那几套）排在其它技能之前。"""
+def test_the_resident_list_stays_within_the_product_budget() -> None:
+    """常驻名单是"每轮都进提示词"的固定税，产品口径是 **5–20 条**（v0.61）。
+
+    上限存在的理由：常驻条数一涨，每个请求的固定成本就跟着涨，而库里几千条时
+    "再多塞几条"的诱惑永远存在。元能力那五条必须在（产品自带件），
+    名字不许重复（重复会让 `_pick_catalog` 的 `seen` 白挡一次）。
+    """
+    assert 5 <= len(RESIDENT_SKILLS) <= 20, "常驻名单必须落在 5–20 条"
+    assert len(set(RESIDENT_SKILLS)) == len(RESIDENT_SKILLS)
+    assert {
+        "kylab-delegate",
+        "kylab-knowledge-base",
+        "kylab-memory",
+        "kylab-office-export",
+        "kylab-web",
+    } <= set(RESIDENT_SKILLS), "产品自带的元能力必须在常驻名单里"
+
+
+def test_the_office_format_skills_are_in_the_catalog(tmp_path: Path) -> None:
+    """跨领域通用件（四种格式各一条）排在其它技能之前。"""
     filler = [f"aaa-{index:03d}" for index in range(skills_module.MAX_CATALOG + 20)]
-    curated = ("pptx", "xlsx", "docx")
-    service = _plain(tmp_path, *filler, *curated, *skills_module.CORE_SKILLS)
+    formats = ("pptx", "xlsx", "docx", "pdf")
+    service = _plain(tmp_path, *filler, *formats, *skills_module.RESIDENT_SKILLS)
     catalog = service.catalog()
 
-    for name in curated:
+    for name in formats:
         assert f"- {name}:" in catalog, f"{name} 应当在目录里"
-    # 排在一个纯按名字会排在前面的技能之前（策展优先于"其余按名字"）
+    # 排在一个纯按名字会排在前面的技能之前（常驻优先于"其余按名字"）
     assert catalog.index("- pptx:") < catalog.index("- aaa-000:")
 
 
@@ -1024,3 +1045,146 @@ def test_no_tail_when_everything_fits(tmp_path: Path) -> None:
     service = _plain(tmp_path, "one", "two")
 
     assert "另有" not in service.catalog()
+
+
+# ------------------------------------------- 分类与每类精选（v0.61 预装/展示口径）
+
+
+def _two_pools(tmp_path: Path, builtin: list[str], user: list[str]) -> SkillService:
+    """自带池与用户池各放几条（精选的四档判据要跨这两个池才看得出来）。"""
+    for name in builtin:
+        _write_skill(tmp_path / "builtin", name, description=f"{name} 的说明")
+    for name in user:
+        _write_skill(tmp_path / "data" / "skills", name, description=f"{name} 的说明")
+    return SkillService(
+        tmp_path / "data",
+        builtin_dir=tmp_path / "builtin",
+        agents_dir=tmp_path / "agents-none",
+        scan_ttl_seconds=0,
+    )
+
+
+def test_records_carry_the_category_of_their_own_text(tmp_path: Path) -> None:
+    """分类在扫描时算好、挂在记录上（接口直接读它，不每次现算）。
+
+    它必须**跟着文件走**：`SKILL.md` 一改，记录缓存按 mtime 失效、分类重算——
+    所以这里顺手把"改描述 → 类别跟着变"也钉住（否则会出现"缓存住旧分类"那种错法）。
+    """
+    skills = tmp_path / "data" / "skills"
+    _write_skill(skills, "playwright-skill", description="端到端测试")
+    _write_skill(skills, "zzz-quiet-one", description="没有能认出来的领域信号")
+    service = SkillService(
+        tmp_path / "data",
+        builtin_dir=tmp_path / "builtin-none",
+        agents_dir=tmp_path / "agents-none",
+        scan_ttl_seconds=0,
+    )
+    got = {item.name: item.category for item in service.list()}
+
+    assert got["playwright-skill"] == "code"
+    assert got["zzz-quiet-one"] == "other"
+
+    _write_skill(skills, "zzz-quiet-one", description="把论文做成一张学术会议海报")
+    service.invalidate()
+    again = {item.name: item.category for item in service.list()}
+    assert again["zzz-quiet-one"] == "research", "描述改了，分类要跟着改"
+
+
+def test_featured_gives_up_to_two_per_category_and_repeats_itself(tmp_path: Path) -> None:
+    """每类最多 2 条（`FEATURED_PER_CATEGORY`），并且**同样的库给同样的两条**。
+
+    可复现是这条派生的全部要求：界面上那一屏下一次刷新不该换人（判据全在
+    `_featured_rank` 里，不用随机、不按时间、不看模型）。
+    """
+    service = _two_pools(
+        tmp_path,
+        builtin=["playwright-skill"],
+        user=["code-review-skill", "refactor-skill"],
+    )
+    records = service.list()
+    first = featured_by_category(records)
+    second = featured_by_category(records)
+
+    assert [item.name for item in first["code"]] == [item.name for item in second["code"]]
+    assert len(first["code"]) == FEATURED_PER_CATEGORY
+    assert {item.name for item in first["code"]} == {
+        "playwright-skill",  # 自带优先
+        "code-review-skill",  # 其余两条里名字更靠前/更短
+    }
+
+
+def test_featured_prefers_builtin_then_installed_then_the_fuller_description(
+    tmp_path: Path,
+) -> None:
+    """四档判据按顺序生效：**内置 → 装进来的 → 描述完整度 → 名字可读性**。
+
+    逐档构造，免得"某一条恰好同时满足两档"把真正的判据盖过去：
+    自带的那条永远第一，剩下的位置按后三档排。
+    """
+    service = _two_pools(
+        tmp_path,
+        builtin=["playwright-skill"],
+        user=["refactor-skill", "code-review-skill"],
+    )
+    records = service.list()
+    installed = featured_by_category(records, installed=["refactor-skill"])
+    assert [item.name for item in installed["code"]] == ["playwright-skill", "refactor-skill"]
+
+    # 都"装过"时看描述完整度：写了 when_to_use 的赢
+    _write_skill(
+        tmp_path / "data" / "skills",
+        "refactor-skill",
+        description="重构",
+        when_to_use="当代码需要重构时",
+    )
+    service.invalidate()
+    richer = featured_by_category(
+        service.list(), installed=["refactor-skill", "code-review-skill"]
+    )
+    assert [item.name for item in richer["code"]] == ["playwright-skill", "refactor-skill"]
+
+
+def test_featured_skips_the_unusable_and_the_discarded(tmp_path: Path) -> None:
+    """被拦下 / 被丢弃的**不参选**——"精选"推一条点不开的东西没有意义。
+
+    用户主动关掉的那条也走 `used_by_prompt=False`，所以它在列表里照旧，只是不当精选。
+    """
+    skills = tmp_path / "data" / "skills"
+    _write_skill(skills, "good-one", description="重构代码")
+    _write_skill(skills, "dropped-one", frontmatter="---\nname: dropped-one\n---\n")
+    state: dict[str, str] = {}
+    service = SkillService(
+        tmp_path / "data",
+        builtin_dir=tmp_path / "builtin-none",
+        agents_dir=tmp_path / "agents-none",
+        scan_ttl_seconds=0,
+        config_value=state.get,
+        config_set=state.update,
+    )
+
+    picked = featured_by_category(service.list())
+    assert [item.name for item in picked["code"]] == ["good-one"]
+
+    # 关掉之后它还在列表里（带着理由），但不再是精选
+    service.set_enabled("good-one", False)
+    records = service.list()
+    assert any(item.name == "good-one" for item in records)
+    assert featured_by_category(records) == {}
+
+
+def test_featured_only_covers_declared_categories_and_keeps_their_order(
+    tmp_path: Path,
+) -> None:
+    """返回的键必须是**登记过的类别**，顺序 = 页面分组顺序（`CATEGORIES`），空类不占位。"""
+    from app.services.skill_categories import CATEGORIES
+
+    service = _two_pools(
+        tmp_path, builtin=[], user=["playwright-skill", "pdf-pro", "zx-no-signal"]
+    )
+    picked = featured_by_category(service.list())
+    order = [item.slug for item in CATEGORIES]
+    declared = set(order)
+
+    assert set(picked) <= declared
+    assert list(picked) == [slug for slug in order if slug in picked]
+    assert "zx-no-signal" in {item.name for item in picked["other"]}

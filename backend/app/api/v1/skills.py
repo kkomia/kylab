@@ -29,6 +29,7 @@ from app.api.v1.schemas import (
     SkillBrowseIn,
     SkillBrowseOut,
     SkillBundleOut,
+    SkillCategoryOut,
     SkillDetailOut,
     SkillEnabledIn,
     SkillInspectIn,
@@ -48,13 +49,14 @@ from app.api.v1.schemas import (
 from app.core.exceptions import InvalidRequestError
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
+from app.services.skill_categories import CATEGORIES
 from app.services.skill_market import MAX_UNPACKED_BYTES
-from app.services.skills import DISABLED_REASON
+from app.services.skills import DISABLED_REASON, featured_by_category
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
 
-def _out(record, summary: str = "") -> SkillOut:  # type: ignore[no-untyped-def]
+def _out(record, summary: str = "", *, featured: bool = False) -> SkillOut:  # type: ignore[no-untyped-def]
     """技能记录 → 界面形状。``summary`` 是**中文简介**（v0.28，v0.53 补上内置那批）。
 
     两个来源，先看清单再退回技能自己：
@@ -69,6 +71,10 @@ def _out(record, summary: str = "") -> SkillOut:  # type: ignore[no-untyped-def]
     那份常是英文），没有才退回技能自己那份。这个顺序必须与命令菜单那边
     （``core/services.py`` 的 ``_skill_summaries``）一致——反了就会出现
     "能力页一句、菜单里另一句"。
+
+    ``category`` 直接来自记录（扫描时算好的，见 ``SkillRecord.category``）；
+    ``featured`` 是**列表级的判断**（"这一类默认摆哪几条"），只有列表端点算得出来，
+    所以由调用方传进来——别在这里自己算：那是全库排序，详情端点不该为它付代价。
     """
     return SkillOut(
         name=record.name,
@@ -83,6 +89,8 @@ def _out(record, summary: str = "") -> SkillOut:  # type: ignore[no-untyped-def]
         # 判据就是服务写进去的那条理由常量——不是另写一句字面量，免得两处漂。
         enabled=DISABLED_REASON not in record.flagged,
         flagged=list(record.flagged),
+        category=record.category,
+        featured=featured,
         discarded=record.discarded,
     )
 
@@ -98,6 +106,18 @@ def _summaries(services) -> dict[str, str]:  # type: ignore[no-untyped-def]
         for name, record in records.items()
         if record.get("summary")
     }
+
+
+def _installed_names(services) -> list[str]:  # type: ignore[no-untyped-def]
+    """"装进来的"那批技能名（市场 / 上传安装清单）。读不出来就当空表。
+
+    只用来给精选排序**多一档判据**（装过一次的比随库躺着的更说明有人要它），
+    所以它坏了不该让列表打不开——与 `_summaries` 同一处置。
+    """
+    try:
+        return list(services.skill_market.installed())
+    except Exception:  # 清单坏了只是少一档判据
+        return []
 
 
 @router.get("", response_model=SkillListOut, summary="技能列表")
@@ -117,13 +137,35 @@ def list_skills(
     既是 18 秒的另一半原因，也没人真的会一屏看 6,000 行。**默认行为一位不变**
     （不传 `limit` 就是全部，向后兼容），前端以后再逐步采用。
     `total` 与 `usable` 报的是**全库**的数，不是这一页的（否则界面上"共几条"会随着
-    翻页变来变去）。"""
+    翻页变来变去）。
+
+    **分类与精选（v0.61）**同样是**全库**的口径，不是这一页的：每条的 `category`
+    来自记录，`categories` 给"界面默认摆什么"（每类 2 条，判据机械可复现）。
+    翻到第 3 页时那两条精选标记**仍然标在它们自己身上**——精选是技能的一个属性，
+    不该随分页变。这两样都**不进提示词目录**（那条预算仍是 60 条 / 2 万字符）。"""
     items = services.skills.list()
     summaries = _summaries(services)
+    featured = featured_by_category(items, installed=_installed_names(services))
+    marks = {item.slug for group in featured.values() for item in group}
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item.category] = counts.get(item.category, 0) + 1
     window = items if limit is None else items[offset : offset + limit]
     return SkillListOut(
-        items=[_out(item, summaries.get(item.name, "")) for item in window],
+        items=[
+            _out(item, summaries.get(item.name, ""), featured=item.slug in marks)
+            for item in window
+        ],
         usable=sum(1 for item in items if item.used_by_prompt),
+        categories=[
+            SkillCategoryOut(
+                slug=group.slug,
+                label=group.label,
+                total=counts.get(group.slug, 0),
+                featured=[item.name for item in featured.get(group.slug, ())],
+            )
+            for group in CATEGORIES
+        ],
     )
 
 

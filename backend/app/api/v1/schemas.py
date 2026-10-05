@@ -2242,6 +2242,21 @@ class SkillOut(BaseModel):
     """
     flagged: list[str] = Field(default_factory=list)
     """没进目录的原因（人话）。空 = 没问题。"""
+    category: str = ""
+    """**分类**（v0.61）：`skill_categories` 里登记过的 slug（`slides` / `code` / `other`…）。
+
+    技能自己**没有**这个字段（SKILL.md 的格式里没有分类，第三方的 `tags:` 也不认），
+    它是按一套可复现的加权信号算出来的（`services/skill_categories.py`），
+    与页面读的那张离线映射同源。空串 = 没经过分类（只有手工构造的记录会这样）。
+
+    它**不进提示词目录**：目录里那一行是给模型判断"何时该用"的，分类是给人分组看的。
+    """
+    featured: bool = False
+    """是不是**本类精选**（v0.61：每类前 2 条，判据见 `services/skills.featured_by_category`）。
+
+    **只在列表端点里有意义**：详情端点是"看这一条"，不参与"每类排前 2"的评选，
+    那里恒为 `false`。精选**不进提示词目录**——它只回答"界面默认该摆哪几条"。
+    """
     discarded: bool = False
     """**被丢弃**（P0-3）：frontmatter 缺 ``name``/``description`` 或描述超长，
     照 ZCode 的规则整个技能不加载。它仍然出现在列表里（带着 ``flagged`` 那条理由），
@@ -2405,10 +2420,32 @@ class SkillSourceInstallIn(BaseModel):
     path: str = Field(min_length=1, max_length=1000)
 
 
+class SkillCategoryOut(BaseModel):
+    """一个分类（v0.61）：页面按它分组，`featured` 是默认要摆出来的那几条。"""
+
+    slug: str
+    """稳定标识（`slides` / `documents` / `code`…），技能的 `category` 就是它的取值。"""
+    label: str
+    """给人看的中文名（`演示与幻灯片`…）。"""
+    total: int = 0
+    """**全库**落在这一类的条数（与 `usable` 同一口径：不是这一页的，也不只算可用的）。"""
+    featured: list[str] = Field(default_factory=list)
+    """这一类默认展示的技能名（每类最多 2 条，某类不够就有几条给几条）。
+
+    只从**能用**的里挑（被安全扫描拦下 / 依赖没满足 / 被关掉 / 被丢弃的不参选），
+    排序判据是机械可复现的（内置 → 装进来的 → 描述完整度 → 名字可读性）。"""
+
+
 class SkillListOut(BaseModel):
     items: list[SkillOut] = Field(default_factory=list)
     usable: int = 0
     """其中真正会进模型目录的条数——界面上一眼看出"装了 N 个，能用 M 个"。"""
+    categories: list[SkillCategoryOut] = Field(default_factory=list)
+    """分类清单（v0.61）：**顺序就是界面分组的顺序**（`skill_categories.CATEGORIES`）。
+
+    它回答的是"界面默认摆什么"：每类给一个中文名、一个全库条数、两条精选
+    （见 `SkillCategoryOut`）。**新增字段，老客户端不读它照旧**——
+    技能的 `category` / `featured` 两位也一样，都是只增不改。"""
 
 
 # ------------------------------------------------------------------ 斜杠命令（P1-2）

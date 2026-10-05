@@ -3190,6 +3190,11 @@ export interface paths {
          *     （不传 `limit` 就是全部，向后兼容），前端以后再逐步采用。
          *     `total` 与 `usable` 报的是**全库**的数，不是这一页的（否则界面上"共几条"会随着
          *     翻页变来变去）。
+         *
+         *     **分类与精选（v0.61）**同样是**全库**的口径，不是这一页的：每条的 `category`
+         *     来自记录，`categories` 给"界面默认摆什么"（每类 2 条，判据机械可复现）。
+         *     翻到第 3 页时那两条精选标记**仍然标在它们自己身上**——精选是技能的一个属性，
+         *     不该随分页变。这两样都**不进提示词目录**（那条预算仍是 60 条 / 2 万字符）。
          */
         get: operations["list_skills_api_v1_skills_get"];
         put?: never;
@@ -8598,6 +8603,23 @@ export interface components {
              */
             truncated: boolean;
         };
+        /**
+         * SkillCategoryOut
+         * @description 一个分类（v0.61）：页面按它分组，`featured` 是默认要摆出来的那几条。
+         */
+        SkillCategoryOut: {
+            /** Slug */
+            slug: string;
+            /** Label */
+            label: string;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /** Featured */
+            featured?: string[];
+        };
         /** SkillDetailOut */
         SkillDetailOut: {
             /** Name */
@@ -8640,6 +8662,16 @@ export interface components {
             enabled: boolean;
             /** Flagged */
             flagged?: string[];
+            /**
+             * Category
+             * @default
+             */
+            category: string;
+            /**
+             * Featured
+             * @default false
+             */
+            featured: boolean;
             /**
              * Discarded
              * @default false
@@ -8726,6 +8758,8 @@ export interface components {
              * @default 0
              */
             usable: number;
+            /** Categories */
+            categories?: components["schemas"]["SkillCategoryOut"][];
         };
         /** SkillMarketEntryOut */
         SkillMarketEntryOut: {
@@ -8807,6 +8841,16 @@ export interface components {
             enabled: boolean;
             /** Flagged */
             flagged?: string[];
+            /**
+             * Category
+             * @default
+             */
+            category: string;
+            /**
+             * Featured
+             * @default false
+             */
+            featured: boolean;
             /**
              * Discarded
              * @default false

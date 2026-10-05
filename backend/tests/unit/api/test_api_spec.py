@@ -107,6 +107,7 @@ def test_every_endpoint_has_a_summary() -> None:
         "签名下载 URL",  # 无状态 HMAC + 过期
         "时间格式",  # ISO 8601 带时区
         "分页",  # limit + offset + total
+        "技能列表的分类与精选",  # v0.61：分类是算出来的、精选只给界面、都不进提示词
     ]
     )
 def test_conventions_are_documented(section: str) -> None:

@@ -44,6 +44,21 @@
 **渐进披露（P0-3）**：上面分两段的那条分工就是三家（ZCode / DSH / QwenPaw）的共同做法
 （调研 §2.3）——目录每轮都在提示词里，正文按需取。
 
+**预装与展示是两件事**（v0.61，产品口径）：库里几千条时，"哪些是产品能力""哪些只是
+装进来的长尾"必须分开答，否则目录会被长尾占满。
+
+1. **常驻名单**（`RESIDENT_SKILLS`）：**元能力 + 跨领域通用件**，总量压在 5–20 个。
+   只有这一批享受"任何库规模下都进目录"的待遇；
+2. **每类精选**（`featured_by_category`）：13 个分类各排前 2 条，判据机械可复现
+   （内置 → 装进来的 → 描述完整度 → 名字可读性，见 `_featured_rank`），
+   **只给界面默认展示用，不进提示词目录**——目录的 60 条 / 2 万字符预算一位不变，
+   prompt 不因为这次口径而变大；
+3. **长尾一条不删**：仍然在 `list()` / `list_skills` / 搜索里，只是默认不铺满界面。
+
+同行的官方预装口径是同一路（OpenAI `.system` 5 个 + `.curated` 按需、Anthropic
+`anthropics/skills` 19 个分 4 类）：**预装只放元能力与跨领域通用件，领域内的按任务拆，
+长尾靠搜索可得**。
+
 仓库自带那一份的**位置**有三种来源，优先级从高到低（v0.1.1）：
 
 1. 构造时显式注入（测试与工具用：断言的对象不该被"机器上恰好设了环境变量"改掉）；
@@ -78,6 +93,7 @@ from typing import Any
 from app.core.exceptions import NotFoundError
 from app.services.memory_files import parse_frontmatter
 from app.services.runtime_config import SETTING_GROUPS
+from app.services.skill_categories import CATEGORIES, category_of
 from app.services.skill_tools import catalog_note, translate_tool_names
 
 __all__ = [
@@ -85,10 +101,13 @@ __all__ = [
     "BUILTIN_DIR_ENV",
     "CATALOG_BUDGET_CHARS",
     "CATALOG_DESCRIPTION_CHARS",
+    "FEATURED_PER_CATEGORY",
     "MAX_DESCRIPTION_CHARS",
+    "RESIDENT_SKILLS",
     "SKILL_FILE",
     "SkillRecord",
     "SkillService",
+    "featured_by_category",
 ]
 
 logger = logging.getLogger(__name__)
@@ -151,38 +170,37 @@ MAX_CATALOG = 60
 #: 把"全量 stat"彻底从请求路径上拿掉。
 SCAN_TTL_SECONDS = 30.0
 
-#: **永远在目录里的那几条**（产品自带能力，见 `BUILTIN_SKILLS` 那张表的同一批）。
+#: **常驻名单**：产品能力 + 跨领域通用件，**任何时候都在目录里**。
 #:
 #: 库涨到几千条之后，"目录里露哪 60 条"成了一个真问题：原先按扫描顺序取前 60，
 #: 于是模型很可能看不到"交付一个 PPT / 存一份文件到知识库"这类**产品自带**的动作。
 #: 这几条是产品能力，不是"某个第三方技能"，**任何库规模下都得在**。
-CORE_SKILLS: tuple[str, ...] = (
+#:
+#: **为什么不能再多**（v0.61 口径）：常驻名额是"每轮都进提示词"的固定税，只给两类——
+#:
+#: 1. **元能力**（`kylab-*` 那五条）：产品的自带件，它们本身就是"怎么用这个 agent"；
+#: 2. **跨领域通用件**（四种格式各一条）：任何领域都会碰到的交付物形态
+#:    （做幻灯片 / 表格 / 文档 / PDF），不是某个领域的活。
+#:
+#: 领域件（`excel-analyst-pro` / `slide-skill` / `pdf-pro` / `office-automation` 这类）
+#: **从常驻降级**：它们各自落在某个分类里，由"每类精选 2 条 + 搜索"承担，
+#: 用户真要常用某一条，装一次就进了列表（`data/skills/`），不必占所有人的提示词。
+#: 名字写了但库里没有的直接跳过（清单写错不该让目录少一条或报错）。
+RESIDENT_SKILLS: tuple[str, ...] = (
     "kylab-delegate",
     "kylab-knowledge-base",
     "kylab-memory",
     "kylab-office-export",
     "kylab-web",
-)
-
-#: **策展清单**：办公 / PPT / 表格 / 文档这几套最常用的（名字按本机实际存在的挑）。
-#:
-#: 与 `CORE_SKILLS` 的区别：这几条是**第三方技能里最该常驻的一批**，但它们是可替换的
-#: ——名字对不上时只是少排一条，不会出错（`_pick_catalog` 会跳过库里没有的）。
-#: 要改就改这份清单（一处常量），别去动排序逻辑。
-CURATED_SKILLS: tuple[str, ...] = (
     "pptx",
-    "html2pptx",
-    "slide-skill",
-    "presentation-skill",
     "xlsx",
-    "excel-analyst-pro",
-    "preview-csv",
-    "ai-config-table",
     "docx",
     "pdf",
-    "pdf-pro",
-    "office-automation",
 )
+
+#: **每个分类默认露几条**（v0.61）：给界面默认展示用，**不进提示词目录**。
+#: 2 是"够看出这一类是什么"的最小值：一条看不出规律，三条以上就该翻了。
+FEATURED_PER_CATEGORY = 2
 
 #: ``requires`` 里认识的四个键。**与 OpenClaw 的门控字段是同一批**
 #: （见《预装技能选型》§4.2）：它们都是"这个技能在这台机器上跑不跑得起来"的
@@ -249,6 +267,18 @@ class SkillRecord:
     relative_path: str = ""
     """相对**发现根**的位置（``<组>/<名字>/SKILL.md``）。目录里那一行用它而不是绝对路径：
     绝对路径带用户名与机器布局，进提示词只是噪音（要排错时接口里有 ``path``）。"""
+    category: str = ""
+    """分类（v0.61）：`skill_categories.CATEGORIES` 里的 slug，取不到信号时是 ``"other"``。
+
+    **它是算出来的，不是技能自己声明的**——技能格式里没有分类字段（第三方还常写
+    `tags:`，解析器一律忽略），所以这里用的是那一套可复现的加权信号
+    （`skill_categories.category_of`，同一份规则生成页面读的那张离线映射）。
+    算在扫描这一步（`_parse`）是为了**跟着文件走**：分类与描述同源，
+    `SKILL.md` 一改，记录缓存按 mtime 失效，分类跟着重算，不存在"缓存住旧分类"。
+    空串 = 没经过分类（只有手工构造的记录会这样），接口上照实回空串。
+
+    它**不进提示词目录**：目录里那一行是给模型看"何时该用"的，分类是给人分组用的。
+    """
     discarded: bool = False
     """坏到**不该被使用**（缺 name / 缺 description / 描述超长，见 ``_drop_reason``）：
     不进目录、``read()`` 也读不出来。仍然留在 ``list()`` 里，好让能力页说清为什么。"""
@@ -343,28 +373,30 @@ def _drop_reason(*, name: str, description: str) -> str:
 
 
 def _pick_catalog(usable: list[SkillRecord]) -> list[SkillRecord]:
-    """目录里露哪几条：**核心固定 → 策展 → 其余按名字**，最后截到 `MAX_CATALOG`。
+    """目录里露哪几条：**常驻固定 → 其余按名字**，最后截到 `MAX_CATALOG`。
 
     为什么不能"按扫描顺序取前 60"（2026-09-29 的现场）：这个库有几千条技能，
     扫描顺序取决于目录遍历与来源层，于是"哪 60 条被模型看见"其实是个**偶然**——
-    产品自带的 5 条与办公那几套都可能不在里面，而它们恰恰是最该常驻的。
+    产品自带的 5 条与那四个格式件都可能不在里面，而它们恰恰是最该常驻的。
 
     三条性质都是刻意要的：
 
-    - **核心永远在**：`CORE_SKILLS` 里的名字只要库里真有就一定排在最前（库再大也一样）；
+    - **常驻永远在**：`RESIDENT_SKILLS` 里的名字只要库里真有就一定排在最前（库再大也一样）；
     - **可复现**：同样的库给同样的 60 条（其余按名字排序，不用随机/哈希）。
       库变了只影响尾部，不重排前面那些；
     - **看不见的那些是可发现的**：目录尾部会报"另有 N 个"，用 `list_skills` 按页看
       （那条提示在 `catalog()` 里拼，不在这里）。
 
-    清单里写了但库里没有的名字直接跳过（清单写错不该让目录少一条或报错）。
+    **v0.61 起这里不再有"策展"那一档**：领域件（办公那几套）退到 `featured_by_category`
+    那条界面口径上。目录只认两件事——常驻名单 + 按名字兜底，
+    于是"谁进了提示词"这件事只有一处判据，也不再随一份清单的长短浮动。
     """
     by_name: dict[str, SkillRecord] = {}
     for record in usable:
         by_name.setdefault(record.name, record)
     picked: list[SkillRecord] = []
     seen: set[str] = set()
-    for name in (*CORE_SKILLS, *CURATED_SKILLS):
+    for name in RESIDENT_SKILLS:
         record = by_name.get(name)
         if record is not None and name not in seen:
             picked.append(record)
@@ -374,6 +406,74 @@ def _pick_catalog(usable: list[SkillRecord]) -> list[SkillRecord]:
         key=lambda item: item.name,
     )
     return [*picked, *rest][:MAX_CATALOG]
+
+
+def _featured_rank(
+    record: SkillRecord, installed: set[str]
+) -> tuple[int, int, int, int, int, int, int, str]:
+    """精选排序键（**升序，越小越靠前**）：四档判据 + 一个兜底，全部机械可复现。
+
+    1. **产品自带优先**（`source == "builtin"`）：我们自己的那份是审过的；
+    2. **装进来的优先**（名字在安装清单里）：用户/市场**主动装**过一次的，
+       比"随初始技能集一起躺在那儿的"更能说明有人要它；
+    3. **描述完整度**：写了 `when_to_use` > 有中文简介（`summary`，界面那一行就靠它）>
+       描述更长（截到目录口径 `CATALOG_DESCRIPTION_CHARS`，再长的不加分——
+       目录里那一行只到 250 字，多出来的部分是正文该待的地方）；
+    4. **名字可读性**：连字符少、更短的名字更像人起的（`pdf-pro` 优于
+       `image-to-editable-ppt-tool-2024`），同分时按名字升序兜底。
+
+    不用随机、不按时间、不看模型：**同样的库给同样的两条**，这样界面上那一屏
+    下一次刷新不会换人，用例也能钉住它。
+    """
+    return (
+        0 if record.source == "builtin" else 1,
+        0 if record.slug in installed else 1,
+        0 if record.when_to_use else 1,
+        0 if record.summary else 1,
+        -min(len(record.description), CATALOG_DESCRIPTION_CHARS),
+        record.name.count("-"),
+        len(record.name),
+        record.name,
+    )
+
+
+def featured_by_category(
+    records: Sequence[SkillRecord],
+    *,
+    installed: Sequence[str] = (),
+    per_category: int = FEATURED_PER_CATEGORY,
+) -> dict[str, list[SkillRecord]]:
+    """**每个分类的前 N 条**（默认 2）——界面默认展示用的那一批（v0.61）。
+
+    与 `_pick_catalog` 的分工：那个回答"模型这轮看到什么"（进提示词、有预算），
+    这个回答"界面默认摆什么"（**不进提示词**，条数由 `per_category` 定）。
+    两条口径共用同一份分类规则，但**互不影响**：改这里不会动 prompt 的大小。
+
+    三条纪律：
+
+    - **只从能用的里挑**：`used_by_prompt` 为假（被安全扫描拦下 / 依赖没满足 /
+      被用户关掉）与被丢弃的一律不参选——"精选"推一条点不开的东西没有意义；
+    - **顺序 = `CATEGORIES` 的顺序**：与页面分组顺序同一份来源，两处不会漂；
+    - **分类是记录自带的**（`SkillRecord.category`，扫描时算好的），
+      所以这条派生是纯排序，不在这里跑正则——列表端点每次都会调它。
+
+    `installed` 是"装进来的"那批名字（市场/上传安装清单），不传就只有前三档判据。
+    返回的字典**只含真有料的分类**（空分类不占位；某类不足 2 条就有几条给几条）。
+    """
+    marks = {normalize_name(name) for name in installed}
+    buckets: dict[str, list[SkillRecord]] = {}
+    for record in records:
+        if record.discarded or not record.used_by_prompt or not record.category:
+            continue
+        buckets.setdefault(record.category, []).append(record)
+    out: dict[str, list[SkillRecord]] = {}
+    for item in CATEGORIES:  # 只认登记过的类别，顺序即页面分组顺序
+        bucket = buckets.get(item.slug)
+        if not bucket:
+            continue
+        bucket.sort(key=lambda record: _featured_rank(record, marks))
+        out[item.slug] = bucket[:per_category]
+    return out
 
 
 def _catalog_line(item: SkillRecord) -> str:
@@ -812,6 +912,12 @@ class SkillService:
             "when_to_use": when_to_use,
             "summary": summary,
             "relative_path": _relative_skill_path(directory, root),
+            # 分类在这里算（而不是在接口里每次现算）：它只依赖这份文本，
+            # 于是**跟着记录缓存走**——16k 条的库上一次全量分类要十几秒，
+            # 放在请求路径上是灾难；放在扫描里则只在文件真的变了才重算。
+            "category": category_of(
+                normalize_name(name or directory.name), name or directory.name, description
+            ),
         }
         dropped = _drop_reason(name=name, description=description)
         if not dropped:
