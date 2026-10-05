@@ -26,12 +26,15 @@
 - `POST /sandbox/exec` 的**本机档**那一份：服务器档照旧有它，用例搬去了
   `test_sandbox_api.py`。
 
-**留在服务器档的两条**：`GET /chat/commands` 与 `GET /chat/suggested-questions`——
-它们不碰会话面（前者读这台服务器自己的命令目录，后者读 NAS 库里的分段问题），
-而且**前端今天仍从服务器读它们**（`frontend/src/api/chat.ts` 走 `request()`），
-所以退役它们会把在用的 `/` 菜单打成空的。**遗留**：命令目录的数据其实属于"这台机器"
-（桌面执行那一轮的是边车），长远该跟着本机面走——那要前端同时改路由，
-见 `api/v1/chat.py` 模块头里的那一段，属另一个单元。
+**留在服务器档的一条**：`GET /chat/suggested-questions`——它不碰会话面（读的是 NAS 库里
+的分段问题），而且**只有这一档有它**（本机档的知识库在别处，问题清单得问提供者）。
+
+**同一轮的收尾（2026-10-05）**：原先与它并列的 `GET /chat/commands` 也走了。上一轮那条
+端点被挪进了本机档（`router.py` 的 `local_router`），服务器这一份却还留着 ——
+于是同一个端点有了**两份**目录；而它的数据（命令目录 + 技能 + 被禁用的技能）本来只属于
+**这台机器**，执行那一轮也在本机（边车）⇒ 服务器档这一条摘掉，只在本机档
+（下面 `test_the_local_face_…` 里钉着）。浏览器那一档（没有本机后端）因此没有命令目录，
+`listCommands` 拿到 404 就回空列表。
 
 **会话面自己**（列表 / 详情 / 消息 / 产物 / 文件区）也只在本机档了：它的用例
 （`test_conversation_api.py`）整份切到了本机档，没有删。
@@ -83,22 +86,31 @@ def test_the_server_face_no_longer_serves_the_retired_ones() -> None:
             assert response.status_code == 404, f"{method} {path} → {response.status_code}"
 
 
-def test_the_server_face_still_serves_the_survivors() -> None:
-    """留下的那两条照旧在（理由见模块头）：命令目录与推荐问题。"""
+def test_the_server_face_still_serves_the_survivor() -> None:
+    """留下的那一条照旧在（理由见模块头）：推荐问题。
+
+    `/chat/commands` 2026-10-05 从这一档摘掉（它的数据属于**这台机器**，本机档那一条
+    才是它的家，见模块头）——所以这里**反过来钉**：服务器档必须 404 它，
+    而本机档照旧有（下面那条用例里）。
+    """
     with admin_client() as client:
-        commands = client.get("/api/v1/chat/commands")
-        assert commands.status_code == 200, commands.text
-        assert commands.json()["items"], "命令目录应当是这台服务器自己的那批命令"
         # 推荐问题：没有库就回空列表（**不是错误**，见那个端点的说明）
         questions = client.get("/api/v1/chat/suggested-questions", params={"kb_ids": ""})
         assert questions.status_code == 200, questions.text
+        # 命令目录回本机了：服务器这一档不该再挂它（同一个端点有两个答案那件事就此收掉）
+        assert client.get("/api/v1/chat/commands").status_code == 404
 
 
 @pytest.mark.local
 def test_the_local_face_keeps_the_two_reads_and_drops_the_rest(
     local_client: TestClient,
 ) -> None:
-    """本机档：两条**只读**的会话端点照旧在（薄重声明），执行口那条裸 HTTP 不在。"""
+    """本机档：两条**只读**的会话端点照旧在（薄重声明），命令目录在这一档，
+    执行口那条裸 HTTP 不在。"""
+    # 命令目录（2026-10-05 起**只**在本机档）：它是"目录与执行同源"那条纪律的落点
+    commands = local_client.get("/api/v1/chat/commands")
+    assert commands.status_code == 200, commands.text
+    assert commands.json()["items"], "命令目录应当是这台机器自己的那批命令"
     # 上下文用量那条只在"会话存在"时答得上来：不存在的会话是 404（与服务器档那份
     # 同一个归属判定），但**路由本身在**——所以这里先建一条真会话再问它。
     conversation = local_client.post("/api/v1/conversations", json={}).json()

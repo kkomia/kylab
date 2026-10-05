@@ -14,7 +14,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  chatOnce,
   chatStream,
   decideApproval,
   getContextUsage,
@@ -29,12 +28,7 @@ import {
 import { resetSessionProbeForTest } from '@/api/client'
 import { SESSION_TOKEN_STORAGE_KEY, useSessionStore } from '@/lib/session'
 import { clearSessionToken, setSessionToken } from '@/lib/session'
-import {
-  DEFAULT_SIDECAR_BASE,
-  resetSidecarProbe,
-  setLocalDataForTest,
-  setSidecarTurnsForTest,
-} from '@/api/sidecar'
+import { DEFAULT_SIDECAR_BASE, resetSidecarProbe, setLocalDataForTest } from '@/api/sidecar'
 
 /**
  * 协议用例不看显示节流：关掉它，事件立即派发，断言才好写。
@@ -775,7 +769,6 @@ describe('openLiveTurn（P2-2 的重连端点）', () => {
 
 describe('decideApproval', () => {
   afterEach(() => {
-    setSidecarTurnsForTest(undefined)
     resetSidecarProbe()
   })
 
@@ -783,7 +776,6 @@ describe('decideApproval', () => {
     // 端点与 id 拼接：拼错等于把决定发给一条不存在的确认（409），界面看着只是"点了没反应"。
     // **只有边车那条链**（服务器那份镜像端点 2026-10-05 退役，见 `api/sidecar.ts` 的头注），
     // 所以这里要让它活着：探活 200、决定那条 200。
-    setSidecarTurnsForTest(true)
     let url = ''
     let body = ''
     vi.stubGlobal(
@@ -805,18 +797,7 @@ describe('decideApproval', () => {
     expect(result.accepted).toBe(true)
   })
 
-  it('边车被显式关掉时**抛**（服务器那条链已不在，不把决定发给一个没人服务的 URL）', async () => {
-    setSidecarTurnsForTest(false)
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-    vi.spyOn(console, 'info').mockImplementation(() => {})
-
-    await expect(decideApproval('ap_1', 'allow_once')).rejects.toThrow('服务器那条链已退役')
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('边车模式：决定打到**边车那台**的 /turn/approvals/{id}（交接文档点名的缺口）', async () => {
-    setSidecarTurnsForTest(true)
+  it('决定打到**边车那台**的 /turn/approvals/{id}（交接文档点名的缺口）', async () => {
     const calls: string[] = []
     vi.stubGlobal(
       'fetch',
@@ -851,23 +832,6 @@ describe('decideApproval', () => {
     )
 
     await expect(decideApproval('ap_1', 'allow_once')).rejects.toThrow('这条确认已经失效了')
-  })
-})
-
-describe('chatOnce', () => {
-  it('返回 answer 与 sources', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ answer: '回答', sources: [source(1)] }), { status: 200 }),
-      ),
-    )
-
-    const result = await chatOnce({ query: 'q', kb_ids: ['kb_1'] })
-
-    expect(result.answer).toBe('回答')
-    expect(result.sources[0].document_name).toBe('文档1.pdf')
   })
 })
 

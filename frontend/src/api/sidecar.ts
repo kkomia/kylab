@@ -12,18 +12,27 @@
  * 所以现在只有**一个落点**：本机边车。打不到就**显式失败**（`TurnUnavailableError`，
  * 由 `resolveTurnTarget` / `resolveApprovalTarget` 抛，界面如实显示那句话）——
  * 与"本机权威面"那条纪律（`localDownReason`：打不到就报错、绝不换源）终于一致了。
- * 保留 `VITE_SIDECAR_TURNS` 这个变量只为把原因说清（关掉它 = 对话没地方跑），
- * 见 `explicitOffReason()`。
  *
- * ## 已完成（P4-2b，2026-09-29）：开关**默认开**
+ * ## 紧接着的一步：`VITE_SIDECAR_TURNS` 那个变量也退役了（2026-10-05）
+ *
+ * 它原先决定"这一轮打边车、还是回服务器那条链"，而上面那一步已经把"回服务器"清掉了
+ * ⇒ 它**没有可切换的两端**，留着只会让人以为还有退路。所以变量本身、以及围着它的
+ * 那一整套（`sidecarTurnsEnabled` / `sidecarTurnsEnabledFrom` / `explicitOffReason` /
+ * 用例用的 `setSidecarTurnsForTest`）一并删掉。
+ *
+ * "对话跑不了"如今只剩**一个**原因：**边车没起来**（`probe.reason`）——
+ * 那句话照旧由 `TurnUnavailableError` 带出去，文案一个字没少（见 `resolveTurnTarget`）。
+ * **`VITE_LOCAL_DATA` 不受影响**：那是另一件事（这份数据归谁），见本文件后半段。
+ *
+ * ## 已完成（P4-2b，2026-09-29）：一轮对话落回本机会话库那条链
  *
  * 原先这里是 TODO：`api/v1/conversations.py` **没有**任何"追加/写入一轮"的端点，
- * 而会话是**服务器权威** —— 边车跑完这一轮若没人写回，用户刷新一下这轮就没了
- * （数据丢失，比"慢一点"严重得多），所以那时接线放在 `VITE_SIDECAR_TURNS` 后面、
- * **默认关**。后来那两件事都入库并验通了：`POST /api/v1/chat/turns/record` 与
- * 边车跑完写回（真机端到端物证 `.shots/e2e-turn.json`，`recorded: true`），
- * 于是本片翻成 **默认开**：不设 `VITE_SIDECAR_TURNS` 就走边车。
- * （那一轮之后边车的会话**直接写本机库**，写回服务器那一环已删——见 `app/sidecar.py`。）
+ * 而当年会话是**服务器权威** —— 边车跑完这一轮若没人写回，用户刷新一下这轮就没了
+ * （数据丢失，比"慢一点"严重得多），所以那时这条接线被一个开关挡着（默认关）。
+ * 后来那两件事都入库并验通了：`POST /api/v1/chat/turns/record` 与边车跑完写回
+ * （真机端到端物证 `.shots/e2e-turn.json`，`recorded: true`），开关随之翻成默认开。
+ * （那一轮之后边车的会话**直接写本机库**，写回服务器那一环已删——见 `app/sidecar.py`；
+ * 而那个开关本身在上面那一步里退役了。）
  *
  * ## 为什么分派落在"接口类别"这一层
  *
@@ -46,12 +55,11 @@
  *
  * ## 没落点就显式失败，不许静默
  *
- * 四种状态都要看得出来：**走边车**（`sidecarStatus().reason` 说清打的是哪个基址）/
- * **被显式关掉**（`explicitOffReason()`）/ **边车没起来**（`probe.reason`）/
- * **还没探过**（`available: null`，不猜好坏）。
- * 「走边车」时正常返回落点；其余三种**都没有回退可走**——
+ * 三种状态都要看得出来：**走边车**（`sidecarStatus().reason` 说清打的是哪个基址）/
+ * **边车没起来**（`probe.reason`）/ **还没探过**（`available: null`，不猜好坏）。
+ * 「走边车」时正常返回落点；后两种**都没有回退可走**——
  * `resolveTurnTarget()` / `resolveApprovalTarget()`（同一套）抛 `TurnUnavailableError`，
- * 同时各留一条日志（显式关是主动选择、不是异常，用 `console.info`；探不到用 `console.warn`），
+ * 同时各留一条 `console.warn`（探不到是异常，不是主动选择），
  * 抛出去那句话就是界面上显示的那句。「还没探过」不必单独一支：`resolveTurnTarget`
  * 自己会先探一次（`sidecarAvailable()`）。
  *
@@ -62,7 +70,8 @@
  * | **一轮对话在哪台机器上跑**（`/chat/stream`，上面那几段） | `resolveTurnTarget` / `resolveApprovalTarget` | **显式失败**（这条链只在边车上有，见上） |
  * | **这份数据的主人是谁**（`LOCAL_PATHS` 那张前缀表） | `requestLocal`（`client.ts`）与顶栏那条状态 | **如实报错、不回退**（会话数据在本机，换源 = 让用户以为会话丢了） |
  *
- * 两者**都**打边车那台机器，但开关不同（`VITE_SIDECAR_TURNS` / `VITE_LOCAL_DATA`）、
+ * 两者**都**打边车那台机器，但**开关不同**（轮次那条链**没有**开关了——它的落点只有一个，
+ * 见文件头；本机权威面还有 `VITE_LOCAL_DATA` 这条逃生门）、
  * 判定不同（`isSidecarPath` / `isLocalPath`）、措辞也不同（"这一轮跑不了" / "数据没换源"）——
  * 合并成一个概念，其中一条纪律必然写错，所以刻意分成两段。
  * 上面那张"明确不归边车"的表说的是**对话轮次那条链**：`/conversations`、`/settings`
@@ -171,20 +180,6 @@ function env(): Record<string, string | undefined> {
 }
 
 /**
- * 用例用的开关覆盖（`undefined` = 不覆盖，按 env 判）。
- *
- * 为什么不靠 `vi.stubEnv`：它只改**测试文件自己**那份 `import.meta.env`，
- * 改不到本模块读的那一份（实测：开了 stub 仍然读到空值）。给一个显式的窄接口更老实，
- * 也让人一眼看出"这是给用例开的门"。
- */
-let turnsOverride: boolean | undefined
-
-/** 用例用：强制开关值（传 `undefined` 恢复按 env 判）。 */
-export function setSidecarTurnsForTest(value: boolean | undefined): void {
-  turnsOverride = value
-}
-
-/**
  * 边车基址：去尾斜杠（拼路径时统一由这里保证只有一层斜杠）。
  *
  * **两处来源、一处判定**：壳里问到的真实端口优先 ✓（`ensureLocalBase` 问的
@@ -205,56 +200,34 @@ function buildtimeBase(): string {
 }
 
 /**
- * "显式关"的字面量判定（**两个开关共用这一处**：对话轮次 / 本机数据面）。
+ * "显式关"的字面量判定（`VITE_LOCAL_DATA` 那一处用，见 `localDataEnabledFrom`）。
  *
  * 为什么单独抽成纯函数（而不是把 `env()` 读在里头）：判据是这一片最容易写错的一位 ✓
  * ——`1/true/yes` 那套是"默认关"时代的写法 ✗（只认真值、其余全关 ✗），
  * 现在要求的是**反过来**：`0` / `false` / `no` / `off`（大小写不敏感 ✓、前后空白忽略 ✓）
  * 才关 ✓，**别的值（含不设、含空）一律算开着** ✓。抽出来之后用例能逐个字面量钉住它 ✓，
- * 不必去动构建期的环境变量 ✗（`vi.stubEnv` 改不到本模块读的那一份，见上面那个窄接口 ✓）。
+ * 不必去动构建期的环境变量 ✗（`vi.stubEnv` 改不到本模块读的那一份，见 `setLocalDataForTest` ✓）。
  */
 function explicitlyOff(raw: string | undefined): boolean {
   const value = (raw ?? '').trim().toLowerCase()
   return value === '0' || value === 'false' || value === 'no' || value === 'off'
 }
 
-/** 对话轮次开关的字面量判据（见 `explicitlyOff`）。 */
-export function sidecarTurnsEnabledFrom(raw: string | undefined): boolean {
-  return !explicitlyOff(raw)
-}
-
-/**
- * 对话轮次**走边车**这个开关（**默认开**，见文件头"已完成"那一段）。
- *
- * 不设 `VITE_SIDECAR_TURNS` → 走边车。它**不再是一条逃生门**：服务器那条链已经退役，
- * 关掉它只能让对话没地方跑（`resolveTurnTarget` 抛 `TurnUnavailableError`）——
- * 之所以还留着它，是因为"关掉"这个配置已经存在（装机脚本 / 排障笔记里会写），
- * 静默忽略它比说清"它现在意味着什么"更糟。
- */
-export function sidecarTurnsEnabled(): boolean {
-  if (turnsOverride !== undefined) return turnsOverride
-  return sidecarTurnsEnabledFrom(env().VITE_SIDECAR_TURNS)
-}
-
-/** 被显式关掉时把用户写的那个值带出来（`reason` 里要说清是**哪一种**关法）。 */
-function explicitOffReason(): string {
-  const raw = env().VITE_SIDECAR_TURNS
-  const shown = raw === undefined || raw.trim() === '' ? '' : `=${raw.trim()}`
-  return (
-    `边车对话轮次被显式关掉（VITE_SIDECAR_TURNS${shown}）` +
-    '：对话只能在本机后端上跑，而服务器那条链已退役（删掉这个变量就回到边车）'
-  )
-}
-
-/** 用例用：强制本机数据面的开关值（传 `undefined` 恢复按 env 判）。 */
+/** 用例用：强制本机数据面的开关值（`undefined` = 不覆盖，按 env 判）。 */
 let localOverride: boolean | undefined
 
-/** 用例用：强制开关值（传 `undefined` 恢复按 env 判）。 */
+/**
+ * 用例用：强制开关值（传 `undefined` 恢复按 env 判）。
+ *
+ * 为什么不靠 `vi.stubEnv`：它只改**测试文件自己**那份 `import.meta.env`，
+ * 改不到本模块读的那一份（实测：开了 stub 仍然读到空值）。给一个显式的窄接口更老实，
+ * 也让人一眼看出"这是给用例开的门"。
+ */
 export function setLocalDataForTest(value: boolean | undefined): void {
   localOverride = value
 }
 
-/** 本机数据面开关的字面量判据（与对话轮次同一套字面量，见 `explicitlyOff`）。 */
+/** 本机数据面开关的字面量判据（见 `explicitlyOff`）。 */
 export function localDataEnabledFrom(raw: string | undefined): boolean {
   return !explicitlyOff(raw)
 }
@@ -267,8 +240,9 @@ export function localDataEnabledFrom(raw: string | undefined): boolean {
  * 想看看"同一批数据走服务器那条链长什么样"、或者怀疑本机库有问题时，改一个环境变量即可 ✓）。
  * 被显式关掉时**绝不静默** ✗：顶栏那条状态会一直写着"服务器"与原因 ✓（见 `localStatus`）。
  *
- * 与 `VITE_SIDECAR_TURNS` 是**两个**开关：一个管"这一轮在哪台机器上跑" ✓，
- * 一个管"这份数据归谁" ✓。想只回退一半也能做到（互不牵连 ✓）。
+ * **与对话轮次那条链互不牵连** ✓：轮次那边只有一个落点（边车）、**没有**开关
+ * （原先那个 `VITE_SIDECAR_TURNS` 已随回退一起退役，见文件头）；
+ * 这一条管的是"这份数据归谁"，与"这一轮在哪台机器上跑"是两件事 ✓。
  */
 export function localDataEnabled(): boolean {
   if (localOverride !== undefined) return localOverride
@@ -342,35 +316,28 @@ const probe: ProbeState = { available: null, reason: '', at: 0 }
 let probeGeneration = 0
 
 /**
- * 给界面读的状态位（走哪条链不是静默的）。
+ * 给界面读的状态位（这一轮打哪儿不是静默的）。
  *
- * `reason` **四种状态都说得清**（默认开之后，"开关未启用"那句话只覆盖"显式关"，
- * 所以不能再用它当默认文案）：
+ * `reason` **三种状态都说得清**（原先那第四种"被显式关掉"随 `VITE_SIDECAR_TURNS`
+ * 一起退役了，见文件头）：
  *
  * 1. **走边车** —— 说打的是哪个基址；
- * 2. **被显式关掉** —— 说清是哪个变量；
- * 3. **边车没起来** —— 带上探测给的原因；
- * 4. **还没探过**（`available: null`）—— 不猜边车是好是坏，只说"还没探过、
- *    默认会先试边车"。后三种都是**打不了**（`resolveTurnTarget` 抛
+ * 2. **边车没起来** —— 带上探测给的原因；
+ * 3. **还没探过**（`available: null`）—— 不猜边车是好是坏，只说"还没探过、
+ *    默认会先试边车"。后两种都是**打不了**（`resolveTurnTarget` 抛
  *    `TurnUnavailableError`）：服务器那条链已退役，没有回退可报（见文件头）。
  */
 export function sidecarStatus(): {
   base: string
   available: boolean | null
   reason: string
-  enabled: boolean
 } {
   const base = sidecarBase()
-  const enabled = sidecarTurnsEnabled()
-  if (!enabled) {
-    return { base, available: probe.available, reason: explicitOffReason(), enabled: false }
-  }
   if (probe.available === true) {
     return {
       base,
       available: true,
       reason: `走边车：对话轮次打 ${base}${SIDECAR_STREAM_PATH}`,
-      enabled: true,
     }
   }
   if (probe.available === false) {
@@ -378,14 +345,12 @@ export function sidecarStatus(): {
       base,
       available: false,
       reason: `${probe.reason || '边车不可用'}；这一轮跑不了（服务器那条链已退役，没有别的落点）`,
-      enabled: true,
     }
   }
   return {
     base,
     available: null,
     reason: `还没探过边车（默认先试 ${base}；服务器那条链已退役，探不到就打不了这一轮）`,
-    enabled: true,
   }
 }
 
@@ -460,7 +425,8 @@ export async function sidecarAvailable(options: { force?: boolean } = {}): Promi
 }
 
 /**
- * 对话轮次**没有落点**时抛的那个错（边车被显式关掉、或没跑起来）。
+ * 对话轮次**没有落点**时抛的那个错（边车没跑起来——原先还有"被显式关掉"那一种，
+ * 随 `VITE_SIDECAR_TURNS` 一起没有了，见文件头）。
  *
  * 单独一个类而不是一句 `Error`（与 `LocalUnavailableError` 同一条理由）：调用方要能区分
  * "这台机器上的对话后端没跑起来"与"后端回了一个错"——前者要劝用户重启壳/看日志，
@@ -481,20 +447,14 @@ export class TurnUnavailableError extends Error {
 }
 
 /**
- * 这一轮对话该打哪里（异步：先看开关、再探边车）。
+ * 这一轮对话该打哪里（异步：先问壳拿基址、再探边车）。
  *
  * **只有一个落点**：边车活着就给 `{base, url}`（打 `/turn/stream`），否则**抛**
- * `TurnUnavailableError`（同时 `console.warn` 一条）——两种"打不到"的原因都写进那句话里：
- * 被显式关掉（`explicitOffReason()`）/ 边车没起来（`probe.reason`）。
- * 原先这里回退服务器 `/chat/stream`，那条端点 2026-10-05 起两档都没有了（见文件头）。
+ * `TurnUnavailableError`（同时 `console.warn` 一条）——"打不到"的原因就是探测给的那句
+ * （`probe.reason`）。原先这里回退服务器 `/chat/stream`，那条端点 2026-10-05 起
+ * 两档都没有了（见文件头），围着它的那个开关也一并退役了。
  */
 export async function resolveTurnTarget(): Promise<TurnTarget> {
-  if (!sidecarTurnsEnabled()) {
-    // 显式关是**主动选择**、不是异常，所以仍用 info 不用 warn；但落点是死的，一样抛
-    const reason = explicitOffReason()
-    console.info(`[sidecar] ${reason}`)
-    throw new TurnUnavailableError(reason)
-  }
   // 基址**先问壳**再取（`sidecarAvailable` 里也会问一次，那一步是幂等的缓存）：
   // 端口顺延到 8766-8769 时，下面这个 `base` 必须是壳里那个真实端口
   await ensureLocalBase()
@@ -517,11 +477,6 @@ export async function resolveTurnTarget(): Promise<TurnTarget> {
  */
 export async function resolveApprovalTarget(approvalId: string): Promise<TurnTarget> {
   const encoded = encodeURIComponent(approvalId)
-  if (!sidecarTurnsEnabled()) {
-    const reason = explicitOffReason()
-    console.info(`[sidecar] ${reason}`)
-    throw new TurnUnavailableError(reason)
-  }
   await ensureLocalBase()
   const base = sidecarBase()
   if (await sidecarAvailable()) {
@@ -716,7 +671,10 @@ export function localDownReason(detail: string): string {
   return `本机后端未启动：${detail || '边车没有应答'}；会话数据在本机，未回退服务器`
 }
 
-/** 被显式关掉时把用户写的那个值带出来（与 `explicitOffReason` 同一套措辞）。 */
+/**
+ * 被显式关掉时把用户写的那个值带出来（**本机面**那一处；对话那条链没有开关了，
+ * 所以这份措辞只服务 `VITE_LOCAL_DATA`，见文件头）。
+ */
 function explicitLocalOffReason(): string {
   const raw = env().VITE_LOCAL_DATA
   const shown = raw === undefined || raw.trim() === '' ? '' : `=${raw.trim()}`

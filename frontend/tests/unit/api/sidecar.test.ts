@@ -40,7 +40,6 @@ import {
   resetSidecarProbe,
   resolveTurnTarget,
   setLocalDataForTest,
-  setSidecarTurnsForTest,
   sidecarBase,
   sidecarStatus,
 } from '@/api/sidecar'
@@ -74,13 +73,11 @@ beforeEach(() => {
   resetSidecarProbe()
   vi.restoreAllMocks()
   setLocalDataForTest(undefined)
-  setSidecarTurnsForTest(undefined)
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
   setLocalDataForTest(undefined)
-  setSidecarTurnsForTest(undefined)
   resetSidecarProbe()
 })
 
@@ -266,7 +263,6 @@ describe('④ 壳里问到的**真实基址**（8765 被占会顺延）', () => 
     expect(urlOf(1)).toBe(`http://127.0.0.1:8767${API_BASE}/notes`)
 
     // 对话轮次那条链读的是**同一个**基址（原先它读构建期常量＝永远 8765 ✗）
-    setSidecarTurnsForTest(true)
     const target = await resolveTurnTarget()
     expect(target.base).toBe('http://127.0.0.1:8767')
     expect(target.url).toBe('http://127.0.0.1:8767/turn/stream')

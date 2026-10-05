@@ -5,6 +5,10 @@
  * 适配在 `chatStream` 里那一处）：服务器档那条 `/chat/stream` 在 2026-10-05 随 NAS 网页端
  * 退役（`backend/app/api/v1/router.py` 的模块头），所以这一族的落点只有本机一个。
  *
+ * 非流式那条 `POST /chat` **两个档里都没有**（同上一句那张表），所以这里也没有
+ * "跑一次拿整段答案"那种便捷函数：要一整轮就走 `chatStream`（界面本来走的就是它）。
+ * 原先那个 `chatOnce()` 打的就是这条不存在的路——它只有用例在调，2026-10-05 删掉。
+ *
  * 为什么不用 `client.ts` 的 `request()`：那个封装假定"响应是 JSON"——
  * 它写死 `Content-Type: application/json` 并把响应体一次性 `json()` 掉。
  * 对话的默认形态是 SSE（`text/event-stream`），响应体是一条会持续打开的字节流，
@@ -26,7 +30,6 @@ import {
   type ApiErrorBody,
 } from './client'
 import { resolveApprovalTarget, resolveTurnTarget, toSidecarTurnBody } from './sidecar'
-import type { components } from './schema'
 import { createDisplayPacer } from '@/lib/pacer'
 
 /**
@@ -302,6 +305,30 @@ export interface ChatApproval {
 export type ApprovalDecision = 'allow_once' | 'allow_always' | 'deny'
 
 /**
+ * 命令目录那一条的**线形状**（后端 `schemas.py::CommandOut`）——**手写的，不是生成物**。
+ *
+ * 为什么手写（2026-10-05，`/chat/commands` 从服务器档摘掉）：这条端点因此退出了服务器档的
+ * OpenAPI（`backend/app/api/v1/router.py` 的模块头写着那一步），它**只挂本机档**
+ * （`local_router`），生成物里那两份模型（`CommandOut` / `CommandListOut`）也跟着消失了
+ * ——理由与上面 `ChatSourceOut` 那段逐字相同。
+ *
+ * 契约本身**一个字没变**：字段逐条对着 `backend/app/api/v1/schemas.py` 抄，
+ * 可选性照生成物那一版（有默认值的都是可选）。**改了后端就回来改这里。**
+ */
+export interface CommandOut {
+  name: string
+  summary?: string
+  usage?: string
+  group?: 'builtin' | 'user' | 'repo' | 'skill'
+  details?: string[]
+  argument_hint?: string
+  short_circuit?: boolean
+  shadowed_by?: string
+  error?: string
+  path?: string
+}
+
+/**
  * 一条斜杠命令（P1-2）。**菜单与 `/help` 读的是后端同一份数据**
  * （`GET /api/v1/chat/commands`，见 `listCommands`）。
  *
@@ -342,7 +369,7 @@ export interface ChatCommandList {
 }
 
 /** 把契约里的可空字段收成必有的（`Required<>` 只在顶层生效，这里逐字段收窄）。 */
-function normalizeCommand(raw: components['schemas']['CommandOut']): ChatCommand {
+function normalizeCommand(raw: CommandOut): ChatCommand {
   return {
     name: raw.name,
     summary: raw.summary ?? '',
@@ -360,12 +387,15 @@ function normalizeCommand(raw: components['schemas']['CommandOut']): ChatCommand
 /**
  * 读一次命令目录（前端输入框里那个 `/` 菜单吃它）。
  *
- * **走本机**（`requestLocal`，2026-10-05）：命令与技能目录都是**这台机器上的**
+ * **走本机**（`requestLocal`）：命令与技能目录都是**这台机器上的**
  * （`data/commands/` + 仓库命令 + `<data_dir>/skills/`，启停状态在本地 `app_settings`），
  * 而桌面真正执行那一轮的是**边车** —— 目录与执行必须同源，否则壳里列出来的
- * （本机那份）与真正能被执行的不是同一批。本机档那一侧挂了它（`router.py` 的
- * `local_router`），浏览器那一档（没有本机后端）由 `resolveLocalBase` 落到服务器，
- * 端点在那边的挂法没动。
+ * （本机那份）与真正能被执行的不是同一批。**2026-10-05 起这条端点只在本机档**
+ * （`router.py` 的 `local_router`；服务器那一份同一天摘掉，见模块头）。
+ *
+ * **浏览器那一档读不到它**（没有本机后端，`resolveLocalBase` 落到服务器上那个已经
+ * 摘掉的路径 = 404）：那条**失败不抛**的处置正好把它收成空列表 —— 那一档本来也只有
+ * 知识库管理台，没有对话页可进。
  *
  * **失败不抛**：菜单是顺手的入口，后端旧版本没有这个端点时不该把对话页变成错误提示
  * （与「权限」那颗读不到设置就不显示同一处置）——返回空列表，界面只少一个菜单。
@@ -373,7 +403,7 @@ function normalizeCommand(raw: components['schemas']['CommandOut']): ChatCommand
 export async function listCommands(): Promise<ChatCommand[]> {
   try {
     const body = await requestLocal<{
-      items?: components['schemas']['CommandOut'][]
+      items?: CommandOut[]
     }>('/chat/commands')
     // 只留**能用的**那批（被遮蔽的与坏掉的在列表端点里仍可见，见插件列表那套做法）
     return (body.items ?? [])
@@ -1090,21 +1120,6 @@ export async function decideApproval(
     method: 'POST',
     body: JSON.stringify(trimmed ? { decision, reason: trimmed } : { decision }),
   })
-}
-
-/** 一次性问答：脚本与自测用，与流式同一条链路。 */
-export async function chatOnce(
-  payload: ChatPayload,
-  signal?: AbortSignal,
-): Promise<{ answer: string; sources: ChatSource[] }> {
-  const response = await fetch(`${API_BASE}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify(payload),
-    signal,
-  })
-  if (!response.ok) throw await errorFromResponse(response)
-  return (await response.json()) as { answer: string; sources: ChatSource[] }
 }
 
 export interface SuggestedQuestions {

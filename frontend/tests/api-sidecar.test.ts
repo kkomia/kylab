@@ -7,6 +7,10 @@
  * 见下面那几条的说明（`TurnUnavailableError`）。它要防的正是那种最坏的样子：
  * 请求发到一个谁也不服务的 URL 上，界面上只多一条 404。
  *
+ * **同一天紧接着又改了一处**：`VITE_SIDECAR_TURNS` 那个开关退役（它原先决定"打边车还是
+ * 回服务器"，而回退那条路已经没了 ⇒ 没有可切换的两端）。所以"开关本身"那一组断言删掉了，
+ * 留下的是"**落点只有一个、打不到就抛**"这件事的四条（默认 / 探不到 / 探过了 / 还没探）。
+ *
  * 原则与其它 api-*.test.ts 一致：**不打真网络**（`fetch` 全程被替身接管）。
  */
 
@@ -22,13 +26,10 @@ import {
   resetSidecarProbe,
   resolveApprovalTarget,
   resolveTurnTarget,
-  setSidecarTurnsForTest,
   sidecarAvailable,
   sidecarBase,
   SIDECAR_APPROVAL_PATH,
   sidecarStatus,
-  sidecarTurnsEnabled,
-  sidecarTurnsEnabledFrom,
   toSidecarTurnBody,
 } from '@/api/sidecar'
 
@@ -48,12 +49,9 @@ describe('边车分派：判定只有一处', () => {
   beforeEach(() => {
     resetSidecarProbe()
     vi.restoreAllMocks()
-    // 这一组验的是"**开关开着**时的分派"；开关本身（默认开 / 显式关）由下面那一组验
-    setSidecarTurnsForTest(true)
   })
   afterEach(() => {
     vi.unstubAllGlobals()
-    setSidecarTurnsForTest(undefined)
   })
 
   it('① 对话轮次归边车：基址与 URL 都指到边车', async () => {
@@ -186,90 +184,37 @@ describe('边车分派：判定只有一处', () => {
 })
 
 /**
- * 开关：**默认开** ✓，**显式关 = 逃生门** ✗。
+ * 落点只有一个（本机边车）：**打得到就走、打不到就抛**，没有"换个地方跑"这一说。
  *
- * 为什么"默认开"这条能直接量、而"显式关"那条用窄接口：本模块读的是**构建期**那份
- * `import.meta.env` ✓，`vi.stubEnv` 改不到它 ✗（实测：开了 stub 仍然读到空值，
- * 见 `setSidecarTurnsForTest` 的说明 ✓）。所以分两处钉：
- *
- * - **不设变量**这种事**不用改环境** ✓ —— 测试环境里本来就没设（先断言这个前提 ✓）；
- * - **字面量怎么判**用纯函数 `sidecarTurnsEnabledFrom` 逐个喂 ✓，
- *   `resolveTurnTarget()` 那条分支则用同一个 override 驱动 ✓（走的是同一段代码 ✓）。
+ * 这里原先还有一组"开关（默认开 / 显式关）"的断言，随 `VITE_SIDECAR_TURNS`
+ * 一起退役（见 `api/sidecar.ts` 的文件头）——所以"显式关"那两条删掉了，
+ * 剩下的三条量的都是**同一个落点**的三个状态：走边车 / 探不到 / 还没探过。
  */
-describe('边车轮次开关：默认开，显式关 = 对话没地方跑', () => {
+describe('边车轮次的落点：只有边车，打不到就抛', () => {
   beforeEach(() => {
     resetSidecarProbe()
     vi.restoreAllMocks()
-    setSidecarTurnsForTest(undefined)
   })
   afterEach(() => {
-    setSidecarTurnsForTest(undefined)
     vi.unstubAllGlobals()
   })
 
-  it('① 不设 VITE_SIDECAR_TURNS → 走边车（默认开），状态位说清打的是哪个基址', async () => {
-    // 前提要显式：这个环境里**没设**那个变量（否则这条用例量的就不是"默认"了 ✗）
-    expect(
-      import.meta.env.VITE_SIDECAR_TURNS as string | undefined,
-      '这条用例的前提：测试环境里没有设 VITE_SIDECAR_TURNS',
-    ).toBeUndefined()
+  it('① 默认（不设任何变量）就走边车，状态位说清打的是哪个基址', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okJson({ ok: true }))
     vi.stubGlobal('fetch', fetchMock)
 
-    expect(sidecarTurnsEnabled()).toBe(true)
     const target = await resolveTurnTarget()
 
     expect(target.base).toBe(DEFAULT_SIDECAR_BASE)
     expect(target.url).toBe(`${DEFAULT_SIDECAR_BASE}${SIDECAR_STREAM_PATH}`)
     // 走边车也要**说得清**（不是只有一个布尔值）：状态位带上实际基址
     const status = sidecarStatus()
-    expect(status.enabled).toBe(true)
     expect(status.available).toBe(true)
     expect(status.reason).toContain('走边车')
     expect(status.reason).toContain(DEFAULT_SIDECAR_BASE)
   })
 
-  it('② 显式关 → 抛（说清是哪个变量），有 info 且**根本不去探边车**', async () => {
-    setSidecarTurnsForTest(false)
-    const fetchMock = vi.fn().mockResolvedValue(okJson({ ok: true }))
-    vi.stubGlobal('fetch', fetchMock)
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
-
-    // 这条开关原先是一条逃生门（关掉就走服务器那条链）。那条链退役之后它**没有落点**，
-    // 所以关掉它 = 对话跑不起来——如实说出来，别让用户以为是别的问题。
-    const error = await resolveTurnTarget().catch((cause: unknown) => cause)
-
-    expect(error).toBeInstanceOf(TurnUnavailableError)
-    expect((error as Error).message).toContain('显式关掉')
-    expect((error as Error).message).toContain('服务器那条链已退役')
-    // 关闭**不许静默**：状态位 + 一条 info（主动选择用 info、不是 warn）
-    const status = sidecarStatus()
-    expect(status.enabled).toBe(false)
-    expect(status.reason).toContain('显式关掉')
-    expect(info).toHaveBeenCalledTimes(1)
-    expect(String(info.mock.calls[0][0])).toContain('VITE_SIDECAR_TURNS')
-    // 开关关着就不该有额外请求（否则每轮白探一次）
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('③ 字面量判据：只有 0/false/no/off 关，其余（含不设、含空、含奇怪值）都开', () => {
-    for (const raw of [undefined, '', '   ', '1', 'true', 'TRUE', 'yes', 'on', 'enabled']) {
-      expect(sidecarTurnsEnabledFrom(raw), String(raw)).toBe(true)
-    }
-    for (const raw of ['0', 'false', 'FALSE', 'no', 'No', 'off', 'OFF', ' 0 ', '\tfalse\t']) {
-      expect(sidecarTurnsEnabledFrom(raw), String(raw)).toBe(false)
-    }
-    // `baseForPath` **不再看这个开关**：对话轮次那条链只有一个落点（边车），
-    // 开关管的是"跑不跑"（`resolveTurnTarget` 抛），不管"打哪台"
-    setSidecarTurnsForTest(false)
-    expect(sidecarTurnsEnabled()).toBe(false)
-    expect(baseForPath('/chat/stream')).toBe(sidecarBase())
-    setSidecarTurnsForTest(true)
-    expect(sidecarTurnsEnabled()).toBe(true)
-    expect(baseForPath('/chat/stream')).toBe(sidecarBase())
-  })
-
-  it('④ 默认开但边车没起来 → 显式失败（状态位 + warn），不打服务器', async () => {
+  it('② 边车没起来 → 显式失败（状态位 + warn），一条请求都不额外发', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'))
     vi.stubGlobal('fetch', fetchMock)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -277,7 +222,6 @@ describe('边车轮次开关：默认开，显式关 = 对话没地方跑', () =
     await expect(resolveTurnTarget()).rejects.toBeInstanceOf(TurnUnavailableError)
 
     const status = sidecarStatus()
-    expect(status.enabled).toBe(true)
     expect(status.available).toBe(false)
     expect(status.reason).toContain('ECONNREFUSED')
     expect(status.reason).toContain('跑不了')
@@ -286,14 +230,13 @@ describe('边车轮次开关：默认开，显式关 = 对话没地方跑', () =
     expect(urlsOf(fetchMock)).toEqual([`${DEFAULT_SIDECAR_BASE}/health`])
   })
 
-  it('⑤ 还没探过边车时不猜好坏：available=null，但仍然说清默认会先试边车', () => {
+  it('③ 还没探过边车时不猜好坏：available=null，但仍然说清默认会先试边车', () => {
     const status = sidecarStatus()
 
-    expect(status.enabled).toBe(true)
     expect(status.available).toBeNull()
     expect(status.reason).toContain('还没探过')
     expect(status.reason).toContain(DEFAULT_SIDECAR_BASE)
-    // reason **不许空着**：四种状态都要能据它判断"这一轮会怎样"
+    // reason **不许空着**：三种状态都要能据它判断"这一轮会怎样"
     expect(status.reason.length).toBeGreaterThan(0)
   })
 })
@@ -301,11 +244,9 @@ describe('边车轮次开关：默认开，显式关 = 对话没地方跑', () =
 describe('审批决定的选址（与轮次同一套，交接文档点名的缺口）', () => {
   beforeEach(() => {
     resetSidecarProbe()
-    setSidecarTurnsForTest(true)
   })
   afterEach(() => {
     vi.unstubAllGlobals()
-    setSidecarTurnsForTest(undefined)
   })
 
   it('边车可用 → 决定打到**边车那台**的 /turn/approvals/{id}', async () => {

@@ -42,18 +42,19 @@ NAS 上那份会话数据不迁移、直接丢；服务器档从此只对外提�
 ——这正是"它唯一的消费者（NAS 网页端）退役"的直接后果。形态仍是**甲**：只摘挂载，
 不删代码、不删表 ✓（把下面 `_chat_survivors` 换成整 include 就回退了）。
 
-**两条例外照旧挂着**，它们不与会话面耦合：
+**只剩一条例外照旧挂着**，它不与会话面耦合：
 
-- ``GET /chat/commands``：命令目录（`/` 菜单吃它）。它读的是**进程自己的**目录
-  （`data/commands/` + 仓库命令 + 技能），与本机档那两张目录表无关。
-  **它现在也在本机档**（2026-10-05，见下面 `local_router` 那一条挂载）：命令与技能
-  在这台机器上、桌面真正执行那一轮的是边车 ⇒ **目录与执行同源**，前端那一半
-  （`LOCAL_PATHS` + `listCommands` 走 `requestLocal`）同一轮改完。服务器这一份照旧留着：
-  浏览器那一档没有本机后端时它就是那份目录（统一走 `requestLocal` 的调用点会落到
-  `API_BASE`），而"不把 `/` 菜单打成空"仍是要守的那条；
 - ``GET /chat/suggested-questions``：推荐问题从**知识库**里已存的分段问题来
   （`services/suggested_questions.py`）——那是 NAS 上的数据，服务器档正是它的家，
   而且**只有这一档有它**（本机档的知识库在别处，问题清单得问提供者）。
+
+``GET /chat/commands``（命令目录）**2026-10-05 又改了一次挂法**：上一轮它从
+"只挂服务器档"挪进本机档（见下面 `local_router`），服务器这一份却还留着 ——
+于是同一个端点有了**两份**目录（这台机器的 / NAS 的），而它的数据本来只属于前者：
+`data/commands/` + 仓库命令 + `<data_dir>/skills/` 与被禁用的技能都在这台机器上，
+执行那一轮也在本机（边车）⇒ **服务器档这一条摘掉**，只剩本机档那一条（目录与执行同源）。
+浏览器那一档（没有本机后端）因此**没有**命令目录可读：`listCommands` 拿到 404 就回空列表，
+`/` 菜单在那一种形态下是空的（那个形态只有 NAS 上的知识库管理台，没有对话页）。
 """
 
 from fastapi import APIRouter
@@ -115,17 +116,18 @@ api_router.include_router(provider.router)
 # 本机档是客户端角色（它调 `/backup/*`，不提供它们），见 `api/v1/backup.py` 的模块头
 api_router.include_router(backup.router)
 # 会话链路那一族**从服务器档退掉**（见模块头"`/chat/*` 那一族的处置"）：
-# 用"只带上幸存的那两条"而不是整 include，理由与下面 `_export_only` 逐字同一条——
+# 用"只带上幸存的那一条"而不是整 include，理由与下面 `_export_only` 逐字同一条——
 # 路径、依赖、响应模型、OpenAPI 说明还是原来那些对象，**不另写一份实现**，
-# 于是"下次改这两个端点时漏掉一边"这件事不可能发生。
+# 于是"下次改这个端点时漏掉一边"这件事不可能发生。
 #
-# 留下的两条**与"不摆注定失败的路"这条规矩不冲突**：它们读的分别是这台服务器自己的
-# 命令目录与 NAS 库里的分段问题，一个字节都不碰会话面 ✓（逐条理由见模块头）。
+# 留下的这一条**与"不摆注定失败的路"这条规矩不冲突**：它读的是 NAS 库里的分段问题，
+# 一个字节都不碰会话面 ✓（理由见模块头）。`/chat/commands` 原先也留在这里，
+# 2026-10-05 摘掉——它的数据属于**这台机器**（见模块头那一段），本机档那一条才是它的家。
 _chat_survivors = APIRouter()
 _chat_survivors.routes.extend(
     route
     for route in chat.router.routes
-    if getattr(route, "path", "") in ("/chat/commands", "/chat/suggested-questions")
+    if getattr(route, "path", "") == "/chat/suggested-questions"
 )
 api_router.include_router(_chat_survivors)
 api_router.include_router(stats.router)
@@ -245,10 +247,14 @@ local_router.include_router(local.router)
 # 摆出来就是一条会 404/503 的路。理由与做法见 `api/v1/local.py` 的模块头。
 local_router.include_router(local.chat_reads)
 local_router.include_router(local.stats_reads)
-# 命令目录（`GET /chat/commands`，2026-10-05 从"只挂服务器档"挪进来）：它读的是
-# **这台机器上的**命令与技能（`data/commands/` + 仓库命令 + `<data_dir>/skills/`），
+# 命令目录（`GET /chat/commands`）：它读的是**这台机器上的**命令与技能
+# （`data/commands/` + 仓库命令 + `<data_dir>/skills/`，含"被禁用的技能"那栏的读法），
 # 而桌面真正执行那一轮的是**边车** —— 目录与执行必须同源，否则壳里列出来的
 # 与真正能被执行的不是同一批（同一个端点也就有了两个答案）。
+#
+# **2026-10-05 先挪进来、再摘掉服务器那一份**（见模块头那一段）：两次改动合起来，
+# 这条端点如今**只在本机档**。浏览器那一档拿不到它（`listCommands` 回空列表，`/` 菜单为空），
+# 那一档本来也只有知识库管理台。
 #
 # 手法与上面那几条薄重声明逐字相同：**按原路径重挂同一个端点函数**（`chat.list_commands`，
 # 函数体一个字不重写、鉴权依赖与响应模型都还是原来那份），只是换一个 router 注册。

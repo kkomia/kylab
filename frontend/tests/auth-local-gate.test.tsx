@@ -60,6 +60,20 @@ vi.mock('@/api/stats', async (importOriginal) => ({
   getDashboard: vi.fn(async () => ({ cards: [], activity: [], trends: [] })),
 }))
 
+// 落地页（`/`）是概览，它按需把整个 ECharts 拉进来（`DashboardPage` 里那个 `lazy`）。
+// 这一份用例只关心"守卫放没放行"，**不需要那张图**——而 jsdom 里没有 canvas：真去
+// `init` 会在线程里抛 `Cannot set properties of null (setting 'dpr')`（`EChart.tsx:320`）。
+//
+// 为什么非替掉不可（2026-10-05 实测，就是本文件那条"远端不可达 + 本机档"）：
+// 整仓并发跑（77 个用例文件各一个 worker）时它**在 12036ms 上抛**——内层等待被用满，
+// 那一刻 DOM 里连侧栏都还没出来；同一轮还带出 10~23 条上面那种未捕获异常，
+// 而 vitest 把"有未捕获异常"直接算成这一轮失败（1313 条断言全过也照红）。
+// 替掉之后：这一条用例 **38ms**（原先单单这一条就是 0.7~12 秒），整仓跑
+// 1313/1313 全过、未捕获异常 0 条、退出码 0。做法与 `tests/misc-dashboard.test.tsx`
+// 逐字相同（那里也是"jsdom 没有 canvas，真 init 会把用例打挂"），
+// 而"图表按需异步加载"这件事由 `DashboardPage` 自己的结构保证，不靠这份用例验。
+vi.mock('@/features/misc/dashboard/EChart', () => ({ EChart: () => null }))
+
 vi.mock('@/api/workspaces', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/workspaces')>()),
   listWorkspaces: vi.fn(async () => ({ items: [] })),
@@ -165,7 +179,16 @@ afterEach(() => {
   resetBackupStore()
 })
 
-/** 进到壳里了吗（侧栏那一条主导航在，就说明守卫放行了）。 */
+/**
+ * 进到壳里了吗（侧栏那一条主导航在，就说明守卫放行了）。
+ *
+ * **外层必须 ≥ 内层**：原先内层 12 秒、外层只有 vitest 默认的 5 秒，那个等待预算
+ * **根本用不上**（用例先被 runner 判超时），表现就是"整仓跑红、单跑绿"。
+ * 所以照 `smoke.test.tsx` / `local-backend-gate.test.tsx` 里那几条同类用例的写法
+ * （同是"等整壳挂载"、同样**不动全局 `testTimeout`**）给下面两条用例各加
+ * `{ timeout: 15_000 }`，内层维持 12 秒——**替掉那张图之后这条链已经不到 1 秒**，
+ * 12 秒是给并发跑留的余量，不是它真的需要（见上面 `EChart` 那一段的实测数字）。
+ */
 async function expectInsideShell(): Promise<void> {
   await waitFor(
     () => {
@@ -176,7 +199,7 @@ async function expectInsideShell(): Promise<void> {
 }
 
 describe('登录守卫：本机档不要求远端登录（R13）', () => {
-  it('拿到登录会话 → 进（原行为）', async () => {
+  it('拿到登录会话 → 进（原行为）', { timeout: 15_000 }, async () => {
     remoteAnswered()
     withCredential()
 
@@ -186,7 +209,7 @@ describe('登录守卫：本机档不要求远端登录（R13）', () => {
     expect(window.location.pathname).toBe('/')
   })
 
-  it('远端不可达 + 本机档 → **也进**，并说一句"连不上服务器"', async () => {
+  it('远端不可达 + 本机档 → **也进**，并说一句"连不上服务器"', { timeout: 15_000 }, async () => {
     // 两条同时成立：远端问不出来（NAS 不可达）+ 本机后端答了 `/local/status` 且那是本机档
     remoteUnreachable()
     localStatusMock.mockResolvedValue(localStatus('local'))
