@@ -21,6 +21,19 @@
  *    加密包……）会走到 catch，文案在那里给。
  * 4. **`destroy()` 只解事件总线，不清 DOM**（上游实现里就两行 `wt/bt('destroy')`），
  *    所以"松手"这件事由我们负责：清空容器。
+ * 5. **舞台宽度要量容器的父节点，不能量容器自己**（2026-10-05 疯狂闪屏的根因）。
+ *    容器是**滚动容器**（`.kylab-office`：`overflow: auto; max-height: 70vh`），11 页叠起来
+ *    必然出竖直滚动条 ⇒ 它的 `clientWidth` 少了约 15px。而重渲染（第 1 条）第一件事是
+ *    `host.innerHTML = ''` ⇒ 容器里空了 ⇒ 撑不到 70vh ⇒ 滚动条消失 ⇒ `clientWidth` 涨回
+ *    约 15px ⇒ `ResizeObserver` 触发 ⇒ `setWidth` ⇒ effect 再跑 ⇒ 又清空、又重建……
+ *    **判据的输入被它自己触发的那次渲染改掉了**，于是无限"清空 → 重建"，屏幕上就是闪屏。
+ *    改成观察容器的**父节点**（调用点上那层就是 `FilePreview` 里的 `.kylab-preview`：
+ *    `display: flex; flex-direction: column; width: 100%` 的普通盒子，**不是滚动容器**），
+ *    它的宽度只随抽屉变，渲染改不动它，这条回路就断了；抽屉真变宽时父节点跟着变，
+ *    RO 照旧触发，"变宽了要重建"一个字没丢。
+ *    另外**要减掉容器自己的横向 padding 与 border**：`clientWidth` 含 padding，
+ *    不减的话注进去的 wrapper 比容器的内容盒还宽，容器下面会一直挂着一条横向滚动条。
+ *    两者从 `getComputedStyle(host)` 取（jsdom 里读出来是空串，按 0 收，见 `px`）。
  *
  * `mode` 取 `'list'`：抽屉里读一份 PPT，最常见的是"往下翻着看完整份"，
  * 而不是一页一页点。`'slide'` 会渲染上游自带的那对圆形翻页按钮（`#666666` 硬编码，
@@ -40,10 +53,16 @@ export interface PptxPreviewProps {
 }
 
 /**
- * 容器量不到宽度时用的兜底：`init` 拿到 `width: 0` 会算出 0 倍缩放，整份 PPT 塌成一条线。
- * jsdom 里量到的一定是 0，所以这个兜底也是测试能跑起来的前提。
+ * 舞台量不到宽度时用的兜底：`init` 拿到 `width: 0` 会算出 0 倍缩放，整份 PPT 塌成一条线。
+ * jsdom 里没有布局，量到的一定是 0，所以这个兜底也是测试能跑起来的前提。
  */
 const FALLBACK_WIDTH = 960
+
+/** 计算样式里的长度（`padding-left` 这类）：jsdom 读出来是空串，非有限数一律当 0。 */
+function px(value: string): number {
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
 
 export function PptxPreview({ url, name }: PptxPreviewProps) {
   const { loading, failure, buffer } = useRemoteBuffer(url)
@@ -51,14 +70,26 @@ export function PptxPreview({ url, name }: PptxPreviewProps) {
   const [width, setWidth] = useState(0)
   const [renderFailure, setRenderFailure] = useState('')
 
-  // 宽度：量一次 + 之后跟着容器变。只有宽度变了才重渲染（见文件头注第 2 条）。
+  // 宽度：量一次 + 之后跟着父节点变。只有宽度变了才重渲染（见文件头注第 2 条）。
+  // 量的是父节点，不是容器自己：容器是滚动容器，它的 clientWidth 会被下面那次"清空再画"
+  // 改掉，量它就是自己咬自己的尾巴——那就是闪屏（见文件头注第 5 条）。
   useEffect(() => {
     const host = hostRef.current
-    if (!host) return
-    const measure = () => setWidth(host.clientWidth)
+    const frame = host?.parentElement
+    if (!host || !frame) return
+    const measure = () => {
+      const style = getComputedStyle(host)
+      // clientWidth 含 padding、不含 border：这两样要减掉，wrapper 才落在容器的内容盒里
+      const chrome =
+        px(style.paddingLeft) +
+        px(style.paddingRight) +
+        px(style.borderLeftWidth) +
+        px(style.borderRightWidth)
+      setWidth(frame.clientWidth - chrome)
+    }
     measure()
     const observer = new ResizeObserver(measure)
-    observer.observe(host)
+    observer.observe(frame)
     return () => observer.disconnect()
   }, [])
 

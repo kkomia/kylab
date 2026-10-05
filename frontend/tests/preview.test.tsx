@@ -12,7 +12,7 @@
  * 字节的来源统一是 `fetch`（签名链接是相对路径），所以每个用例都从
  * `vi.stubGlobal('fetch', …)` 开始——**失败态那组正是让它失败**。
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -92,15 +92,37 @@ function stubFetch(body: Parameters<typeof response>[0] | Error) {
  * 变宽了必须重建）。`tests/setup.ts` 里已经有一个全局替身，但本文件的
  * `afterEach` 会 `vi.unstubAllGlobals()` 把 `fetch` 的替身一起收掉——那个全局替身
  * 也会被顺手收走，所以在每个用例前重新装一个。
+ *
+ * 这份比全局那个多两件：记下**观察的是哪个节点**、以及能把回调**手动触发一次**
+ * （`fire`）——闪屏那条用例要复现"浏览器观察到尺寸变了"，光有 observe 是复现不了的。
  */
 class ResizeObserverStub {
-  observe() {}
+  static instances: ResizeObserverStub[] = []
+  /** 它被 observe 过的节点（按调用顺序）。 */
+  readonly seen: Element[] = []
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    ResizeObserverStub.instances.push(this)
+  }
+
+  observe(target: Element) {
+    this.seen.push(target)
+  }
   unobserve() {}
   disconnect() {}
+
+  /** 照浏览器会做的那样回调一次（参数在本组件里用不到，entries 给个空壳）。 */
+  fire() {
+    this.callback(
+      this.seen.map((target) => ({ target }) as unknown as ResizeObserverEntry),
+      this as unknown as ResizeObserver,
+    )
+  }
 }
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+  ResizeObserverStub.instances = []
   upstream.preview.mockClear()
   upstream.destroy.mockClear()
   upstream.init.mockClear()
@@ -466,6 +488,63 @@ describe('pptx：init 之后才有 preview，销毁时自己清容器', () => {
     expect(upstream.init.mock.invocationCallOrder[0]).toBeLessThan(
       upstream.preview.mock.invocationCallOrder[0],
     )
+  })
+
+  /**
+   * 2026-10-05 的疯狂闪屏：容器（`.kylab-office`）是**滚动容器**，11 页叠起来必然出竖直
+   * 滚动条（少约 15px）；而重渲染第一件事是 `host.innerHTML = ''`，容器空了 ⇒ 撑不到
+   * `max-height` ⇒ 滚动条消失 ⇒ 量出来的宽度涨回去 ⇒ RO 触发 ⇒ 再清空重建……
+   * **量容器自己 = 判据的输入被它自己那次渲染改掉**，于是无限循环。
+   *
+   * 所以这里让 **host 的 clientWidth 随"有没有内容"变**（模拟滚动条），父节点恒定：
+   * 观察对象必须是父节点、宽度必须由父节点算出来，回调一次之后 `init` 仍只有一次。
+   */
+  it('量的是父节点：容器自己的 clientWidth 随内容变化也不重建（闪屏那条回路）', async () => {
+    stubFetch({ bytes: [1] })
+    // `init` 的替身照上游行为往容器里 append 一页（内容在 ⇒ 容器就有滚动条了）；
+    // 用 `mockImplementationOnce` 是为了只影响这一条用例（beforeEach 只 `mockClear`）
+    upstream.init.mockImplementationOnce((dom) => {
+      dom.appendChild(document.createElement('div'))
+      return { preview: upstream.preview, destroy: upstream.destroy }
+    })
+
+    // 父节点由我们自己给：换成提供的容器当父节点，两边的宽度才能在**挂载之前**定下来
+    const FRAME_WIDTH = 900
+    const frame = document.createElement('div')
+    Object.defineProperty(frame, 'clientWidth', { configurable: true, get: () => FRAME_WIDTH })
+    document.body.appendChild(frame)
+    const { unmount } = render(<PptxPreview url="/api/a.pptx" name="讲稿.pptx" />, {
+      container: frame,
+    })
+
+    // 容器：有内容 = 少 15px（竖直滚动条占位），空 = 拿回那 15px
+    const host = screen.getByTestId('pptx-host')
+    Object.defineProperty(host, 'clientWidth', {
+      configurable: true,
+      get: () => (host.childElementCount > 0 ? FRAME_WIDTH - 15 : FRAME_WIDTH),
+    })
+
+    await waitFor(() => expect(upstream.init).toHaveBeenCalledTimes(1))
+
+    // 这一条用例的牙就在下面这两句：内容已经进去了 ⇒ 此刻 host 的 clientWidth 是 885 那个值。
+    // 照浏览器那样回调一次 RO，父节点没变 ⇒ 宽度不变 ⇒ 不该再清空重建。
+    // **改回"量 host 自己"这一句就会红**（它拿到 885 → `setWidth` → effect 再跑 → 又清空又
+    // init，就是用户看到的疯狂闪屏）：实测 received 2。
+    await act(async () => ResizeObserverStub.instances[0].fire())
+
+    await waitFor(() => expect(upstream.init).toHaveBeenCalledTimes(1))
+
+    // 顺带钉住"量的是父节点、减掉了容器自己的 padding/border"：
+    // jsdom 里 padding/border 读成空串（按 0 减），所以宽度就是父节点的 900
+    // ——不是 host 的 0（量到就落 960 兜底）、也不是有滚动条时的 885
+    expect(ResizeObserverStub.instances[0].seen[0]).toBe(frame)
+    expect(upstream.init.mock.calls[0][1]).toEqual({ width: FRAME_WIDTH, mode: 'list' })
+    await waitFor(() => expect(upstream.preview).toHaveBeenCalledTimes(1))
+    expect(host.childElementCount).toBe(1)
+
+    // 容器是我们自己给的：`cleanup()` 不管它，自己收掉，免得留在 body 里跟着后面几条用例
+    unmount()
+    frame.remove()
   })
 
   it('卸载：destroy 交给上游、DOM 我们自己清（上游的 destroy 不清 DOM）', async () => {
