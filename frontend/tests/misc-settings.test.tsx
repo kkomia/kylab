@@ -6,6 +6,9 @@
  * 2. **槽位绑定走 bindSlot**（不是改设置字段）——这正是 v0.8 归属整理那条；
  * 3. **测试连接失败要就地显示后端那句话**（不是一句"失败"）；
  * 4. **成员看不到「用户」分组**（写与管理端点是 `require_admin`）。
+ *
+ * 文件末另有**账号菜单那一行**（侧栏左下）的用例：设置是模型 key 与知识库连接
+ * 唯一的入口，而它的在不在由那一行判——所以它跟着这一份弹窗一起验（见末尾那一节）。
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -74,7 +77,9 @@ import { fetchHealth } from '@/api/health'
 import { bindSlot, getRegistry } from '@/api/modelRegistry'
 import { getAuthStatus, getSettings, testConnection, type SettingsView } from '@/api/settings'
 import { resetBackupStore, setBackupStatusForTest, type LocalBackup } from '@/api/backup'
+import { resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
 import { resetProviderStore, setProviderStatusForTest } from '@/api/provider'
+import { AccountMenu } from '@/features/layout/AccountMenu'
 import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
 import { SettingsModal } from '@/features/misc/settings/SettingsModal'
 import { renderMisc } from '@/features/misc/testing/harness'
@@ -1162,5 +1167,93 @@ describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
     expect(await screen.findByRole('button', { name: '服务配置' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '备份' })).toBeNull()
     expect(screen.queryByRole('button', { name: '凭据' })).toBeNull()
+  })
+})
+
+/* ------------------- 账号菜单那一行（侧栏左下；2026-10-05 修的那条 bug） ------------------- */
+
+/**
+ * 这一行是**设置唯一的入口**（模型 key 与知识库连接都在弹窗里），所以它按什么判"我在不在"
+ * 直接等于"进不进得去设置"。
+ *
+ * 本机档里 `currentUser` **恒为 null**：`/auth/*` 一族根本不挂 `local_router`
+ * （`backend/app/api/v1/router.py`），后端把这一档短路成"本机主人"
+ * （`backend/app/api/auth.py::current_caller`）。原先两处都按"有没有登录"判，于是
+ * 名字留白、菜单里也没有「设置」——用户看到的就是「现在怎么左下角设置这些都没了？？」。
+ *
+ * 三档各摆一次答案（判据是 `api/local.ts::localBackendView`，用 `setLocalBackendForTest`
+ * 直接摆好，不经过网络）：本机档无账号 / 服务器档无账号 / 本机档有管理员（回归）。
+ */
+describe('账号菜单那一行（侧栏左下）', () => {
+  afterEach(() => {
+    // 模块级单份状态必须由调用方复位，否则前一条用例的结论会串到下一条
+    resetLocalBackendForTest()
+  })
+
+  /** 摆成"还没有账号"那一档（`currentUser` 为 null）。 */
+  function asNobody(): void {
+    useSessionStore.setState({
+      token: '',
+      currentUser: null,
+      authStatus: null,
+      reloginCount: 0,
+    })
+  }
+
+  it('本机档：写着「本机主人」，菜单里有「设置」，点它能打开弹窗', async () => {
+    setLocalBackendForTest('local')
+    asNobody()
+
+    renderMisc(<AccountMenu />)
+
+    // 名字照后端那个唯一主体的口径（`AccountMenu.tsx::LOCAL_CALLER_NAME`）
+    expect(screen.getByText('本机主人')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '账号：本机主人' })).toBeInTheDocument()
+    // 角色徽章照旧不给：没有账号就没有角色（本机主人不是"管理员"这个角色）
+    expect(screen.queryByText('管理员')).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: '账号：本机主人' }))
+    const menu = await screen.findByRole('menu')
+    // 头像 / 退出登录不给（本机档没有账号可退），「设置」必须给
+    expect(within(menu).queryByRole('menuitem', { name: '头像' })).toBeNull()
+    expect(within(menu).queryByRole('menuitem', { name: '退出登录' })).toBeNull()
+    await userEvent.click(within(menu).getByRole('menuitem', { name: '设置' }))
+
+    // 真的开起来了（落点是「模型注册」那一屏，与别的用例同一处认路）
+    expect(await screen.findByRole('heading', { name: '模型注册' })).toBeInTheDocument()
+    expect(getSettingsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('服务器档（没有本机后端）：没有「设置」，也没有「头像」「退出登录」，主题那一项照旧', async () => {
+    setLocalBackendForTest('absent')
+    asNobody()
+
+    renderMisc(<AccountMenu />)
+
+    // 那一档"没有登录"就是没有身份：留白是实话，写个名字只会让人以为登录被吞了
+    expect(screen.getByRole('button', { name: '账号' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '账号' }))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).queryByRole('menuitem', { name: '设置' })).toBeNull()
+    expect(within(menu).queryByRole('menuitem', { name: '头像' })).toBeNull()
+    expect(within(menu).queryByRole('menuitem', { name: '退出登录' })).toBeNull()
+    // 主题翻转与本机后端无关，照旧在（菜单里不能只剩个空壳）
+    expect(within(menu).getByRole('menuitem', { name: /切换为/ })).toBeInTheDocument()
+    // 入口不在，弹窗也没挂：那四条读一条都不发（两者同一条件）
+    expect(getSettingsMock).not.toHaveBeenCalled()
+    expect(getRegistryMock).not.toHaveBeenCalled()
+  })
+
+  it('回归：有账号的管理员 + 有本机后端——「设置」照旧在（与旧行为一致）', async () => {
+    setLocalBackendForTest('local')
+
+    renderMisc(<AccountMenu />)
+
+    await userEvent.click(screen.getByRole('button', { name: '账号：管理员' }))
+    const menu = await screen.findByRole('menu')
+    for (const label of ['头像', '设置', '退出登录']) {
+      expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument()
+    }
   })
 })

@@ -6,14 +6,31 @@
  * **不提供在系统里切换使用者的入口**：切换身份必须先登出再登录——一个下拉就能换人，
  * 会让"我以为我是谁"和"后端认为我是谁"分叉。
  *
- * 菜单四项（管理员多一项），**每一项都在说一件"这台机器上的事"**：
+ * 菜单四项（哪一项在，见右列），**每一项都在说一件"这台机器上的事"**：
  *
- * | 菜单项 | 做什么 | 为什么在这里 |
- * | --- | --- | --- |
- * | 头像 | 换一张脸（`AvatarDialog`） | 低频、只跟账号有关 |
- * | 设置（仅管理员） | 打开 `SettingsModal` | 设置里是密钥与用户管理，后端对成员一律 403 |
- * | 切换为浅色 / 深色 | 翻到另一边 | 低频，且"这台机器怎么显示"属于设置；这里给一条近路 |
- * | 退出登录 | 退会话 → 清本地 → 去登录页 | 不可逆，摊在页脚上误点代价高，所以收进二级菜单 |
+ * | 菜单项 | 做什么 | 为什么在这里 | 什么时候在 |
+ * | --- | --- | --- | --- |
+ * | 头像 | 换一张脸（`AvatarDialog`） | 低频、只跟账号有关 | 只在真有账号时 |
+ * | 设置 | 打开 `SettingsModal` | 设置里是密钥与模型（用户管理只给管理员），后端对成员一律 403 | 本机档**都有**；服务器档不摆（见下） |
+ * | 切换为浅色 / 深色 | 翻到另一边 | 低频，且"这台机器怎么显示"属于设置；这里给一条近路 | 恒在 |
+ * | 退出登录 | 退会话 → 清本地 → 去登录页 | 不可逆，摊在页脚上误点代价高，所以收进二级菜单 | 只在真有账号时 |
+ *
+ * ## 本机档（没有账号体系）这一行的口径
+ *
+ * 桌面壳那一份里 `currentUser` **恒为 null**：本机档的 `/auth/*` 一族根本不挂在
+ * `local_router` 上，后端把这一档短路成"本机主人"（`backend/app/api/auth.py::current_caller`）。
+ * 所以名字与「设置」**都不能按"有没有登录"来判**——照"没有登录"判的表现是这一行空白、
+ * 菜单里也没有「设置」，而设置里正是模型 key 与知识库连接唯一的入口（用户原话：
+ * 「现在怎么左下角设置这些都没了？？」）。两处各自的判据：
+ *
+ * - **名字**：`currentUser?.name ?? (local.present ? LOCAL_CALLER_NAME : '')` —— 兜底只在
+ *   **有本机后端**的那一份给（服务器档没有账号体系之外的"主人"，留白才是实话）；
+ * - **设置**：`local.present && (currentUser ? currentUser.role === 'admin' : true)`——
+ *   服务器档仍旧不摆（那一档 `/settings` 一族不存在，点进去只会 404）；本机档没有账号体系，
+ *   而"本机主人"在后端那条记录里就是管理员（`api_key.py::LOCAL_CALLER`：
+ *   `is_admin=True`、`role=UserRole.ADMIN`），设置读的又正是本机那几张表。
+ *
+ * 「头像」「退出登录」照旧**只给真账号**：本机档没有账号可退，也没有头像那一族端点。
  *
  * 页脚**只有这一行**：使用者下拉、独立的「设置」按钮、字体大小入口都已收进设置弹窗；
  * 旧版还把「后端在线」那行探针删掉了（真出问题会有请求报错）。
@@ -67,6 +84,17 @@ import { useSidebar } from './useSidebar'
 
 const ICON = 14
 
+/**
+ * 本机档唯一调用主体的名字（后端起给它的**就是**这个）。
+ *
+ * 本机档没有账号体系，`currentUser` 恒为 null（见文件头"本机档"那一节），
+ * 而这一行不能因此留白——后端起给本机档那个唯一主体的名字是「本机主人」
+ * （`backend/app/services/api_key.py::LOCAL_CALLER`，`UserRecord(name="本机主人")`）。
+ * 界面照抄同一个口径，**别在这里另起一个名字**：一句话在两处写法不同，
+ * 用户会以为这是两个人。
+ */
+const LOCAL_CALLER_NAME = '本机主人'
+
 /** 「我是谁」的兜底：没有头像就用名字的第一个字（与旧 `AppAvatar` 同一口径）。 */
 function initialOf(name: string): string {
   return name.trim().slice(0, 1) || '·'
@@ -98,18 +126,34 @@ export function AccountMenu() {
    * 与侧栏读的是同一份状态，不会出现"栏收了、行没动"）。
    */
   const { collapsed } = useSidebar()
-  /** 这一份界面有没有本机后端（决定「设置」那一项在不在，见下面那段说明）。 */
+  /** 这一份界面有没有本机后端（决定「设置」那一项在不在，见下面 `settingsAvailable` 那段）。 */
   const local = useLocalBackend()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
 
-  const identityName = currentUser?.name ?? ''
-  // 身份还没验完（`currentUser` 为 null）时留空：那不是一种身份，写个名字只会让人
-  // 以为登录被吞了。管理员入口同理——放行会让成员登录后一瞬间看到管理员入口。
+  /**
+   * 这一行写谁：真账号的名字，本机档则是「本机主人」（见 `LOCAL_CALLER_NAME`）。
+   *
+   * 服务器档里 `currentUser` 为 null 意味着"身份还没验完"：那不是一种身份，
+   * 写个名字只会让人以为登录被吞了——所以**只在本机档兜底**（`local.present`）。
+   */
+  const identityName = currentUser?.name ?? (local.present ? LOCAL_CALLER_NAME : '')
   const isAdmin = currentUser?.role === 'admin'
   const identityRole = currentUser ? (isAdmin ? '管理员' : '成员') : ''
+
+  /**
+   * 「设置」那一项在不在——**与 `SettingsModal` 的挂载条件是同一个**（见文件头那两段）。
+   *
+   * 两条理由，别把它们并成一条：
+   * - **服务器档不摆**（`local.present` 为假）：设置里那几节读的是本机那几张表
+   *   （`/settings`、`/model-registry`、`/local/*`），这一档根本没有它们，点开只会得到
+   *   一片"读不到"——摆一个点进去报错的入口比不显示更糟；
+   * - **本机档照摆**：那一档没有账号体系（`currentUser` 恒为 null），"本机主人"就是
+   *   这台机器的管理员。成员仍是 403，所以有账号时照旧只给管理员。
+   */
+  const settingsAvailable = local.present && (currentUser ? currentUser.role === 'admin' : true)
 
   function onToggleTheme(): void {
     // 切到**另一边**：所以文案要说清切过去是哪个
@@ -190,12 +234,10 @@ export function AccountMenu() {
               <RiUserLine size={ICON} aria-hidden="true" /> 头像
             </DropdownMenuItem>
           )}
-          {/* 设置只给管理员：后端对成员一律 403，摆一个点进去只会报错的入口比不显示更糟。
-              **也只给有本机后端的那一份**（2026-10-05，NAS 网页端退役）：设置里那几节
-              读的是本机那几张表（`/settings`、`/model-registry`、`/local/*`），服务器档
-              从这一轮起不挂它们了——那一档点开只会得到一片"读不到"（同一条理由：
-              摆一个点进去只会报错的入口比不显示更糟）。 */}
-          {isAdmin && local.present && (
+          {/* 「设置」在不在由 `settingsAvailable` 定（见它在组件顶部那段：服务器档不摆，
+              本机档没有账号体系也照摆）。**两处的条件必须是同一个值**——入口与弹窗
+              一起在、一起不在。 */}
+          {settingsAvailable && (
             <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
               <RiSettings3Line size={ICON} aria-hidden="true" /> 设置
             </DropdownMenuItem>
@@ -228,14 +270,14 @@ export function AccountMenu() {
       {/* 两个浮层由本组件持有开合：菜单一选项就收起（Radix 的默认行为），
           所以不会出现"两层浮层叠在一起"。
 
-          **设置弹窗只在真有那条入口时才挂**（2026-10-05，NAS 网页端退役）：它读的
-          `/settings` 那一档**根本没有**（`settings.router` 只挂在本机档那张白名单上，
-          见 `backend/app/api/v1/router.py`），而弹窗挂上就等着用户点——挂着一个
-          打不开、点开才发现是 404 的弹窗没有意义。
+          **设置弹窗只在真有那条入口时才挂**（2026-10-05，NAS 网页端退役；2026-10-05
+          本机档那一条见文件头）：它读的 `/settings` 那一族**服务器档根本没有**
+          （`settings.router` 只挂在本机档那张白名单上，见 `backend/app/api/v1/router.py`），
+          而弹窗挂上就等着用户点——挂着一个打不开、点开才发现是 404 的弹窗没有意义。
           （这条条件管"入口在不在"；"关着的时候读不读"是另一件事——`SettingsModal`
           里那四个 `useQuery` 都带 `enabled: open`，关着一条都不读。）
-          入口与弹窗同一条件，两者一起在、一起不在（见上面那一段）。 */}
-      {isAdmin && local.present && (
+          入口与弹窗同一条件（`settingsAvailable`），两者一起在、一起不在。 */}
+      {settingsAvailable && (
         <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       )}
       <AvatarDialog
