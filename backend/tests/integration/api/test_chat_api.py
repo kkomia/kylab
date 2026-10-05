@@ -989,68 +989,127 @@ def test_context_usage_needs_a_known_conversation(client: TestClient) -> None:
     )
 
 
-# ------------------------------------------------- 记忆：交给长期记忆那一步（P0-8）
+# ------------------------------------------------- 记忆：记进档案那一步（§4.1 第②路）
 
 
-def _enable_memory(client: TestClient) -> None:
-    """把长期记忆打开。走设置端点，与用户的操作同一条路。"""
+def _set_switch(client: TestClient, **values: str) -> None:
+    """改设置。走设置端点，与用户的操作同一条路。"""
     response = client.patch(
-        "/api/v1/settings", json={"values": [{"key": "memory.enabled", "value": "true"}]}
+        "/api/v1/settings",
+        json={"values": [{"key": key, "value": value} for key, value in values.items()]},
     )
     assert response.status_code == 200, response.text
     assert response.json()["rejected"] == [], response.text
 
 
-def test_the_fifth_turn_says_it_was_handed_to_memory(client: TestClient, kb_id: str) -> None:
-    """**第 5 轮的过程面板里看得见「交给长期记忆」**（P0-8 的可见性）。
+#: 判定说"值得记"时模型该给的那一行（分区 + 一句话，形状见 ``memory._parse_lines``）。
+_JUDGEMENT = "长期偏好与风格｜用户要求以后的回答都先给结论。"
 
-    自动沉淀是**异步**的（走队列），所以它没法像工具调用那样在过程面板里自己
-    长出来——不补这一步，用户那边就是"记忆这东西好像存在，但从来没见过它动"。
+#: 一句会命中信号词的话（``memory.CAPTURE_SIGNALS`` 里的「以后」）。
+_SIGNAL_QUERY = "我以后都要先看结论"
 
-    顺带守住三条：前面几轮**不显示**（节流是每 5 个用户回合一次）、它同样是
-    事件日志里的一条、以及快照与日志仍然是同一件事（P0-2 那条验收对它也成立）。
+
+class _FakeJudgement:
+    """假的**判定**模型：只实现这一次出网调用用到的那一个方法。
+
+    判定本身（开关、词表、解析、写档案、回执）在 ``tests/unit/services/test_memory.py``
+    里逐条覆盖过了；这里关心的是"判完之后这一轮的过程面上是什么"，所以换掉的是
+    **出网那一层**（``_ask_model`` 建的 ``OpenAICompatChat``），固定回一句话。
     """
-    _enable_memory(client)
+
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+
+    def complete(self, messages: object) -> str:
+        self.calls.append(messages)
+        return _JUDGEMENT
+
+
+def _install_fake_judgement(monkeypatch: pytest.MonkeyPatch) -> _FakeJudgement:
+    """把判定那一次出网换掉——**打的是它自己模块里的那个名字**（不是全局的模型通道）。"""
+    import app.services.memory as memory_module
+
+    stub = _FakeJudgement()
+    monkeypatch.setattr(memory_module, "OpenAICompatChat", lambda config: stub)
+    return stub
+
+
+def _steps_of_phase(messages: list[dict], phase: str) -> list[dict]:
+    """消息快照里 ``phase`` 是某一档的那几步（平铺、按轮次顺序）。"""
+    return [step for item in messages for step in item["steps"] if step["phase"] == phase]
+
+
+def test_only_the_turn_that_wrote_into_the_archive_says_so(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**真写进档案的那一轮**，过程面板上是「记进档案」（§4.1 第②路、§4.4）。
+
+    触发条件是**这一轮的窄信号词命中、且判定真写进去了**（``chat._implicit_capture_step``，
+    ``chat.py:2342-2379``），不是轮次计数——"每 5 个用户回合必然交接"那个口径已经退场
+    （``memory.capture`` 默认关、判定也可能说没有值得写的）。所以这里先跑满五轮
+    **没有信号词**的普通问答：那五轮一轮都不该有这一步，第 6 轮命中「以后」之后，
+    它才出现在**那一轮**上。
+
+    顺带两条：报出来的 detail 说的是真写进档案的那件事（档案里找得到，
+    与模型从 `remember` 听到的是同一句话），以及快照与事件日志是同一份 payload
+    （P0-2 的"投影 == 快照"）。
+    """
+    _set_switch(client, **{"memory.capture": "true"})
     install_fake_chat("答案")
+    judgement = _install_fake_judgement(monkeypatch)
     conversation_id = _conversation(client)
 
     for index in range(1, 6):
         _ask(client, conversation_id, kb_id, f"问题{index}")
 
     messages = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"]
-    tracings = [[step["label"] for step in item["steps"]] for item in messages]
-    assert all("交给长期记忆" not in item for item in tracings[:-1]), "前 4 轮不该显示"
-    assert "交给长期记忆" in tracings[-1]
+    assert _steps_of_phase(messages, "memory") == [], "没有信号词的轮次一律不显示这一步"
 
-    handoffs = [
+    _ask(client, conversation_id, kb_id, _SIGNAL_QUERY)
+
+    messages = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"]
+    steps = _steps_of_phase(messages, "memory")
+    assert len(steps) == 1, "六轮里只有信号命中且真写进去的那一轮有"
+    assert steps == _steps_of_phase([messages[-1]], "memory"), "它挂在最后那一轮上"
+    assert steps[0]["label"] == "记进档案"
+    assert steps[0]["status"] == "done" and steps[0]["detail"]
+    assert len(judgement.calls) == 1, "六轮里只有信号那一轮出网判定一次"
+
+    # 报的是**真写进去的那件事**：档案里找得到，回执里带着同一句话（§4.4）
+    entry = _JUDGEMENT.split("｜", 1)[1]
+    archive = (get_services().memory.workspace / "PROFILE.md").read_text(encoding="utf-8")
+    assert entry in archive, archive
+    assert entry in str(steps[0]["detail"])
+
+    logged = [
         event
         for event in _events(client, conversation_id)
         if event["payload"].get("phase") == "memory"
     ]
-    assert len(handoffs) == 1, "第 5 轮一次，日志里也只该有一条"
-    assert handoffs[0]["kind"] == "step"
-    # 快照 == 日志的投影（同一份 payload，两处一起写）
-    assert [step for step in messages[-1]["steps"] if step["phase"] == "memory"] == [
-        handoffs[0]["payload"]
-    ]
+    assert len(logged) == 1 and logged[0]["kind"] == "step"
+    assert logged[0]["payload"] == steps[0], "快照 == 日志的投影（同一份 payload）"
 
 
-def test_memory_is_not_handed_over_when_the_switch_is_off(client: TestClient, kb_id: str) -> None:
-    """关着长期记忆时**不显示那一步**——判据问的是服务层，不是"界面自己觉得"。
+def test_the_default_off_switch_shows_nothing_even_with_a_signal(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**默认关**（``memory.capture``）时：同一句带信号词的话也不显示那一步。
 
     显示"会沉淀"而实际什么都不会发生，比少一行糟得多：用户会照着它去记忆页找，
-    然后得出"这功能是坏的"。
+    然后得出"这功能是坏的"。这里**不碰设置**，用的就是产品默认值
+    （``runtime_config.DEFAULTS``，单测里钉着它是 ``"false"``）——判据在服务层的
+    第一道闸上（``memory.py:969``），所以连判定那次出网都不发起。
     """
     install_fake_chat("答案")
+    judgement = _install_fake_judgement(monkeypatch)
     conversation_id = _conversation(client)
 
-    for index in range(1, 6):
-        _ask(client, conversation_id, kb_id, f"问题{index}")
+    _ask(client, conversation_id, kb_id, _SIGNAL_QUERY)
 
     messages = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"]
-    assert all(
-        step["phase"] != "memory" for item in messages for step in item["steps"]
-    )
+    assert len(messages) == 2, "这一轮本身是正常的（否则'没有那一步'是空绿）"
+    assert _steps_of_phase(messages, "memory") == []
+    assert judgement.calls == [], "关着时连信号词都不看，一次出网都没有"
 
 
 def test_an_overlong_query_is_rejected_before_anything_runs(client: TestClient) -> None:
