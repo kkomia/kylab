@@ -53,18 +53,28 @@ include 就回退了）：
 - `/conversations/{id}/events`、`/chat/context-usage`：**本机档**——`local.py` 的
   `chat_reads` 薄重声明了这两条（只读本机数据）；
 - `/chat/turns/record`：**没有人**——边车写回本机那一半早删了（`sidecar::_record_turn`）；
-- `/chat/commands`、`/chat/suggested-questions`：**服务器档照旧**（`_chat_survivors`）
-  ——它们不碰会话面，而前端今天仍从服务器读它们。
+- `/chat/commands`：**本机档**——`router.py` 的 `local_router` 按原路径重挂了同一个端点
+  函数（`_chat_commands_local`，函数体一个字没改）。它读的是**这台机器上的**命令与技能
+  （`data/commands/` + 仓库命令 + `<data_dir>/skills/`），执行那一轮也在本机（边车），
+  于是**目录与执行同源**；服务器档那一份 2026-10-05 同一天摘掉（服务器没有这些数据，
+  留着就是同一个端点两个答案）。前端也跟着改走本机
+  （`frontend/src/api/chat.ts` 的 `listCommands`，走 `requestLocal`）；
+- `/chat/suggested-questions`：**服务器档照旧**（`_chat_survivors` 如今只剩这一条）
+  ——它从**知识库**里已存的分段问题取材（`services/suggested_questions.py`），
+  而知识库那一族本来就留在服务器档（`router.py` 的模块头），它一个字节都不碰会话面，
+  所以**这一条的家就在服务器档**（本机档的知识库在 NAS 上，问题清单得问提供者）。
 
 **这一族在本模块里的代码一个字没删**（可回退、也免得下次要用时从 git 里捞）——
 它现在是一座"无人挂载的端点库"：读它的时候记住上表，别把"没挂"当成"没实现"。
 
 **它的 HTTP 用例也一起摘了**：`tests/integration/api/test_chat_*.py` 那六份
 （`api` / `commands` / `live` / `resume` / `step_retry` / `approvals`，共 107 条）
-打的就是上表里"没有人服务"的那几条，所以整份删掉了——逐条的承接者写在新加的
+打的就是上表里"没有人服务"的那几条（`commands` 那一份打的是当时**服务器档还挂着**的
+那一条——它 2026-10-05 才摘掉，见上表那一行），所以整份删掉了——逐条的承接者写在新加的
 `tests/integration/api/test_retired_nas_web_face.py` 里（那一份同时把"哪张表上有什么"
-钉成了断言）。**要把上面那一行 include 换回来（回退），就得连那六份用例一起从
-git 历史里捞回来**——否则回退之后的链路没有任何 HTTP 用例。
+钉成了断言，含"服务器档 404 `/chat/commands` ↔ 本机档 200"这一对）。**要把上面那一行
+include 换回来（回退），就得连那六份用例一起从 git 历史里捞回来**——否则回退之后的链路
+没有任何 HTTP 用例。
 """
 
 from __future__ import annotations
@@ -3754,6 +3764,9 @@ def list_commands(
     _: Caller = Depends(require_read),
 ) -> CommandListOut:
     """斜杠命令的目录：前端那个 ``/`` 菜单就吃这一份（P1-2 第 4 条）。
+
+    **只挂本机档**（``router.py`` 的 ``local_router``；服务器那一份 2026-10-05 摘掉，
+    理由见模块头那一行）：这里列的是**这台机器上的**命令与技能，执行那一轮也在本机。
 
     三条与界面直接相关的约定：
 

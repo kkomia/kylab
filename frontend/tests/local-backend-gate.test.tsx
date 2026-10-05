@@ -70,6 +70,16 @@ vi.mock('@/api/knowledgeBases', async (importOriginal) => ({
   listKnowledgeBases: vi.fn(async () => ({ items: [], total: 0 })),
 }))
 
+// 落地页（`/`）是概览，它按需把整个 ECharts 拉进来（`DashboardPage` 里那个 `lazy`）；
+// 而 **jsdom 没有 canvas** —— 真进到那一步就在线程里抛（两种都实测过：
+// `EChart.tsx` 的 `Cannot set properties of null (setting 'dpr')`，以及它后面
+// zrender 的 `Cannot read properties of null (reading 'clearRect')`）。这类异常
+// **不算在任何一条断言上**，但 vitest 把"这一轮有未捕获异常"直接判成失败：
+// 表现就是某个恰好同时在跑的文件被归上十几条异常、整仓退出码非 0。这一份只关心
+// "哪几页存在、清单读不读"，**不需要那张图**，所以换成空组件——做法与
+// `tests/misc-dashboard.test.tsx`、`tests/auth-local-gate.test.tsx` 逐字相同。
+vi.mock('@/features/misc/dashboard/EChart', () => ({ EChart: () => null }))
+
 import { App } from '@/app/App'
 import { getAuthBootstrapStatus, me } from '@/api/auth'
 import { resetBackupStore } from '@/api/backup'

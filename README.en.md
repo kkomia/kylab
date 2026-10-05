@@ -154,7 +154,7 @@ pnpm install
 pnpm dev                          # http://127.0.0.1:5173, /api proxied to port 8000
 ```
 
-LAN access and deployment details: [deployment & operations v0.3](docs/规范/部署与运行-v0.3.md) (Chinese).
+LAN access and deployment details: [deployment & operations v0.4](docs/规范/部署与运行-v0.4.md) (Chinese).
 
 ### Desktop shell (optional, Rust + Tauri 2)
 
@@ -211,7 +211,7 @@ kylab/
 | [Engineering spec v0.6](docs/规范/项目工程规范-v0.6.md) | Layout, naming, layering discipline, testing, **the four doc folders** and the freeze rule, commits and branches (v0.6: `调研/` moved under `归档/`) |
 | [Frontend design spec v0.14](docs/规范/前端设计规范-v0.14.md) | Design tokens, light/dark themes, accessible controls, UI information architecture (values measured from Kimi) |
 | [API spec v0.1](docs/规范/API-接口规范-v0.1.md) | REST routes, request/response conventions, error envelope (accepted when it matches the generated OpenAPI) |
-| [Deployment & operations v0.3](docs/规范/部署与运行-v0.3.md) | PostgreSQL prerequisite, local and container routes, backup/restore, capacity and pitfalls |
+| [Deployment & operations v0.4](docs/规范/部署与运行-v0.4.md) | PostgreSQL prerequisite, local and container routes, backup/restore, capacity and pitfalls |
 | **design/** — how the system is built, and why | |
 | [Architecture v0.2](docs/设计/架构设计-v0.2.md) | Original positioning, architecture, ingestion pipeline, retrieval, capacity planning. **Two parts are void**: the positioning (see the "drift" section above) and §8's storage choice (SQLite), superseded by PostgreSQL |
 | [Agent workspace & capability layer v0.1](docs/设计/Agent-工作区与能力层设计-v0.1.md) | Workspaces, skills and external MCP, tool admission policy, session sandboxes, sub-agents |
@@ -234,6 +234,7 @@ kylab/
 | [Engineering spec v0.3](docs/归档/项目工程规范-v0.3.md) | Superseded by v0.4 (the doc-folders change) |
 | [Frontend design spec v0.13](docs/归档/前端设计规范-v0.13.md) | Superseded by v0.14 (radii, motion, overlay surface) |
 | [Deployment & operations v0.1](docs/归档/部署与运行-v0.1.md) | Superseded by v0.2 (dependency install, required env var, a wrong attribution) |
+| [Deployment & operations v0.3](docs/归档/部署与运行-v0.3.md) | Superseded by v0.4 (corrects §2.4: the `VITE_SIDECAR_TURNS` fallback knob is retired) |
 | [Code review M2/M4 v0.1](docs/归档/质检报告-M2M4-async-worker-rest-api-v0.1.md) | Milestone review of the async consumer and core REST API (verdict: pass) |
 | [Code review M5 v0.1](docs/归档/质检报告-M5-web-console-v0.1.md) | Milestone review of the web console (verdict: pass) |
 | [Handover 2026-09-11](docs/归档/交接说明-2026-09-11.md) | Early handover snapshot: three commands to get running, discipline, pitfalls; everything it listed as "next" is done |

@@ -152,7 +152,7 @@ cargo run --release    # 快得多，推荐
    轮询 `GET /api/v1/local/import/<批次 id>` → 撤销 `POST /api/v1/local/import/<批次 id>/rollback`；
    不在壳里也能导：`python -m app.services.legacy_import --server … --token … --data-dir …`。
    界面上这三笔账写在**顶栏那条状态条的第二行**（导入了几批 / 有几笔没跑完 / 有多少文件引用没随导入）。
-   逐条说明（含两条回退开关与常见问题）见[《部署与运行 v0.3》§2.4](../docs/规范/部署与运行-v0.3.md)。
+   逐条说明（含回退开关与常见问题）见[《部署与运行 v0.4》§2.4](../docs/规范/部署与运行-v0.4.md)。
 
 ### 出包前先造运行时
 
