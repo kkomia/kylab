@@ -1,7 +1,7 @@
 /**
  * 能力页（旧 `views/CapabilitiesView.vue` + `components/capabilities/**`）的用例。
  *
- * 七条刻意设计的验证：
+ * 十条刻意设计的验证：
  * 1. **被拦下/被丢弃的技能要显示原因**（`flagged` + `discarded` 分开标）；
  * 2. **插件包的"未实现"原样显示**（四类能力面的 status 是后端给的，界面不改写）；
  * 3. **探活连不上不是错误、是结果**：`reachable:false` + `detail` 要显示出来；
@@ -12,7 +12,17 @@
  * 6. **技能正文按 markdown 渲染**：用户看到的是文档，不是 `SKILL.md` 源码
  *    （`#` 成标题、`**` 成加粗），且首行那句解释小字已按 U1 删掉；
  * 7. **联网搜索的配置区就摆在页面上**、保存不会把留空的密钥发出去（2026-09-30：
- *    用户"找不到哪儿能填 API key"，而密钥被抹掉是同一处的另一半）。
+ *    用户"找不到哪儿能填 API key"，而密钥被抹掉是同一处的另一半）；
+ * 8. **"读不到"不等于"没有"**：页头三颗读数（技能 / 插件 / 插件包）分三态——
+ *    读取中 / 读取失败 / 真有数。`技能 0 / 0 可用` 只有在后端真回了个空列表时
+ *    才是对的；请求还在飞或已经失败时它会被读成"一个都没装"；
+ * 9. **每类默认只露 2 条精选**（v0.61）：判据是接口标在每条上的 `featured`
+ *    （**前端不自己算"前 2 条"**），其余收在「展开其余 N 条」后面；搜索时不受这
+ *    2 条限制（否则用户搜不到），清空关键词回到默认收起态；后端一条精选都没标、
+ *    或**这一类**没有精选时**全露**——宁可多露几张卡，也不能把一类画成空的。
+ * 10. **归类按后端给的 `category`**（镜像那份是快照，实测与后端现算的差 25 条）：
+ *    同一条按镜像该进「其他」、后端说是「演示与幻灯片」，就必须进后者——
+ *    否则精选（后端按自己的分类选的）与分组错位，几类会露 1 条或 3 条。
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -108,7 +118,18 @@ const WEB_GROUP: SettingGroup = {
   ],
 }
 
-function skill(overrides: Partial<Skill> = {}): Skill {
+/**
+ * 技能列表项的夹具。
+ *
+ * `category` / `featured`（v0.61）是 `@/api/capabilities` 的手写声明还没带上的那两个
+ * 字段（生成物 `@/api/schema.d.ts` 里已经有了），这里窄吃它们——
+ * "每类默认只露 2 条"那条口径只有拿 `featured` 才钉得住（**前端不重算精选**），
+ * `category` 则决定这一条归哪一类（后端给的优先于镜像映射）。
+ * **两个字段默认都不给**（= 老后端 / 没经过分类的样子），要用的用例自己写。
+ */
+type SkillFixture = Skill & { category?: string; featured?: boolean }
+
+function skill(overrides: Partial<SkillFixture> = {}): SkillFixture {
   return {
     name: 'pdf-report',
     description: 'Write a PDF report',
@@ -540,6 +561,361 @@ describe('能力页', () => {
     await userEvent.type(screen.getByLabelText('搜索技能'), 'pdf-pro')
     await waitFor(() => expect(document.querySelectorAll('li.m-card')).toHaveLength(1))
     expect(screen.getAllByTestId('skill-category')).toHaveLength(1)
+  })
+
+  /* ------------------------------------------------------- 每类默认只露 2 条（v0.61） */
+
+  /**
+   * v0.61 的精选夹具：`slides`（演示与幻灯片）一类 4 条、后端标了前 2 条为精选；
+   * `documents`（文档与办公）一类 2 条、两条都是精选（**没有可展开的**——
+   * 那颗入口就不该出现）。名字都取自真映射，落在哪一类不是用例编的。
+   */
+  function featuredSkills(): SkillFixture[] {
+    return [
+      skill({ name: 'slide-skill', featured: true }),
+      skill({ name: 'presentation-skill', featured: true }),
+      skill({ name: 'html2pptx' }),
+      skill({ name: 'mocky' }),
+      skill({ name: 'pdf-pro', featured: true }),
+      skill({ name: 'office-automation', featured: true }),
+    ]
+  }
+
+  /** 某一类的头（`data-category` 是 slug）。 */
+  function categoryHeader(slug: string): HTMLElement {
+    const found = screen
+      .getAllByTestId('skill-category')
+      .find((element) => element.getAttribute('data-category') === slug)
+    if (!found) throw new Error(`这一类没画出来：${slug}`)
+    return found
+  }
+
+  /** 类头上那个条数——说的是**这一类一共几条**，不是现在露了几条。 */
+  function headerCount(slug: string): number {
+    const span = [...categoryHeader(slug).querySelectorAll('span')].find((element) =>
+      /^\d+$/.test(element.textContent ?? ''),
+    )
+    return Number(span?.textContent ?? '0')
+  }
+
+  it('归类按后端给的 `category`：镜像说「其他」、后端说「演示与幻灯片」时就进后者', async () => {
+    /*
+     * 镜像那份 `assignments` 是**快照**，后端是**现算**的（实测 187 条里差 25 条，
+     * 产品自带的 `pptx`/`docx`/`xlsx`/`pdf` 压根不在镜像里）。两边若各用一份，
+     * 精选（后端按自己的分类选的）与分组就错位：这一类会露 1 条、那一类露 3 条。
+     * 所以分组跟着后端走——这条用例把优先级钉死。
+     */
+    const items = [
+      skill({ name: 'pptx', category: 'slides', featured: true }),
+      skill({ name: 'slide-skill', category: 'slides', featured: true }),
+      skill({ name: 'html2pptx', category: 'slides' }),
+      // 后端给了一个**没登记过**的分类（版本不匹配）：照旧兜到「其他」，不许凭空消失
+      skill({ name: 'no-such-category', category: 'not-registered', featured: true }),
+    ]
+    listSkillsMock.mockResolvedValue({ items, usable: items.length })
+
+    renderMisc(<CapabilitiesPage />)
+
+    // `pptx` 在镜像里查不到（按镜像该进「其他」），但后端说它属于演示与幻灯片
+    expect(await screen.findByText('pptx')).toBeInTheDocument()
+    expect(headerCount('slides')).toBe(3)
+    // 这一类按后端标了 2 条精选（pptx + slide-skill），第 3 条收在入口后面
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(3)
+    expect(screen.getByRole('button', { name: /展开其余 1 条/ })).toHaveAttribute(
+      'data-category',
+      'slides',
+    )
+    // 没登记过的分类兜到「其他」：那一条在那儿，且它没精选 → 这一类全露
+    expect(headerCount('other')).toBe(1)
+    expect(screen.getByText('no-such-category')).toBeInTheDocument()
+  })
+
+  it('每类默认只露 2 条：以接口标的 `featured` 为准，其余收在那颗入口后面', async () => {
+    const items = featuredSkills()
+    listSkillsMock.mockResolvedValue({ items, usable: items.length })
+
+    renderMisc(<CapabilitiesPage />)
+
+    // 这一类 4 条，先露后端标的那 2 条。**判据是 `featured`**：夹具里后面两条
+    // 名字更短、看起来也更像"精选"，但后端没标它们，前端就不许自己挑
+    expect(await screen.findByText('slide-skill')).toBeInTheDocument()
+    expect(screen.getByText('presentation-skill')).toBeInTheDocument()
+    expect(screen.queryByText('html2pptx')).toBeNull()
+    expect(screen.queryByText('mocky')).toBeNull()
+    // 另一类两条都是精选：全露
+    expect(screen.getByText('pdf-pro')).toBeInTheDocument()
+    expect(screen.getByText('office-automation')).toBeInTheDocument()
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(4)
+
+    // 类头那颗数说的是这一类**一共**几条（0 条也不许出现：那会把一类说成空的）
+    expect(headerCount('slides')).toBe(4)
+    expect(headerCount('documents')).toBe(2)
+
+    // 「展开其余 N 条」只说真收起来的那几条，而且只出现在真有收起来的**那一类**
+    const reveals = screen.getAllByTestId('skill-category-reveal')
+    expect(reveals).toHaveLength(1)
+    expect(reveals[0]).toHaveAttribute('data-category', 'slides')
+    expect(reveals[0]).toHaveTextContent('展开其余 2 条')
+  })
+
+  it('点「展开其余 N 条」把这一类补全，再点「收起」回到 2 条', async () => {
+    const items = featuredSkills()
+    listSkillsMock.mockResolvedValue({ items, usable: items.length })
+
+    renderMisc(<CapabilitiesPage />)
+
+    await userEvent.click(await screen.findByRole('button', { name: /展开其余 2 条/ }))
+
+    expect(screen.getByText('html2pptx')).toBeInTheDocument()
+    expect(screen.getByText('mocky')).toBeInTheDocument()
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(6)
+    // 展开之后同一颗变「收起」（与插件卡上「工具 N 个 / 收起工具」同一形态），
+    // 而且**可访问名带着类名**：一屏十几颗同样的入口，光听"收起"分不出是哪一类的
+    const collapse = screen.getByRole('button', { name: '演示与幻灯片：收起' })
+    expect(collapse).toHaveAttribute('data-category', 'slides')
+    expect(collapse).toHaveAttribute('aria-expanded', 'true')
+
+    await userEvent.click(collapse)
+    expect(screen.queryByText('html2pptx')).toBeNull()
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(4)
+    expect(screen.getByRole('button', { name: /展开其余 2 条/ })).toBeInTheDocument()
+  })
+
+  it('搜索时不受这 2 条限制：有关键词就在这一类里搜全部', async () => {
+    const items = featuredSkills()
+    listSkillsMock.mockResolvedValue({ items, usable: items.length })
+
+    renderMisc(<CapabilitiesPage />)
+
+    await screen.findByText('slide-skill')
+    // 夹具里每条描述都含 "PDF"，所以这个词会把两类都筛成"整类都在"
+    await userEvent.type(screen.getByLabelText('搜索技能'), 'pdf')
+    await waitFor(() => expect(document.querySelectorAll('li.m-card')).toHaveLength(6))
+    // 不在精选里的那两条也搜得到——收着它们就等于"搜了也没有"
+    expect(screen.getByText('html2pptx')).toBeInTheDocument()
+    expect(screen.getByText('mocky')).toBeInTheDocument()
+    // 这一屏没有"收起来的"，那颗入口整颗不出现（「展开其余 0 条」是一句废话）
+    expect(screen.queryByTestId('skill-category-reveal')).toBeNull()
+  })
+
+  it('清空关键词回到默认收起态：搜过 / 展开过都不许把默认值改掉', async () => {
+    const items = featuredSkills()
+    listSkillsMock.mockResolvedValue({ items, usable: items.length })
+
+    renderMisc(<CapabilitiesPage />)
+
+    await screen.findByText('slide-skill')
+    // 先手动把这一类摊开
+    await userEvent.click(screen.getByRole('button', { name: /展开其余 2 条/ }))
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(6)
+
+    const search = screen.getByLabelText('搜索技能')
+    await userEvent.type(search, 'mocky')
+    await waitFor(() => expect(document.querySelectorAll('li.m-card')).toHaveLength(1))
+    expect(screen.getByText('mocky')).toBeInTheDocument()
+
+    // 清空关键词：回到默认收起态（每类 2 条），不是回到"搜之前摊开的样子"
+    await userEvent.clear(search)
+    await waitFor(() => expect(document.querySelectorAll('li.m-card')).toHaveLength(4))
+    expect(screen.queryByText('mocky')).toBeNull()
+    expect(screen.getByRole('button', { name: /展开其余 2 条/ })).toBeInTheDocument()
+  })
+
+  it('后端一条精选都没标时降级为**全露**：宁可多露几张，也不能把一类收成空壳', async () => {
+    // 老后端 / 字段没给：`featured` 一位都没有
+    const items = [
+      skill({ name: 'slide-skill' }),
+      skill({ name: 'presentation-skill' }),
+      skill({ name: 'html2pptx' }),
+      skill({ name: 'mocky' }),
+    ]
+    listSkillsMock.mockResolvedValue({ items, usable: items.length })
+
+    renderMisc(<CapabilitiesPage />)
+
+    expect(await screen.findByText('slide-skill')).toBeInTheDocument()
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(4)
+    // 类头还在（不是空分组），也没有一颗"展开其余 0 条"
+    expect(categoryHeader('slides')).toHaveTextContent('演示与幻灯片')
+    expect(screen.queryByTestId('skill-category-reveal')).toBeNull()
+  })
+
+  it('某一类没有精选时**只有这一类**全露，别的类照旧收着 2 条', async () => {
+    // `documents` 这一类后端给不出精选（整类都被拦下时就是这样）：不许画成空的
+    const items = [
+      skill({ name: 'slide-skill', featured: true }),
+      skill({ name: 'presentation-skill', featured: true }),
+      skill({ name: 'html2pptx' }),
+      skill({ name: 'pdf-pro' }),
+      skill({ name: 'office-automation' }),
+      skill({ name: 'kylab-office-export' }),
+    ]
+    listSkillsMock.mockResolvedValue({ items, usable: items.length })
+
+    renderMisc(<CapabilitiesPage />)
+
+    await screen.findByText('slide-skill')
+    // slides 露 2 条精选 + documents 全露 3 条
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(5)
+    expect(screen.getByText('kylab-office-export')).toBeInTheDocument()
+    expect(headerCount('documents')).toBe(3)
+    // 有精选的那一类照旧收着，入口也只有它一颗
+    const reveals = screen.getAllByTestId('skill-category-reveal')
+    expect(reveals).toHaveLength(1)
+    expect(reveals[0]).toHaveAttribute('data-category', 'slides')
+    expect(reveals[0]).toHaveTextContent('展开其余 1 条')
+  })
+
+  /*
+   * 下面这一组钉的是同一件事的三面：**"读不到"不等于"没有"**。
+   *
+   * 技能那一路是**全库返回**（1.6 万条、冷扫几十秒），所以打开这一页时"数据还没到"
+   * 是常态；而 `data ?? []` 那种读法会把它画成 `技能 0 / 0 可用`——与"一个技能都
+   * 没装"字面相同。0 在这几处是**结论**，不能拿它当"还不知道"。
+   */
+  it('数据还没到时页头三颗读数都说「读取中」，一颗都不报 0', async () => {
+    // 三个查询一起挂在半空中：这正是打开这一页时的第一帧
+    const pending: (() => void)[] = []
+    listSkillsMock.mockImplementation(
+      () =>
+        new Promise<{ items: Skill[]; usable: number }>((resolve) => {
+          pending.push(() => resolve({ items: [skill()], usable: 1 }))
+        }),
+    )
+    listServersMock.mockImplementation(
+      () =>
+        new Promise<{ items: MCPServer[] }>((resolve) => {
+          pending.push(() => resolve({ items: [server()] }))
+        }),
+    )
+    listPluginsMock.mockImplementation(
+      () =>
+        new Promise<Awaited<ReturnType<typeof listPlugins>>>((resolve) => {
+          pending.push(() =>
+            resolve({
+              items: [pack()],
+              total: 1,
+              enabled: 1,
+              failed: 0,
+              user_dir: '/data/plugins',
+              builtin_dir: '/app/plugins',
+            }),
+          )
+        }),
+    )
+
+    renderMisc(<CapabilitiesPage />)
+
+    expect(await screen.findByText('技能 读取中')).toBeInTheDocument()
+    expect(screen.getByText('插件 读取中')).toBeInTheDocument()
+    expect(screen.getByText('插件包 读取中')).toBeInTheDocument()
+    // "还不知道"不许写成 0：这三处的 0 都是结论
+    expect(screen.queryByText(/技能 \d+ \/ \d+ 可用/)).toBeNull()
+    expect(screen.queryByText(/插件 \d+ 个/)).toBeNull()
+    expect(screen.queryByText(/插件包 \d+ \/ \d+/)).toBeNull()
+    // 也不能落到空态上："还没有技能"会被读成"一个都没装"
+    expect(screen.queryByText('还没有技能')).toBeNull()
+
+    // 数据到了之后三颗一起报数
+    pending.forEach((resolve) => resolve())
+    expect(await screen.findByText('技能 1 / 1 可用')).toBeInTheDocument()
+    expect(screen.getByText('插件 1 个')).toBeInTheDocument()
+    expect(screen.getByText('插件包 1 / 1')).toBeInTheDocument()
+  })
+
+  it('技能读不到时是错误态 + 重试入口，不伪装成「还没有技能」', async () => {
+    listSkillsMock.mockRejectedValueOnce(new Error('技能列表读取超时'))
+
+    renderMisc(<CapabilitiesPage />)
+
+    // 页头那颗如实说"读不到"，不写 0
+    expect(await screen.findByText('技能 读取失败')).toBeInTheDocument()
+    expect(screen.queryByText(/技能 \d+ \/ \d+ 可用/)).toBeNull()
+    // 列表的位置上是错误态：后端那句原话 + 一个重试入口
+    expect(screen.getByText('技能读取失败')).toBeInTheDocument()
+    expect(screen.getByText('技能列表读取超时')).toBeInTheDocument()
+    expect(screen.queryByText('还没有技能')).toBeNull()
+
+    // 重试真的再拉一次：数据回来之后列表与读数都跟着回来
+    await userEvent.click(screen.getByRole('button', { name: /重试/ }))
+    expect(await screen.findByText('pdf-report')).toBeInTheDocument()
+    expect(screen.getByText('技能 1 / 1 可用')).toBeInTheDocument()
+  })
+
+  it('插件读不到时同样是错误态：不谎报「还没有插件」，筛选胶囊也不画', async () => {
+    listServersMock.mockRejectedValueOnce(new Error('连不上本机服务'))
+
+    renderMisc(<CapabilitiesPage />)
+    await userEvent.click(await screen.findByRole('tab', { name: '插件' }))
+
+    expect(await screen.findByText('插件读取失败')).toBeInTheDocument()
+    expect(screen.getByText('插件 读取失败')).toBeInTheDocument()
+    expect(screen.getByText('连不上本机服务')).toBeInTheDocument()
+    expect(screen.queryByText('还没有插件')).toBeNull()
+    // 「全部 0」也是把"还没回来"画成 0：没有数就整排不画
+    expect(screen.queryByRole('tablist', { name: '插件筛选' })).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: /重试/ }))
+    expect(await screen.findByText('filesystem')).toBeInTheDocument()
+  })
+
+  it('插件包读不到时报「读取失败」，不谎报「还没有插件包」', async () => {
+    listPluginsMock.mockRejectedValue(new Error('插件目录读不动'))
+
+    renderMisc(<CapabilitiesPage />)
+    await userEvent.click(await screen.findByRole('tab', { name: '插件包' }))
+
+    expect(await screen.findByText('插件包读取失败')).toBeInTheDocument()
+    expect(screen.getByText('插件包 读取失败')).toBeInTheDocument()
+    expect(screen.getByText('插件目录读不动')).toBeInTheDocument()
+    expect(screen.queryByText('还没有插件包')).toBeNull()
+  })
+
+  it('真拿到空结果才说「还没有技能」，页头那三颗也才敢报 0', async () => {
+    listSkillsMock.mockResolvedValue({ items: [], usable: 0 })
+    listServersMock.mockResolvedValue({ items: [] })
+    listPluginsMock.mockResolvedValue({
+      items: [],
+      total: 0,
+      enabled: 0,
+      failed: 0,
+      user_dir: '/data/plugins',
+      builtin_dir: '/app/plugins',
+    })
+
+    renderMisc(<CapabilitiesPage />)
+
+    expect(await screen.findByText('还没有技能')).toBeInTheDocument()
+    expect(screen.getByText('技能 0 / 0 可用')).toBeInTheDocument()
+    expect(screen.getByText('插件 0 个')).toBeInTheDocument()
+    expect(screen.getByText('插件包 0 / 0')).toBeInTheDocument()
+  })
+
+  it('查询被暂停（浏览器报离线）时也是「读取中」：暂停≠没有，也更不是"读不到"', async () => {
+    /*
+     * 实测到的第三种"未就绪"：react-query 在浏览器报离线时把查询挂成
+     * `fetchStatus: 'paused'`——那时 `isLoading` 与 `isError` 都是 false，只有"没数"
+     * 是真的。按 `isLoading` 分支的写法会把它画成"还没有技能"（与那个假 0 同一类错）。
+     * 所以这条直接按离线态钉住：三颗读数说读取中、列表位置是骨架、**不出现空态**。
+     */
+    const { onlineManager } = await import('@tanstack/react-query')
+    onlineManager.setOnline(false)
+    try {
+      renderMisc(<CapabilitiesPage />)
+
+      expect(await screen.findByText('技能 读取中')).toBeInTheDocument()
+      expect(screen.getByText('插件 读取中')).toBeInTheDocument()
+      expect(screen.getByText('插件包 读取中')).toBeInTheDocument()
+      // 没数就不报数、也不说"读不到"（那是把"还不知道"说成结论）
+      expect(screen.queryByText(/技能 \d+ \/ \d+ 可用/)).toBeNull()
+      expect(screen.queryByText('技能 读取失败')).toBeNull()
+      expect(screen.queryByText('还没有技能')).toBeNull()
+      // 列表位置上是骨架（还没数），不是空态
+      expect(document.querySelector('.m-empty')).toBeNull()
+    } finally {
+      // 别的用例要的是正常的在线态（onlineManager 是模块级单例）
+      onlineManager.setOnline(true)
+    }
   })
 
   it('联网搜索的配置区直接摆在页面上，且保存不会把留空的密钥抹掉', async () => {

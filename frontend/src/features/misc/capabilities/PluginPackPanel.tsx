@@ -11,18 +11,16 @@
  * 3. **四类能力面各自带着"未实现"的说明**（后端的 `status` 原样显示）：
  *    命令、钩子、工具这一轮只列出，界面不能让人以为点了就能跑；
  * 4. **启停只写状态**：后端不碰插件目录，所以这里不提供"删除"。
+ *
+ * 还有一条是**三态**：与隔壁两栏同一套判据（见 `CapabilitiesPage` 的 `readoutOf`）
+ * ——读不到就说读不到（错误态 + 重试），数没到就摆骨架。"还没有插件包"与「全部 0」
+ * 都会被读成"扫过了，一个也没有"，而这两句话在请求没回来时都是假的。
  */
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Archive, EllipsisVertical, RefreshCw, Search } from 'lucide-react'
 
-import {
-  disablePlugin,
-  enablePlugin,
-  listPlugins,
-  type PluginList,
-  type PluginPack,
-} from '@/api/plugins'
+import { disablePlugin, enablePlugin, listPlugins, type PluginPack } from '@/api/plugins'
 import { formatCount } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
 
@@ -47,21 +45,6 @@ const KIND_LABELS: Record<string, string> = {
   tool: '工具',
 }
 
-export interface PackStats {
-  total: number
-  enabled: number
-  failed: number
-}
-
-/** 状态栏要的数（页头上那一行由父组件画，所以把数交出去）。 */
-export function statsOf(data: PluginList | undefined): PackStats {
-  return {
-    total: data?.total ?? 0,
-    enabled: data?.enabled ?? 0,
-    failed: data?.failed ?? 0,
-  }
-}
-
 /**
  * 0 计数的筛选项不渲染（「全部」与**当前选中项**除外）。
  *
@@ -76,7 +59,8 @@ export function statsOf(data: PluginList | undefined): PackStats {
  *   而列表正因这条筛选是空的——留一颗亮着的胶囊，才说得清列表为什么是空的。
  *
  * 放在这个模块（而不是各调用点）是因为它**与数据无关、三个筛选栏同一口径**：
- * 技能 / 插件 / 插件包三排胶囊形状相同，规则也该相同；父页面本来就依赖本模块（`statsOf`）。
+ * 技能 / 插件 / 插件包三排胶囊形状相同，规则也该相同（页头的读数是另一码事，见
+ * `CapabilitiesPage` 的 `readoutOf`）。
  */
 export function withoutEmptyCounts<T extends string>(
   items: readonly { key: T; label: string; count: number }[],
@@ -178,15 +162,32 @@ export function PluginPackPanel() {
         </div>
       </header>
 
-      <FilterChips
-        items={withoutEmptyCounts(filters, filter)}
-        value={filter}
-        onChange={setFilter}
-        ariaLabel="插件包筛选"
-      />
-      {list.isLoading && <SkeletonBlock variant="list" rows={3} />}
+      {/* 数还没到就**整排不画**：`全部 0` 与真·空目录长得一模一样（见 `withoutEmptyCounts`） */}
+      {items.length > 0 && (
+        <FilterChips
+          items={withoutEmptyCounts(filters, filter)}
+          value={filter}
+          onChange={setFilter}
+          ariaLabel="插件包筛选"
+        />
+      )}
 
-      {!list.isLoading && visible.length === 0 && (
+      {/* 三态按**手里有没有数**分（不是按 `isLoading` 分）：`list.data` 为空时先说
+          "还没数"——查询被暂停（浏览器报离线）时既不是加载中也不是出错，那种状态下
+          画空态同样是把"还不知道"说成了"这块磁盘上没有插件包" */}
+      {list.data === undefined && !list.isError && <SkeletonBlock variant="list" rows={3} />}
+
+      {/* 读不到就说读不到：落到下面那个空态会被读成"这块磁盘上确实没有插件包" */}
+      {list.data === undefined && list.isError && (
+        <EmptyState title="插件包读取失败" hint={messageOf(list.error, '请稍后重试。')}>
+          <Button size="sm" variant="secondary" onClick={() => void list.refetch()}>
+            <RefreshCw size={14} />
+            重试
+          </Button>
+        </EmptyState>
+      )}
+
+      {list.data !== undefined && visible.length === 0 && (
         /* 目录就在工具栏那行 `code` 里摆着，空态不再复述"把目录放到哪里" */
         <EmptyState
           title={items.length > 0 ? '没有匹配的插件包' : '还没有插件包'}

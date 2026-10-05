@@ -84,9 +84,10 @@ import {
   StatusTag,
   type TagTone,
 } from '../shared/composites'
-import { PLUGINS_QUERY_KEY, PluginPackPanel, statsOf, withoutEmptyCounts } from './PluginPackPanel'
+import { PLUGINS_QUERY_KEY, PluginPackPanel, withoutEmptyCounts } from './PluginPackPanel'
 import { SkillMarketDialog } from './SkillMarketDialog'
 import { groupSkills } from './skillCategories'
+import { revealOf } from './skillReveal'
 // 上面那个渲染件的样式**跟着一起引**：知识域的路由是懒加载的，`knowledge.css` 只在那几个
 // chunk 里加载（实测能力页上没有任何 `.kb-md-*` 规则）——少了它，正文就是裸 HTML
 // （段落没有间距、代码块没有底色），那还不如继续显示源文件。
@@ -193,9 +194,51 @@ function messageOf(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
+/**
+ * 页头那颗读数标签的**三态**：读取中 / 读不到 / 真有数。
+ *
+ * 三颗原先都是 `data ?? []` 之后再数数——请求还在飞或已经失败时，页头写的是
+ * `技能 0 / 0 可用`，而那正是"一个技能都没装"的写法。0 在这几处是**结论**，
+ * 不能拿它当"还不知道"：技能那一路尤其藏不住这个错（接口不传 limit 就是全库返回，
+ * 1.6 万条的冷扫要几十秒），但**慢或失败不是"没有"**，界面得自己分得清。
+ *
+ * 判据是**手里有没有数**（`data`），不是 `isLoading`：react-query 在浏览器报离线时
+ * 会把查询挂成 `fetchStatus: 'paused'`——那时 `isLoading` 是 false、`isError` 也是
+ * false，只有"没数"这一件事是真的（实测：暂停中的查询一度被画成了"还没有技能"）。
+ *
+ * 手里已经有数时**先报那个数**：后台重取失败不该把用户已经看到的东西改写成"读取失败"。
+ */
+function readoutOf<T>(
+  noun: string,
+  query: { isError: boolean; data: T | undefined },
+  format: (data: T) => { label: string; tone: TagTone },
+): { label: string; tone: TagTone } {
+  if (query.data !== undefined) return format(query.data)
+  if (query.isError) return { label: `${noun} 读取失败`, tone: 'danger' }
+  return { label: `${noun} 读取中`, tone: 'neutral' }
+}
+
 /** 滚动容器是不是已经到底了（留 4px 容差：亚像素会把"到底"判成"没到底"）。 */
 function scrolledToEnd(element: HTMLElement): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= 4
+}
+
+/**
+ * 列表项上 v0.61 那两个字段：`category`（这一条属于哪一类）与 `featured`（是不是本类精选）。
+ *
+ * **为什么在这里窄读**：`@/api/capabilities` 的 `Skill` 是手写声明，还没带上
+ * `category` / `featured`（生成物 `@/api/schema.d.ts` 里已经有了）。这一页只用这两位，
+ * 所以把窄读收在**这一处**（`SkillCard`，与下面查询那一处断言配套）——
+ * 页面其余地方照旧用 `Skill`。等那份声明补齐之后，这一对可以一起删掉。
+ */
+type SkillCard = Skill & { category?: string; featured?: boolean }
+
+/** 集合里加入 / 去掉一个 slug（"收起来的那几类"与"展开了的那几类"同一套写法）。 */
+function toggled(current: ReadonlySet<string>, slug: string): ReadonlySet<string> {
+  const next = new Set(current)
+  if (next.has(slug)) next.delete(slug)
+  else next.add(slug)
+  return next
 }
 
 export function CapabilitiesPage() {
@@ -229,7 +272,11 @@ export function CapabilitiesPage() {
 
   const skillsQuery = useQuery({
     queryKey: SKILLS_QUERY_KEY,
-    queryFn: async () => (await listSkills()).items,
+    /*
+     * 接口回的这一份比手写声明多了 v0.61 的 `items[].featured`（见 `SkillCard`）：
+     * **只在这一处断言**，好让"哪几条是精选"在类型上认得出来（`./skillReveal` 要用它）。
+     */
+    queryFn: async () => (await listSkills()) as { items: SkillCard[]; usable: number },
   })
   const packsQuery = useQuery({ queryKey: PLUGINS_QUERY_KEY, queryFn: listPlugins })
   /**
@@ -248,10 +295,30 @@ export function CapabilitiesPage() {
     queryFn: async () => (await listMCPServers()).items,
   })
 
-  const skills = skillsQuery.data ?? []
+  const skills = skillsQuery.data?.items ?? []
   const installed = installedQuery.data ?? {}
   const servers = serversQuery.data ?? []
-  const packStats = statsOf(packsQuery.data)
+
+  /*
+   * 页头那三个读数**只在真拿到数之后才报数**（见 `readoutOf`）。它们原先都是
+   * `data ?? []` 之后再数数，"还没回来"因此被画成了真的 0——而这三处的 0 是有
+   * 结论的数（"一个都没装"）。三个查询各自的骨架 / 错误态在下面各栏里。
+   */
+  const skillsReadout = readoutOf('技能', skillsQuery, ({ items }) => {
+    const usable = items.filter((item) => item.used_by_prompt).length
+    return {
+      label: `技能 ${formatCount(usable)} / ${formatCount(items.length)} 可用`,
+      tone: items.length > 0 && usable === 0 ? 'warning' : 'neutral',
+    }
+  })
+  const serversReadout = readoutOf('插件', serversQuery, (items) => ({
+    label: `插件 ${formatCount(items.length)} 个`,
+    tone: 'neutral',
+  }))
+  const packsReadout = readoutOf('插件包', packsQuery, (list) => ({
+    label: `插件包 ${formatCount(list.enabled)} / ${formatCount(list.total)}`,
+    tone: list.failed > 0 ? 'warning' : 'neutral',
+  }))
 
   /** 这个技能是不是从市场（线上仓库）装的。清单只在管理员看过市场之后才有值。 */
   const isFromMarket = (skill: Skill) =>
@@ -286,25 +353,62 @@ export function CapabilitiesPage() {
   })
 
   /**
-   * 过滤之后**再分组**（搜索是在类内生效的：某一类被筛空，那一类的头就不画了）。
-   *
-   * 分组是纯函数（`./skillCategories` 读镜像 JSON），页面只画结果：
-   * "每类几条、有没有漏"因此能用真映射单测，不必起浏览器。
-   */
-  const skillGroups = groupSkills(visibleSkills)
-  /**
-   * 收起来的那几类（默认**全展开**）：首屏就该看见有哪些技能，
-   * 收合是"这一类我看过了"的整理动作，不是一个默认状态。
+   * 收起来的那几类（默认**都不收**）：每一类至少露出后端标的那两条精选
+   * （见 `./skillReveal`），整类收起来是"这一类我看过了"的整理动作，不是默认状态。
    */
   const [closedCategories, setClosedCategories] = useState<ReadonlySet<string>>(new Set())
-  const toggleCategory = (slug: string) => {
-    setClosedCategories((current) => {
-      const next = new Set(current)
-      if (next.has(slug)) next.delete(slug)
-      else next.add(slug)
-      return next
+  const toggleCategory = (slug: string) => setClosedCategories((current) => toggled(current, slug))
+
+  /**
+   * 展开了"其余那几条"的类（默认**一个都不展开**：每类先露两条精选，见 `./skillReveal`）。
+   *
+   * 与 `closedCategories` 是两件事：那个是"整类先不看"（连精选一起收掉），
+   * 这个是"这一类的长尾也要摆出来"。
+   */
+  const [revealedCategories, setRevealedCategories] = useState<ReadonlySet<string>>(new Set())
+  const toggleRevealed = (slug: string) =>
+    setRevealedCategories((current) => toggled(current, slug))
+
+  /** 有关键词的时候**类内搜全部**（不受两条的限制，见 `./skillReveal`）。 */
+  const searching = skillQuery.trim() !== ''
+  /**
+   * **清空关键词就回到默认收起态**：搜索时把整类摊开是为了"找得到"，而"搜过"
+   * 不该把一整类永久摊在页面上——那等于把默认值悄悄改掉了。
+   */
+  useEffect(() => {
+    if (searching) return
+    setRevealedCategories((current) => (current.size === 0 ? current : new Set()))
+  }, [searching])
+
+  /**
+   * 过滤之后**再分组**（搜索是在类内生效的：某一类被筛空，那一类的头就不画了），
+   * 并且把每一类**现在画哪几条**一次算好：默认只露后端标的那两条精选，有关键词
+   * 或用户点了「展开其余 N 条」时补上其余（取舍全在 `./skillReveal`，页面只画结果）。
+   * `hidden` 是"还有几条没露"，`foldable` 是"折叠起来真会少几条"——**那颗入口出不出现
+   * 看 `foldable`**（展开之后 `hidden` 就是 0，拿它当判据会把「收起」一起吞掉）。
+   *
+   * 分组是纯函数（`./skillCategories`：归类先看后端给的 `category`，镜像只剩顺序、
+   * 中文名与兜底）："每类几条、有没有漏"因此能用真映射单测，不必起浏览器。
+   */
+  const skillGroups = groupSkills(visibleSkills).map((group) => {
+    const revealed = revealedCategories.has(group.slug)
+    const { visible, hidden, foldable } = revealOf(group.skills, {
+      searching,
+      expanded: revealed,
     })
-  }
+    return {
+      slug: group.slug,
+      label: group.label,
+      total: group.skills.length,
+      closed: closedCategories.has(group.slug),
+      revealed,
+      visible,
+      hidden,
+      foldable,
+      /** 那颗入口上的字（同一处算，别在 JSX 里再拼一遍）。 */
+      revealLabel: revealed ? '收起' : `展开其余 ${formatCount(hidden)} 条`,
+    }
+  })
 
   const visibleServers = servers.filter((item) => {
     if (serverFilter === 'enabled' && !item.enabled) return false
@@ -319,8 +423,6 @@ export function CapabilitiesPage() {
     { key: 'enabled' as const, label: '已启用', count: servers.filter((i) => i.enabled).length },
     { key: 'disabled' as const, label: '已停用', count: servers.filter((i) => !i.enabled).length },
   ]
-
-  const usableSkills = skills.filter((item) => item.used_by_prompt).length
 
   const reloadSkills = async () => {
     await queryClient.invalidateQueries({ queryKey: SKILLS_QUERY_KEY })
@@ -462,15 +564,9 @@ export function CapabilitiesPage() {
       title=""
       actions={
         <>
-          <StatusTag
-            label={`技能 ${formatCount(usableSkills)} / ${formatCount(skills.length)} 可用`}
-            tone={skills.length > 0 && usableSkills === 0 ? 'warning' : 'neutral'}
-          />
-          <StatusTag label={`插件 ${formatCount(servers.length)} 个`} tone="neutral" />
-          <StatusTag
-            label={`插件包 ${formatCount(packStats.enabled)} / ${formatCount(packStats.total)}`}
-            tone={packStats.failed > 0 ? 'warning' : 'neutral'}
-          />
+          <StatusTag label={skillsReadout.label} tone={skillsReadout.tone} />
+          <StatusTag label={serversReadout.label} tone={serversReadout.tone} />
+          <StatusTag label={packsReadout.label} tone={packsReadout.tone} />
           {/* 沙箱执行在这后面（联网搜索在页面正文里，见下）。**只给管理员**：后端 `/settings` 是管理员端点。
               按钮照旧叫「设置」（与记忆页那颗同一档，那里也只剩一组） */}
           {isAdmin && (
@@ -551,9 +647,26 @@ export function CapabilitiesPage() {
 
           {/* 这一排按**来源**分的筛选胶囊已删（2026-09-24）：「随代码发布」「从市场装」
               是内部分类名，而用户找技能靠搜索与列表；来源在详情弹窗里说一句就够 */}
-          {skillsQuery.isLoading && <SkeletonBlock variant="list" rows={3} />}
 
-          {!skillsQuery.isLoading && visibleSkills.length === 0 && (
+          {/* **三态分开**（见 `readoutOf`）：骨架（还没数）/ 读不到 + 重试 / 列表。
+              原先只有两态，于是"读不到"掉进了下面那个空态——而它写的是"还没有技能"，
+              一个失败的请求因此被读成"一个技能都没装"。
+              判据是**手里有没有数**（`data`），不是 `isLoading`：查询被暂停
+              （浏览器报离线）时 `isLoading` 与 `isError` 都是 false，那同样属于"还没数"。 */}
+          {skillsQuery.data === undefined && !skillsQuery.isError && (
+            <SkeletonBlock variant="list" rows={3} />
+          )}
+
+          {skillsQuery.data === undefined && skillsQuery.isError && (
+            <EmptyState title="技能读取失败" hint={messageOf(skillsQuery.error, '请稍后重试。')}>
+              <Button size="sm" variant="secondary" onClick={() => void skillsQuery.refetch()}>
+                <RefreshCw size={14} />
+                重试
+              </Button>
+            </EmptyState>
+          )}
+
+          {skillsQuery.data !== undefined && visibleSkills.length === 0 && (
             /*
               空态说的是"接下来点哪儿"，不是"SKILL.md 该放哪个目录"（第四批评审 B②）。
               原先那句整句是写给开发者的：`SKILL.md`、仓库的 `skills/`、数据目录、
@@ -592,39 +705,62 @@ export function CapabilitiesPage() {
               {/*
                 **按分类分组**（2026-09-29 用户："把这 178 条当初始技能集做分类整理并在页面上展示"）。
 
-                三笔的来路：
-                - 分组与顺序由 `./skillCategories`（读镜像 JSON 的纯函数）给，页面不自己判；
-                - 每一类的头**可收合**（`closedCategories` 记收起来的那几类，默认全展开——
-                  首屏就该看见有哪些技能，收合是"这一类我看过了"的整理动作）；
+                四笔的来路：
+                - 分组由 `./skillCategories`（纯函数）给，**归类先看后端给的 `category`**，
+                  顺序/中文名/兜底才用镜像那份 JSON（理由见那个模块的 `resolveCategory`）；
+                - **每一类默认只露后端标的两条精选**（v0.61），其余靠右那颗
+                  「展开其余 N 条」补出来——取舍在 `./skillReveal`（搜索时不受这两条限制），
+                  页面只画结果；
+                - 每一类的头**可收合**（`closedCategories` 记收起来的那几类，默认都不收——
+                  整类收起来是"这一类我看过了"的整理动作，不是默认状态）；
                 - 头那一格 `col-span-full`：它排在同一个网格里，所以"整行一条"要自己说。
               */}
               {skillGroups.map((group) => (
                 <Fragment key={group.slug}>
-                  <li className="col-span-full">
+                  <li className="col-span-full flex items-center justify-between gap-[var(--space-2)]">
                     <button
                       type="button"
-                      className="flex w-full cursor-pointer items-center gap-[var(--space-2)] bg-transparent p-0 text-left text-[length:var(--text-meta-size)] font-medium text-text-primary"
+                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-[var(--space-2)] bg-transparent p-0 text-left text-[length:var(--text-meta-size)] font-medium text-text-primary"
                       data-testid="skill-category"
                       data-category={group.slug}
-                      aria-expanded={!closedCategories.has(group.slug)}
+                      aria-expanded={!group.closed}
                       onClick={() => toggleCategory(group.slug)}
                     >
                       <ChevronDown
                         size={12}
                         aria-hidden
                         className={`shrink-0 text-text-quaternary transition-transform ${
-                          closedCategories.has(group.slug) ? '-rotate-90' : ''
+                          group.closed ? '-rotate-90' : ''
                         }`}
                       />
                       {group.label}
                       <span className="tabular text-[length:var(--text-micro-size)] text-text-tertiary">
-                        {formatCount(group.skills.length)}
+                        {formatCount(group.total)}
                       </span>
                     </button>
+                    {/* 「展开其余 N 条」只说真收起来的那几条：整类收着时没有"其余"可言，
+                        搜索时整类已经摊开了，折叠起来什么都不会变的组也不给这颗
+                        （判据是 `foldable`，见 `./skillReveal`）。展开后同一颗变成
+                        「收起」（与插件卡上「工具 N 个 / 收起工具」同一形态）。
+                        **可访问名带上类名**：一屏十几颗同样的入口，光听"展开其余 6 条"
+                        分不出是哪一类的（可见文字仍在这个名字里）。 */}
+                    {!group.closed && !searching && group.foldable && (
+                      <button
+                        type="button"
+                        className="shrink-0 cursor-pointer bg-transparent p-0 text-[length:var(--text-micro-size)] text-text-tertiary hover:text-accent"
+                        data-testid="skill-category-reveal"
+                        data-category={group.slug}
+                        aria-label={`${group.label}：${group.revealLabel}`}
+                        aria-expanded={group.revealed}
+                        onClick={() => toggleRevealed(group.slug)}
+                      >
+                        {group.revealLabel}
+                      </button>
+                    )}
                   </li>
-                  {closedCategories.has(group.slug)
+                  {group.closed
                     ? null
-                    : group.skills.map((skill) => (
+                    : group.visible.map((skill) => (
                         <li
                           key={skill.name}
                           className="m-card gap-[var(--space-2-5)] rounded-[var(--radius-row)] px-[var(--space-3)] py-[var(--space-2-5)]"
@@ -735,18 +871,33 @@ export function CapabilitiesPage() {
             </div>
           </header>
 
-          {/* 同一口径：一排里 0 的那几档不占位置（见 `withoutEmptyCounts`） */}
-          <FilterChips
-            items={withoutEmptyCounts(serverFilters, serverFilter)}
-            value={serverFilter}
-            onChange={setServerFilter}
-            ariaLabel="插件筛选"
-          />
+          {/* 同一口径：一排里 0 的那几档不占位置（见 `withoutEmptyCounts`）。
+           **一个数都没有的时候整排不画**——「全部 0」同样是把"还没回来"画成了 0 */}
+          {servers.length > 0 && (
+            <FilterChips
+              items={withoutEmptyCounts(serverFilters, serverFilter)}
+              value={serverFilter}
+              onChange={setServerFilter}
+              ariaLabel="插件筛选"
+            />
+          )}
 
-          {serversQuery.isLoading && <SkeletonBlock variant="list" rows={3} />}
+          {/* 三态与技能那一栏同一套（见 `readoutOf`）：判据同样是"手里有没有数" */}
+          {serversQuery.data === undefined && !serversQuery.isError && (
+            <SkeletonBlock variant="list" rows={3} />
+          )}
+
+          {serversQuery.data === undefined && serversQuery.isError && (
+            <EmptyState title="插件读取失败" hint={messageOf(serversQuery.error, '请稍后重试。')}>
+              <Button size="sm" variant="secondary" onClick={() => void serversQuery.refetch()}>
+                <RefreshCw size={14} />
+                重试
+              </Button>
+            </EmptyState>
+          )}
 
           {/* 空态只说"点哪儿开始"，不解释登记之后它会怎么被调用 */}
-          {!serversQuery.isLoading && visibleServers.length === 0 && (
+          {serversQuery.data !== undefined && visibleServers.length === 0 && (
             <EmptyState
               title={servers.length > 0 ? '没有匹配的插件' : '还没有插件'}
               hint={
