@@ -175,6 +175,7 @@ Packaging: [desktop/README.md](desktop/README.md); the stack choice and pitfalls
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\dev-backend.ps1     # backend dev server
 powershell -ExecutionPolicy Bypass -File scripts\dev-frontend.ps1    # frontend dev server
+powershell -ExecutionPolicy Bypass -File scripts\dev-sidecar.ps1     # local-sidecar backend (desktop-shell profile: chat + local data)
 powershell -ExecutionPolicy Bypass -File scripts\lint.ps1            # convention checks (before committing)
 powershell -ExecutionPolicy Bypass -File scripts\ci.ps1              # CI gate (conventions + both test suites)
 ```
