@@ -132,3 +132,26 @@ def test_t1_ignores_tests_outside_source_roots(checker: ModuleType, tmp_path: Pa
     path = outside / "chat-ui.test.tsx"
     path.write_text("export {}\n", encoding="utf-8")
     assert checker.check_test_placement(path, tmp_path) == []
+
+
+def test_s1_flags_a_real_ps1_without_bom(checker: ModuleType, tmp_path: Path) -> None:
+    """S1 要能报：`scripts/` 下真的少了 BOM 的 .ps1（PowerShell 5.1 会当 GBK 读）。"""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "dev-backend.ps1").write_bytes("Write-Output '你好'\n".encode())
+
+    assert [item.rule for item in checker.check_ps1_bom(tmp_path)] == ["S1"]
+
+
+def test_s1_ignores_generated_ps1_shims(checker: ModuleType, tmp_path: Path) -> None:
+    """`scripts/*/node_modules/.bin/*.ps1` 是 npm 生成的垫片：不入库，也不该报。
+
+    起因：写盘层把 Node 脚本放在 `scripts/deck/`（`npm install` 会在那儿生成
+    `.bin/image-size.ps1` 之类的垫片），S1 于是对**我们改不了的文件**报警——
+    而这类误报会让真正的违规淹在噪音里（`scan_emoji.py` 的 `SKIP_DIRS` 是同一条处置）。
+    """
+    shim = tmp_path / "scripts" / "deck" / "node_modules" / ".bin"
+    shim.mkdir(parents=True)
+    (shim / "image-size.ps1").write_bytes(b"#!/usr/bin/env node\n")
+
+    assert checker.check_ps1_bom(tmp_path) == []

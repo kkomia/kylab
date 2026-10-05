@@ -1133,12 +1133,19 @@ def check_ps1_bom(root: Path) -> list[Violation]:
     Windows PowerShell 5.1 会把无 BOM 的 .ps1 当 GBK 解码，中文字符串直接变乱码、
     脚本以 ParserError 崩掉——门禁脚本自己就是受害者。编辑器/工具改写文件时极易丢掉 BOM，
     故用机械检查兜住，而不是靠人记得。
+
+    **只查我们自己写的脚本**：`node_modules/` 里的 `.ps1` 是 npm 生成的启动垫片
+    （`scripts/deck/node_modules/.bin/*.ps1`），既不入库也不由我们保存，作者改不了它，
+    报它只会让"这条规则红了"变成噪音——与 `scripts/scan_emoji.py` 的 `SKIP_DIRS` 同一条处置。
     """
     violations: list[Violation] = []
     scripts_dir = root / "scripts"
     if not scripts_dir.exists():
         return violations
+    generated = {"node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
     for path in sorted(scripts_dir.rglob("*.ps1")):
+        if generated & set(path.parts):
+            continue
         if not path.read_bytes().startswith(b"\xef\xbb\xbf"):
             violations.append(
                 Violation(
