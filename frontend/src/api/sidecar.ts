@@ -1,32 +1,35 @@
 /**
- * 对话轮次的**基址分派**（P4 第 2 片）：对话轮次走**本地边车**，其余接口照旧走**服务器**。
+ * 对话轮次的**基址分派**（P4 第 2 片）：一轮对话在**本机边车**上跑。
+ *
+ * ## 2026-10-05：服务器那条链退役了，这一片的"回退"随之清掉
+ *
+ * `/chat/stream` 与 `/chat/approvals/{id}` 原先在服务器档也挂着一份（前端打不到边车时
+ * 就落过去）。NAS 网页端退役之后这一族**两个档里都不再对外**
+ * （`backend/app/api/v1/router.py` 的模块头写着那一步）——于是"回退服务器"成了一条
+ * **死路**：那个 URL 谁都答不上来，打过去只会在界面上多一条 404，而用户看到的是
+ * "对话坏了"，看不出真正的原因是"这台机器上的对话后端没跑起来"。
+ *
+ * 所以现在只有**一个落点**：本机边车。打不到就**显式失败**（`TurnUnavailableError`，
+ * 由 `resolveTurnTarget` / `resolveApprovalTarget` 抛，界面如实显示那句话）——
+ * 与"本机权威面"那条纪律（`localDownReason`：打不到就报错、绝不换源）终于一致了。
+ * 保留 `VITE_SIDECAR_TURNS` 这个变量只为把原因说清（关掉它 = 对话没地方跑），
+ * 见 `explicitOffReason()`。
  *
  * ## 已完成（P4-2b，2026-09-29）：开关**默认开**
  *
- * 原先这里是 TODO：`api/v1/conversations.py` **没有**任何"追加/写入一轮"的端点 ✗，
- * 而会话是**服务器权威** —— 边车跑完这一轮若没人写回，用户刷新一下这轮就没了 ✗
- * （数据丢失，比"慢一点"严重得多 ✓），所以那时接线放在 `VITE_SIDECAR_TURNS` 后面、
- * **默认关** ✓。现在那两件事都入库并验通了 ✓：
- *
- * 1. **记录一轮的端点**（`f921f8e` ✓）：`POST /api/v1/chat/turns/record` ✓ ——
- *    401 / 422 / 幂等 `recorded=false` / 回读 `message_count: 2` 都实测过 ✓；
- * 2. **边车跑完写回**（`f7b9a2f` ✓）：真机端到端物证 `turn_id: e590b199…` +
- *    `recorded: true` ✓（`.shots/e2e-turn.json` ✓）
- *    → "**跑在本机、账在服务器**"成立 ✓，"丢这一轮"的风险不再存在 ✓。
- *
- * 于是本片翻成 **默认开** ✓：不设 `VITE_SIDECAR_TURNS` 就走边车 ✓。
- *
- * ## 显式关 = 逃生门（保留，不许删）
- *
- * 只有**明确的假值**才关 ✗：`0` / `false` / `no` / `off`（大小写不敏感 ✓）。
- * 这不是历史包袱 ✓：默认开是产品行为 ✓，而"改一个环境变量就能回退服务器那条链" ✗
- * 是万一边车出问题时的**逃生门** ✓ —— 回退不用改代码、不用重新发版 ✓。
- * 被显式关掉时同样**不静默** ✓（`reason` + `console.info` ✓）。
+ * 原先这里是 TODO：`api/v1/conversations.py` **没有**任何"追加/写入一轮"的端点，
+ * 而会话是**服务器权威** —— 边车跑完这一轮若没人写回，用户刷新一下这轮就没了
+ * （数据丢失，比"慢一点"严重得多），所以那时接线放在 `VITE_SIDECAR_TURNS` 后面、
+ * **默认关**。后来那两件事都入库并验通了：`POST /api/v1/chat/turns/record` 与
+ * 边车跑完写回（真机端到端物证 `.shots/e2e-turn.json`，`recorded: true`），
+ * 于是本片翻成 **默认开**：不设 `VITE_SIDECAR_TURNS` 就走边车。
+ * （那一轮之后边车的会话**直接写本机库**，写回服务器那一环已删——见 `app/sidecar.py`。）
  *
  * ## 为什么分派落在"接口类别"这一层
  *
- * 已定的分界是 **API 层**（不是数据库）：**对话轮次 → 本地边车**，**账号 / 知识库 / 记忆 /
- * 会话列表 / 设置 → 服务器**（权威数据）。判定只有这一处，其余模块不许自己拼基址。
+ * 已定的分界是 **API 层**（不是数据库）：**对话轮次 → 本地边车**，**账号 / 知识库 /
+ * 记忆 / 会话列表 / 设置 → 本机权威面或服务器**（按域名判）。判定只有这一处，
+ * 其余模块不许自己拼基址。
  *
  * ## 只有对话轮次归边车（多一个都要有理由）
  *
@@ -35,36 +38,38 @@
  * | `POST /chat/stream` → 边车 `POST /turn/stream` | 一轮对话：模型调用 + 工具在本机执行 + SSE |
  *
  * **明确不归边车的**：
- * - `POST /chat`（非流式）：边车 `/turn` 的响应是 `answer/steps/notes`，与服务器那套不同，
- *   这一片不换解析口径；
- * - `/chat/turns/{id}/live`（重连补发）：**边车没有会话事件日志**，它只在服务器上存在；
- * - `/chat/approvals/{id}`、`/conversations/*`、`/auth/*`、`/knowledge-bases/*`、`/memory`、
- *   `/settings`：账号与权威数据都在服务器。
+ * - `POST /chat`（非流式）：边车 `/turn` 的响应是 `answer/steps/notes`，与原来那套不同，
+ *   这一片不换解析口径（而且这条端点两个档里都没有了：`router.py` 的模块头那张表里
+ *   逐条写着哪一族退到哪里）。
+ * - `/chat/turns/{id}/live`（重连补发）：**边车没有会话事件日志**；
+ * - `/conversations/*`、`/settings`、`/memory` 这些：它们归**本机权威面**（`LOCAL_PATHS`）。
  *
- * ## 回退必须可见，不许静默
+ * ## 没落点就显式失败，不许静默
  *
- * 三种状态都要看得出来 ✓：**走边车** / **被显式关掉**（逃生门 ✓）/ **边车没起来、已回退** ✓。
- * - 回退：`resolveTurnTarget()` 返回 `fallback: true` 与 `reason`，同时 `console.warn` 一条 ✓；
- * - 显式关：同样给 `reason`，并 `console.info` 一条 ✓ —— 那是**主动选择**、不是异常 ✓，
- *   所以用 info 不用 warn ✓；
- * - 走边车：`sidecarStatus().reason` 也说清"打的是哪个基址" ✓（只给一个布尔值的话，
- *   排障时说不出"这一轮到底走的哪条链" ✗）。
+ * 四种状态都要看得出来：**走边车**（`sidecarStatus().reason` 说清打的是哪个基址）/
+ * **被显式关掉**（`explicitOffReason()`）/ **边车没起来**（`probe.reason`）/
+ * **还没探过**（`available: null`，不猜好坏）。
+ * 「走边车」时正常返回落点；其余三种**都没有回退可走**——
+ * `resolveTurnTarget()` / `resolveApprovalTarget()`（同一套）抛 `TurnUnavailableError`，
+ * 同时各留一条日志（显式关是主动选择、不是异常，用 `console.info`；探不到用 `console.warn`），
+ * 抛出去那句话就是界面上显示的那句。「还没探过」不必单独一支：`resolveTurnTarget`
+ * 自己会先探一次（`sidecarAvailable()`）。
  *
  * ## M2 阶段 4：这个模块现在管**两件事**（别混）
  *
  * | 管什么 | 谁读它 | 本机那台不可用时 |
  * | --- | --- | --- |
- * | **一轮对话在哪台机器上跑**（`/chat/stream`，上面那几段） | `resolveTurnTarget` / `resolveApprovalTarget` | **回退服务器**（那一轮换个地方跑，数据不丢） |
+ * | **一轮对话在哪台机器上跑**（`/chat/stream`，上面那几段） | `resolveTurnTarget` / `resolveApprovalTarget` | **显式失败**（这条链只在边车上有，见上） |
  * | **这份数据的主人是谁**（`LOCAL_PATHS` 那张前缀表） | `requestLocal`（`client.ts`）与顶栏那条状态 | **如实报错、不回退**（会话数据在本机，换源 = 让用户以为会话丢了） |
  *
  * 两者**都**打边车那台机器，但开关不同（`VITE_SIDECAR_TURNS` / `VITE_LOCAL_DATA`）、
- * 判定不同（`isSidecarPath` / `isLocalPath`）、失败之后怎么办也不同（回退 / 报错）——
- * 合并成一个概念，其中一条纪律必然写错 ✗，所以刻意分成两段 ✓。
+ * 判定不同（`isSidecarPath` / `isLocalPath`）、措辞也不同（"这一轮跑不了" / "数据没换源"）——
+ * 合并成一个概念，其中一条纪律必然写错，所以刻意分成两段。
  * 上面那张"明确不归边车"的表说的是**对话轮次那条链**：`/conversations`、`/settings`
- * 这些如今仍然不在 `isSidecarPath` 里 ✓，但它们归**本机权威面** ✓（`LOCAL_PATHS`）。
+ * 这些如今仍然不在 `isSidecarPath` 里，但它们归**本机权威面**（`LOCAL_PATHS`）。
  *
- * 两条基址的来路也各说一句：轮次那条链原先读**构建期常量** ✗，本机权威面拿的是
- * **壳里问到的真实端口** ✓ ——M2 起两边统一走 `sidecarBase()`（壳里优先）。
+ * 两条基址的来路也各说一句：轮次那条链原先读**构建期常量**，本机权威面拿的是
+ * **壳里问到的真实端口** ——M2 起两边统一走 `sidecarBase()`（壳里优先）。
  */
 
 import { API_BASE } from './client'
@@ -72,16 +77,23 @@ import { API_BASE } from './client'
 /** 边车默认地址（可被构建期 `VITE_SIDECAR_URL` 覆盖）。 */
 export const DEFAULT_SIDECAR_BASE = 'http://127.0.0.1:8765'
 
-/** 这一片**唯一**归边车的接口类别：对话轮次的流式端点。 */
+/**
+ * 这一片**唯一**归边车的接口类别：对话轮次的流式端点。
+ *
+ * 它现在**只在边车上有**（服务器档那一份 2026-10-05 随 NAS 网页端退役，
+ * 见文件头）：所以这个常量只剩"这一族叫什么"的意思，`sidecarStatus().reason`
+ * 拿它说清打的是哪个基址。
+ */
 export const SIDECAR_TURN_PATH = '/chat/stream'
 
 /** 边车那一侧对应的路径（`remote_clients.py` 打的就是这个）。 */
 export const SIDECAR_STREAM_PATH = '/turn/stream'
 
 /**
- * 边车那台的**审批决定**端点（`app/sidecar.py` 的 `POST /turn/approvals/{id}`，
- * 与服务器 `/chat/approvals/{id}` 同形）。挂 `SIDECAR_STREAM_PATH` 的兄弟位置，
- * 是因为两者服务的是同一条轮次：流停在边车的 `wait` 上，决定就必须送回**那台**。
+ * 边车那台的**审批决定**端点（`app/sidecar.py` 的 `POST /turn/approvals/{id}`）。
+ * 挂 `SIDECAR_STREAM_PATH` 的兄弟位置，是因为两者服务的是同一条轮次：流停在边车的
+ * `wait` 上，决定就必须送回**那台**。（原先它有个服务器的镜像
+ * `/chat/approvals/{id}`，那一份随本轮退役一起没有了。）
  */
 export const SIDECAR_APPROVAL_PATH = '/turn/approvals'
 
@@ -91,7 +103,7 @@ export const PROBE_TTL_MS = 5_000
 /**
  * 历史条数的前端上限（与边车 `MAX_HISTORY_MESSAGES` 同一口径）。
  *
- * 为什么要带历史：服务器那条链以**库里的历史**为准；边车这一侧没有库，
+ * 为什么要带历史：边车那一轮就按请求体里这份历史跑（它不自己去翻会话库），
  * 不带历史就是**失忆的一轮**（用户立刻感觉到"它忘了上文"，界面还看不出来）。
  * 上限是**提示词预算**：别把整个会话灌进去。
  */
@@ -112,6 +124,25 @@ export const MAX_HISTORY_MESSAGES = 20
  *
  * 两条只读端点（`/chat/context-usage` / `/conversations/{id}/events`）也在表里：
  * 本机档在 `local.chat_reads` 上**薄重声明**了它们（只读本机数据）✓。
+ * `/chat/commands`（2026-10-05 加）同一条理由：命令目录与技能就在这台机器上，
+ * 而桌面真正执行那一轮的是**边车** —— 目录与执行同源，`local_router` 那一侧
+ * 同一轮挂了它。
+ *
+ * ## 2026-10-05 补的五条（技能 / 插件包 / 沙箱 / 站点图标 / 用量）
+ *
+ * 本机档那张白名单早就挂了这五族的端点（`local_router`：`skills` / `plugins` /
+ * `sandbox` / `site_icons` / `local.stats_reads`），这张表却一直没跟上 —— 于是
+ * 任何走 `requestLocal` 的调用点都会**先吃一条"不在 LOCAL_PATHS 里"的警告**，
+ * 再照常落到本机（`resolveLocalBase` 对表外路径只警告不拦）。补上是让这张表
+ * 重新等于"本机档到底服务什么"。
+ *
+ * ⚠️ 第二处**实差别**（与上面 `/scheduled-tasks` 那条同一类，也是"写实的那一个"）：
+ * 用量那一条写的是 `/stats/usage` 而**不是** `/stats`（施工单原文写的是 `/stats`）。
+ * 理由是同一条——本机档只**薄重声明**了 `/stats/usage` 这一条（`local.stats_reads`），
+ * 而 `/stats/dashboard` 数的是知识库的文档与任务、**不挂本机档**（见
+ * `api/v1/router.py` 里 `local_router` 那段说明）。表里写 `/stats` 会把
+ * `/stats/dashboard` 一并卷成"本机权威面" —— 那样概览页在壳里会 404，
+ * 而它本来就是服务器那份统计的正确入口。
  */
 export const LOCAL_PATHS = [
   '/conversations',
@@ -123,6 +154,14 @@ export const LOCAL_PATHS = [
   '/mcp-servers',
   '/memory',
   '/chat/context-usage',
+  // 命令目录：命令与技能在本机，执行那一轮也在本机（边车）——目录与执行同源
+  '/chat/commands',
+  // 2026-10-05 补的五族（上一条注释里写了为什么要补、以及 `/stats/usage` 的边界）
+  '/skills',
+  '/plugins',
+  '/sandbox',
+  '/site-icons',
+  '/stats/usage',
   // `/local/status`（本机档状态）与阶段 5 的 `/local/import*`
   '/local',
 ] as const
@@ -185,23 +224,25 @@ export function sidecarTurnsEnabledFrom(raw: string | undefined): boolean {
 }
 
 /**
- * 对话轮次**走边车**这个开关（**默认开** ✓，见文件头"已完成"那一段）。
+ * 对话轮次**走边车**这个开关（**默认开**，见文件头"已完成"那一段）。
  *
- * 不设 `VITE_SIDECAR_TURNS` → 走边车 ✓；要回退服务器那条链就**显式关** ✓
- * （逃生门：改一个环境变量即可，不必改代码/发版 ✓）。
+ * 不设 `VITE_SIDECAR_TURNS` → 走边车。它**不再是一条逃生门**：服务器那条链已经退役，
+ * 关掉它只能让对话没地方跑（`resolveTurnTarget` 抛 `TurnUnavailableError`）——
+ * 之所以还留着它，是因为"关掉"这个配置已经存在（装机脚本 / 排障笔记里会写），
+ * 静默忽略它比说清"它现在意味着什么"更糟。
  */
 export function sidecarTurnsEnabled(): boolean {
   if (turnsOverride !== undefined) return turnsOverride
   return sidecarTurnsEnabledFrom(env().VITE_SIDECAR_TURNS)
 }
 
-/** 被显式关掉时把用户写的那个值带出来 ✓（`reason` 里要说清是**哪一种**关法 ✓）。 */
+/** 被显式关掉时把用户写的那个值带出来（`reason` 里要说清是**哪一种**关法）。 */
 function explicitOffReason(): string {
   const raw = env().VITE_SIDECAR_TURNS
   const shown = raw === undefined || raw.trim() === '' ? '' : `=${raw.trim()}`
   return (
     `边车对话轮次被显式关掉（VITE_SIDECAR_TURNS${shown}）` +
-    '，走服务器那条链（逃生门；删掉这个变量就回到边车）'
+    '：对话只能在本机后端上跑，而服务器那条链已退役（删掉这个变量就回到边车）'
   )
 }
 
@@ -252,21 +293,28 @@ export function isLocalPath(path: string): boolean {
   return LOCAL_PATHS.some((prefix) => clean === prefix || clean.startsWith(`${prefix}/`))
 }
 
-/** 这个路径该打的基址（对话轮次且开关开着 → 边车，其余 → 服务器）。 */
+/**
+ * 这个路径该打的基址。
+ *
+ * **对话轮次那条链不再看开关**（2026-10-05）：它只有一个落点（边车），而"开关关掉"
+ * 那种情形在 `resolveTurnTarget` 里是一条显式的失败——这里再回 `API_BASE` 就与
+ * 那段话自相矛盾了（那个 URL 两档都不存在）。
+ */
 export function baseForPath(path: string): string {
-  return isSidecarPath(path) && sidecarTurnsEnabled() ? sidecarBase() : API_BASE
+  return isSidecarPath(path) ? sidecarBase() : API_BASE
 }
 
+/**
+ * 这一轮要打的那个落点——**只有一个**（本机边车），所以不再有"走哪条链"那个判别位。
+ *
+ * 拿不到它就是一条显式的失败（`resolveTurnTarget` / `resolveApprovalTarget` 抛
+ * `TurnUnavailableError`）：服务器那条链已经退役，没有"换个地方跑"这一说。
+ */
 export interface TurnTarget {
-  kind: 'sidecar' | 'server'
-  /** 实际要打的基址。 */
+  /** 实际要打的基址（壳里问到的真实端口，8765 被占会顺延）。 */
   base: string
   /** 实际要打的完整 URL。 */
   url: string
-  /** 是不是**回退**（边车不可用 → 用服务器那条链）。 */
-  fallback: boolean
-  /** 给人看的原因（回退或被显式关掉时**必须有** ✓，不许空着 ✗）。 */
-  reason: string
 }
 
 interface ProbeState {
@@ -296,15 +344,15 @@ let probeGeneration = 0
 /**
  * 给界面读的状态位（走哪条链不是静默的）。
  *
- * `reason` 现在**三种状态都说得清** ✓（默认开之后，"开关未启用"那句话只覆盖"显式关" ✓，
- * 所以不能再用它当默认文案 ✗）：
+ * `reason` **四种状态都说得清**（默认开之后，"开关未启用"那句话只覆盖"显式关"，
+ * 所以不能再用它当默认文案）：
  *
- * 1. **走边车** ✓ —— 说打的是哪个基址 ✓；
- * 2. **被显式关掉** ✓ —— 逃生门，说清是哪个变量 + 删掉它就能回边车 ✓；
- * 3. **边车没起来、已回退** ✓ —— 带上探测给的原因 ✓。
- *
- * 还没探过就返回第 4 种（`available: null`）：**不猜**边车是好是坏 ✗，
- * 只说"还没探过、默认会先试边车" ✓。
+ * 1. **走边车** —— 说打的是哪个基址；
+ * 2. **被显式关掉** —— 说清是哪个变量；
+ * 3. **边车没起来** —— 带上探测给的原因；
+ * 4. **还没探过**（`available: null`）—— 不猜边车是好是坏，只说"还没探过、
+ *    默认会先试边车"。后三种都是**打不了**（`resolveTurnTarget` 抛
+ *    `TurnUnavailableError`）：服务器那条链已退役，没有回退可报（见文件头）。
  */
 export function sidecarStatus(): {
   base: string
@@ -329,14 +377,14 @@ export function sidecarStatus(): {
     return {
       base,
       available: false,
-      reason: `${probe.reason || '边车不可用'}；已回退到服务器 ${API_BASE}（这条链仍然可用）`,
+      reason: `${probe.reason || '边车不可用'}；这一轮跑不了（服务器那条链已退役，没有别的落点）`,
       enabled: true,
     }
   }
   return {
     base,
     available: null,
-    reason: `还没探过边车（默认先试 ${base}，不可用就回退服务器 ${API_BASE}）`,
+    reason: `还没探过边车（默认先试 ${base}；服务器那条链已退役，探不到就打不了这一轮）`,
     enabled: true,
   }
 }
@@ -412,112 +460,117 @@ export async function sidecarAvailable(options: { force?: boolean } = {}): Promi
 }
 
 /**
- * 这一轮对话该打哪里（异步：先看开关、再探边车）。
+ * 对话轮次**没有落点**时抛的那个错（边车被显式关掉、或没跑起来）。
  *
- * 返回的 `fallback` / `reason` 就是"走哪条链可见"的落点：调用方要把 `reason` 显示或记日志。
+ * 单独一个类而不是一句 `Error`（与 `LocalUnavailableError` 同一条理由）：调用方要能区分
+ * "这台机器上的对话后端没跑起来"与"后端回了一个错"——前者要劝用户重启壳/看日志，
+ * 后者是那条请求本身的问题。界面上这就是那条错误提示的全部内容
+ * （`liveTurn.begin` 的 `failWith` / `ApprovalBar` 的 `notifyError`）。
+ *
+ * 它**不是回退**：原先打不到边车时这一轮会落到服务器 `/chat/stream`，
+ * 而那条链 2026-10-05 起两档都没有了（见文件头）——所以这里如实失败，不换源。
  */
-export async function resolveTurnTarget(): Promise<TurnTarget> {
-  const server: TurnTarget = {
-    kind: 'server',
-    base: API_BASE,
-    url: `${API_BASE}${SIDECAR_TURN_PATH}`,
-    fallback: true,
-    reason: '',
+export class TurnUnavailableError extends Error {
+  constructor(detail: string) {
+    super(
+      `对话跑不起来：${detail}；` +
+        `这一轮只能在本机后端（边车）上跑，而服务器那条链已退役——没有别的落点`,
+    )
+    this.name = 'TurnUnavailableError'
   }
-  if (!sidecarTurnsEnabled()) {
-    // **显式关不是失败** ✓，但也绝不静默 ✓（排障要能一眼看出"这一轮走的是服务器、而且是被关掉的"）
-    const reason = explicitOffReason()
-    console.info(`[sidecar] ${reason}`)
-    return { ...server, reason }
-  }
-  // 基址**先问壳**再取（`sidecarAvailable` 里也会问一次，那一步是幂等的缓存）：
-  // 端口顺延到 8766-8769 时，下面这个 `base` 必须是壳里那个真实端口 ✓
-  await ensureLocalBase()
-  const base = sidecarBase()
-  if (await sidecarAvailable()) {
-    return {
-      kind: 'sidecar',
-      base,
-      url: `${base}${SIDECAR_STREAM_PATH}`,
-      fallback: false,
-      reason: '',
-    }
-  }
-  const reason = `${probe.reason || '边车不可用'}；已回退到服务器 ${API_BASE}（这条链仍然可用）`
-  console.warn(`[sidecar] ${reason}`)
-  return { ...server, reason }
 }
 
 /**
- * 审批决定该打到哪边——**与 `resolveTurnTarget` 同一套选址**（边车可用 → 边车；
- * 被显式关/不可用 → 服务器）。
+ * 这一轮对话该打哪里（异步：先看开关、再探边车）。
+ *
+ * **只有一个落点**：边车活着就给 `{base, url}`（打 `/turn/stream`），否则**抛**
+ * `TurnUnavailableError`（同时 `console.warn` 一条）——两种"打不到"的原因都写进那句话里：
+ * 被显式关掉（`explicitOffReason()`）/ 边车没起来（`probe.reason`）。
+ * 原先这里回退服务器 `/chat/stream`，那条端点 2026-10-05 起两档都没有了（见文件头）。
+ */
+export async function resolveTurnTarget(): Promise<TurnTarget> {
+  if (!sidecarTurnsEnabled()) {
+    // 显式关是**主动选择**、不是异常，所以仍用 info 不用 warn；但落点是死的，一样抛
+    const reason = explicitOffReason()
+    console.info(`[sidecar] ${reason}`)
+    throw new TurnUnavailableError(reason)
+  }
+  // 基址**先问壳**再取（`sidecarAvailable` 里也会问一次，那一步是幂等的缓存）：
+  // 端口顺延到 8766-8769 时，下面这个 `base` 必须是壳里那个真实端口
+  await ensureLocalBase()
+  const base = sidecarBase()
+  if (await sidecarAvailable()) {
+    return { base, url: `${base}${SIDECAR_STREAM_PATH}` }
+  }
+  const reason = probe.reason || '边车不可用'
+  console.warn(`[sidecar] ${reason}；不回退服务器（/chat/stream 两档都没有了）`)
+  throw new TurnUnavailableError(reason)
+}
+
+/**
+ * 审批决定该打到哪边——**与 `resolveTurnTarget` 同一套选址**（只有边车一个落点）。
  *
  * 为什么要这一条（交接文档点名的缺口）：流在边车那台停在 `wait` 上等这一下，
- * 而 `decideApproval` 原先写死 `/chat/approvals/{id}` 打服务器——桌面壳（边车模式）
- * 里点「允许一次」，服务器根本不知道这个 id（404），那一轮只能等超时按拒绝走。
+ * 而 `decideApproval` 原先写死 `/chat/approvals/{id}` 打服务器——服务器根本不知道
+ * 这个 id（404），那一轮只能等超时按拒绝走。那个服务器镜像端点如今也退役了，
+ * 所以这里同样只剩边车：打不到就抛（界面上如实说"这条确认送不到"）。
  */
 export async function resolveApprovalTarget(approvalId: string): Promise<TurnTarget> {
   const encoded = encodeURIComponent(approvalId)
-  const server: TurnTarget = {
-    kind: 'server',
-    base: API_BASE,
-    url: `${API_BASE}/chat/approvals/${encoded}`,
-    fallback: true,
-    reason: '',
-  }
   if (!sidecarTurnsEnabled()) {
-    return { ...server, reason: explicitOffReason() }
+    const reason = explicitOffReason()
+    console.info(`[sidecar] ${reason}`)
+    throw new TurnUnavailableError(reason)
   }
   await ensureLocalBase()
   const base = sidecarBase()
   if (await sidecarAvailable()) {
-    return {
-      kind: 'sidecar',
-      base,
-      url: `${base}${SIDECAR_APPROVAL_PATH}/${encoded}`,
-      fallback: false,
-      reason: '',
-    }
+    return { base, url: `${base}${SIDECAR_APPROVAL_PATH}/${encoded}` }
   }
-  return { ...server, reason: `${probe.reason || '边车不可用'}；已回退到服务器 ${API_BASE}` }
+  const reason = probe.reason || '边车不可用'
+  console.warn(`[sidecar] ${reason}；这条确认没有别处可送（/chat/approvals 两档都没有了）`)
+  throw new TurnUnavailableError(reason)
 }
 
 /**
- * 服务器那条 `/chat/stream` 的请求体里**边车会用到的那几个字段**（`ChatPayload` 的子集）。
+ * 前端那份请求体（`ChatPayload`）里**边车会用到的那几个字段**。
+ *
+ * 名字里的 "Server" 是那会儿的叫法（这条适配原先写在"服务器请求体 → 边车请求体"之间），
+ * 服务器那条链 2026-10-05 退役之后它只剩一个输入：界面那一份 `ChatPayload`。
  *
  * 刻意**不加索引签名** `[key: string]: unknown`：加了之后 `ChatPayload` 反而不满足它
  * （TS 要求源类型也有索引签名）→ 调用点会报"missing index signature"。
  * 用"子集 + 结构化类型"就是对的：`ChatPayload` 有 `query` 就够了，多余字段本来就要被丢掉。
  */
 export interface ServerTurnPayload {
-  /** 用户这一句（服务器那边叫 `query`，边车那边叫 `message` —— 适配就在这一处做）。 */
+  /** 用户这一句（界面这一侧叫 `query`，边车那边叫 `message` —— 适配就在这一处做）。 */
   query: string
   kb_ids?: string[]
   history?: { role: 'user' | 'assistant'; content: string }[]
   /**
-   * 这一轮归属的会话。**必须带**（2026-09-30 修的真 bug）：边车拿它写回服务器
-   * （`POST /api/v1/chat/turns/record`）；不带 = 这一轮**不入库**——刷新就没了，
-   * 界面上只多一行"未写回"的小字，用户基本不会注意到。
+   * 这一轮归属的会话。**必须带**（2026-09-30 修的真 bug）：边车拿它把这一轮写进
+   * **本机会话库**；不带 = 这一轮**不入库**——刷新就没了。
    */
   conversation_id?: string
 }
 
 /**
- * 服务器请求体 → 边车请求体（`sidecar.TurnIn`：`message` / `kb_ids` / `history` / `conversation_id`）。
+ * 界面的请求体 → 边车请求体（`sidecar.TurnIn`：`message` / `kb_ids` / `history` / `conversation_id`）。
  *
  * 只挑边车认识的字段：其余（`mode`、`permission`、附件……）边车这一侧没有对应语义，
  * 硬塞过去只会被忽略（或更糟：让人以为它们生效了）。
- * ⚠️ **`conversation_id` 不属于"其余"那一类**：边车的 `TurnIn` 有它，写回那一环全靠它——
- * 之前漏在门外，实测表现是每一轮的 note 都写着"未带会话 id，本轮未写回服务器"（真丢数据）。
+ * **`conversation_id` 不属于"其余"那一类**：边车的 `TurnIn` 有它，落库那一环全靠它——
+ * 之前漏在门外，实测表现是每一轮都写着"未带会话 id，本轮未写回"（真丢数据）。
  * `workspace` 由边车自己按启动参数定 —— 前端不指定，避免"浏览器决定本机路径"这种危险默认。
  *
- * **历史带上**（最近 `MAX_HISTORY_MESSAGES` 条）：不带就是失忆的一轮。
+ * **历史带上**（最近 `MAX_HISTORY_MESSAGES` 条）：边车按这一份跑那一轮（它不自己去翻会话库），
+ * 不带就是失忆的一轮。
  */
 export function toSidecarTurnBody(payload: ServerTurnPayload): Record<string, unknown> {
-  // `query` → `message`：**字段名的适配只在这一处**（服务器叫 query、边车叫 message）
+  // `query` → `message`：**字段名的适配只在这一处**（界面叫 query、边车叫 message）
   const body: Record<string, unknown> = { message: payload.query }
   if (payload.kb_ids?.length) body.kb_ids = payload.kb_ids
-  // 会话 id 照传：边车用它写回服务器（不带就静默丢这一轮，见上面的说明）
+  // 会话 id 照传：边车用它把这一轮写进本机库（不带就静默丢这一轮，见上面的说明）
   if (payload.conversation_id) body.conversation_id = payload.conversation_id
   const history = (payload.history ?? [])
     .filter((item) => item.role === 'user' || item.role === 'assistant')
@@ -548,6 +601,8 @@ export function toSidecarTurnBody(payload: ServerTurnPayload): Record<string, un
  * 而壳在、边车却没起来时**必须如实报错** ✗✗：会话数据在本机，
  * 静默换到服务器会让用户看到 NAS 上**旧的那一份**，表现得就像"我的会话不见了" ✓
  * ——这也是方案把"边车不可达就回退服务器"这条**只**留给检索/模型的原因 ✓。
+ * （2026-10-05 补一句：那一族留给检索/模型的回退也**没了**——`/chat/stream` 两档都不再对外，
+ * 所以对话那条链如今同样"打不到就如实报错"，见文件头那一段。）
  *
  * ## 为什么基址要问壳（而不是继续读构建期常量）
  *
@@ -650,11 +705,12 @@ async function askShellForBase(): Promise<string> {
 }
 
 /**
- * 边车（本机后端）没起来时那句话——**方案 §4.3 的原话，别改写** ✓。
+ * 边车（本机后端）没起来时那句话——**方案 §4.3 的原话，别改写**。
  *
- * 与 `resolveTurnTarget` 那句"已回退到服务器"是**两套口径** ✓：那一轮换个地方跑，
- * 数据不丢 ✓；这一句说的是"数据在本机、没有换源" ✓——两者混着说，用户会以为
- * 会话在服务器上还有一份新的 ✗（其实那上面是旧的一份）。
+ * 与 `TurnUnavailableError` 那句（对话跑不起来）是**两套口径**：这一句说的是"数据在
+ * 本机、没有换源"——混着说会让用户以为会话在服务器上还有一份新的（其实那上面是旧的一份）。
+ * 前者是"换个地方跑"，而**对话那条链已经没有"别的地方"了**（见文件头），所以它如今也
+ * 不再是回退，而是如实失败。
  */
 export function localDownReason(detail: string): string {
   return `本机后端未启动：${detail || '边车没有应答'}；会话数据在本机，未回退服务器`

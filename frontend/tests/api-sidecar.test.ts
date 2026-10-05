@@ -1,6 +1,12 @@
 /**
  * 对话轮次的基址分派（P4 第 2 片）—— 三组断言，对应派单的三条验收。
  *
+ * **2026-10-05 改过一轮**（NAS 网页端退役）：这一族端点服务器档不再挂
+ * （`/chat/stream` 与 `/chat/approvals/{id}` 两档都没有了），所以"边车打不到就回退
+ * 服务器"那几条断言换成了"**打不到就显式失败，而且一次都不打服务器**"——
+ * 见下面那几条的说明（`TurnUnavailableError`）。它要防的正是那种最坏的样子：
+ * 请求发到一个谁也不服务的 URL 上，界面上只多一条 404。
+ *
  * 原则与其它 api-*.test.ts 一致：**不打真网络**（`fetch` 全程被替身接管）。
  */
 
@@ -10,6 +16,7 @@ import { API_BASE } from '@/api/client'
 import {
   DEFAULT_SIDECAR_BASE,
   SIDECAR_STREAM_PATH,
+  TurnUnavailableError,
   baseForPath,
   isSidecarPath,
   resetSidecarProbe,
@@ -32,11 +39,16 @@ function okJson(body: unknown): Response {
   })
 }
 
+/** 打出去的**全部** URL（用来钉"一条都没落到服务器那条链上"）。 */
+function urlsOf(mock: unknown): string[] {
+  return vi.mocked(mock as typeof fetch).mock.calls.map((call) => String(call[0]))
+}
+
 describe('边车分派：判定只有一处', () => {
   beforeEach(() => {
     resetSidecarProbe()
     vi.restoreAllMocks()
-    // 这一组验的是"**开关开着**时的分派"；开关本身（默认开 / 显式关是逃生门）由下面那一组验
+    // 这一组验的是"**开关开着**时的分派"；开关本身（默认开 / 显式关）由下面那一组验
     setSidecarTurnsForTest(true)
   })
   afterEach(() => {
@@ -50,11 +62,8 @@ describe('边车分派：判定只有一处', () => {
 
     const target = await resolveTurnTarget()
 
-    expect(target.kind).toBe('sidecar')
     expect(target.base).toBe(DEFAULT_SIDECAR_BASE)
     expect(target.url).toBe(`${DEFAULT_SIDECAR_BASE}${SIDECAR_STREAM_PATH}`)
-    expect(target.fallback).toBe(false)
-    expect(target.reason).toBe('')
     // 探活打的是边车自己的 /health（不是服务器）
     expect(String(fetchMock.mock.calls[0][0])).toBe(`${DEFAULT_SIDECAR_BASE}/health`)
   })
@@ -86,39 +95,43 @@ describe('边车分派：判定只有一处', () => {
     expect(sidecarBase()).not.toBe(API_BASE)
   })
 
-  it('③ 边车不可用时回退服务器，而且**有可见标记**（不许静默）', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
+  it('③ 边车不可用时**显式失败**，而且一次都不打服务器（回退已清掉）', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'))
+    vi.stubGlobal('fetch', fetchMock)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    const target = await resolveTurnTarget()
+    // 原先这里回退服务器 `/chat/stream`，而那条链 2026-10-05 起两档都没有了
+    // （`backend/app/api/v1/router.py` 的模块头）：打过去只多一条 404，
+    // 用户看到的是"对话坏了"，看不出真正的原因是"本机那个对话后端没跑起来"。
+    const error = await resolveTurnTarget().catch((cause: unknown) => cause)
 
-    expect(target.kind).toBe('server')
-    expect(target.base).toBe(API_BASE)
-    expect(target.url).toBe(`${API_BASE}/chat/stream`)
-    // **回退是显式的**：状态位 + reason + 一条 warn（三者都要有）
-    expect(target.fallback).toBe(true)
-    expect(target.reason).toContain('回退')
-    expect(target.reason).toContain('ECONNREFUSED')
+    expect(error).toBeInstanceOf(TurnUnavailableError)
+    // 失败原因是**探测给的那句原话**（含 ECONNREFUSED），而且说清"没有别的落点"
+    expect((error as Error).message).toContain('ECONNREFUSED')
+    expect((error as Error).message).toContain('没有别的落点')
+    // 状态位照样说得清（不许静默）：available=false + 一条 warn
     expect(sidecarStatus().available).toBe(false)
     expect(sidecarStatus().reason).toContain('边车不可达')
     expect(warn).toHaveBeenCalledTimes(1)
     expect(String(warn.mock.calls[0][0])).toContain('[sidecar]')
+    // **一条都没落到服务器那条链上**：这条链上只该有探活那一次（`/health`）
+    expect(urlsOf(fetchMock)).toEqual([`${DEFAULT_SIDECAR_BASE}/health`])
+    expect(urlsOf(fetchMock).some((url) => url.includes('/chat/stream'))).toBe(false)
 
     // 探测结果**有缓存**：一秒内不再打了（否则每轮对话都先等一次超时）
-    const fetchMock = vi.mocked(fetch)
-    const calls = fetchMock.mock.calls.length
+    const calls = vi.mocked(fetchMock).mock.calls.length
     await sidecarAvailable()
-    expect(fetchMock.mock.calls.length).toBe(calls)
+    expect(vi.mocked(fetchMock).mock.calls.length).toBe(calls)
   })
 
   it('/health 返回非 2xx 也算不可用（并且原因如实带上状态码）', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 503 })))
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    const target = await resolveTurnTarget()
+    const error = await resolveTurnTarget().catch((cause: unknown) => cause)
 
-    expect(target.fallback).toBe(true)
-    expect(target.reason).toContain('503')
+    expect(error).toBeInstanceOf(TurnUnavailableError)
+    expect((error as Error).message).toContain('503')
   })
 
   it('请求体只挑边车认识的字段：conversation_id 要带，mode/permission 不带', () => {
@@ -183,7 +196,7 @@ describe('边车分派：判定只有一处', () => {
  * - **字面量怎么判**用纯函数 `sidecarTurnsEnabledFrom` 逐个喂 ✓，
  *   `resolveTurnTarget()` 那条分支则用同一个 override 驱动 ✓（走的是同一段代码 ✓）。
  */
-describe('边车轮次开关：默认开，显式关是逃生门', () => {
+describe('边车轮次开关：默认开，显式关 = 对话没地方跑', () => {
   beforeEach(() => {
     resetSidecarProbe()
     vi.restoreAllMocks()
@@ -206,10 +219,8 @@ describe('边车轮次开关：默认开，显式关是逃生门', () => {
     expect(sidecarTurnsEnabled()).toBe(true)
     const target = await resolveTurnTarget()
 
-    expect(target.kind).toBe('sidecar')
     expect(target.base).toBe(DEFAULT_SIDECAR_BASE)
     expect(target.url).toBe(`${DEFAULT_SIDECAR_BASE}${SIDECAR_STREAM_PATH}`)
-    expect(target.fallback).toBe(false)
     // 走边车也要**说得清**（不是只有一个布尔值）：状态位带上实际基址
     const status = sidecarStatus()
     expect(status.enabled).toBe(true)
@@ -218,21 +229,20 @@ describe('边车轮次开关：默认开，显式关是逃生门', () => {
     expect(status.reason).toContain(DEFAULT_SIDECAR_BASE)
   })
 
-  it('② 显式关（逃生门）→ 走服务器，有 reason 与一条 info，且**根本不去探边车**', async () => {
+  it('② 显式关 → 抛（说清是哪个变量），有 info 且**根本不去探边车**', async () => {
     setSidecarTurnsForTest(false)
     const fetchMock = vi.fn().mockResolvedValue(okJson({ ok: true }))
     vi.stubGlobal('fetch', fetchMock)
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
 
-    const target = await resolveTurnTarget()
+    // 这条开关原先是一条逃生门（关掉就走服务器那条链）。那条链退役之后它**没有落点**，
+    // 所以关掉它 = 对话跑不起来——如实说出来，别让用户以为是别的问题。
+    const error = await resolveTurnTarget().catch((cause: unknown) => cause)
 
-    expect(target.kind).toBe('server')
-    expect(target.url).toBe(`${API_BASE}/chat/stream`)
-    expect(target.fallback).toBe(true)
-    // 文案要能区分"被显式关掉"与"边车没起来"（默认开之后，这两件事长得很像 ✗）
-    expect(target.reason).toContain('显式关掉')
-    expect(target.reason).toContain('逃生门')
-    // 关闭**不许静默**：状态位 + 一条 info
+    expect(error).toBeInstanceOf(TurnUnavailableError)
+    expect((error as Error).message).toContain('显式关掉')
+    expect((error as Error).message).toContain('服务器那条链已退役')
+    // 关闭**不许静默**：状态位 + 一条 info（主动选择用 info、不是 warn）
     const status = sidecarStatus()
     expect(status.enabled).toBe(false)
     expect(status.reason).toContain('显式关掉')
@@ -249,30 +259,31 @@ describe('边车轮次开关：默认开，显式关是逃生门', () => {
     for (const raw of ['0', 'false', 'FALSE', 'no', 'No', 'off', 'OFF', ' 0 ', '\tfalse\t']) {
       expect(sidecarTurnsEnabledFrom(raw), String(raw)).toBe(false)
     }
-    // 与 override 那条路一致：关掉之后 `/chat/stream` 也回服务器
+    // `baseForPath` **不再看这个开关**：对话轮次那条链只有一个落点（边车），
+    // 开关管的是"跑不跑"（`resolveTurnTarget` 抛），不管"打哪台"
     setSidecarTurnsForTest(false)
     expect(sidecarTurnsEnabled()).toBe(false)
-    expect(baseForPath('/chat/stream')).toBe(API_BASE)
+    expect(baseForPath('/chat/stream')).toBe(sidecarBase())
     setSidecarTurnsForTest(true)
     expect(sidecarTurnsEnabled()).toBe(true)
     expect(baseForPath('/chat/stream')).toBe(sidecarBase())
   })
 
-  it('④ 默认开但边车没起来 → 回退服务器，且**回退是显式的**（状态位 + warn）', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
+  it('④ 默认开但边车没起来 → 显式失败（状态位 + warn），不打服务器', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'))
+    vi.stubGlobal('fetch', fetchMock)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    const target = await resolveTurnTarget()
+    await expect(resolveTurnTarget()).rejects.toBeInstanceOf(TurnUnavailableError)
 
-    expect(target.kind).toBe('server')
-    expect(target.fallback).toBe(true)
-    expect(target.reason).toContain('回退')
     const status = sidecarStatus()
     expect(status.enabled).toBe(true)
     expect(status.available).toBe(false)
-    expect(status.reason).toContain('回退')
     expect(status.reason).toContain('ECONNREFUSED')
+    expect(status.reason).toContain('跑不了')
     expect(warn).toHaveBeenCalledTimes(1)
+    // 探活那一次之外，一条请求都不该发（尤其**没有**打到服务器 /chat/stream 上）
+    expect(urlsOf(fetchMock)).toEqual([`${DEFAULT_SIDECAR_BASE}/health`])
   })
 
   it('⑤ 还没探过边车时不猜好坏：available=null，但仍然说清默认会先试边车', () => {
@@ -282,7 +293,7 @@ describe('边车轮次开关：默认开，显式关是逃生门', () => {
     expect(status.available).toBeNull()
     expect(status.reason).toContain('还没探过')
     expect(status.reason).toContain(DEFAULT_SIDECAR_BASE)
-    // reason **不许空着**：三种状态都要能据它判断"当前走哪条链"
+    // reason **不许空着**：四种状态都要能据它判断"这一轮会怎样"
     expect(status.reason.length).toBeGreaterThan(0)
   })
 })
@@ -303,20 +314,19 @@ describe('审批决定的选址（与轮次同一套，交接文档点名的缺�
 
     const target = await resolveApprovalTarget('appr_1')
 
-    expect(target.kind).toBe('sidecar')
     expect(target.url).toBe(`${DEFAULT_SIDECAR_BASE}${SIDECAR_APPROVAL_PATH}/appr_1`)
-    expect(target.fallback).toBe(false)
   })
 
-  it('边车不可用 → 回退服务器 /chat/approvals/{id}，回退是显式的', async () => {
+  it('边车不可用 → 抛（不再回退服务器 /chat/approvals/{id}）', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'))
     vi.stubGlobal('fetch', fetchMock)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    const target = await resolveApprovalTarget('appr_2')
+    const error = await resolveApprovalTarget('appr_2').catch((cause: unknown) => cause)
 
-    expect(target.kind).toBe('server')
-    expect(target.url).toBe(`${API_BASE}/chat/approvals/appr_2`)
-    expect(target.fallback).toBe(true)
-    expect(target.reason).not.toBe('')
+    expect(error).toBeInstanceOf(TurnUnavailableError)
+    expect((error as Error).message).toContain('ECONNREFUSED')
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(urlsOf(fetchMock).some((url) => url.includes('/chat/approvals'))).toBe(false)
   })
 })

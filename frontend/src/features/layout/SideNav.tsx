@@ -95,6 +95,17 @@
  * 切换侧栏走**偏好那一层**（`toggleSidebarPreference`：落 `kylab-sidebar-collapsed`
  * 并广播 `kylab:sidebar-toggle`）。本组件既是那个键的读者、也是那次广播的听众，
  * 于是"按 Ctrl+B"和"点那颗折叠按钮"最终落到同一个状态上。
+ *
+ * ## 2026-10-05：没有本机后端的那一份只剩「知识库」这一组
+ *
+ * NAS 网页端退役（路由表那一段写在 `app/App.tsx` 的文件头）：判据是
+ * `api/local.ts::localBackendPresent()`——**与路由表同源**，于是菜单里没有的、
+ * 敲地址也进不去。这一栏里跟着摘掉的是：新建会话、笔记 / 记忆 / 能力三项、
+ * 以及整段项目节与对话节（它们的数据面在那一档已经不服务了）；
+ * 知识库那一组的三个子项（所有知识库 / 概览 / 任务中心）**留着**，它们就是那一档的全部。
+ *
+ * 那三笔清单（会话 / 项目 / 已归档）在那一档**一次都不读**：读下去只会得到 404，
+ * 而"启动时打一串注定失败的请求"没有任何收益（`/local/status` 那一探已经把结论给了）。
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useMatch, useNavigate } from 'react-router'
@@ -102,6 +113,7 @@ import { Link, useLocation, useMatch, useNavigate } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { preloadPage, type PageName } from '@/app/routes'
+import { useLocalBackend } from '@/api/local'
 import { prefetchConversationDetail } from '@/features/chat/runtime/useChatData'
 import { useLiveTurn } from '@/features/chat/model/liveTurn'
 import {
@@ -401,6 +413,13 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
   const { collapsed, toggleSidebar } = useSidebar()
+  /**
+   * 这一份界面有没有本机后端（2026-10-05，NAS 网页端退役）。
+   *
+   * 没有的那一份里会话面整个不存在（路由表同源），所以这一栏只留知识库那一组。
+   * 判据的来源与理由写在 `api/local.ts`：**不在这个组件里发明新的探测**。
+   */
+  const local = useLocalBackend()
 
   /**
    * 当前打开的是哪条会话（`/chat/<id>`；裸 `/chat` 与 `/chat?new=1` 没有 id）。
@@ -454,7 +473,16 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   // 之后每次打开都是收着的，而他会以为坏了。
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
-  const [knowledgeOpen, setKnowledgeOpen] = useState(false)
+  /**
+   * 「知识库」那一组的两行状态：**用户手动开合过没有**、以及他手动选的档。
+   *
+   * 默认档按"这一份有没有本机后端"取（没有本机后端时这一组是整条栏里唯一的内容，
+   * 默认收起等于把唯一的入口藏起来）；手动点过一次之后**永远听用户的**——
+   * 把默认值写成受控的、用户改不动，那颗箭头就成了一个点了没反应的按钮。
+   */
+  const [knowledgeTouched, setKnowledgeTouched] = useState(false)
+  const [knowledgeOpenManual, setKnowledgeOpenManual] = useState(false)
+  const knowledgeOpen = knowledgeTouched ? knowledgeOpenManual : !local.present
   /** 手动展开了哪几个项目。 */
   const [expandedProjects, setExpandedProjects] = useState<string[]>([])
   /** 「新增项目」弹窗开着吗（按钮在「项目」标题右边）。 */
@@ -463,12 +491,14 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const [showArchived, setShowArchived] = useState(false)
 
   useEffect(() => {
+    // 没有本机后端的那一份：这三笔清单一次都不读（见文件头那一段）
+    if (!local.present) return
     void loadConversations()
     // 项目清单也是首屏就有的数据：它和会话一起决定侧栏下半栏长什么样。
     // 走 `ensureWorkspacesLoaded` 而不是直接 `load`：行菜单的「移至项目」
     // 也要这份清单，两处都不该重复发同一个请求。
     void ensureWorkspacesLoaded()
-  }, [loadConversations])
+  }, [loadConversations, local.present])
 
   /**
    * 已归档的项目：**要不要显示那一行**得先知道有没有。
@@ -477,8 +507,9 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
    * 归档的项目（那正是"收起来"的意思），而"找回来"的入口要有依据。
    */
   useEffect(() => {
+    if (!local.present) return
     void loadArchivedProjects()
-  }, [loadArchivedProjects])
+  }, [loadArchivedProjects, local.present])
 
   /**
    * **按项目补齐会话清单**（2026-09-29 走查：项目行有计数、点开却是空的）。
@@ -494,6 +525,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
    * （先前并进 `items` 的那版就是这么被后到的 `load()` 盖掉、真链路上复发的）。
    */
   useEffect(() => {
+    if (!local.present) return
     for (const workspace of workspaces) {
       const loaded =
         conversations.filter((item) => item.workspace_id === workspace.id).length +
@@ -502,7 +534,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
         void loadWorkspaceConversations(workspace.id)
       }
     }
-  }, [workspaces, conversations, workspaceConversations, loadWorkspaceConversations])
+  }, [local.present, workspaces, conversations, workspaceConversations, loadWorkspaceConversations])
 
   /**
    * 全局快捷键（P2-1，照 ZCode 的注册表）。
@@ -522,7 +554,10 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
       // （见最终报告的"需要主控做的事"）。
       event.stopImmediatePropagation()
       if (action === 'chat.new') {
-        void navigate('/chat?new=1')
+        // 「新建会话」只在真有这一页时跳：没有本机后端的那一份里 `/chat` 会重定向到
+        // 知识库首屏，按下去"什么都没发生"已经够迷惑了，再去跳一趟更没有意义
+        // （那条快捷键与"这一份有没有会话"无关，所以这里只吞掉跳转、不吞按键本身）
+        if (local.present) void navigate('/chat?new=1')
         return
       }
       // 与对话页同一条契约：落 `kylab-sidebar-collapsed` 并广播 `kylab:sidebar-toggle`
@@ -530,7 +565,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
     }
     window.addEventListener('keydown', onKeydown)
     return () => window.removeEventListener('keydown', onKeydown)
-  }, [navigate])
+  }, [navigate, local.present])
 
   /** 「新建会话」现在绑的是哪几组键（提示与绑定同源）。 */
   const newChatKeys = useMemo(() => bindingParts(bindingsOf('chat.new')[0] ?? ''), [])
@@ -636,8 +671,10 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
       </div>
 
       {/* 「新对话」放在**最上面**（导航之上）：它是这一栏里最高频的动作，
-          埋在任何东西下面都是浪费。带上 `?new=1` 才是"新建"。 */}
-      {!collapsed && (
+          埋在任何东西下面都是浪费。带上 `?new=1` 才是"新建"。
+          **没有本机后端的那一份里它不存在**（那一档 `/chat` 已经不是一页了，
+          见文件头那一段）——不是藏起来，是这一栏里本来就没有这件事可做。 */}
+      {local.present && !collapsed && (
         <Link
           to="/chat?new=1"
           /* 划过就先把对话页的代码拉下来（它是最可能去的地方），点进去不必等 */
@@ -664,31 +701,34 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
       )}
 
       <nav className="flex flex-col px-2 pb-2" aria-label="主导航">
-        {NAV_ITEMS.map((item) => (
-          <Link
-            key={item.to}
-            onMouseEnter={() => preloadPage(item.page as PageName)}
-            onFocus={() => preloadPage(item.page as PageName)}
-            to={item.to}
-            // 选中态用**中性 alpha 底**（不是品牌色底，Kimi 的实测值），而且是类名不是内联样式：
-            // 内联样式会压过 `:hover`，鼠标划过当前项就没了反馈
-            className={cn(
-              NAV_ROW,
-              collapsed && NAV_ROW_COLLAPSED,
-              isActive(item.to, item.exact) && 'bg-[var(--bg-selected)]',
-            )}
-            // 当前路由标在语义上（旧版只有一个 CSS class）：辅助技术与用例都靠它读
-            aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
-            title={collapsed ? item.label : undefined}
-          >
-            <item.icon
-              size={18}
-              className={`ly-nav-motion-${item.motion} shrink-0`}
-              aria-hidden="true"
-            />
-            <span className="ly-collapsible">{item.label}</span>
-          </Link>
-        ))}
+        {/* 笔记 / 记忆 / 能力：**只在有本机后端的那一份里**（数据面同源，见文件头）。
+            没有的那一份里导航整段就只剩下面「知识库」那一组。 */}
+        {local.present &&
+          NAV_ITEMS.map((item) => (
+            <Link
+              key={item.to}
+              onMouseEnter={() => preloadPage(item.page as PageName)}
+              onFocus={() => preloadPage(item.page as PageName)}
+              to={item.to}
+              // 选中态用**中性 alpha 底**（不是品牌色底，Kimi 的实测值），而且是类名不是内联样式：
+              // 内联样式会压过 `:hover`，鼠标划过当前项就没了反馈
+              className={cn(
+                NAV_ROW,
+                collapsed && NAV_ROW_COLLAPSED,
+                isActive(item.to, item.exact) && 'bg-[var(--bg-selected)]',
+              )}
+              // 当前路由标在语义上（旧版只有一个 CSS class）：辅助技术与用例都靠它读
+              aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
+              title={collapsed ? item.label : undefined}
+            >
+              <item.icon
+                size={18}
+                className={`ly-nav-motion-${item.motion} shrink-0`}
+                aria-hidden="true"
+              />
+              <span className="ly-collapsible">{item.label}</span>
+            </Link>
+          ))}
 
         {/* 知识库组（v0.17）：**三条固定子项**（所有知识库 / 概览 / 任务中心），**不列库名**；
             **无条件渲染**（R5：不再按提供者状态整组显隐，见文件头那一节）。
@@ -704,7 +744,10 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
             )}
             aria-expanded={knowledgeOpen}
             title={collapsed ? KNOWLEDGE_GROUP.label : undefined}
-            onClick={() => setKnowledgeOpen((open) => !open)}
+            onClick={() => {
+              setKnowledgeTouched(true)
+              setKnowledgeOpenManual(!knowledgeOpen)
+            }}
           >
             <KNOWLEDGE_GROUP.icon
               size={18}
@@ -755,8 +798,11 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
           标题右侧默认什么都不摆，鼠标移上来才出现一个"新建"图标；标题下面直接铺清单。
 
           这一栏的滚动条**用时才出现**（v0.26，用户报的）：它一直在那儿时，那条灰竖线
-          是在回答"你还能往下滚"——而那个问题只在鼠标进到这一栏时才存在。 */}
-      {!collapsed && (
+          是在回答"你还能往下滚"——而那个问题只在鼠标进到这一栏时才存在。
+
+          **没有本机后端的那一份里整段不存在**：项目与会话都在本机库里，那一档一条都读不到
+          （见文件头那一段）。这时侧栏就是"品牌位 + 知识库那一组 + 账号"三块。 */}
+      {local.present && !collapsed && (
         <div ref={sideScroll} className="scroll-quiet flex-1 overflow-y-auto px-2 pb-2">
           {/* ------------------------------------------------------------ 项目 */}
           <div className="ly-side-head mt-3 flex items-center gap-1 pr-1">

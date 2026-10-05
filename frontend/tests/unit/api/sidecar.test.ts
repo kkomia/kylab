@@ -1,10 +1,11 @@
 /**
- * 本机权威面（M2 阶段 4）：前缀表、真实基址、以及**两条回退纪律**。
+ * 本机权威面（M2 阶段 4）：前缀表、真实基址、以及**不回退的纪律**。
  *
  * 这一份钉的是"会话数据的主人是谁"那一半（`LOCAL_PATHS` + `requestLocal`）。
  * 上面那份 `tests/api-sidecar.test.ts` 钉的是"一轮对话在哪台机器上跑"那一半
- * （`/chat/stream` 的选址与回退）——两者**不是一回事**，失败之后怎么办也不同：
- * 轮次是"打不到就回退服务器" ✓，本机权威面是"打不到就如实报错、绝不换源" ✗✗。
+ * （`/chat/stream` 的选址）——两者**不是一回事**：对话那条链 2026-10-05 起
+ * **只有边车一个落点**（打不到就抛，服务器那一份退役了），而本机权威面是
+ * "打不到就如实报错、绝不换源"。两边的处置现在一致了，判据仍然是两套。
  *
  * 三条纪律各有一组用例（方案 §4.3）：
  *
@@ -84,7 +85,7 @@ afterEach(() => {
 })
 
 describe('① 前缀表：判定只有一处', () => {
-  it('表里那十个前缀本身、它们的子路径、带查询串/尾斜杠的都归本机', () => {
+  it('表里那些前缀本身、它们的子路径、带查询串/尾斜杠的都归本机', () => {
     for (const prefix of LOCAL_PATHS) {
       expect(isLocalPath(prefix), prefix).toBe(true)
       expect(isLocalPath(`${prefix}/x`), prefix).toBe(true)
@@ -105,6 +106,17 @@ describe('① 前缀表：判定只有一处', () => {
       '/mcp-servers',
       '/memory',
       '/chat/context-usage',
+      // 命令目录（2026-10-05）：命令与技能在本机、执行那一轮也在本机（边车）
+      '/chat/commands',
+      // 2026-10-05 补的五条：本机档早就挂了这五族端点，表一直没跟上
+      // （`skills` / `plugins` / `sandbox` / `site_icons` / `stats_reads`）
+      '/skills',
+      '/plugins',
+      '/sandbox',
+      '/site-icons',
+      // 用量那一条是**写实的**：本机档只薄重声明了 `/stats/usage`，
+      // 而 `/stats/dashboard` 数的是知识库的文档与任务（不挂本机档）
+      '/stats/usage',
       '/local',
     ])
   })
@@ -117,6 +129,8 @@ describe('① 前缀表：判定只有一处', () => {
       '/localStorage',
       '/workspace',
       '/memories',
+      '/skill',
+      '/stats/usage-all',
     ]) {
       expect(isLocalPath(path), path).toBe(false)
     }
@@ -131,10 +145,11 @@ describe('① 前缀表：判定只有一处', () => {
       '/chunks',
       '/folders',
       '/wiki',
+      // `/stats` 这一族**只**把那一条薄重声明（`/stats/usage`）算本机权威面：
+      // 概览那条数的是知识库的文档与任务，权威在 NAS
       '/stats',
+      '/stats/dashboard',
       '/tasks',
-      '/skills',
-      '/plugins',
       '/tabular',
       '/data-sources',
       '/chat/stream', // 对话轮次那条链（另一套选址，见 api-sidecar.test.ts）
@@ -299,11 +314,13 @@ describe('⑥ 调用点写错了只警告不拦（运行时把能用的请求变
     vi.stubGlobal('fetch', fetchMock)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await requestLocal('/skills')
+    // `/stats/dashboard` 是一个**真实存在**的表外路径：数的是知识库的文档与任务，
+    // 权威在 NAS（表里那条 `/stats/usage` 与它按路径段并不互相覆盖）
+    await requestLocal('/stats/dashboard')
 
     expect(warn).toHaveBeenCalledTimes(1)
     expect(String(warn.mock.calls[0][0])).toContain('LOCAL_PATHS')
-    expect(urlOf(1)).toBe(`${DEFAULT_SIDECAR_BASE}${API_BASE}/skills`)
+    expect(urlOf(1)).toBe(`${DEFAULT_SIDECAR_BASE}${API_BASE}/stats/dashboard`)
   })
 })
 

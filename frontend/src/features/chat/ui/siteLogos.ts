@@ -19,11 +19,21 @@
  *    这里不抛、不打印（控制台零 error 是验收项）；
  * 4. 用 `fetch` + `Blob` 而不是 `<img src>`：这一组端点要凭据，而 `<img>` 带不了
  *    `Authorization`；顺带也避免了 404 在控制台留下"加载图片失败"。
+ *
+ * ## 基址要过**本机那一套**（2026-10-05）
+ *
+ * 抓取与那 30 天磁盘缓存都在**这台机器**上（`<data_dir>/site-icons/`，见
+ * `backend/app/services/site_icons.py`），本机档挂的也是它（`local_router` 里
+ * `site_icons.router` 逐条写着理由）→ `/site-icons` 在 `LOCAL_PATHS` 里。
+ * 所以这一处不能再拿 `API_BASE` 硬拼（那是"恒打服务器"）：壳里那样取到的是 **NAS** 上
+ * 那份缓存（或没有），而这份图本该由本机代抓。基址与 `requestLocal` 走**同一处判定**
+ * （`resolveLocalBase`）——这一条是 Blob，套不了 `requestLocal`（它假定响应是 JSON）。
  */
 
 import { useEffect, useState } from 'react'
 
-import { API_BASE, authHeaders } from '@/api/client'
+import { authHeaders } from '@/api/client'
+import { resolveLocalBase } from '@/api/sidecar'
 import type { WebSite } from '@/features/chat/model/webSites'
 
 const iconCache = new Map<string, Promise<string | null>>()
@@ -45,13 +55,16 @@ async function fetchSiteIcon(domain: string): Promise<string | null> {
   // 测试环境（jsdom）与很老的浏览器没有它：直接退化，不抛
   if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return null
   try {
-    const response = await fetch(`${API_BASE}/site-icons?domain=${encodeURIComponent(domain)}`, {
+    // 基址先过本机那一套（见文件头）：本机后端没起来时它会抛，由下面那道 catch 兜成
+    // "这次没有真实 logo"——与"取不到就回 null"是同一条口径
+    const base = await resolveLocalBase('/site-icons')
+    const response = await fetch(`${base}/site-icons?domain=${encodeURIComponent(domain)}`, {
       headers: authHeaders(),
     })
     if (!response.ok) return null
     return URL.createObjectURL(await response.blob())
   } catch {
-    // 网络报错也好、401 也好，都只是"这次没有真实 logo"
+    // 网络报错也好、401 也好、本机后端没起来也好，都只是"这次没有真实 logo"
     return null
   }
 }

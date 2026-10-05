@@ -1,5 +1,9 @@
 /**
- * 对话接口（对应后端 POST /api/v1/chat/stream 与 POST /api/v1/chat）。
+ * 对话接口。
+ *
+ * 一轮对话打的是**本机边车**的 `POST /turn/stream`（落点判定在 `api/sidecar.ts`，
+ * 适配在 `chatStream` 里那一处）：服务器档那条 `/chat/stream` 在 2026-10-05 随 NAS 网页端
+ * 退役（`backend/app/api/v1/router.py` 的模块头），所以这一族的落点只有本机一个。
  *
  * 为什么不用 `client.ts` 的 `request()`：那个封装假定"响应是 JSON"——
  * 它写死 `Content-Type: application/json` 并把响应体一次性 `json()` 掉。
@@ -25,10 +29,36 @@ import { resolveApprovalTarget, resolveTurnTarget, toSidecarTurnBody } from './s
 import type { components } from './schema'
 import { createDisplayPacer } from '@/lib/pacer'
 
-type ChatSourceOut = components['schemas']['ChatSourceOut']
+/**
+ * 回答引用的**线形状**（后端 `schemas.py::ChatSourceOut`）——**手写的，不是生成物**。
+ *
+ * 为什么手写（2026-10-05，`/chat/*` 那一族从服务器档退役）：这一族端点退出了服务器档的
+ * OpenAPI（`backend/app/api/v1/router.py` 的模块头写着那一步），于是这两个模型
+ * （本条与下面的 `ContextUsageOut`）**从 `schema.d.ts` 里消失了**——它们是"只在会话面
+ * 成立"的东西，而会话面这条链在本机档走的是**边车**（`app/sidecar.py` 的 `/turn*`）
+ * 与两条薄重声明的只读端点（`local.py::chat_reads` 的 `/chat/context-usage`、
+ * `router.py` 的 `/chat/commands`）。
+ *
+ * 契约本身**一个字没变**：字段逐条对着 `backend/app/api/v1/schemas.py` 抄，
+ * 可选性也照生成物那一版（`heading_path?` / `page?` —— `ChatSource` 用 `Required<>`
+ * 把它们收成必有，那条口径没动）。**改了后端就回来改这里**——与 `local.ts` 头注
+ * （`/local/*` 那一族同样手写）是同一条办事方式。
+ */
+export interface ChatSourceOut {
+  index: number
+  chunk_id: string
+  document_id: string
+  document_name: string
+  heading_path?: string | null
+  page?: number | null
+  score: number
+  preview: string
+  knowledge_base_id: string
+  document_summary: string
+}
 
 /**
- * 一处引用的出处：契约来自后端的 OpenAPI（见 `conversations.ts` 头注的三条约定）。
+ * 一处引用的出处：契约见上面那个手写的 `ChatSourceOut`（形状与生成物那一版逐字相同）。
  *
  * `document_summary` **显式留成可选**（`Required<…>` 之外唯一的例外）：schema 描述的是
  * **当前版本**的响应形状，而历史会话里存的引用快照是**当年写下的**——v25 之前那些
@@ -330,12 +360,19 @@ function normalizeCommand(raw: components['schemas']['CommandOut']): ChatCommand
 /**
  * 读一次命令目录（前端输入框里那个 `/` 菜单吃它）。
  *
+ * **走本机**（`requestLocal`，2026-10-05）：命令与技能目录都是**这台机器上的**
+ * （`data/commands/` + 仓库命令 + `<data_dir>/skills/`，启停状态在本地 `app_settings`），
+ * 而桌面真正执行那一轮的是**边车** —— 目录与执行必须同源，否则壳里列出来的
+ * （本机那份）与真正能被执行的不是同一批。本机档那一侧挂了它（`router.py` 的
+ * `local_router`），浏览器那一档（没有本机后端）由 `resolveLocalBase` 落到服务器，
+ * 端点在那边的挂法没动。
+ *
  * **失败不抛**：菜单是顺手的入口，后端旧版本没有这个端点时不该把对话页变成错误提示
  * （与「权限」那颗读不到设置就不显示同一处置）——返回空列表，界面只少一个菜单。
  */
 export async function listCommands(): Promise<ChatCommand[]> {
   try {
-    const body = await request<{
+    const body = await requestLocal<{
       items?: components['schemas']['CommandOut'][]
     }>('/chat/commands')
     // 只留**能用的**那批（被遮蔽的与坏掉的在列表端点里仍可见，见插件列表那套做法）
@@ -626,20 +663,16 @@ export async function chatStream(
   signal?: AbortSignal,
   options: { smooth?: boolean } = {},
 ): Promise<ChatStreamHandle> {
-  // **按接口类别分派基址**（P4 第 2 片，判定只有 `api/sidecar.ts` 那一处）：
-  //   边车活着且开关开着 → 打本地边车 `/turn/stream`（模型与工具在这台机器上跑）；
-  //   否则 → 服务器 `/chat/stream`（**回退路径**，这条链一直可用）。
-  // 适配（请求体换成边车认识的字段、历史随体带上）**只在这一层做** ——
-  // UI 里不许出现 `if (是边车)`，否则分派逻辑就散到界面里去了。
+  // **落点只有一处**：本机边车（判定只有 `api/sidecar.ts` 那一处）。拿不到就由
+  // `resolveTurnTarget` **抛**——服务器那条链已退役，没有"回退服务器"那一手
+  // （见那里与文件头的说明）。适配（请求体换成边车认识的字段、历史随体带上）
+  // **只在这一层做** —— UI 里不许出现 `if (是边车)`，否则分派逻辑就散到界面里去了。
   const target = await resolveTurnTarget()
-  if (target.kind === 'sidecar') {
-    return openStream(target.url, handlers, {
-      signal,
-      body: toSidecarTurnBody(payload),
-      ...options,
-    })
-  }
-  return openStream(target.url, handlers, { signal, body: payload, ...options })
+  return openStream(target.url, handlers, {
+    signal,
+    body: toSidecarTurnBody(payload),
+    ...options,
+  })
 }
 
 /**
@@ -1124,6 +1157,35 @@ export interface ContextUsagePart {
 }
 
 /**
+ * 上下文用量分解里的**一项来源**的线形状（后端 `schemas.py::ContextUsageItemOut`）。
+ *
+ * **手写**，理由与上面 `ChatSourceOut` 那段逐字相同（`/chat/*` 退役之后它不在生成物里了，
+ * 而 `/chat/context-usage` 在本机档照旧由 `local.py::chat_reads` 薄重声明）。
+ * 界面那份是 `ContextUsagePart`（见下），两者字段同名，收窄（`?? 0` / `?? ''`）在
+ * `getContextUsage` 里做一处。
+ */
+export interface ContextUsageItemOut {
+  kind: string
+  label: string
+  chars: number
+  tokens: number
+  share: number
+  preview: string
+}
+
+/** `GET /chat/context-usage` 的响应（后端 `schemas.py::ContextUsageOut`）。**手写**，同上。 */
+export interface ContextUsageOut {
+  items?: ContextUsageItemOut[]
+  used: number
+  total: number
+  ratio: number
+  compress_at: number
+  compress_budget: number
+  estimated: boolean
+  note: string
+}
+
+/**
  * 这一轮上下文的占用与分解（P1-3 的仪表，抄 ZCode 的 `chat.contextUsage.breakdown`）。
  *
  * `used` / `total` / `share` 这几个数**全部来自接口**：界面一次都不自己算
@@ -1155,9 +1217,7 @@ export async function getContextUsage(conversationId: string): Promise<ContextUs
   const params = new URLSearchParams({ conversation_id: conversationId })
   // `requestLocal`（M2 §4.2）：这条只读**本机**数据（按本机会话历史与提示词现算），
   // 本机档在边车上薄重声明了它；服务器档那份实现一个字没改。
-  const raw = await requestLocal<components['schemas']['ContextUsageOut']>(
-    `/chat/context-usage?${params.toString()}`,
-  )
+  const raw = await requestLocal<ContextUsageOut>(`/chat/context-usage?${params.toString()}`)
   return {
     // 与 `listFiles` 同一套归一化：schema 里这些字段都有默认值，
     // 直接当必有的用会在缺字段时变成 `undefined`（界面显示成 NaN）

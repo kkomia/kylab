@@ -12,9 +12,17 @@
  *    静默藏掉会让用户以为插件没装上。
  * 3. **能力面四类都还没接执行**：每一类的 `status` 里写着"未实现"，
  *    界面上要照它显示——不能让人以为命令真的能被执行。
+ *
+ * ## 这一族**归本机**（2026-10-05）
+ *
+ * 判据就是上面那句"本地市场 = 目录本身"：目录 = `<data_dir>/plugins/` + 仓库自带 `plugins/`，
+ * 启停/屏蔽写在本地 `app_settings`（`plugins.enabled.*`）——权威在本机的 `data_dir`
+ * （`backend/app/api/v1/router.py` 的 `local_router` 里逐条写着）。所以三条都走 `requestLocal`
+ * （`/plugins` 在 `LOCAL_PATHS` 里）：壳里读的是本机那份目录，与真正加载插件的那台机器一致。
+ * 没有本机后端的那一档仍落到服务器（`resolveLocalBase` 在"无壳"那一支回 `API_BASE`）。
  */
 
-import { request } from './client'
+import { requestLocal } from './client'
 import type { components } from './schema'
 
 /** 插件提供的一样东西（四类能力面之一：skill / command / hook / tool）。 */
@@ -31,15 +39,19 @@ export type PluginList = Omit<Required<components['schemas']['PluginListOut']>, 
 }
 
 export function listPlugins(): Promise<PluginList> {
-  return request<PluginList>('/plugins')
+  return requestLocal<PluginList>('/plugins')
 }
 
 /** 启用。内置的顺带解除屏蔽（后端那条路会删掉屏蔽标记）。 */
 export function enablePlugin(pluginId: string): Promise<PluginPack> {
-  return request<PluginPack>(`/plugins/${encodeURIComponent(pluginId)}/enable`, { method: 'POST' })
+  return requestLocal<PluginPack>(`/plugins/${encodeURIComponent(pluginId)}/enable`, {
+    method: 'POST',
+  })
 }
 
 /** 停用。**不碰插件目录**：只写一条状态，内置的另记一条屏蔽标记。 */
 export function disablePlugin(pluginId: string): Promise<PluginPack> {
-  return request<PluginPack>(`/plugins/${encodeURIComponent(pluginId)}/disable`, { method: 'POST' })
+  return requestLocal<PluginPack>(`/plugins/${encodeURIComponent(pluginId)}/disable`, {
+    method: 'POST',
+  })
 }

@@ -47,6 +47,7 @@ import { useNavigate } from 'react-router'
 import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
 import { SettingsModal } from '@/features/misc/settings/SettingsModal'
 import { setTheme, useThemeMode } from '@/features/misc/settings/useTheme'
+import { useLocalBackend } from '@/api/local'
 import { cn } from '@/lib/utils'
 import { logout } from '@/lib/sessionActions'
 import { useSessionStore } from '@/lib/session'
@@ -97,6 +98,8 @@ export function AccountMenu() {
    * 与侧栏读的是同一份状态，不会出现"栏收了、行没动"）。
    */
   const { collapsed } = useSidebar()
+  /** 这一份界面有没有本机后端（决定「设置」那一项在不在，见下面那段说明）。 */
+  const local = useLocalBackend()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [avatarOpen, setAvatarOpen] = useState(false)
@@ -187,8 +190,12 @@ export function AccountMenu() {
               <RiUserLine size={ICON} aria-hidden="true" /> 头像
             </DropdownMenuItem>
           )}
-          {/* 设置只给管理员：后端对成员一律 403，摆一个点进去只会报错的入口比不显示更糟 */}
-          {isAdmin && (
+          {/* 设置只给管理员：后端对成员一律 403，摆一个点进去只会报错的入口比不显示更糟。
+              **也只给有本机后端的那一份**（2026-10-05，NAS 网页端退役）：设置里那几节
+              读的是本机那几张表（`/settings`、`/model-registry`、`/local/*`），服务器档
+              从这一轮起不挂它们了——那一档点开只会得到一片"读不到"（同一条理由：
+              摆一个点进去只会报错的入口比不显示更糟）。 */}
+          {isAdmin && local.present && (
             <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
               <RiSettings3Line size={ICON} aria-hidden="true" /> 设置
             </DropdownMenuItem>
@@ -219,8 +226,18 @@ export function AccountMenu() {
       </DropdownMenu>
 
       {/* 两个浮层由本组件持有开合：菜单一选项就收起（Radix 的默认行为），
-          所以不会出现"两层浮层叠在一起" */}
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          所以不会出现"两层浮层叠在一起"。
+
+          **设置弹窗只在真有那条入口时才挂**（2026-10-05，NAS 网页端退役）：它读的
+          `/settings` 那一档**根本没有**（`settings.router` 只挂在本机档那张白名单上，
+          见 `backend/app/api/v1/router.py`），而弹窗挂上就等着用户点——挂着一个
+          打不开、点开才发现是 404 的弹窗没有意义。
+          （这条条件管"入口在不在"；"关着的时候读不读"是另一件事——`SettingsModal`
+          里那四个 `useQuery` 都带 `enabled: open`，关着一条都不读。）
+          入口与弹窗同一条件，两者一起在、一起不在（见上面那一段）。 */}
+      {isAdmin && local.present && (
+        <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      )}
       <AvatarDialog
         open={avatarOpen}
         name={identityName}

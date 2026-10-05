@@ -4,6 +4,21 @@
  * 与 `chat.ts` 的分工：那边负责"问一个问题"，这边负责"回看问过什么"。
  * 分开是因为前端的提问路径不该被会话状态污染——`/chat` 依然可以完全无状态地调用
  * （脚本、MCP 都走那条），只有界面上的对话才带上 `conversation_id`。
+ *
+ * ## 这个文件里的类型为什么**手写**了（2026-10-05，NAS 网页端退役）
+ *
+ * 原先这里有四个类型取自 `./schema.d.ts`（`ConversationOut` / `ChatMessageOut` /
+ * `ConversationArtifactOut` / `FileListingOut`）。**服务器档从这一轮起不再挂会话面**
+ * （`backend/app/api/v1/router.py`：那一档只留 `/conversations/export`），而生成物
+ * （`schema.d.ts` 与《API 接口规范》）是按**服务器档的 OpenAPI** 生成的 ——
+ * 于是那四个模型从契约里消失了，而边车那一档照旧提供它们（`local_router`）。
+ *
+ * 处置按本项目对"只在本机档成立的端点"的既有先例（`api/local.ts` / `api/provider.ts` /
+ * `api/backup.ts` 的 `/local/*` 那一族）：**手写 + 写清出处**。字段逐条对着
+ * `backend/app/api/v1/schemas.py` 的同名模型抄，**改了后端就回来改这里**
+ * （`tests/api-conversations.test.ts` 钉住这一份用到的形状）。
+ * 只手写"这一轮从生成物里掉出去"的那四个；`ChatSourceOut` 也一起掉了出去（`/chat/*`
+ * 那一族同样从服务器档退役），它的手写版在 `chat.ts` 里，这一份从那里 import。
  */
 
 // 会话 / 消息 / 事件 / 产物 / 文件区**都在本机**（M2 §4.2 的本机白名单）：这一份的接口
@@ -13,28 +28,37 @@ import { requestLocal } from './client'
 import { localizeUrl } from './sidecar'
 import type { ChatAttachment } from './chat'
 import type { ChatSource } from './chat'
+import type { ChatSourceOut } from './chat'
 import type { ThinkingEffort } from './chat'
-import type { components } from './schema'
 
 /**
- * 会话摘要：**契约来自后端的 OpenAPI**（`./schema.d.ts`，由
- * `scripts/gen_api_types.py` 生成）。
+ * 会话摘要（`schemas.py::ConversationOut`，逐字段抄；**服务端一定会回全这几项**，
+ * 所以这里没有可选字段——原先那个 `Required<…>` 就是把这件事写出来）。
  *
- * 两条约定，这个文件里其余接口也照这个来：
- *
- * - **`Required<…>` 包一层**：后端 schema 里带默认值的字段（`kb_ids` / `pinned` /
- *   `message_count`…）在 OpenAPI 里是**可选**的，但 Pydantic 序列化时一定会带上。
- *   照抄 `?` 会让全站凭空多出几百处空值检查——那是类型在替后端"可能不发"背书，
- *   而它其实每次都发。
- * - **该收窄的显式收窄**：`thinking_effort` 在 schema 里是 `string`（归一化在服务端做），
- *   而界面只认三档。用 `Omit` + 重新声明把它收回来，并写清为什么——
- *   这样"契约变宽"时至少留下了一处需要人判断的地方，而不是静默放松。
+ * `thinking_effort` 按界面的口径收窄成三档：服务端那边是开放字符串（归一化在它那里做），
+ * 而界面只认这三档。**这里收窄是刻意的**：契约变宽时应当留下一处要人来判断的地方。
  */
-type ConversationOut = Required<components['schemas']['ConversationOut']>
-
-export type ConversationSummary = Omit<ConversationOut, 'thinking_effort'> & {
+export interface ConversationSummary {
+  id: string
+  title: string
+  kb_ids: string[]
+  /** 本条会话选用的对话模型；`null` = 全局默认。 */
+  model_pk: string | null
+  /** 本条会话是否开启思考；`null` = 全局默认。 */
+  thinking: boolean | null
   /** 本条会话的思考强度（v16）；`null` = 跟随全局默认。 */
   thinking_effort: ThinkingEffort | null
+  /** 置顶（v17）：置顶的会话排在列表最前，且聊天不改变它的名次。 */
+  pinned: boolean
+  /** 所属工作区（v0.15）；`null` = 未归档。 */
+  workspace_id: string | null
+  /** 归档时间（v0.17）。非空 = 已归档——**归档不是删除**。 */
+  archived_at: string | null
+  /** 最近一条回答的开头一段（历史会话面板的两行预览）。 */
+  preview: string
+  created_at: string | null
+  updated_at: string | null
+  message_count: number
 }
 
 /** 对话的思考偏好（请求级参数，随会话保存）。 */
@@ -43,22 +67,37 @@ export interface ConversationThinking {
   thinking_effort?: 'low' | 'medium' | 'high' | null
 }
 
-type ChatMessageOut = Required<components['schemas']['ChatMessageOut']>
+/**
+ * 库里存下的一条消息的**线形状**（`schemas.py::ChatMessageOut`）。
+ *
+ * `sources` / `attachments` 在这里被 `StoredMessage` 换掉（见下），
+ * 所以这个接口只描述"服务端原样回的那几项"。
+ */
+interface ChatMessageOut {
+  id: string
+  role: string
+  content: string
+  sources: ChatSourceOut[]
+  steps: Record<string, unknown>[]
+  thinking: string
+  attachments: ChatAttachment[]
+  created_at: string | null
+}
 
 /**
- * 库里存下的一条消息（历史回放用）：契约来自后端的 OpenAPI。
+ * 库里存下的一条消息（历史回放用；线的形状见上面那个 `ChatMessageOut`）。
  *
- * 三处显式处理，都因为**存下来的数据比 schema 老**：
+ * 三处显式处理，都因为**存下来的数据比后端 schema 老**：
  *
- * - `sources` 用本项目的 `ChatSource` 而不是 schema 里的那个字段类型：
+ * - `sources` 用本项目的 `ChatSource` 而不是 schema 里那个字段类型：
  *   快照是**当年写下的**，v25 之前的没有 `document_summary`（见 `ChatSource` 的说明）；
- * - `role` 在 schema 里就是开放的 `string`——后端存的是模型给的原文角色，
+ * - `role` 是开放的 `string`——后端存的是模型给的原文角色，
  *   将来多一种（工具消息之类）时界面不该崩，渲染时按已知的两种分派；
  * - `attachments` **显式留成可选**（v0.55）：老消息没有这一项（后端只对用户消息回填，
- *   而那批数据里没有），`Required<>` 会把它变成"一定有"——那才是替后端"可能不发"背书。
+ *   而那批数据里没有），必有字段会把它变成"一定有"——那才是替后端"可能不发"背书。
  *   助手消息也恒为空，只有用户消息带它。
  */
-export type StoredMessage = Required<Omit<ChatMessageOut, 'sources' | 'attachments'>> & {
+export type StoredMessage = Omit<ChatMessageOut, 'sources' | 'attachments'> & {
   sources: ChatSource[]
   attachments?: ChatAttachment[]
 }
@@ -160,17 +199,28 @@ export function deleteConversation(id: string): Promise<void> {
 // ------------------------------------------------------------------ 会话产物（v0.26）
 
 /**
- * 会话产出的一份文件。契约同样来自后端的 OpenAPI。
+ * 会话产出的一份文件（`schemas.py::ConversationArtifactOut`，逐字段抄）。
  *
  * `storage` 显式收窄成三档：界面据此决定说"在 工作区「X」"还是"本会话"。
- * 后端 schema 里它是开放的 `string`（那一列存的是服务端自己的词），
+ * 后端那边它是开放的 `string`（那一列存的是服务端自己的词），
  * 而界面只认这几种——多出第四种时应当是一个要人来判断的地方，不是静默显示空白。
  * `document` 那一档是"直接进的库"（外部 MCP 通道导出时走的老路），界面上不再出现。
  */
-type ArtifactOut = Required<components['schemas']['ConversationArtifactOut']>
-
-export type ConversationArtifact = Omit<ArtifactOut, 'storage'> & {
+export interface ConversationArtifact {
+  artifact_id: string
+  name: string
+  size_bytes: number
+  /** 扩展名小写（`docx` / `pdf` / …），界面据此选图标。 */
+  format: string
   storage: 'workspace' | 'object' | 'document'
+  /** 给人看的那句话：「工作区「我的项目」」/「本会话」。 */
+  where: string
+  /** 工作区那份的绝对路径；对象存储那份没有。 */
+  path: string | null
+  /** 进了哪个知识库；`null` = 没进，界面据此决定要不要给「存进知识库」。 */
+  knowledge_base_id: string | null
+  document_id: string | null
+  created_at: string | null
 }
 
 /**
@@ -185,13 +235,27 @@ export function listArtifacts(conversationId: string): Promise<{ items: Conversa
 
 // ------------------------------------------------------------------ 文件区（v0.26）
 
-type FileListing = components['schemas']['FileListingOut']
+/**
+ * 一层目录的**线形状**（`schemas.py::FileListingOut` + `FileEntryOut`）。
+ *
+ * `mode` / `label` 是服务端必回的（它们没有默认值）；其余几项在服务端带默认值，
+ * 所以这里写成可选、由下面 `listFiles` 逐个补成 `ConversationFileListing` 里
+ * "一定有"的那一份——补默认值的地方只该有一处。
+ */
+interface FileListing {
+  mode: string
+  label: string
+  path?: string
+  parent?: string | null
+  entries?: Array<Partial<ConversationFile>>
+  truncated?: boolean
+}
 
 /**
  * 文件区里的一行。
  *
- * **展开写而不是 `Required<FileEntry>`**：那份 schema 里除了 `key` 全带默认值，
- * 于是 `Required` 会把 `modified_at` 变成"一定有值"，而界面确实要构造一种
+ * **展开写而不是"照抄那份 schema + 全必有"**：那份 schema 里除了 `key` 全带默认值，
+ * 于是"全必有"会把 `modified_at` 变成"一定有值"，而界面确实要构造一种
  * "还没从列表里拿到、先按 key 直接预览"的条目（见 `FileDrawer.openInitial`）。
  * 类型逼着那种条目补一个假时间戳，就是在逼代码说谎。
  */

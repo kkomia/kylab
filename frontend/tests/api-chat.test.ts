@@ -779,15 +779,19 @@ describe('decideApproval', () => {
     resetSidecarProbe()
   })
 
-  it('POST 到那条确认的端点，并把决定原样放进请求体（服务器链）', async () => {
+  it('决定原样放进请求体：端点与 id 拼接、body 就是那个 body（边车那条链）', async () => {
     // 端点与 id 拼接：拼错等于把决定发给一条不存在的确认（409），界面看着只是"点了没反应"。
-    // 这一条钉**服务器链**（边车显式关掉），边车那条链由下面一条钉
-    setSidecarTurnsForTest(false)
+    // **只有边车那条链**（服务器那份镜像端点 2026-10-05 退役，见 `api/sidecar.ts` 的头注），
+    // 所以这里要让它活着：探活 200、决定那条 200。
+    setSidecarTurnsForTest(true)
     let url = ''
     let body = ''
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string, init: RequestInit) => {
+        if (String(input).endsWith('/health')) {
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 })
+        }
         url = input
         body = String(init.body)
         return new Response(JSON.stringify({ accepted: true, detail: '' }), { status: 200 })
@@ -796,9 +800,19 @@ describe('decideApproval', () => {
 
     const result = await decideApproval('ap 1/2', 'allow_always')
 
-    expect(url).toBe('/api/v1/chat/approvals/ap%201%2F2')
+    expect(url).toBe(`${DEFAULT_SIDECAR_BASE}/turn/approvals/ap%201%2F2`)
     expect(JSON.parse(body)).toEqual({ decision: 'allow_always' })
     expect(result.accepted).toBe(true)
+  })
+
+  it('边车被显式关掉时**抛**（服务器那条链已不在，不把决定发给一个没人服务的 URL）', async () => {
+    setSidecarTurnsForTest(false)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+
+    await expect(decideApproval('ap_1', 'allow_once')).rejects.toThrow('服务器那条链已退役')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('边车模式：决定打到**边车那台**的 /turn/approvals/{id}（交接文档点名的缺口）', async () => {
@@ -825,12 +839,15 @@ describe('decideApproval', () => {
   it('409（已经超时或点过一次）如实抛出后端那句话，不谎报"已执行"', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ code: 'conflict', message: '这条确认已经失效了' }), {
-            status: 409,
-          }),
-      ),
+      vi.fn(async (input: string) => {
+        // 探活那条要 200（否则这一条量的就不是 409 了，而是"边车不在"）
+        if (String(input).endsWith('/health')) {
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 })
+        }
+        return new Response(JSON.stringify({ code: 'conflict', message: '这条确认已经失效了' }), {
+          status: 409,
+        })
+      }),
     )
 
     await expect(decideApproval('ap_1', 'allow_once')).rejects.toThrow('这条确认已经失效了')

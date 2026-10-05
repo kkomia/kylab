@@ -9,6 +9,7 @@
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -69,8 +70,9 @@ vi.mock('@/api/knowledgeBases', () => ({
 }))
 
 import { clearAvatar } from '@/api/auth'
+import { fetchHealth } from '@/api/health'
 import { bindSlot, getRegistry } from '@/api/modelRegistry'
-import { getSettings, testConnection, type SettingsView } from '@/api/settings'
+import { getAuthStatus, getSettings, testConnection, type SettingsView } from '@/api/settings'
 import { resetBackupStore, setBackupStatusForTest, type LocalBackup } from '@/api/backup'
 import { resetProviderStore, setProviderStatusForTest } from '@/api/provider'
 import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
@@ -82,6 +84,8 @@ import { useSessionStore } from '@/lib/session'
 
 const getSettingsMock = vi.mocked(getSettings)
 const getRegistryMock = vi.mocked(getRegistry)
+const getAuthStatusMock = vi.mocked(getAuthStatus)
+const fetchHealthMock = vi.mocked(fetchHealth)
 const bindSlotMock = vi.mocked(bindSlot)
 const testConnectionMock = vi.mocked(testConnection)
 
@@ -402,6 +406,51 @@ describe('设置弹窗', () => {
     // 那段解释 API Key 与登录会话是两条路的常显文字也删了（它带着 `app/api/auth.py`）
     expect(screen.queryByText(/API Key 不在这一页/)).toBeNull()
     expect(screen.queryByText(/app\/api\/auth\.py/)).toBeNull()
+  })
+
+  /*
+   * 这个弹窗**一直挂在树上**（`AccountMenu` 那头"关掉"只是把 `open` 置回 false），
+   * 所以那几条读要跟着 `open` 走：没有 `enabled` 就是每个页面加载都白读一趟 `/settings`
+   * ——2026-10-05 之前正是如此，而 NAS 网页端退役之后那一档连这条端点都不服务
+   * （404 会落在控制台里）。
+   *
+   * 用一颗按钮模拟真实的开合（`AccountMenu` 就是这么切的），因为这一条要验的正是
+   * "`open` 从 false 变 true 时读不读"。
+   */
+  function Toggle({ initial = false }: { initial?: boolean }) {
+    const [open, setOpen] = useState(initial)
+    return (
+      <>
+        <SettingsModal open={open} onClose={() => undefined} />
+        <button type="button" onClick={() => setOpen(true)}>
+          打开设置
+        </button>
+      </>
+    )
+  }
+
+  it('关着的时候四条读一条都不发：开一次才各读一趟（弹窗常挂，读了就是白读）', async () => {
+    renderMisc(<Toggle />)
+
+    // 关着：四条读（`/settings` / 模型注册 / `/health` / `/auth/status`）一条都不读
+    // （挂上就各发一条是原先的行为）
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '打开设置' })).toBeInTheDocument(),
+    )
+    expect(getSettingsMock).not.toHaveBeenCalled()
+    expect(getRegistryMock).not.toHaveBeenCalled()
+    expect(fetchHealthMock).not.toHaveBeenCalled()
+    expect(getAuthStatusMock).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByRole('button', { name: '打开设置' }))
+
+    await waitFor(() => expect(getSettingsMock).toHaveBeenCalledTimes(1))
+    // 打开之后照旧：这一屏的内容是从 `/settings` 来的
+    expect(await screen.findByText('深度求索')).toBeInTheDocument()
+    // 另外三条也**这才**读（关着的时候一条都不读）
+    await waitFor(() => expect(getRegistryMock).toHaveBeenCalledTimes(1))
+    expect(fetchHealthMock).toHaveBeenCalledTimes(1)
+    expect(getAuthStatusMock).toHaveBeenCalledTimes(1)
   })
 })
 

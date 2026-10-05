@@ -31,12 +31,24 @@
  * 提供者不可用时**重定向到 `/chat` + 一条含原因的 toast**（方案 §3.3）。它不是登录守卫
  * 那种"挡在门口"的东西——服务器档（浏览器 / NAS 网页端）里它一个判断都不做，
  * 那一档的知识库就是它自己。`ProviderBoot` 在启动时**不挡渲染**地探一次状态。
+ *
+ * ## 2026-10-05：NAS 网页端退役，没有本机后端的那一份只剩知识库管理台
+ *
+ * 服务器档从这一轮起不再挂会话面那几族端点（`backend/app/api/v1/router.py` 的模块头），
+ * 所以**会话 / 笔记 / 记忆 / 能力那四页在那一档存在也打不开**——路由表跟着判据走：
+ * `localBackendPresent()` 为假时，那四条路由重定向到知识库首屏（`/knowledge-bases`），
+ * 而不是留一页点进去四处报错的空壳，也不是给一条 404（旧地址是书签，得有个去处）。
+ * 判据与侧栏显隐**同一个来源**（`api/local.ts`），所以"菜单里没有了"与"敲地址进不去"
+ * 永远一致——不会有"菜单藏了、书签还能进"那种半截状态。
+ *
+ * **登录页与知识库那一族一个字都不动**：这一档仍然要登录，知识库仍然是它的全部。
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router'
 
 import { refresh as refreshProvider } from '@/api/provider'
+import { useLocalBackend } from '@/api/local'
 import { Toaster } from '@/ui/sonner'
 import { ensureAuthStatus, localOnlyDeployment, restoreSession } from '@/lib/sessionActions'
 import { hasCredential, sessionToken, useSessionStore } from '@/lib/session'
@@ -275,7 +287,27 @@ function TitleSync() {
   return null
 }
 
+/**
+ * 没有本机后端的那一份里，会话面那几页的去处（知识库首屏）。
+ *
+ * 与侧栏那条判据同源：`App` 与 `SideNav` 都读 `useLocalBackend()`，
+ * 两处不会分叉（见文件头最后那一段）。
+ */
+const KNOWLEDGE_HOME = '/knowledge-bases'
+
 export function App() {
+  const local = useLocalBackend()
+
+  /**
+   * 会话面的一页：有本机后端就渲染它，没有就回知识库首屏。
+   *
+   * 用**重定向**而不是"删掉这条路由（落到 `*` 的 404）"：那几条地址是真实存在过的
+   * 书签与深链接，给一个去处比给一页"找不到"清楚（与 `/search` `/settings`
+   * `/workspaces` 那三条旧地址的处置同一条）。
+   */
+  const sessionPage = (page: React.ReactNode): React.ReactNode =>
+    local.present ? page : <Navigate to={KNOWLEDGE_HOME} replace />
+
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
@@ -292,7 +324,7 @@ export function App() {
                 {/* 落地页与旧前端一致：`/` 是**概览**（驾驶舱），不是对话页 */}
                 <Route path="/" element={<DashboardPage />} />
                 <Route path="/dashboard" element={<Navigate to="/" replace />} />
-                <Route path="/chat/:conversationId?" element={<ChatPage />} />
+                <Route path="/chat/:conversationId?" element={sessionPage(<ChatPage />)} />
                 {/*
                   四条知识库路由都包一层守卫（M3 阶段 6）：提供者不可用时
                   重定向到 `/chat` + 一条含原因的 toast——不是白屏、也不是死页面。
@@ -330,10 +362,10 @@ export function App() {
                     </ProviderRoute>
                   }
                 />
-                <Route path="/notes/:noteId?" element={<NotesView />} />
+                <Route path="/notes/:noteId?" element={sessionPage(<NotesView />)} />
                 <Route path="/tasks" element={<TasksPage />} />
-                <Route path="/memory" element={<MemoryPage />} />
-                <Route path="/capabilities" element={<CapabilitiesPage />} />
+                <Route path="/memory" element={sessionPage(<MemoryPage />)} />
+                <Route path="/capabilities" element={sessionPage(<CapabilitiesPage />)} />
                 {/*
                   「备份」也是本机档专属（M5 阶段 7），但守卫的判据**不是**"提供者 ready"：
                   连不上远端时正是要看"有几份没备上去"，所以那一档照常放行。

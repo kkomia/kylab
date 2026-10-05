@@ -11,15 +11,24 @@
  * 2. MCP 的凭据**只在写入时上行**，读出来只有 `secret_keys`（键名）。
  *    所以"改配置"时不要把读到的值回填进表单——那会把 key 写成一个掩码串。
  *
- * ## 两半的**数据主人不是同一台**（M2 阶段 4 起）
+ * ## 两半的**数据主人不是同一台**（M2 阶段 4 起；2026-10-05 改）
  *
- * **MCP 服务配置属于这台机器**（v0.3 §1："模型凭据走本机"同一档）→ `requestLocal`；
- * **技能是磁盘上的 SKILL.md、由服务器那侧管**（本机档的白名单里没有 `/skills` ✗）
- * → 仍然是 `request`。所以这份文件里两个 import 都在，别看着奇怪就统一成一个。
+ * **技能那一半也搬回本机了**：技能目录 = `<data_dir>/skills/` + 仓库自带 `skills/` +
+ * `~/.agents/skills`，启停状态写在本地 `app_settings`——三处都在**这台机器**上，
+ * 本机档挂的就是整个 `skills.router`（`backend/app/api/v1/router.py` 的 `local_router`
+ * 里逐条写着理由）。上一版这一段的说法（"技能由服务器那侧管"）是本机档还没挂它时的样子，
+ * 而它有个看得见的坏处：壳里"列技能"读的是 NAS 那份目录，而本机那个 Agent 用的是本机这份
+ * ——列出来的与真正生效的不是同一批。
+ *
+ * 于是**两边都走 `requestLocal`**（MCP 配置同上：它属于这台机器，v0.3 §1）。
+ * 技能市场那六条（`browse` / `inspect` / `install-source` / `upload` / `installed` /
+ * `uninstall`）**2026-10-05 补上了**（原先还走 `request`）：技能落在哪份 `data_dir`
+ * 由它们决定，而"装到服务器那份 data_dir"的表现正是"装完列不出来"——
+ * 见 `browseSkillSource` 那一句的说明。
  */
 
-// MCP → 本机（`requestLocal`）；技能 → 服务器（`request`）
-import { request, requestLocal } from './client'
+// 这一份**全部**走本机（`requestLocal`）：技能目录、技能源、市场安装记录都在本机
+import { requestLocal } from './client'
 
 // ------------------------------------------------------------------ 技能
 
@@ -63,11 +72,11 @@ export interface SkillDetail extends Skill {
 }
 
 export function listSkills(): Promise<{ items: Skill[]; usable: number }> {
-  return request<{ items: Skill[]; usable: number }>('/skills')
+  return requestLocal<{ items: Skill[]; usable: number }>('/skills')
 }
 
 export function getSkill(name: string): Promise<SkillDetail> {
-  return request<SkillDetail>(`/skills/${encodeURIComponent(name)}`)
+  return requestLocal<SkillDetail>(`/skills/${encodeURIComponent(name)}`)
 }
 
 // ------------------------------------------------------------------ MCP
@@ -240,19 +249,19 @@ export interface SkillBundle {
 }
 
 export function listSkillSources(): Promise<{ items: SkillSource[] }> {
-  return request<{ items: SkillSource[] }>('/skills/market/sources')
+  return requestLocal<{ items: SkillSource[] }>('/skills/market/sources')
 }
 
 /** 加一个自定义源：`owner/repo`，或 GitHub 上那个仓库（含子目录）的 URL。 */
 export function addSkillSource(repo: string): Promise<SkillSource> {
-  return request<SkillSource>('/skills/market/sources', {
+  return requestLocal<SkillSource>('/skills/market/sources', {
     method: 'POST',
     body: JSON.stringify({ repo }),
   })
 }
 
 export function setSkillSourceEnabled(sourceId: string, enabled: boolean): Promise<SkillSource> {
-  return request<SkillSource>(`/skills/market/sources/${encodeURIComponent(sourceId)}`, {
+  return requestLocal<SkillSource>(`/skills/market/sources/${encodeURIComponent(sourceId)}`, {
     method: 'PATCH',
     body: JSON.stringify({ enabled }),
   })
@@ -265,14 +274,14 @@ export function setSkillSourceEnabled(sourceId: string, enabled: boolean): Promi
  * 这一条是"这一条技能给不给模型看"。
  */
 export function setSkillEnabled(name: string, enabled: boolean): Promise<Skill> {
-  return request<Skill>(`/skills/${encodeURIComponent(name)}/enabled`, {
+  return requestLocal<Skill>(`/skills/${encodeURIComponent(name)}/enabled`, {
     method: 'PUT',
     body: JSON.stringify({ enabled }),
   })
 }
 
 export function deleteSkillSource(sourceId: string): Promise<void> {
-  return request<void>(`/skills/market/sources/${encodeURIComponent(sourceId)}`, {
+  return requestLocal<void>(`/skills/market/sources/${encodeURIComponent(sourceId)}`, {
     method: 'DELETE',
   })
 }
@@ -281,12 +290,19 @@ export function deleteSkillSource(sourceId: string): Promise<void> {
  * 浏览一个源里的技能。
  *
  * `refresh` 会忽略服务端缓存（GitHub 匿名配额 60 次/小时，默认那条路是走缓存的）。
+ *
+ * **走本机**（`requestLocal`，2026-10-05 修的真 bug）：市场那六条（浏览 / 看文件树 /
+ * 装 / 传 / 已装清单 / 卸）原先打服务器，而**技能目录与技能源都在本机**
+ * （`<data_dir>/skills/`、`skills_market_sources` 表，本机档挂的是整个 `skills.router`）
+ * ——于是壳里"列技能"读本机、装却装到**服务器那份 data_dir**：装完列不出来，
+ * 而用户自建的技能源在服务器上根本不认识那个 `source_id`。现在六条与上面那几条
+ * （清单 / 正文 / 启停 / 技能源）**同一台机器**。
  */
 export function browseSkillSource(
   sourceId: string,
   refresh = false,
 ): Promise<{ source: SkillSource; items: MarketSkill[]; cached: boolean }> {
-  return request<{ source: SkillSource; items: MarketSkill[]; cached: boolean }>(
+  return requestLocal<{ source: SkillSource; items: MarketSkill[]; cached: boolean }>(
     '/skills/market/browse',
     { method: 'POST', body: JSON.stringify({ source_id: sourceId, refresh }) },
   )
@@ -294,7 +310,7 @@ export function browseSkillSource(
 
 /** 看某个技能的文件清单（安装前的那一步，会打网络取文件树）。 */
 export function inspectMarketSkill(sourceId: string, path: string): Promise<SkillBundle> {
-  return request<SkillBundle>('/skills/market/inspect', {
+  return requestLocal<SkillBundle>('/skills/market/inspect', {
     method: 'POST',
     body: JSON.stringify({ source_id: sourceId, path }),
   })
@@ -302,7 +318,7 @@ export function inspectMarketSkill(sourceId: string, path: string): Promise<Skil
 
 /** 安装：后端按同一个 SHA 取文件、扫描、落盘、记版本锁。 */
 export function installMarketSkill(sourceId: string, path: string): Promise<Skill> {
-  return request<Skill>('/skills/market/install-source', {
+  return requestLocal<Skill>('/skills/market/install-source', {
     method: 'POST',
     body: JSON.stringify({ source_id: sourceId, path }),
   })
@@ -318,17 +334,17 @@ export function uploadSkill(files: File[], paths: string[]): Promise<Skill> {
   const body = new FormData()
   for (const file of files) body.append('files', file)
   body.append('paths', JSON.stringify(paths))
-  return request<Skill>('/skills/market/upload', { method: 'POST', body })
+  return requestLocal<Skill>('/skills/market/upload', { method: 'POST', body })
 }
 
 /** 已从市场装的技能：`技能名 → 来源`。用来显示来源与"能不能卸"。 */
 export function listInstalledSkills(): Promise<{ items: Record<string, string>; total: number }> {
-  return request<{ items: Record<string, string>; total: number }>('/skills/market/installed')
+  return requestLocal<{ items: Record<string, string>; total: number }>('/skills/market/installed')
 }
 
 /** 卸载一个从市场装的技能（仓库自带的删不掉，后端会 404 说明）。 */
 export function uninstallSkill(name: string): Promise<void> {
-  return request<void>(`/skills/market/installed/${encodeURIComponent(name)}`, {
+  return requestLocal<void>(`/skills/market/installed/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   })
 }

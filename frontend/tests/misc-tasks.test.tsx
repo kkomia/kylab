@@ -9,7 +9,7 @@
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/tasks', () => ({
   listTasks: vi.fn(),
@@ -31,12 +31,21 @@ vi.mock('@/api/schedules', () => ({
   runScheduledTaskNow: vi.fn(),
 }))
 
+// 「有没有本机后端」那条判据（`api/local.ts`）在本文件里**逐档摆答案**：
+// 任务中心的「定时任务」分段只看它（`useLocalBackend`）。探那一趟不出网络——
+// 默认替身会把 `/local/status` 记成"漏出替身的请求"，而且那不是这一份要验的东西。
+vi.mock('@/api/local', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/local')>()),
+  getLocalStatus: vi.fn(),
+}))
+
 import {
   listScheduledTasks,
   runScheduledTaskNow,
   updateScheduledTask,
   type ScheduledTask,
 } from '@/api/schedules'
+import { getLocalStatus, resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
 import { cancelTasks, getTaskLoad, listTasks, type SystemLoad, type TaskSummary } from '@/api/tasks'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
@@ -49,6 +58,7 @@ const cancelTasksMock = vi.mocked(cancelTasks)
 const listSchedulesMock = vi.mocked(listScheduledTasks)
 const runScheduleNowMock = vi.mocked(runScheduledTaskNow)
 const updateScheduleMock = vi.mocked(updateScheduledTask)
+const localStatusMock = vi.mocked(getLocalStatus)
 
 function schedule(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -178,6 +188,15 @@ beforeEach(() => {
   listTasksMock.mockResolvedValue({ items: [task()] })
   getTaskLoadMock.mockRejectedValue(new Error('403'))
   listSchedulesMock.mockResolvedValue({ items: [schedule()], timezone: 'CST UTC+08:00' })
+  // 判据的默认档：**有本机后端**（桌面壳那一份）——这一份的大部分用例验的是那一档的形状。
+  // 要摆"没有本机后端"的那两条用例自己再摆一次（`setLocalBackendForTest('absent')`）
+  localStatusMock.mockRejectedValue(new Error('这一份用例不探本机后端'))
+  setLocalBackendForTest('local')
+})
+
+afterEach(() => {
+  // 模块级单份状态（`api/local.ts` 的判据）必须由调用方复位，否则会串到下一条用例
+  resetLocalBackendForTest()
 })
 
 describe('任务中心', () => {
@@ -619,5 +638,36 @@ describe('定时任务分段', () => {
     await waitFor(() =>
       expect(updateScheduleMock).toHaveBeenCalledWith('sch-1', { enabled: false }),
     )
+  })
+})
+
+/*
+ * 「定时任务」那一章的显隐（2026-10-05，NAS 网页端退役）。
+ *
+ * 那一族端点（`/scheduled-tasks`）只挂在本机档上，服务器档没有它——所以判据不是
+ * "这一页在不在"（任务中心两档都在），而是"这一页**里面**有没有这一段"。
+ * 判据与侧栏 / 路由表是同一个（`api/local.ts`），这里按两档各摆一次答案。
+ */
+describe('定时任务分段的显隐（按"有没有本机后端"）', () => {
+  it('没有本机后端：那一段不在，留下的是知识库那一半', async () => {
+    setLocalBackendForTest('absent')
+    renderMisc(<TasksPage />)
+
+    // 列表照样渲染（这一页在这一档仍然在，只是少了定时任务那一段）
+    expect(
+      await screen.findByRole('button', { name: /查看任务详情：解析 手册\.pdf/ }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '流水线任务' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '定时任务' })).not.toBeInTheDocument()
+    // 那一段自己那条读也一次都不发（它只由 SchedulePanel 发，而面板没渲染）
+    expect(listSchedulesMock).not.toHaveBeenCalled()
+  })
+
+  it('有本机后端：两个分段都在（桌面壳那一档一个字没改）', async () => {
+    setLocalBackendForTest('local')
+    renderMisc(<TasksPage />)
+
+    expect(await screen.findByRole('tab', { name: '定时任务' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '流水线任务' })).toBeInTheDocument()
   })
 })

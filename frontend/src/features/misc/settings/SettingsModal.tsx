@@ -190,14 +190,27 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [resetError, setResetError] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<RosterUser | null>(null)
 
-  const settings = useQuery({ queryKey: SETTINGS_QUERY_KEY, queryFn: getSettings })
-  const registry = useQuery({ queryKey: REGISTRY_QUERY_KEY, queryFn: getRegistry })
+  // 这四条读**都跟着 `open` 走**：这个弹窗**一直挂在树上**（`AccountMenu` 那头关一次只是
+  // 把 `open` 置回 false），没有 `enabled` 就是每个页面加载都各白读一趟
+  // （`/settings` / 模型注册 / `/health` / `/auth/status`）——而那四趟**只在这一页用得上**。
+  const settings = useQuery({ queryKey: SETTINGS_QUERY_KEY, queryFn: getSettings, enabled: open })
+  const registry = useQuery({
+    queryKey: REGISTRY_QUERY_KEY,
+    queryFn: getRegistry,
+    enabled: open,
+  })
 
-  const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth, retry: false })
+  const health = useQuery({
+    queryKey: ['health'],
+    queryFn: fetchHealth,
+    retry: false,
+    enabled: open,
+  })
   const authStatus = useQuery({
     queryKey: ['auth', 'status'],
     queryFn: getAuthStatus,
     retry: false,
+    enabled: open,
   })
 
   const users = useQuery({

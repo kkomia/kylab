@@ -31,7 +31,10 @@
  * 与 CLI 在另一个进程里开的批次查的是**同一份台账**。
  */
 
+import { useEffect, useState } from 'react'
+
 import { requestLocal } from './client'
+import { inDesktopShell, localDataEnabled } from './sidecar'
 
 /** 一个导入批次的摘要（`LocalStatusOut.imports[]`，字段与后端同形）。 */
 export interface LocalImportBatch {
@@ -182,4 +185,161 @@ export async function rollbackImportBatch(batchId: string): Promise<ImportBatch>
     throw new Error('回滚结论不认识（没有 state / counts：是不是本机后端比界面老？）')
   }
   return payload
+}
+
+/* ------------------------------------------------ 这一档有没有本机后端（显隐的唯一判据） */
+
+/**
+ * 浏览器里那一份（**没有壳**）从 2026-10-05 起只剩知识库管理台。
+ *
+ * NAS 上跑的网页端与桌面端共用这一套前端，而浏览器里没有 Tauri 壳 → 会话面那几页
+ * 读的是 NAS 的 PG（`sidecar.ts::resolveLocalBase` 在"无壳"那一支直接回 `API_BASE`）。
+ * 产品判定：**那一个网页端退役**，服务器档从那一轮起也不再挂会话面那几族端点
+ * （`backend/app/api/v1/router.py`）。于是"这一份有没有本机后端"不只是一个数据选址问题，
+ * 它直接决定**哪几页存在**：有本机后端 = 完整产品；没有 = 知识库 + 备份 + 健康。
+ *
+ * ## 判据用已有的信号：本机后端答不答 `/local/status`
+ *
+ * 与 `lib/sessionActions.ts::localOnlyDeployment` **同一个判据、同一个端点**
+ * （那条是登录守卫用的，见它的说明）：`/local/status` 只在 `local_router` 上，
+ * 服务器档里**根本不存在**这条路径。所以这里不新发明模式探测——
+ * 端口、环境变量、`navigator.onLine` 都不该用来判这件事。
+ *
+ * 与那两个"本机档才显隐"的既有函数（`provider.ts::providerGateApplies` /
+ * `backup.ts::backupGateApplies`）同形：先看显式关掉的逃生门，再看"壳在不在"，
+ * 最后看"那个本机端点答没答"。
+ */
+
+/** `/local/status` 那一趟的结论。 */
+export type LocalAnswer =
+  /** 答上来了，而且是本机档。 */
+  | 'local'
+  /** **答了"这一档没有它"**：404（服务器档），或答上来却说自己不是本机档。 */
+  | 'absent'
+  /** 还没问出结论：没探过 / 探不通 / 形状不认识。**不按缺席处理**（见下）。 */
+  | null
+
+let answer: LocalAnswer = null
+/** 有结论了吗（`answer` 为 `null` 时它是 `false`）——界面据此区分"还不知道"与"知道没有"。 */
+let settled = false
+
+const listeners = new Set<() => void>()
+/** 探这一趟只做一次（并发调用共享同一次）。 */
+let inflight: Promise<void> | null = null
+
+/** 状态变了就广播（与 `api/provider.ts` 那套同一个写法）。 */
+function publish(): void {
+  for (const listener of listeners) listener()
+}
+
+/**
+ * 探一次（**单飞 + 只此一次**）。
+ *
+ * **壳里与显式关掉时一次都不探**：那两种情形下这个判据是同步的（`localBackendView`
+ * 里那两条前置分支），打一趟注定不改结论的请求只是白费一次往返——而这里是
+ * "本机后端在不在"的唯一一条探测，别让它出现在启动路径上。
+ *
+ * 三档的处置在下面两个回调里：**404 是明确答案**（"这一档没有这条端点"），
+ * 于是它落 `absent`；而网络不通 / 超时 / 形状不认识落"不知道"——**不落 `absent`**。
+ * 理由：`absent` 会让界面把会话面那几页**摘掉**，而"问不出来"与"确认没有"是两件事。
+ * 装机形态的显隐不该被一次网络抖动改掉（与 `provider.ts` 里"一次读失败不改状态"同一条）。
+ */
+export function probeLocalBackend(): Promise<void> {
+  if (inDesktopShell() || !localDataEnabled()) return Promise.resolve()
+  inflight ??= getLocalStatus().then(
+    (status) => {
+      answer = status.deployment === 'local' ? 'local' : 'absent'
+      settled = true
+      publish()
+    },
+    (error: unknown) => {
+      settled = true
+      // 404 = 这一档**没有**这条端点（服务器档：浏览器 / NAS 网页端）；
+      // 其余（连不上 / 超时 / 形状不认识）**保留"不知道"**，见上面那一句。
+      if ((error as { status?: number } | undefined)?.status === 404) answer = 'absent'
+      publish()
+    },
+  )
+  return inflight
+}
+
+/** 给界面读的那一份（`useLocalBackend` 的返回值）。 */
+export interface LocalBackendView {
+  /** 这一份界面**有没有**本机后端（会话面那几页在不在只看它）。 */
+  present: boolean
+  /** 问出结论了吗（`false` = 还在探，界面按"不拆"处理，见 `localBackendView`）。 */
+  settled: boolean
+}
+
+/**
+ * 同步结论（**任何地方都能读**：路由表、侧栏、账号菜单）。
+ *
+ * 三条分支：
+ *
+ * 1. 本机数据面被显式关掉（`VITE_LOCAL_DATA=0`，排障用的逃生门）→ **没有**：
+ *    那一档界面读的就是服务器上的数据，与"本机后端"无关
+ *    （与 `providerGateApplies` / `backupGateApplies` 的头两条逐字同形）；
+ * 2. **壳里恒真有**（`inDesktopShell()`）：本机后端由壳拉起，那是"本机档"成立的地方。
+ *    这一条必须是**同步**的——它是主产品形态，不能在首屏先按"没有"渲染一帧再纠正；
+ * 3. 其余（浏览器里的这一份）看那一趟探测的结论：`local` → 有；`absent` → 没有；
+ *    **还没结论 → 有**（宁可按完整产品渲染：一次没答上来的探测不该把界面拆掉，
+ *    而"确认没有"那一支是 404，很快就有结论）。
+ */
+export function localBackendView(): LocalBackendView {
+  if (!localDataEnabled()) return { present: false, settled: true }
+  if (inDesktopShell()) return { present: true, settled: true }
+  return { present: answer !== 'absent', settled }
+}
+
+/** 这一个（同步版）：只问"会话面那几页在不在"。 */
+export function localBackendPresent(): boolean {
+  return localBackendView().present
+}
+
+/**
+ * 订阅它（侧栏、路由表读的是同一份结论）。
+ *
+ * 首次被问到才探（不在启动时挡路）——与 `useKnowledgeProviderStatus` 同一条：
+ * 已经有结论时那一次 `probeLocalBackend()` 是空操作。
+ */
+export function useLocalBackend(): LocalBackendView {
+  const [, bump] = useState(0)
+
+  useEffect(() => {
+    const listener = (): void => bump((value) => value + 1)
+    listeners.add(listener)
+    // **挂上订阅之后再对一次表**：结论可能在"这次渲染"与"挂上订阅"之间就到了
+    // （与 `api/provider.ts` 里那一句同一条理由，那里写着实测过的缺口）
+    bump((value) => value + 1)
+    // 壳里不必探（判据同步）——那一跳在 `probeLocalBackend` 里面
+    void probeLocalBackend()
+    return () => {
+      listeners.delete(listener)
+    }
+  }, [])
+
+  return localBackendView()
+}
+
+/* ------------------------------------------------------------------ 用例用的窄接口 */
+
+/**
+ * 用例用：把结论**直接摆好**（不经过网络），或复位成"还没探过"。
+ *
+ * 与 `setProviderStatusForTest` 同一条纪律：模块级单份状态必须由调用方复位，
+ * 否则前一条用例的结论会串到下一条（真机上表现为"服务器档的形状测试时有时无"）。
+ */
+export function setLocalBackendForTest(next: LocalAnswer): void {
+  answer = next
+  settled = true
+  inflight = null
+  publish()
+}
+
+/** 用例用：复位成"还没探过"（`undefined` = 让下一次 `probeLocalBackend` 真的去探）。 */
+export function resetLocalBackendForTest(): void {
+  answer = null
+  settled = false
+  inflight = null
+  listeners.clear()
 }

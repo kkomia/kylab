@@ -18,6 +18,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, FileText, RefreshCw } from 'lucide-react'
 import { useNavigate } from 'react-router'
 
+import { useLocalBackend } from '@/api/local'
 import { cancelTasks, getTaskLoad, listTasks, type TaskSummary } from '@/api/tasks'
 import { formatCount, formatDate } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
@@ -51,6 +52,16 @@ const TASK_LOAD_QUERY_KEY = ['tasks', 'load'] as const
 /** 分段控件的取值（Radix 的 `onValueChange` 给的是 `string`，在这里收窄一次）。 */
 type TaskView = 'tasks' | 'schedules'
 
+/**
+ * 这一页的分段。
+ *
+ * **「定时任务」只在有本机后端的那一份里存在**（2026-10-05，NAS 网页端退役）：
+ * 那一族端点（`/scheduled-tasks`）只挂在本机档上（`backend/app/api/v1/router.py`），
+ * 服务器档从这一轮起没有它——切过去只会是一页报错。
+ * 判据与侧栏 / 路由表是**同一个**（`api/local.ts::useLocalBackend`），所以"别处没有的、
+ * 这里也没有"在同一页内部同样成立（过滤在组件里做，见下面的 `views`）。
+ * `SchedulePanel` 自己那几条读不动：服务器档那一段根本不渲染，读不出去。
+ */
 const VIEWS = [
   { value: 'tasks' as const, label: '流水线任务' },
   { value: 'schedules' as const, label: '定时任务' },
@@ -122,6 +133,17 @@ export function TasksPage() {
 
   const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
   const knowledgeBases = useKnowledgeBases()
+  /**
+   * 本机后端在不在（判据只有一处：`api/local.ts`）——它决定**「定时任务」那一段在不在**。
+   *
+   * 用 `useLocalBackend` 而不是同步的那个（`localBackendPresent`）：浏览器那一档要探一次
+   * 才有结论，而结论可能在这一页已经打开之后才到——到了就得跟着收起来。
+   * `view` 还停在 `schedules` 时按 `tasks` 渲染（`activeView`），否则会留下一格
+   * 切不回去、又什么都没得看的空页。
+   */
+  const localBackend = useLocalBackend()
+  const views = localBackend.present ? VIEWS : VIEWS.filter((item) => item.value !== 'schedules')
+  const activeView: TaskView = view === 'schedules' && localBackend.present ? 'schedules' : 'tasks'
 
   const list = useQuery({
     queryKey: TASKS_QUERY_KEY,
@@ -262,7 +284,7 @@ export function TasksPage() {
       title="任务中心"
       actions={
         // 只有流水线那一段归这两个按钮管：定时任务有它自己的刷新（在面板里）
-        view === 'tasks' ? (
+        activeView === 'tasks' ? (
           <>
             {running && <StatusTag tone="info" live label="有任务在跑，自动刷新中" />}
             <Button onClick={refresh}>
@@ -283,17 +305,20 @@ export function TasksPage() {
         `--bg-subtle` 轨道上浮起白色当前项（当前项墨色 `--text-primary`、另一项次级灰
         `--text-secondary`，两边同为 500 字重，差别在**底色 + 字色**，悬停时字色也转墨色）。
         `misc/memory`、`misc/capabilities` 的页签是同一个形状（同一原语、同样不加类）。
+
+        **分段本身按这一档过滤**（`views`，见 `VIEWS` 的说明）：没有本机后端时只剩
+        「流水线任务」一格——那一档不存在"切过去看什么"这件事。
       */}
-      <Tabs value={view} onValueChange={(next) => setView(next as TaskView)}>
+      <Tabs value={activeView} onValueChange={(next) => setView(next as TaskView)}>
         <TabsList aria-label="任务视图">
-          {VIEWS.map((item) => (
+          {views.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
               {item.label}
             </TabsTrigger>
           ))}
         </TabsList>
       </Tabs>
-      {view === 'schedules' ? (
+      {activeView === 'schedules' ? (
         <div className="page-shell-body">
           <SchedulePanel />
         </div>
