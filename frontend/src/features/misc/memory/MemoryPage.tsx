@@ -32,7 +32,7 @@ import {
   type MemoryDraftSuggestion,
   type MemoryMigration,
 } from '@/api/memory'
-import { useSessionStore } from '@/lib/session'
+import { useIsAdmin } from '@/lib/useIsAdmin'
 import { Badge } from '@/ui/badge'
 import { Button } from '@/ui/button'
 
@@ -51,7 +51,13 @@ import { ChangeTimeline } from './ChangeTimeline'
 
 export function MemoryPage() {
   const queryClient = useQueryClient()
-  const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
+  /**
+   * 页头那颗「设置」（记忆那一组字段）只给管理员：它是管理员端点 `/settings`。
+   * 判据走共享那一条（`lib/useIsAdmin`）——记忆本体就在本机 `data_dir/memory`
+   * （`/memory` 挂在本机档的白名单上），本机档没有账号体系（`currentUser` 恒为 null），
+   * 按"有没有登录"判会把这一颗藏掉。
+   */
+  const isAdmin = useIsAdmin()
 
   const archive = useQuery({ queryKey: ['memory', 'archive'], queryFn: getMemoryArchive })
   const changes = useQuery({ queryKey: ['memory', 'changes'], queryFn: getMemoryChanges })

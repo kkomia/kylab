@@ -144,6 +144,13 @@ export function TasksPage() {
   const [listAtEnd, setListAtEnd] = useState(true)
   const listRef = useRef<HTMLDivElement | null>(null)
 
+  /**
+   * **这一处刻意不用共享那条判据**（`lib/useIsAdmin`）：它管的是**「运行负载」**
+   * （`/tasks/load`）那一块——数的是知识库那边的家当（文档 / 解析批次 / 索引）。
+   * 那一族端点**只挂在服务器档**（`local_router` 那一张白名单里没有 `tasks.router`），
+   * 本机档按本机档判成管理员，只会让这一页白打一趟必被拒的请求（这个端点对非管理员是 403），
+   * 所以照旧按"有没有账号体系"判。
+   */
   const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
   const knowledgeBases = useKnowledgeBases()
   /**

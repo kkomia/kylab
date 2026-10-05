@@ -26,7 +26,7 @@
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/capabilities', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/capabilities')>()
@@ -77,6 +77,7 @@ import {
   type Skill,
 } from '@/api/capabilities'
 import { listPlugins, type PluginPack } from '@/api/plugins'
+import { resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
 import { getSettings, updateSettings, type SettingGroup } from '@/api/settings'
 import { CapabilitiesPage } from '@/features/misc/capabilities/CapabilitiesPage'
 import { renderMisc } from '@/features/misc/testing/harness'
@@ -215,6 +216,12 @@ beforeEach(() => {
     user_dir: '/data/plugins',
     builtin_dir: '/app/plugins',
   })
+})
+
+afterEach(() => {
+  // 「这一份有没有本机后端」是模块级单份状态（`api/local.ts`）：摆过的用例必须复位，
+  // 否则这一份的结论会串到下一条（真机上表现为"管理员入口时有时无"）
+  resetLocalBackendForTest()
 })
 
 describe('能力页', () => {
@@ -916,6 +923,65 @@ describe('能力页', () => {
       // 别的用例要的是正常的在线态（onlineManager 是模块级单例）
       onlineManager.setOnline(true)
     }
+  })
+
+  /**
+   * 管理员的定义（`lib/useIsAdmin`）：**本机档没有账号体系**（`currentUser` 恒为 null），
+   * 而那一档"本机主人"就是这台机器的管理员。这一页上被那条判据挡着的入口读的全是
+   * **本机服务**的东西（`/settings`、`/skills`、`/plugins` 都在本机档的白名单上），
+   * 所以按"有没有登录"判会把它们一并藏掉——用户报过两次同类 bug（侧栏「设置」、
+   * 输入框那排「权限」）。反面同样要钉：服务器档 + 没有账号 ⇒ 确实不该摆。
+   */
+  describe('能力页 · 管理员的入口（本机档 / 服务器档）', () => {
+    /** 技能页上那三处（页头「设置」、联网搜索那一组、市场那一颗）。 */
+    function entriesOnSkills(): (HTMLElement | null)[] {
+      return [
+        screen.queryByRole('button', { name: '设置' }),
+        screen.queryByRole('region', { name: '联网搜索' }),
+        screen.queryByRole('button', { name: /浏览市场/ }),
+      ]
+    }
+
+    it('本机档（没有账号）：页头「设置」、联网搜索那一组、市场、插件包卡上的操作都在', async () => {
+      setLocalBackendForTest('local')
+      useSessionStore.setState({ token: '', currentUser: null, reloginCount: 0 })
+
+      renderMisc(<CapabilitiesPage />)
+      await screen.findByRole('button', { name: /浏览市场/ })
+
+      expect(entriesOnSkills().every((item) => item !== null)).toBe(true)
+
+      await userEvent.click(screen.getByRole('tab', { name: '插件包' }))
+      expect(await screen.findByRole('button', { name: 'demo-pack 的操作' })).toBeInTheDocument()
+    })
+
+    it('服务器档 + 没有账号：这三处与插件包那一条**都不在**', async () => {
+      setLocalBackendForTest('absent')
+      useSessionStore.setState({ token: '', currentUser: null, reloginCount: 0 })
+
+      renderMisc(<CapabilitiesPage />)
+      // 技能那一页照旧在（这一条钉的是那几处入口，不是整页）
+      expect(await screen.findByText('pdf-report')).toBeInTheDocument()
+
+      expect(entriesOnSkills()).toEqual([null, null, null])
+
+      await userEvent.click(screen.getByRole('tab', { name: '插件包' }))
+      expect(await screen.findByText('demo-pack')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'demo-pack 的操作' })).toBeNull()
+    })
+
+    it('服务器档 + 管理员账号：照旧都在（判据对"有账号"那一支没改）', async () => {
+      // 这一档是 NAS 网页端那一位管理员：没有本机后端，但账号是真的、角色是管理员
+      setLocalBackendForTest('absent')
+
+      renderMisc(<CapabilitiesPage />)
+      await screen.findByRole('button', { name: /浏览市场/ })
+
+      expect(entriesOnSkills().every((item) => item !== null)).toBe(true)
+
+      await userEvent.click(screen.getByRole('tab', { name: '插件包' }))
+      expect(await screen.findByRole('button', { name: 'demo-pack 的操作' })).toBeInTheDocument()
+    })
   })
 
   it('联网搜索的配置区直接摆在页面上，且保存不会把留空的密钥抹掉', async () => {

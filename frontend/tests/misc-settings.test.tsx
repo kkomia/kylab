@@ -1256,4 +1256,24 @@ describe('账号菜单那一行（侧栏左下）', () => {
       expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument()
     }
   })
+
+  it('服务器档 + 有账号的管理员：这一档仍旧不摆「设置」（改成共享判据前后行为一字不差）', async () => {
+    // 判据从就地那一条 `local.present && (currentUser ? role === 'admin' : true)`
+    // 换成了 `lib/useIsAdmin`：有账号那一支只看角色，所以**本机后端在不在仍由这里
+    // 前面那条 `local.present` 管**——这一条钉的就是那一半没被换掉。
+    // （那一档 `/settings` 一族不存在，摆一个点进去 404 的入口比不显示更糟。）
+    setLocalBackendForTest('absent')
+    asAdmin()
+
+    renderMisc(<AccountMenu />)
+
+    await userEvent.click(screen.getByRole('button', { name: '账号：管理员' }))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).queryByRole('menuitem', { name: '设置' })).toBeNull()
+    // 「头像」「退出登录」照旧：有真账号就有它们（与「设置」不是同一条判据）
+    expect(within(menu).getByRole('menuitem', { name: '头像' })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: '退出登录' })).toBeInTheDocument()
+    // 入口不在，弹窗也没挂
+    expect(getSettingsMock).not.toHaveBeenCalled()
+  })
 })

@@ -16,6 +16,9 @@
  * 必然出现"界面上写着允许、实际还是被拒"。
  *
  * 非管理员**不显示**：这一档背后是管理员端点，摆在成员眼前只会让他点了拿到 403。
+ * **本机档照摆**：那一档没有账号体系（`currentUser` 恒为 null），而"本机主人"就是这台机器的
+ * 管理员（`api_key.py::LOCAL_CALLER`）、`/settings` 也挂在本机那台白名单上——判据在
+ * `lib/useIsAdmin`（用户报过"权限按钮不见了"，就是这一条按"有没有登录"判出来的）。
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -23,7 +26,7 @@ import { Check, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 
 import { getSettings, updateSettings } from '@/api/settings'
-import { useSessionStore } from '@/lib/session'
+import { useIsAdmin } from '@/lib/useIsAdmin'
 
 import { notifyError, notifySuccess } from '../runtime/notify'
 import { CONTROL_TRIGGER, MENU_CHECK, MENU_ITEM, MENU_PANEL } from './DropdownShell'
@@ -46,17 +49,14 @@ const LEVELS: { value: string; label: string; hint: string }[] = [
   { value: 'full', label: '全自动', hint: '写与命令都放行、也不再问' },
 ]
 
-/** 是否管理员：这一排里的设置入口都是管理员端点。会话还没恢复完时按"不是"处理。 */
-export function useIsAdmin(): boolean {
-  const user = useSessionStore((state) => state.currentUser)
-  return user?.role === 'admin'
-}
-
 /**
  * 当前权限档与写入动作。
  *
  * **触发器与菜单里的三档都读这一处**：两处各写一份的话，"显示的是哪一档"
  * 与"点了写哪一档"迟早对不上（这一档的全部风险就在这里）。
+ *
+ * 管理员判据走共享的那一条（`lib/useIsAdmin`）：本机档没有账号体系，按"有没有登录"判
+ * 会把这一颗胶囊整颗藏掉——而本机档的 `/settings` 正是它读的那一份。
  */
 export function usePermission(): {
   ready: boolean

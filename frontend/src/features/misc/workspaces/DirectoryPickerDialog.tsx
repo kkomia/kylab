@@ -50,7 +50,7 @@ import {
   type DirectoryEntry,
   type WorkspaceBrowse,
 } from '@/api/workspaces'
-import { useSessionStore } from '@/lib/session'
+import { useIsAdmin } from '@/lib/useIsAdmin'
 
 import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
@@ -68,7 +68,13 @@ export function DirectoryPickerDialog({
   onClose: () => void
   onPick: (path: string) => void
 }) {
-  const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
+  /**
+   * 目录浏览只给管理员：这三条（列目录 / 建目录 / 改名）是管理员端点。
+   * 判据走共享那一条（`lib/useIsAdmin`）——`/workspaces` 那一族挂在本机档的白名单上，
+   * 而本机档没有账号体系（`currentUser` 恒为 null），按"有没有登录"判会把「浏览…」
+   * 这条唯一能挑目录的路藏掉。
+   */
+  const isAdmin = useIsAdmin()
 
   const [view, setView] = useState<WorkspaceBrowse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -125,7 +131,7 @@ export function DirectoryPickerDialog({
     setError('')
     cancelEditing()
     void load(start?.trim() || undefined)
-    // 每一次打开都重新读一次：服务器上的目录可能被别处改过
+    // 每一次打开都重新读一次：那台机器上的目录可能被别处改过
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isAdmin])
 
@@ -173,7 +179,8 @@ export function DirectoryPickerDialog({
   }
 
   if (!isAdmin) {
-    // 目录浏览是管理员专属（列出的是服务器上的目录树）。成员不该看到这颗按钮，
+    // 目录浏览是管理员专属（列的是**这台机器**上的目录树：本机档列本机的，
+    // 服务器档列服务器上的）。成员不该看到这颗按钮，
     // 万一被打开，这里给一句明确的话而不是一个转圈的空白。
     return (
       <Modal open={open} title="选择目录" onClose={onClose}>

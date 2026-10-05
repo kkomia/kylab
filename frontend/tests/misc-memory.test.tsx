@@ -196,6 +196,22 @@ function asAdmin(): void {
   })
 }
 
+/**
+ * 成员：**有账号但不是管理员**。
+ *
+ * 摆它而不是留 `currentUser: null`：判据（`lib/useIsAdmin`）里"没有账号"那一支看的是
+ * **"这一份有没有本机后端"**——不摆账号会被读成"本机档，本机主人就是管理员"，
+ * 与"成员"正好相反（那一支管的是本机档没有账号体系这件事，不是"没权限"）。
+ */
+function asMember(): void {
+  useSessionStore.setState({
+    token: 'st',
+    currentUser: { id: 'u2', username: 'member', name: '成员', role: 'member', avatar_url: '' },
+    authStatus: null,
+    reloginCount: 0,
+  })
+}
+
 /** 找到某个分区的元素（多个同名 testid 时按 `data-section` 定位）。 */
 function sectionEl(name: string): HTMLElement {
   const found = screen
@@ -634,6 +650,8 @@ describe('记忆页 · 去解释化', () => {
   })
 
   it('管理员看得到「设置」入口，成员看不到', async () => {
+    // 成员 = **有账号但不是管理员**（见 `asMember` 那段：不摆账号表达的是本机档，不是没权限）
+    asMember()
     renderMisc(<MemoryPage />)
     await screen.findByTestId('archive-card')
     expect(screen.queryByRole('button', { name: '设置' })).not.toBeInTheDocument()

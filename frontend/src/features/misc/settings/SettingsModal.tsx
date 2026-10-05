@@ -151,6 +151,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const currentUser = useSessionStore((store) => store.currentUser)
+  /**
+   * **这一处刻意不用共享那条判据**（`lib/useIsAdmin`）：这里管的是「用户」那一节
+   * （`adminOnly: true`，读 `/users`）与账号自己的角色徽章——**服务器档专属**的东西。
+   * 那一族端点不在本机的白名单上（`local_router` 里没有 `users.router`），本机档按本机档
+   * 判成管理员，只会摆一个点进去读不到的入口，所以照旧按"有没有账号体系"判。
+   */
   const isAdmin = currentUser?.role === 'admin'
   /**
    * 知识库提供者（M3 阶段 6）：只用来决定**「知识库连接」这一节有没有入口**——

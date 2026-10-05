@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, Link } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   chatStream,
@@ -122,6 +122,9 @@ vi.mock('@/api/settings', async (importOriginal) => {
       embedding_is_development: false,
       rerank_enabled: false,
     })),
+    // 「权限」那一颗把选中的档写回 `/settings`（PATCH）。用例断言的就是这一个调用：
+    // 不给替身的话它会走真网络（`tests/setup.ts` 那个漏网记账器会当场判红）
+    updateSettings: vi.fn(async () => ({ updated: 1, rejected: [] })),
   }
 })
 
@@ -151,6 +154,8 @@ vi.mock('@/api/documents', async (importOriginal) => {
 vi.mock('@/lib/clipboard', () => ({ copyText: vi.fn(async () => true) }))
 
 import { getConversation, rewindConversation, type ConversationDetail } from '@/api/conversations'
+import { resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
+import { getSettings, updateSettings } from '@/api/settings'
 import { useSessionStore } from '@/lib/session'
 import { copyText } from '@/lib/clipboard'
 
@@ -280,6 +285,17 @@ beforeEach(() => {
   clearLiveAnchors()
   vi.mocked(listCommands).mockResolvedValue([])
   vi.mocked(getConversation).mockResolvedValue(detail([]))
+  // 恢复这一份替身的**默认值**：`mockResolvedValueOnce` 摆的一次性返回值万一没被消费
+  // （用例断言先失败、或那条查询没跑起来），它会留在队列里串到下一条用例，而
+  // `vi.clearAllMocks()` 只清调用记录、清不掉那个队列。这里按默认值重新摆一次。
+  vi.mocked(getSettings).mockReset()
+  vi.mocked(getSettings).mockResolvedValue({ groups: [] } as never)
+})
+
+afterEach(() => {
+  // 「这一份有没有本机后端」是**模块级单份状态**（`api/local.ts`）：摆过它的用例必须复位，
+  // 否则这一份的结论会串到下一条（真机上表现为"管理员入口时有时无"）
+  resetLocalBackendForTest()
 })
 
 describe('对话流（发一句 → 增量 → done）', () => {
@@ -1475,6 +1491,59 @@ describe('停止与回到最新', () => {
     expect(pill).not.toHaveTextContent('权限')
     const siblings = [...(pill.parentElement?.children ?? [])]
     expect(siblings.indexOf(pill)).toBe(1)
+  })
+
+  it('本机档（没有账号体系）：这一颗照旧在，选一档会写回设置页那一份', async () => {
+    // 本机档的 `currentUser` **恒为 null**（`/auth/*` 一族根本不挂在边车的 `local_router` 上，
+    // 登录守卫直接放行），而那一档"本机主人"就是这台机器的管理员——判据在 `lib/useIsAdmin`：
+    // 有账号按角色，**没有账号按"这一份有没有本机后端"**。
+    // 用户报过两次的 bug 就是这里按"有没有登录"判：侧栏「设置」不见了、这一颗不见了。
+    setLocalBackendForTest('local')
+    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      groups: [
+        {
+          key: 'chat',
+          label: '聊天',
+          fields: [{ key: 'chat.permission', label: '权限', type: 'select', value: 'smart' }],
+        },
+      ],
+    } as never)
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 档名仍然来自 `/settings` 里的 `chat.permission`（替身回 `smart` ⇒ 屏幕上「默认」）
+    const pill = await screen.findByRole('button', { name: '权限：默认' })
+    expect(pill).toHaveTextContent('默认')
+    expect(getSettings).toHaveBeenCalled()
+
+    // 选一档写的就是设置页那一份（`chat.permission`），不另存一份
+    const user = userEvent.setup()
+    await user.click(pill)
+    await user.click(await screen.findByRole('menuitemradio', { name: '全自动' }))
+    await waitFor(() =>
+      expect(updateSettings).toHaveBeenCalledWith([{ key: 'chat.permission', value: 'full' }]),
+    )
+  })
+
+  it('服务器档 + 没有账号：这一颗不在，而且**一条设置都不去读**', async () => {
+    // 反面：没有本机后端（NAS 网页端那一份）时 `currentUser` 为 null 意味着"还没验出身份"
+    // ——那不是管理员。读的那一趟只会拿到 401/404，所以连问都不问（`enabled: isAdmin`）。
+    setLocalBackendForTest('absent')
+    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 这里**不摆** `getSettings` 的一次性返回值：查询根本不该跑，摆了就没人消费它
+    // （队列里的那一次会串到下一条用例上）。真正锐的断言是下面第二条
+    expect(screen.queryByRole('button', { name: /^权限：/ })).toBeNull()
+    expect(getSettings).not.toHaveBeenCalled()
   })
 
   it('输入卡片控制行按旧版收成三颗：+ / 知识库 / 模型，两侧都带 min-w-0', async () => {

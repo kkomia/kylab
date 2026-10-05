@@ -22,7 +22,7 @@ import { AlertCircle, Archive, EllipsisVertical, RefreshCw, Search } from 'lucid
 
 import { disablePlugin, enablePlugin, listPlugins, type PluginPack } from '@/api/plugins'
 import { formatCount } from '@/lib/format'
-import { useSessionStore } from '@/lib/session'
+import { useIsAdmin } from '@/lib/useIsAdmin'
 
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Badge } from '@/ui/badge'
@@ -79,7 +79,13 @@ function kindsLabel(record: PluginPack): string {
 
 export function PluginPackPanel() {
   const queryClient = useQueryClient()
-  const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
+  /**
+   * 启停那一颗（卡片右侧的「…」）只给管理员：后端那三条是管理员端点。
+   * 判据走共享那一条（`lib/useIsAdmin`）——插件目录就是 `<data_dir>/plugins/`
+   * （`/plugins` 挂在本机档的白名单上），本机档没有账号体系（`currentUser` 恒为 null），
+   * 按"有没有登录"判会把这一颗藏掉。
+   */
+  const isAdmin = useIsAdmin()
 
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'enabled' | 'disabled' | 'failed'>('all')

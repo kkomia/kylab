@@ -25,10 +25,12 @@
  *
  * - **名字**：`currentUser?.name ?? (local.present ? LOCAL_CALLER_NAME : '')` —— 兜底只在
  *   **有本机后端**的那一份给（服务器档没有账号体系之外的"主人"，留白才是实话）；
- * - **设置**：`local.present && (currentUser ? currentUser.role === 'admin' : true)`——
- *   服务器档仍旧不摆（那一档 `/settings` 一族不存在，点进去只会 404）；本机档没有账号体系，
+ * - **设置**：`local.present && useIsAdmin()`——管理员判据与另外六处**共用同一条**
+ *   （`lib/useIsAdmin`：有账号按角色，本机档按"有没有本机后端"；本机档没有账号体系，
  *   而"本机主人"在后端那条记录里就是管理员（`api_key.py::LOCAL_CALLER`：
- *   `is_admin=True`、`role=UserRole.ADMIN`），设置读的又正是本机那几张表。
+ *   `is_admin=True`、`role=UserRole.ADMIN`），设置读的又正是本机那几张表）。
+ *   前面那一条 `local.present` 是**这一处自己的**：服务器档整个不摆（那一档
+ *   `/settings` 一族不存在，点进去只会 404）。
  *
  * 「头像」「退出登录」照旧**只给真账号**：本机档没有账号可退，也没有头像那一族端点。
  *
@@ -68,6 +70,7 @@ import { useLocalBackend } from '@/api/local'
 import { cn } from '@/lib/utils'
 import { logout } from '@/lib/sessionActions'
 import { useSessionStore } from '@/lib/session'
+import { useIsAdmin } from '@/lib/useIsAdmin'
 import { setOperator, useOperatorStore } from '@/lib/operator'
 import { Avatar, AvatarFallback, AvatarImage } from '@/ui/avatar'
 import {
@@ -128,6 +131,14 @@ export function AccountMenu() {
   const { collapsed } = useSidebar()
   /** 这一份界面有没有本机后端（决定「设置」那一项在不在，见下面 `settingsAvailable` 那段）。 */
   const local = useLocalBackend()
+  /**
+   * 这一份界面上"当前这个人是不是管理员"——判据只有一处（`lib/useIsAdmin`）：
+   * 有账号按角色，本机档（没有账号体系，`currentUser` 恒为 null）按"有没有本机后端"。
+   *
+   * **它在下面只用于「设置」那一项**；屏幕上印的「管理员 / 成员」是账号自己的角色
+   * （`accountIsAdmin`），与本机档那一条无关——本机档那一行不印角色。
+   */
+  const isAdmin = useIsAdmin()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [avatarOpen, setAvatarOpen] = useState(false)
@@ -140,8 +151,9 @@ export function AccountMenu() {
    * 写个名字只会让人以为登录被吞了——所以**只在本机档兜底**（`local.present`）。
    */
   const identityName = currentUser?.name ?? (local.present ? LOCAL_CALLER_NAME : '')
-  const isAdmin = currentUser?.role === 'admin'
-  const identityRole = currentUser ? (isAdmin ? '管理员' : '成员') : ''
+  /** 这一格是**账号自己的角色**（屏幕上印的「管理员 / 成员」），与本机档那一条无关。 */
+  const accountIsAdmin = currentUser?.role === 'admin'
+  const identityRole = currentUser ? (accountIsAdmin ? '管理员' : '成员') : ''
 
   /**
    * 「设置」那一项在不在——**与 `SettingsModal` 的挂载条件是同一个**（见文件头那两段）。
@@ -150,10 +162,12 @@ export function AccountMenu() {
    * - **服务器档不摆**（`local.present` 为假）：设置里那几节读的是本机那几张表
    *   （`/settings`、`/model-registry`、`/local/*`），这一档根本没有它们，点开只会得到
    *   一片"读不到"——摆一个点进去报错的入口比不显示更糟；
-   * - **本机档照摆**：那一档没有账号体系（`currentUser` 恒为 null），"本机主人"就是
-   *   这台机器的管理员。成员仍是 403，所以有账号时照旧只给管理员。
+   * - **管理员才摆**：成员拿到的一律是 403（`/settings` 是管理员端点）。判据本身在
+   *   `lib/useIsAdmin`：本机档没有账号体系（`currentUser` 恒为 null），而那一档
+   *   "本机主人"就是这台机器的管理员——按"有没有登录"判，这一项与弹窗会一起消失
+   *   （用户原话：「现在怎么左下角设置这些都没了？？」）。
    */
-  const settingsAvailable = local.present && (currentUser ? currentUser.role === 'admin' : true)
+  const settingsAvailable = local.present && isAdmin
 
   function onToggleTheme(): void {
     // 切到**另一边**：所以文案要说清切过去是哪个
