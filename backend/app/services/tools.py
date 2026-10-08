@@ -72,8 +72,7 @@ from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.core.services import Services
 from app.services import deck, office, web
 from app.services.api_key import WRITE, Caller
-from app.services.archive import KNOWN_SECTIONS as KNOWN_ARCHIVE_SECTIONS
-from app.services.memory import DEFAULT_RECALL, MAX_RECALL
+from app.services.memory import DEFAULT_RECALL, MAX_RECALL, SECTIONS
 from app.storage.base import ARTIFACT_IN_WORKSPACE
 
 __all__ = ["TOOL_NAMES", "call_tool", "tool_definitions"]
@@ -271,12 +270,12 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "recall",
             "description": (
-                "在**变更流**里查证：这条以前是什么、什么时候改的。"
-                "**用户档案本身不必查**——它每轮已经全量在你的提示词里。"
+                "在**长期记忆**里按意思检索：找「哪一条里说过这件事」。"
+                "**记忆条目本身不必查**——它们每轮已经全量在你的提示词里，"
+                "这里用来确认「我说的这件事是不是真记过」、「具体是哪一条」。"
                 "**它与 search 是两个池子**：search 给「文献怎么写的」（有出处可引用），"
-                "recall 给「档案里改过什么」（某条旧值、某次更正）。"
-                "「上次那个是怎么改的」「这条以前写的是什么」这类问题用它；"
-                "返回空只有一个含义：变更流里确实没有相关的话。"
+                "recall 给「对方说过什么」（没有出处、可以改）。"
+                "返回空只有一个含义：记忆库里确实没有相关的话。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -296,13 +295,13 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "remember",
             "description": (
-                "把一条**长期有效**的事实记进用户档案（四个分区），之后的对话都会带上它。"
+                "把一条**长期有效**的事实记进长期记忆（按分区归类），之后的对话都会带上它。"
                 "适合：怎么称呼对方、他的稳定偏好、定下来的约定与决策、项目目标与约束。"
-                "**一条只记一句**（上限 120 字，超出会被拒并给出路）；成篇的内容写进 "
+                "**一条只记一句**（上限 500 字，超出会被拒并给出路）；成篇的内容写进 "
                 "`AGENTS.md` 或笔记。"
-                "**更正**旧条目就在同一次调用里带上 `replaces`（填你要顶替的那条原文），"
+                "**更正**旧条目就在同一次调用里带上 `replaces`（填你要改掉的那条原话），"
                 "不要先删再记；同一条重复记不会写第二遍。"
-                "**绝不记**密码、令牌、密钥、证件号——档案每轮都进上下文。"
+                "**绝不记**密码、令牌、密钥、证件号——记忆每轮都进上下文。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -310,7 +309,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "content": {"type": "string", "description": "一句可复用的事实"},
                     "section": {
                         "type": "string",
-                        "enum": list(KNOWN_ARCHIVE_SECTIONS),
+                        "enum": list(SECTIONS),
                         "description": (
                             "写进哪个分区；留空则按内容自动归区。"
                             "分区是固定的四个，不能新开"
@@ -319,7 +318,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "replaces": {
                         "type": "string",
                         "description": (
-                            "要顶替的那一条的原文（更正时用）。它必须逐字来自当前档案，"
+                            "要改掉的那一条的原文（更正时用）。它必须逐字来自当前记忆，"
                             "不确定就别填——判据会自己找那条"
                         ),
                     },
@@ -331,10 +330,9 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "forget",
             "description": (
-                "从用户档案里**删掉一条**（对方说「忘掉那条」「这条别记着」时用）。"
+                "从长期记忆里**删掉一条**（对方说「忘掉那条」「这条别记着」时用）。"
                 "`topic` 填那条的话；不确定原文时填一个能认出它的短说法即可——"
                 "对得上不止一条时不会猜，会把候选列回来让你说清。"
-                "删掉的旧值留在**变更流**里，对方随时可以还原（要还原就说一声，别自己写回去）。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -988,15 +986,14 @@ def _list_notes(services: Services, args: dict[str, Any], *, caller: Caller) -> 
 
 
 def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    """在**变更流**里查证（§5.3），与 `search` 是两条路。
+    """在**长期记忆**里检索（mem0 的 ``search``），与 `search` 是两条路。
 
-    **归属按账号走**（v0.54 起是精确的）：记忆工作区是 ``<data>/memory/<user_id>/``，
-    这个工具**只读自己的那一份**——与 `_remember` 写的是同一个目录（那条曾经写共享桶，
-    见它的注释）。管理员是 `None`（共享桶），成员之间互不可见。
+    **归属按账号走**：记忆库是 ``<data>/memory/<账号>/mem0/``，
+    这个工具**只读自己的那一份**——与 `_remember` 写的是同一个库。
+    管理员是 ``local``（本机主人），成员用自己的账号，彼此互不可见。
 
-    **池子只有 ``changes.md``**：用户档案每轮已经全量注入，再召回一遍就是把同一段内容
-    进两次上下文。所以这里返回的是"改过什么、以前是什么、什么时候改的"，
-    ``path`` 永远是 ``changes.md``，行号是那条记录在文件里的位置。
+    **池子是全部记忆条目**：它们每轮已经全量注入，所以这里不是为了"给模型看看有
+    什么"，而是为了**定到具体哪一条**（改、删都按 id 走）。
     """
     query = _require(args, "query")
     limit = int(args.get("limit") or DEFAULT_RECALL)
@@ -1005,11 +1002,9 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
         "query": query,
         "hits": [
             {
+                "id": item.id,
                 "text": item.text,
-                "path": item.path,
-                "lines": (
-                    f"{item.start_line}-{item.end_line}" if item.start_line is not None else None
-                ),
+                "section": item.section,
                 "score": round(item.score, 4) if item.score is not None else None,
             }
             for item in hits
@@ -1019,33 +1014,35 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
     }
 
 
-#: 查证结果里那句提醒（REST 与工具**共用这一份文案**）。
+#: 检索结果里那句提醒（REST 与工具**共用这一份文案**）。
 RECALL_NOTE = (
-    "这是**变更流**（这份档案改过什么、以前写的是什么），不是知识库原文。"
-    "用户档案本身每轮已经全量在提示词里；需要可引用的原文依据时用 search。"
+    "这是**长期记忆**（对方说过的话），不是知识库原文。"
+    "记忆条目每轮已经全量在提示词里；需要可引用的原文依据时用 search。"
 )
 
 
 def _recall_note() -> str:
-    """查证结果里那句说明：**这是变更流，不是知识库原文**。
+    """检索结果里那句说明：**这是长期记忆，不是知识库原文**。
 
-    与 REST 那份（``api/v1/memory.RECALL_NOTE``）**同一口径**：写两份的话，
-    模型听到的与人在界面上看到的就是两种说法（旧设计里那条纪律继续有效）。
+    与 REST 那份（``api/v1/memory.py``）**同一口径**：写两份的话，
+    模型听到的与人在界面上看到的就是两种说法。
     """
     return RECALL_NOTE
 
 
 def _remember(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    """往**用户档案**里写一条（新增或顶替），并把**回执**交给模型。
+    """往**长期记忆**里写一条（新增或顶替），并把**回执**交给模型。
 
-    **归属必须与 `_recall` 一致**（v0.54 修）：`recall` 一直传 `user_id`，而这里
-    原先不传——`workspace_for(None)` 落到**共享桶**，于是成员"记住了"的东西写进了
-    他自己读不到的地方：下次再问永远搜不到，而且**不报错、只给空结果**（最难查的
-    那类）。管理员两侧都是 `None`（共享桶），所以这个洞只在成员账号上露出来。
+    **归属必须与 `_recall` 一致**：两处都传 ``user_id``，写进去的与查得到的
+    是同一个账号——不一致的后果是"记住了却永远搜不到，而且不报错只给空结果"
+    （最难查的那类）。
 
-    **动作与回执来自服务层**（§4.4）：``action`` 是 added/replaced/existing/rejected
+    **动作与回执来自服务层**：``action`` 是 added/replaced/existing/rejected
     四种之一，``receipt`` 是给人看的那一句话——模型照抄它回给用户就行，
     不要自己另编一句（那样界面上的说法与对话里的说法会不一样）。
+
+    ``item_id`` 也交出去：记忆是按 id 改 / 删的，模型刚写完就要能指出是哪一条
+    （``read_memory`` 与 ``recall`` 都给 id，这里是同一个句柄的第三个来源）。
     """
     content = _require(args, "content")
     result = services.memory.remember(
@@ -1060,12 +1057,13 @@ def _remember(services: Services, args: dict[str, Any], *, caller: Caller) -> di
         "text": result.text,
         "section": result.section,
         "replaced": result.replaced,
-        "entries": len(services.memory.archive_entries(_owner_of(caller))),
+        "item_id": result.item_id,
+        "items": len(services.memory.all_items(_owner_of(caller))),
     }
 
 
 def _forget(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    """从档案里删掉一条（§7.4）：定位 → 删除 → 变更流留痕 → 可还原。
+    """从长期记忆里删掉一条：定位 → 删除 → 历史留痕。
 
     ``topic`` 不必逐字精确：服务层先按原样找，找不到再按唯一子串兜一次；
     对得上不止一条时**不猜**，把候选列回来（``action=rejected``）。
@@ -1077,7 +1075,8 @@ def _forget(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
         "receipt": result.receipt,
         "text": result.text,
         "section": result.section,
-        "entries": len(services.memory.archive_entries(_owner_of(caller))),
+        "item_id": result.item_id,
+        "items": len(services.memory.all_items(_owner_of(caller))),
     }
 
 

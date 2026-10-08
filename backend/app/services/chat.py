@@ -278,7 +278,7 @@ def build_agent_messages(
     summary: str = "",
     system_prompt: str = "",
     persona: tuple[tuple[str, str], ...] = (),
-    archive: str = "",
+    memory_block: str = "",
     memory_guidance: str = "",
     bootstrap: str = "",
     skills: str = "",
@@ -291,9 +291,10 @@ def build_agent_messages(
     这是"知识库从框架降级成工具"在提示词这一层的落点——不预先给，它才需要动手要。
 
     拼装交给 `services/prompt.py` 的贡献者表（P1）：顺序是数据，加一个来源不必
-    回头读整段。人设两份（人格 / 规程）走 `persona` 那一条，**档案走 `archive`**——
-    它也是每轮在场的设定，但它有**自己的开关**（`memory.enabled`），所以是独立的
-    一个贡献者（§5.1）；收两次会注入两遍，收错地方会被一次编辑静默关掉。
+    回头读整段。人设两份（人格 / 规程）走 `persona` 那一条，**记忆条目走
+    `memory_block`**——它也是每轮在场的设定，但它有**自己的开关**
+    （`memory.enabled`），所以是独立的一个贡献者；收两次会注入两遍，
+    收错地方会被一次编辑静默关掉。
     """
     messages: list[ChatMessage] = [
         ChatMessage(
@@ -302,7 +303,7 @@ def build_agent_messages(
                 PromptContext(
                     base=system_prompt or AGENT_SYSTEM_PROMPT,
                     persona=persona,
-                    archive=archive,
+                    memory_block=memory_block,
                     memory_guidance=memory_guidance,
                     bootstrap=bootstrap,
                     kb_prompt=kb_prompt,
@@ -607,21 +608,21 @@ class ChatService:
             return catalog
         return f"{catalog}{_SKILL_SEPARATOR}{loaded}" if catalog else loaded
 
-    def _archive_block(self, owner_id: str | None = None) -> str:
-        """**用户档案**块的文本；没接记忆服务、或服务说"没有"时是空串。
+    def _memory_items_block(self, owner_id: str | None = None) -> str:
+        """**长期记忆**块的文本；没接记忆服务、或服务说"没有"时是空串。
 
-        **判在服务层**（``MemoryService.archive_block``）：它每轮现读现拼、
+        **判在服务层**（``MemoryService.memory_block``）：它每轮现读现拼、
         带边界说明、超限自己声明——这一层只负责把它放到人设那一档后面。
         **不要在这里拼它**：拼一次就要在工具循环那条链路上再拼一次，两处迟早会漂。
         """
         if self._memory is None:
             return ""
-        return self._memory.archive_block(owner_id)
+        return self._memory.memory_block(owner_id)
 
     def _bootstrap_note(self, owner_id: str | None = None) -> str:
-        """「还没认识对方」那一段；人设已经被填过、或没接记忆服务时是空串。
+        """「还没认识对方」那一段；库里已经有记忆、或没接记忆服务时是空串。
 
-        **判在服务层**（比对 ``PROFILE.md`` 与模板）：这一段什么时候出现、
+        **判在服务层**（库里一条都没有）：这一段什么时候出现、
         什么时候自己消失，是记忆那一层的知识，不是提示词层的。
         """
         if self._memory is None:
@@ -968,10 +969,10 @@ class ChatService:
         skill_text = [self._skill_block()]
         tool_text = [_tool_spec_text(item) for item in tools]
         memory_text = [text for _, text in self._persona_texts(owner_id)]
-        # 档案、记忆指导与首次引导算进「记忆与人设」这一项：它们确实是提示词里
+        # 记忆条目、记忆指导与首次引导算进「记忆与人设」这一项：它们确实是提示词里
         # 为这一层付的那部分预算，不计的话仪表会少报一段每轮都发出去的字数。
         for extra in (
-            self._archive_block(owner_id),
+            self._memory_items_block(owner_id),
             self._memory_guidance(),
             self._bootstrap_note(owner_id),
         ):
@@ -1042,9 +1043,9 @@ class ChatService:
             # 人设两份（SOUL / AGENTS）由 persona 提供：它们住在同一个目录
             # （`data/memory/<账号>/`），也是用户能编辑的那份"人格"
             persona=self._persona_texts(owner_id),
-            # **档案是独立的一块**（§5.1）：它也是每轮在场的设定，但开关不同
+            # **记忆条目是独立的一块**：它也是每轮在场的设定，但开关不同
             # （memory.enabled），所以不并进 persona 那一份
-            archive=self._archive_block(owner_id),
+            memory_block=self._memory_items_block(owner_id),
             # 记忆指导挂在 AGENTS.md 那一份的末尾（见 services/prompt.py 的 _persona_block）；
             # 「还没认识对方」那一段跟着它——两者都是"这类活怎么干"，不是待读的资料
             memory_guidance=self._memory_guidance(),

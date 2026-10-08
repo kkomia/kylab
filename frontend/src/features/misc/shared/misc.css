@@ -515,45 +515,71 @@
   /* ---------------------------------------------------------------- 记忆页 */
 
   /**
-   * 这一页现在只有两块：**档案卡**（主视图）与**变更流**。
+   * 这一页现在是一块：**条目列表**（外加搜索框、迁移入口与人设文件两节辅助区）。
    *
-   * 旧的文件列表 / 整份文件编辑 / 图谱 / 召回试验那一批样式随页面上线一起删掉了
-   * （§6.3）——留着空的类名比留着入口更容易让人以为功能还在。
+   * 旧的档案卡 / 变更流 / 文件列表 / 整份文件编辑 / 图谱 / 召回试验那一批样式
+   * 随页面上线一起删掉了——留着空的类名比留着入口更容易让人以为功能还在。
    */
 
-  .m-archive-layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-    gap: var(--space-5);
-    align-items: start;
+  .m-status {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+    flex-wrap: wrap;
   }
 
-  .m-archive-main,
-  .m-archive-side {
+  .m-search {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .m-search input {
+    flex: 1 1 auto;
     min-width: 0;
   }
 
-  .m-archive-side {
-    position: sticky;
-    top: var(--space-4);
-    max-height: calc(100vh - var(--space-8));
-    overflow-y: auto;
-  }
-
-  .m-archive {
+  .m-items {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
   }
 
-  .m-archive-head {
+  .m-persona {
     display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .m-persona-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .m-persona-item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+
+  .m-persona-open {
+    display: inline-flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
+    gap: var(--space-1);
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .m-persona-open:hover {
+    color: var(--accent-text);
   }
 
   /* 读数：条数 / 字数。接近上限换色（§5.2、§6.1），平时是次级字色。 */
@@ -598,45 +624,6 @@
     font-weight: 600;
   }
 
-  .m-section-head .m-readout {
-    margin-left: auto;
-  }
-
-  .m-section-empty {
-    margin: 0;
-    font-size: var(--text-c2-size);
-    color: var(--text-tertiary);
-  }
-
-  .m-group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
-  .m-group-head {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-  }
-
-  .m-group-title {
-    border: none;
-    background: none;
-    color: var(--text-primary);
-    font-size: var(--text-meta-size);
-    font-weight: 600;
-    cursor: text;
-  }
-
-  .m-group-title:hover {
-    color: var(--accent-text);
-  }
-
-  .m-group-rename {
-    max-width: 260px;
-  }
-
   .m-entries {
     display: flex;
     flex-direction: column;
@@ -646,11 +633,42 @@
     list-style: none;
   }
 
-  /* 一条：正文占满、动作与来源靠右。整行不换行，长条目由正文自己省略。 */
+  /* 一条：左边是正文与元信息（两行），右边是动作。长条目由正文自己折行。 */
   .m-entry {
     display: flex;
     align-items: flex-start;
     gap: var(--space-2);
+  }
+
+  .m-entry-body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .m-entry-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    font-size: var(--text-c2-size);
+    color: var(--text-tertiary);
+  }
+
+  /* 条目上那一行"什么时候、从哪来"：**数据**（不是解释），按用途命名。 */
+  .m-entry-when,
+  .m-status-when,
+  .m-persona-name {
+    color: var(--text-tertiary);
+    font-size: var(--text-c2-size);
+  }
+
+  .m-persona-empty {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: var(--text-meta-size);
   }
 
   .m-entry-text {
@@ -713,14 +731,8 @@
     gap: var(--space-2);
   }
 
-  .m-archive-foot {
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  /* 迁移入口：检测到可折叠的旧数据时出现的一条（§8）。 */
-  .m-migrate,
-  .m-draft {
+  /* 迁移入口：把旧档案的四区条目一次性搬进来（可重跑、旧文件不动）。 */
+  .m-migrate {
     display: flex;
     align-items: center;
     gap: var(--space-3);
@@ -732,34 +744,8 @@
     font-size: var(--text-meta-size);
   }
 
-  .m-draft {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .m-draft > span:first-child {
+  .m-migrate > span:first-child {
     flex: 1 1 auto;
-  }
-
-  /* 整理初稿的预览（§8.3）：模型给的建议，确认之后才写进档案。 */
-  .m-draft-preview {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .m-draft-preview ul {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    margin: 0;
-    padding-left: var(--space-4);
-  }
-
-  .m-draft-preview li {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
   }
 
   .m-report {
@@ -810,18 +796,25 @@
     overflow-wrap: anywhere;
   }
 
-  /* ---------------------------------------------------------------- 变更流 */
+  /* ------------------------------------------------------------ 一条记忆的历史 */
 
-  .m-timeline {
+  .m-history {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
   }
 
-  .m-timeline-title {
+  .m-history-lead {
     margin: 0;
-    font-size: var(--text-section-size);
-    font-weight: 600;
+    font-size: var(--text-meta-size);
+    line-height: var(--line-prose);
+    overflow-wrap: anywhere;
+  }
+
+  .m-history-empty {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: var(--text-meta-size);
   }
 
   .m-changes {
@@ -1901,16 +1894,6 @@
   @media (max-width: 960px) {
     .m-settings-layout {
       grid-template-columns: minmax(0, 1fr);
-    }
-
-    .m-archive-layout {
-      grid-template-columns: minmax(0, 1fr);
-    }
-
-    .m-archive-side {
-      position: static;
-      max-height: none;
-      overflow: visible;
     }
 
     .m-settings-nav {

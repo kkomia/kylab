@@ -231,12 +231,12 @@ def test_the_local_files_are_seeded_at_startup(tmp_path, monkeypatch) -> None:  
 
     sidecar.create_app("http://nas.test/api/v1", "t", workspace, data_dir=data_dir)
 
-    # **v0.56 起只种三份**：``MEMORY.md`` 随"记忆档案"退场（§7.2），不再被播种
-    # （见 `services/memory.py` 的 `seed_persona`，那份 docstring 里写着这一条）。
-    # 老用户盘上已有的 ``MEMORY.md`` 仍在（折叠迁移还会读它），
-    # 与"新装好的桌面第一次打开有什么"是两件事 ✓。
+    # **v0.57 起只种两份**：``MEMORY.md`` 与 ``PROFILE.md`` 都不是记忆本体了，
+    # 不再被播种（见 `services/memory.py` 的 `seed_persona`）。老用户盘上已有的
+    # 那两份仍在（``PROFILE.md`` 还是迁移的来源），与"新装好的桌面第一次打开有什么"
+    # 是两件事 ✓。
     seeded = {path.name for path in (data_dir / "memory").iterdir()}
-    assert seeded >= {"SOUL.md", "PROFILE.md", "AGENTS.md"}, seeded
+    assert seeded >= {"SOUL.md", "AGENTS.md"}, seeded
     soul = data_dir / "memory" / "SOUL.md"
     soul.write_text("# 我的人格\n\n用户自己写的。\n", encoding="utf-8")
 

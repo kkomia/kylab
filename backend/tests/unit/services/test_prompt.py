@@ -56,6 +56,22 @@ class _FakeRuntime:
     def get_int(self, key: str) -> int:
         return 0
 
+    def llm(self):
+        """没配对话模型的那个快照（``is_configured`` 为假）。
+
+        记忆块（``memory_block``）要建 mem0 实例，而实例要一个 LLM 对象——
+        给一个"没配"的替身，正是要顺带钉住"没配模型也读得出记忆"。
+        """
+        from app.services.llm import LLMConfig
+
+        return LLMConfig(base_url="", api_key="", model_id="")
+
+    def embedding(self):
+        """**一律没配**：服务层退回开发用确定性嵌入（无语义的词面哈希）。"""
+        from app.services.runtime_config import EmbeddingSettings
+
+        return EmbeddingSettings(base_url="", api_key="", model_id="", dim=0, batch_size=32)
+
 
 # ------------------------------------------------------------------ 三条约定
 
@@ -146,7 +162,7 @@ def test_persona_block_opens_with_a_do_follow_this_instruction() -> None:
         PromptContext(
             base="底",
             persona=((SOUL_FILE, "我很克制"), (AGENTS_FILE, "先问再做")),
-            archive="以下是用户档案：……\n\n## 身份与称呼\n\n- 用户叫小又\n",
+            memory_block="以下是长期记忆：……\n\n## 身份与称呼\n\n- 用户叫小又\n",
         )
     )
 
@@ -178,10 +194,10 @@ def test_no_persona_files_no_dangling_instruction() -> None:
     )
 
 
-def test_the_archive_rides_in_its_own_block_right_after_the_persona() -> None:
-    """档案是**独立的一个贡献者**，位置紧挨人设那一档之后（§5.1）。
+def test_the_memory_block_rides_in_its_own_block_right_after_the_persona() -> None:
+    """记忆条目是**独立的一个贡献者**，位置紧挨人设那一档之后。
 
-    这条钉的是"位置是数据"：写成 `_persona_block` 里的一句会让人以为删掉档案
+    这条钉的是"位置是数据"：写成 `_persona_block` 里的一句会让人以为删掉记忆
     要去改人设；而它有自己的开关（`memory.enabled`），一旦挂进人设那份配置，
     用户从清单里删一个名字就会静默关掉它。
     """
@@ -189,27 +205,27 @@ def test_the_archive_rides_in_its_own_block_right_after_the_persona() -> None:
         PromptContext(
             base="底",
             persona=((SOUL_FILE, "人格正文"),),
-            archive="档案正文",
+            memory_block="记忆正文",
         )
     )
 
-    assert "档案正文" in text
-    assert text.index("人格正文") < text.index("档案正文")
+    assert "记忆正文" in text
+    assert text.index("人格正文") < text.index("记忆正文")
     # 它是**独立的一段**（段落之间用空行分隔），不是被人设块吞进去的续行
-    assert "档案正文" in text.split("\n\n")
+    assert "记忆正文" in text.split("\n\n")
 
 
-def test_dropping_a_persona_file_does_not_drop_the_archive() -> None:
+def test_dropping_a_persona_file_does_not_drop_the_memory_block() -> None:
     """**人设清单与档案互不影响**（§7.2）。
 
     旧的失败形状：档案挂在那份清单上，用户从清单里删掉一个名字（他以为在调
     "哪几份文件进提示词"），档案就静默停止注入。
     """
     text = build_system_prompt(
-        PromptContext(base="底", persona=(), archive="档案正文")
+        PromptContext(base="底", persona=(), memory_block="记忆正文")
     )
 
-    assert "档案正文" in text
+    assert "记忆正文" in text
 
 
 def test_persona_files_have_a_fixed_order() -> None:
@@ -228,14 +244,14 @@ def test_persona_files_have_a_fixed_order() -> None:
 def test_seeding_writes_templates_then_leaves_them_alone(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """首次对话把缺的补上，**已存在的绝不覆盖**（那可能是用户写了几天的东西）。
 
-    **v0.56 起只三份**（SOUL / AGENTS / PROFILE=档案）：``MEMORY.md`` 不再播种
-    ——它退场了（§7.2：不再注入、不再写入）。
+    **v0.57 起只两份**（SOUL / AGENTS）：``PROFILE.md`` 已经不是记忆本体
+    （记忆换成 mem0 的条目库了），新装的实例不再铺它。
     """
     service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
 
     created = service.seed_persona("u1")
 
-    assert sorted(created) == sorted([SOUL_FILE, PROFILE_FILE, AGENTS_FILE])
+    assert sorted(created) == sorted([SOUL_FILE, AGENTS_FILE])
     assert not (service.workspace_for("u1") / "MEMORY.md").exists()
     # 第二次不再新建
     assert service.seed_persona("u1") == []
@@ -256,19 +272,18 @@ def test_persona_texts_are_per_account(tmp_path) -> None:  # type: ignore[no-unt
     assert any(text == "甲的人格" for _name, text in service.persona_texts("u1"))
     assert not any(text == "甲的人格" for _name, text in service.persona_texts("u2"))
     # 档案那一侧同样按账号分（它走的是另一条路，所以单独钉一次）
-    assert "甲" in service.archive_text("u1") + "甲"
 
 
-def test_archive_block_is_per_account(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """档案的注入**按账号取**：甲写进去的东西不该出现在乙的提示词里。
+def test_memory_block_is_per_account(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """记忆条的注入**按账号取**：甲写进去的东西不该出现在乙的提示词里。
 
     注入是记忆层最容易"串号"的一环（它每轮都静默发生），所以这条单独钉。
     """
     service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
     service.remember("甲叫小又", section="身份与称呼", user_id="u1")
 
-    assert "甲叫小又" in service.archive_block("u1")
-    assert "甲叫小又" not in service.archive_block("u2")
+    assert "甲叫小又" in service.memory_block("u1")
+    assert "甲叫小又" not in service.memory_block("u2")
 
 
 def test_persona_does_not_depend_on_the_memory_service_switch(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -280,17 +295,17 @@ def test_persona_does_not_depend_on_the_memory_service_switch(tmp_path) -> None:
 
     那两份文件是**磁盘上的普通文件**（`memory_files` 的模块头自己就写着
     "看自己的文本文件不该先要求另一个进程活着"）。那个开关管的是另一半：
-    档案进不进这一轮的上下文（``archive_block``）、``recall`` 能不能用。
+    记忆进不进这一轮的上下文（``memory_block``）、``recall`` 能不能用。
     """
     service = MemoryService(_FakeRuntime(False), tmp_path)  # type: ignore[arg-type]
 
-    assert service.seed_persona("u1") == [SOUL_FILE, PROFILE_FILE, AGENTS_FILE]
+    assert service.seed_persona("u1") == [SOUL_FILE, AGENTS_FILE]
     assert [name for name, _text in service.persona_texts("u1")] == [SOUL_FILE, AGENTS_FILE]
     # 关着的是**档案那一块**：人设块照旧（这里用活的那张贡献者表拼，与工具循环同源）
     text = build_system_prompt(
         PromptContext(
             persona=tuple(service.persona_texts("u1")),
-            archive=service.archive_block("u1"),
+            memory_block=service.memory_block("u1"),
         )
     )
     assert "【你的人格" in text and "以下是用户档案" not in text
@@ -311,6 +326,9 @@ def test_seeded_core_files_are_classified_as_core(tmp_path) -> None:  # type: ig
     service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
     service.seed_persona("u1")
     workspace = service.workspace_for("u1")
+    # `PROFILE.md` 不再由我们铺（旧档案不是记忆本体了），但**旧盘上那份还在**：
+    # 人设文件那一节仍要能只读地打开它，所以它照样得被认成核心文件
+    (workspace / PROFILE_FILE).write_bytes("# 用户档案\n".encode())
 
     for name in (SOUL_FILE, PROFILE_FILE, AGENTS_FILE):
         item = memory_files.describe(workspace, name)
@@ -360,8 +378,8 @@ def test_templates_are_qwenpaw_shaped_not_empty_skeletons(tmp_path) -> None:  # 
     # 规程里要说清"先问一声"的边界，以及技能与检索该用哪个工具
     assert "先问一声" in texts[AGENTS_FILE]
     assert "list_skills" in texts[AGENTS_FILE] and "search" in texts[AGENTS_FILE]
-    # 档案不再走 persona（它是独立贡献者），所以这里拿不到 PROFILE.md——
-    # 它由 `archive_files.render_archive` 写成四区骨架，见 test_memory.py 那一条
+    # 记忆条目不再走 persona（它是独立贡献者），PROFILE.md 也已经不是记忆本体；
+    # 「旧档案不再是记忆本体」那条在 test_memory.py 里单独钉
     assert PROFILE_FILE not in texts
 
 
@@ -371,8 +389,8 @@ def test_templates_carry_the_frontmatter_the_memory_layer_needs(tmp_path) -> Non
     这不是装饰：它是 ReMe 那一族的约定（记忆文件靠这两个字段被检索与按需读取）。
     少了它，人设文件在检索那一侧就是"没有元数据的普通文件"。
 
-    **档案那份不带**（§3.5 第 1 条）：它的 frontmatter 只放 `updated`——
-    档案的形状由 `archive_files` 那一层定，混进人设这套约定会让两处口径打架。
+    这两份是**纯设定**，`summary` 与 `read_when` 就是它们的形状；
+    ``PROFILE.md``（旧档案）与记忆条目不走这条路。
     """
     service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
     service.seed_persona("u1")
@@ -382,10 +400,6 @@ def test_templates_carry_the_frontmatter_the_memory_layer_needs(tmp_path) -> Non
         head = text.split("---")[1]
         assert "summary:" in head, name
         assert "read_when:" in head, name
-
-    archive = service.archive_text("u1")
-    assert archive.startswith("---\nupdated: ")
-    assert "summary:" not in archive
 
 
 def test_templates_have_no_emoji(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -430,21 +444,21 @@ def test_memory_guidance_is_injected_only_when_the_service_gives_one() -> None:
 def test_memory_guidance_lands_inside_the_agents_section() -> None:
     """挂在**操作规程那一份之内**，而不是末尾单列（照 QwenPaw 拼进 AGENTS.md）。
 
-    "档案怎么用"是做事规程的一部分；单列成一块会让模型把它读成
+    "记忆怎么用"是做事规程的一部分；单列成一块会让模型把它读成
     另一份待读的资料，而不是"我该怎么干活"。它藏在人设那一块**内部**，
-    于是排在档案块之前。
+    于是排在记忆块之前。
     """
     text = build_system_prompt(
         PromptContext(
             base="底",
             persona=_persona_of(SOUL_FILE, AGENTS_FILE),
-            archive="档案正文",
+            memory_block="记忆正文",
             memory_guidance="记忆指导正文",
         )
     )
 
     assert text.index(f"{AGENTS_FILE} 正文") < text.index("记忆指导正文")
-    assert text.index("记忆指导正文") < text.index("档案正文"), "指导属于人设那一块"
+    assert text.index("记忆指导正文") < text.index("记忆正文"), "指导属于人设那一块"
 
 
 def test_memory_guidance_survives_a_missing_agents_file() -> None:
@@ -547,18 +561,18 @@ def test_the_skill_use_block_only_rides_along_with_a_skill_directory() -> None:
     assert "不许用" in with_skills
 
 
-def test_the_archive_block_is_passed_through_verbatim() -> None:
-    """提示词层**不改写档案原文**：给什么放什么（只按 `strip()` 去空白）。
+def test_the_memory_block_is_passed_through_verbatim() -> None:
+    """提示词层**不改写记忆原文**：给什么放什么（只按 `strip()` 去空白）。
 
-    为什么这条值得单独钉：档案块的边界说明、占位词规矩、超限声明**都由服务层
-    拼进那一段**（`MemoryService.archive_block`，那三句的用例在 test_memory.py）。
+    为什么这条值得单独钉：记忆块的边界说明、超限声明**都由服务层
+    拼进那一段**（`MemoryService.memory_block`，那几句的用例在 test_memory.py）。
     提示词这一层要是也"顺手整理"一下，两处就会各有一套措辞——而"模型看到的"
     与"界面上展示的"必须逐字一致。
     """
-    archive = "以下是用户档案：……\n\n## 身份与称呼\n\n- 用户叫小又\n"
-    text = build_system_prompt(PromptContext(base="底", archive=archive))
+    block = "以下是长期记忆：……\n\n## 身份与称呼\n\n- 用户叫小又\n"
+    text = build_system_prompt(PromptContext(base="底", memory_block=block))
 
-    assert archive.strip() in text
+    assert block.strip() in text
 
 
 # ------------------------------------------------- 这一轮怎么做事（§12.338 后续两条政策）

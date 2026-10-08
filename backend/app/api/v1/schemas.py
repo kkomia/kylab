@@ -16,7 +16,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.memory import MAX_ENTRY_CHARS as MAX_MEMORY_ENTRY_CHARS
-from app.services.memory import MAX_RECALL as MAX_MEMORY_RECALL
 
 _RECORD_CONFIG = ConfigDict(from_attributes=True, use_attribute_docstrings=True)
 """记录类响应模型直接由服务/存储的记录对象构建。
@@ -1501,77 +1500,71 @@ class MemoryFileDetailOut(MemoryFileOut):
 
 
 class MemoryStatusOut(BaseModel):
-    """记忆层的状态。**全是本地数字**（v0.46）：
+    """记忆层的状态。**全是本地数字**：
 
     没有"连没连上"这一项——记忆跑在我们自己的进程里，没有第二个进程可连。
-    原先那对 ``base_url`` / ``reachable``（三态）随 ReMe 一起删了：
-    它们的存在只为了让界面说清"服务在不在"，而现在这件事不存在。
+    ``development`` 报的是"向量是开发兜底"（没配嵌入模型，退回无语义的词面哈希）：
+    界面据此说清"检索质量不代表真实效果"，而不是让它看起来和真嵌入一样。
     """
 
     enabled: bool
     workspace: str = ""
     detail: str = ""
-    file_count: int = 0
-    """工作区里的记忆文件份数。"""
+    items: int = 0
+    """记忆库里一共几条（最多数到 200 条，见服务层的 ``MAX_ITEMS``）。"""
 
     last_changed_at: str = ""
     """记忆内容最后一次改动的时间（界面上写的"上次更新"）。"""
 
+    embedder: str = ""
+    """这一轮用的向量化模型 id（``dev/deterministic-hash`` = 兜底）。"""
+
+    development: bool = False
+    """``true`` = 向量是开发兜底，检索只反映词面重合。"""
+
 
 class MemoryOverviewOut(BaseModel):
-    """``GET /memory`` 的响应：只有状态。
-
-    原先这里还带一份**文件列表**（``files`` / ``truncated``，每项有个 ``injected``
-    标记）：它服务的是记忆页上那节只读的「旧记忆」（靠 ``injected=false`` 认那份
-    ``MEMORY.md``）。那一节与那条链一起退场（"历史的东西就删了"），列表也就没有
-    消费者了——**列表能力本身一并删掉**，不留一个没人读的字段。
-    """
+    """``GET /memory`` 的响应：只有状态。"""
 
     status: MemoryStatusOut
 
 
-class MemoryRecallIn(BaseModel):
-    query: str = Field(min_length=1, max_length=2000)
-    limit: int | None = Field(default=None, ge=1, le=MAX_MEMORY_RECALL)
+class MemoryItemOut(BaseModel):
+    """库里的一条记忆（D9 的条目列表用它）。"""
 
-
-class MemoryHitOut(BaseModel):
+    id: str
     text: str
-    path: str = ""
-    start_line: int | None = None
-    end_line: int | None = None
+    section: str = ""
+    """分区标签：``身份与称呼`` / ``长期偏好与风格`` / ``进行中的项目`` / ``工具与环境``。
+    自动捕获的条目入库时还不知道归哪一区，读取时按内容补一个**显示用**的标签。"""
+
+    source: str = ""
+    """它是怎么进来的：``显式`` / ``隐式`` / ``界面`` / ``迁移``。"""
+
+    created_at: str = ""
+    updated_at: str = ""
     score: float | None = None
-    """排序用的分。**只在本条查询内可比**：它跟工作区里有几块正文有关，
-    不是归一化的量——所以界面上不要拿它当"相关度百分比"读。"""
+    """检索给的相似度；列全部（``get_all``）那条路没有它。
 
-    coverage: float | None = None
-    """命中判据：查询里的字对有多少比例在这条记录里出现过（0–1）。
-
-    与分数量纲不同，这个是**归一化**的：它决定"算不算命中"
-    （见 ``archive.MIN_CHANGE_COVERAGE``），分数只决定排在第几条。
-    """
-
-    source: str = "text"
-    """这条是怎么被找到的：**变更流里永远是 ``text``**。
-
-    字段留着是因为 REST 与外部客户端一直按同一个形状读（v0.50 起它用来区分
-    词面命中与语义命中，而语义那一路已随档案制退场）。"""
+    **只在本条查询内可比**，界面上不要当"相关度百分比"读。"""
 
 
-class MemoryRecallOut(BaseModel):
-    query: str
-    hits: list[MemoryHitOut] = Field(default_factory=list)
+class MemoryItemsOut(BaseModel):
+    """``GET /memory/items`` 的响应。"""
+
+    query: str = ""
+    items: list[MemoryItemOut] = Field(default_factory=list)
+    total: int = 0
     note: str = ""
     """一句话提醒这是记忆而不是知识库原文（与 MCP 那份同口径）。"""
 
 
-class MemoryRememberIn(BaseModel):
-    """写一条进档案（§7.4 的 ``POST /memory/remember``）。
+class MemoryItemCreateIn(BaseModel):
+    """``POST /memory/items``：写一条新的（新增或按机械判据顶替）。
 
     ``section`` 留空或不认识时服务层按内容机械归区；``replaces`` 是"更正一次完成"
-    的入口（要顶替的那条原文）。``content`` 的 ``max_length`` 只是协议层的一道
-    粗护栏（500），**真正的单条上限是 120 字**——它由服务层以**回执**的形式拒绝
-    （"请拆成两条，或写进 AGENTS.md"），不是 422：被拒时调用方要拿到那条出路。
+    的入口（填要改掉的那条原文）。``content`` 的 ``max_length`` 是协议层的护栏，
+    **与真正的单条上限是同一个数**（500）——超过它的内容属于笔记或知识库。
     """
 
     content: str = Field(min_length=1, max_length=MAX_MEMORY_ENTRY_CHARS)
@@ -1579,161 +1572,70 @@ class MemoryRememberIn(BaseModel):
     replaces: str = Field(default="", max_length=MAX_MEMORY_ENTRY_CHARS)
 
 
-class MemoryRememberOut(BaseModel):
-    """一次写入的结果与回执（§4.4）。
+class MemoryItemPatchIn(BaseModel):
+    """``PATCH /memory/items/{id}``：改一条（按 id）。
+
+    两个字段都给了才算改；``content`` 留空 = 只改分区标签。
+    """
+
+    content: str = Field(default="", max_length=MAX_MEMORY_ENTRY_CHARS)
+    section: str = Field(default="", max_length=40)
+
+
+class MemoryWriteOut(BaseModel):
+    """一次写入的结果与回执。
 
     ``action`` 四种：``added`` / ``replaced`` / ``existing`` / ``rejected``
-    （``forget`` 那条路还会给 ``forgotten``）。``receipt`` 是**给人看的那一句话**，
+    （删除那条路还会给 ``forgotten``）。``receipt`` 是**给人看的那一句话**，
     界面与模型共用同一个来源——谁也不该自己另编一句。
     """
 
     action: str
     receipt: str = ""
     text: str = ""
-    """留在档案里的那一条原文（``rejected`` 时是这次想写进去的那条）。"""
+    """留在库里的那一条原文（``rejected`` 时是这次想写进去的那条）。"""
 
     section: str = ""
     replaced: str = ""
-    """被顶替掉的旧值（``replaced`` 时有）。"""
+    """被改掉 / 删掉的旧值。"""
 
-    entries: int = 0
-    """写完之后档案里一共几条（界面上的读数）。"""
-
-
-class MemoryEntryOut(BaseModel):
-    """档案里的一条（界面按区渲染，项目区还按 ``group`` 分组）。"""
-
-    text: str
-    group: str = ""
-    source: str = ""
-    """它是怎么进来的：``显式`` / ``隐式`` / ``界面`` / ``迁移``；空 = 没有对得上的记录
-    （多半是用户拿外部编辑器直接改的）。"""
-
-    change_at: str = ""
-    change_index: int = -1
-    """在变更流里的位置（文件顺序，最旧为 0）；``-1`` = 没找到。界面点来源小字时跳过去。"""
+    item_id: str = ""
+    """这条的 id（被拒时是空串）。"""
 
 
-class MemoryGroupOut(BaseModel):
-    name: str
-    entries: int = 0
+class MemoryHistoryOut(BaseModel):
+    """一条记忆历史上的一步（mem0 自己的 ``history.db``）。"""
 
-
-class MemorySectionOut(BaseModel):
-    """一个分区的读数与条目。**未知分区照常报**（``known=false``），界面标"分区不认识"。"""
-
-    name: str
-    known: bool = True
-    entries: int = 0
-    chars: int = 0
-    limit: int = 0
-    """条数上限；0 = 这一区不按条数限（项目区按组限）。"""
-
-    suggested_chars: int = 0
-    group_limit: int = 0
-    groups: list[MemoryGroupOut] = Field(default_factory=list)
-    items: list[MemoryEntryOut] = Field(default_factory=list)
-
-
-class MemoryBudgetOut(BaseModel):
-    """顶部那条全局读数（§5.2、§6.1）。"""
-
-    entries: int = 0
-    chars: int = 0
-    entry_limit: int = 0
-    char_limit: int = 0
-
-
-class MemoryDraftOut(BaseModel):
-    """``import-draft.md``：迁移时没挤进档案的旧条目（§8.2 第 3、4 类）。"""
-
-    exists: bool = False
-    path: str = ""
-    entries: int = 0
-
-
-class MemoryDraftSuggestionOut(BaseModel):
-    """「整理初稿」给出的一条建议（§8.3）：**只是建议，还没有写进档案**。"""
-
-    text: str
-    section: str = ""
-
-
-class MemoryDraftOrganizeOut(BaseModel):
-    """一次「整理初稿」的结果。
-
-    **这一步不写任何东西**：它只跑一次模型、把草稿里的旧条目改写成画像条目并把
-    归区建议带回来，用户在界面上确认之后才逐条走 ``POST /memory/remember``
-    ——于是这一次模型调用**不可能绕过预算与变更流**（§3.3–§3.4）。
-    """
-
-    items: list[MemoryDraftSuggestionOut] = Field(default_factory=list)
-    note: str = ""
-
-
-class MemoryArchiveOut(BaseModel):
-    """档案卡首屏要的一切（一页两块里的第一块）。"""
-
-    path: str = ""
-    updated: str = ""
-    budget: MemoryBudgetOut
-    sections: list[MemorySectionOut] = Field(default_factory=list)
-    draft: MemoryDraftOut
-    migration_available: bool = False
-    """还有没有可折叠的旧数据——**没有时迁移入口不出现**（§8）。"""
-
-
-class MemoryChangeOut(BaseModel):
-    """变更流里的一条（§3.4）。``old`` / ``new`` 是逐字节的原文。"""
-
-    index: int = 0
     at: str = ""
-    action: str = ""
-    section: str = ""
-    source: str = ""
+    event: str = ""
+    """mem0 的动作名：``ADD`` / ``UPDATE`` / ``DELETE``。"""
+
     old: str = ""
     new: str = ""
-    restorable: bool = False
-    """能不能还原：``顶替`` 与 ``忘掉`` 有旧值可写回，其余动作没有。"""
+    deleted: bool = False
 
 
-class MemoryChangesOut(BaseModel):
-    changes: list[MemoryChangeOut] = Field(default_factory=list)
+class MemoryItemHistoryOut(BaseModel):
+    """``GET /memory/items/{id}/history`` 的响应，**最旧在前**。"""
+
+    id: str = ""
+    items: list[MemoryHistoryOut] = Field(default_factory=list)
 
 
-class MemoryForgetIn(BaseModel):
-    """忘掉一条（界面上行尾的删除）。``topic`` 是那一条的原文。"""
+class MemoryImportOut(BaseModel):
+    """``POST /memory/import-legacy`` 的报告。"""
 
-    topic: str = Field(min_length=1, max_length=MAX_MEMORY_ENTRY_CHARS)
+    source: str = ""
+    entries: int = 0
+    """旧档案里读到几条候选。"""
 
-
-class MemoryRestoreIn(BaseModel):
-    """还原：把一条旧值写回档案（界面上变更流的「还原」）。"""
-
-    text: str = Field(min_length=1, max_length=MAX_MEMORY_ENTRY_CHARS)
-
-
-class MemoryGroupRenameIn(BaseModel):
-    """项目段的组改名（§3.1 第 2 条：改名 = 一次顶替，旧名进变更流）。"""
-
-    section: str = Field(default="", max_length=40)
-    old: str = Field(min_length=1, max_length=MAX_MEMORY_ENTRY_CHARS)
-    new: str = Field(min_length=1, max_length=MAX_MEMORY_ENTRY_CHARS)
-
-
-class MemoryMigrationOut(BaseModel):
-    """一次机械折叠迁移的计数（§8.4 的迁移报告）。"""
-
-    added: int = 0
-    replaced: int = 0
+    imported: int = 0
     existing: int = 0
     dropped_sensitive: int = 0
-    downgraded: int = 0
-    trimmed: int = 0
     skipped: bool = False
-    archive_changed: bool = False
-    draft_entries: int = 0
-    per_source: list[tuple[str, int]] = Field(default_factory=list)
+    """没有新东西可搬（源指纹与水位一致）——此时净改动为零。"""
+
+    changed: bool = False
 
 
 # ------------------------------------------------- 知识库提供者（M3 握手）

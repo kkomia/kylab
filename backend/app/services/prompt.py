@@ -36,16 +36,16 @@ logger = logging.getLogger(__name__)
 #: 语义上：越靠前越像"我是谁"，越靠后越像"这一轮的上下文"。
 PRIORITY_BASE = 10
 PRIORITY_PERSONA = 20
-PRIORITY_ARCHIVE = 21
-"""**用户档案**那一档（§5.1，2026-10-03 档案制）。
+PRIORITY_MEMORY_BLOCK = 21
+"""**长期记忆**那一档（v0.57：mem0 条目，此前是用户档案）。
 
-"挂在人设那一档"这条口径有两个半的含义，三条都刻意：
+"挂在人设那一档"这条口径有三个含义，三条都刻意：
 
 - **位置紧挨人设**（21，就在人设之后）：它与 `SOUL.md`/`AGENTS.md` 是**同一类东西**
   ——每轮都该在场的设定，而不是这一轮才取的资料；
 - **但是独立的一个贡献者**：它有自己的配置项（`memory.enabled`）与自己的开关语义，
   不与人设共用一份配置。挂进 `memory.persona_files` 的后果是：用户从那一行里
-  删掉一个文件名，档案就**静默停止注入**（§7.2）；
+  删掉一个文件名，记忆就**静默停止注入**；
 - **跟着人设那一档之后**（而不是之前）：先"我是谁、这类活怎么干"，再"对方是谁、
   他在意什么"——后者是数据，越靠后越像数据，这一条与这份文件里其它优先级的
   语义一致。
@@ -94,18 +94,19 @@ class PromptContext:
     persona: tuple[tuple[str, str], ...] = ()
     """``[(文件名, 正文)]``，来自 `MemoryService.persona_texts`（按人设顺序）。
 
-    v0.56 起只有 ``SOUL.md`` 与 ``AGENTS.md`` 走这条路——``PROFILE.md``（档案）
-    是下面那个独立的 ``archive`` 贡献者，``MEMORY.md`` 已退场。"""
+    只有 ``SOUL.md`` 与 ``AGENTS.md`` 走这条路：它们是**设定**。
+    ``PROFILE.md``（旧档案）v0.57 起不再注入——记忆是下面那个独立的
+    ``memory_block`` 贡献者，``MEMORY.md`` 早已退场。"""
 
-    archive: str = ""
-    """**用户档案**那一段（已含边界说明），来自 `MemoryService.archive_block`。
+    memory_block: str = ""
+    """**长期记忆**那一段（已含边界说明），来自 `MemoryService.memory_block`。
 
-    **未启用记忆、或档案还是空的时是空串**（由服务层判，这里不重复判）。
-    它是独立的贡献者而不是拼进 ``persona``（§5.1）：那份配置只管人设的取舍与顺序，
-    档案挂上去就会被一次编辑静默关掉。"""
+    **未启用记忆、或库里一条都没有时是空串**（由服务层判，这里不重复判）。
+    它是独立的贡献者而不是拼进 ``persona``：那份配置只管人设的取舍与顺序，
+    记忆挂上去就会被一次编辑静默关掉。"""
 
     memory_guidance: str = ""
-    """「用户档案怎么用」那一段，来自 `MemoryService.guidance`。
+    """「长期记忆怎么用」那一段，来自 `MemoryService.guidance`。
 
     **未启用记忆时是空串**（由服务层判，这里不重复判）：关着时 ``recall``
     会明确报错，再告诉模型"什么时候该去查"只会换来每轮一次无效调用。"""
@@ -113,7 +114,7 @@ class PromptContext:
     bootstrap: str = ""
     """「还没认识对方：这一轮该做一次开场」那一段，来自 `MemoryService.bootstrap_block`。
 
-    **只在档案还是空模板时非空**（由服务层判）：Agent 一写进去它自己就没了，
+    **只在库里一条记忆都没有时非空**（由服务层判）：Agent 一写进去它自己就没了，
     所以这一段不需要"用过就删"的簿记。
 
     **它是独立一块、而且排在整份提示词的最后**（``PRIORITY_BOOTSTRAP``，v0.52）：
@@ -135,7 +136,7 @@ def default_contributors() -> list[PromptContributor]:
     return [
         (PRIORITY_BASE, "base", lambda ctx: ctx.base),
         (PRIORITY_PERSONA, "persona", _persona_block),
-        (PRIORITY_ARCHIVE, "archive", lambda ctx: ctx.archive),
+        (PRIORITY_MEMORY_BLOCK, "memory_block", lambda ctx: ctx.memory_block),
         (PRIORITY_KB_PROMPT, "kb_prompt", lambda ctx: ctx.kb_prompt),
         (PRIORITY_MEMORY, "memory", lambda ctx: ctx.memory),
         (PRIORITY_SKILLS, "skills", lambda ctx: ctx.skills),
@@ -204,12 +205,13 @@ def _persona_block(context: PromptContext) -> str:
     总起句只在**真有文件进来**时才给（一份都没有时这一块整体为空）：
     空挂着一段"请遵守以下设定"而没有下文，比不写更糟。
 
-    「用户档案怎么用」（``memory_guidance``）挂在**操作规程那一份的末尾**，
+    「长期记忆怎么用」（``memory_guidance``）挂在**操作规程那一份的末尾**，
     照 QwenPaw 把记忆指导拼进 ``AGENTS.md`` 那一段的做法：这是"这类活怎么干"的
     一部分，单列成一块会让它读起来像另一份待读的资料。没有 ``AGENTS.md`` 时
     退化成独立一块——总比把整段指导丢掉好。
 
-    **档案不在这一块里**：它是独立的贡献者（``PRIORITY_ARCHIVE``），理由见那里的说明。
+    **记忆条目不在这一块里**：它是独立的贡献者（``PRIORITY_MEMORY_BLOCK``），
+    理由见那里的说明。
     """
     blocks: list[str] = []
     agents_at: int | None = None

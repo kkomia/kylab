@@ -57,6 +57,7 @@ from app.services.command_policy import (
 )
 from app.services.llm import ToolSpec
 from app.services.mcp_client import normalized_server_name, split_qualified
+from app.services.memory import render_items
 from app.services.skills import recombine_surrogates, text_problem
 from app.services.subagent import parse_tool_content as parse_subagent_content
 from app.services.tool_loop import ToolOutcome, ToolRunner
@@ -369,30 +370,26 @@ _CONVERSATION_FILE_TOOLS = frozenset({"list_conversation_files", "read_conversat
 #:   而"给了又拒"正是知识库那一侧已经修过的坑（见 ``_KB_TOOLS``——模型会先试一次、
 #:   再拿一句错误，白花一个来回）。
 #:
-#: **其余三件都不看这个开关**：``remember`` / ``forget`` 写的是档案（"关了也能改自己
-#: 的东西"，§7.3），``read_memory`` 读的也是它。旧口径把 ``read_memory`` 藏起来，
-#: 是因为它**只在给 recall 的片段做展开**时有入口；现在它读的是整份档案，
-#: 与 recall 没有依赖关系。
+#: **其余三件都不看这个开关**：``remember`` / ``forget`` 写的是记忆库（"关了也能改
+#: 自己的东西"），``read_memory`` 读的也是它。
 _MEMORY_SWITCH_TOOLS = frozenset({"recall"})
 
 #: 记忆这一侧的内部工具（对外 MCP 面只有 ``recall`` / ``remember`` / ``forget``）。
 #:
-#: **为什么需要 ``read_memory``**：档案虽然每轮已经注入，但模型写进去之后要能
-#: **自查它落在哪、写成什么样**（编辑是"顶替一条"，而顶替目标必须逐字准确）。
-#: 它读的是**磁盘上那份原样的 Markdown**（含 frontmatter 与用户手写的内容），
-#: 比注入块多一层"文件是什么样"的事实。
+#: **为什么需要 ``read_memory``**：记忆条目虽然每轮已经注入，但模型改 / 删一条时要能
+#: **指出具体是哪一条**（v0.57 起按 id 走），而注入块里**不带 id**（一行的 id 是 36 个
+#: 字符，200 条就是七千字，那是每轮都发出去的成本）。这个工具给的就是带 id 的那一版。
 #:
-#: **``write_memory`` 已退场**（§7.4）：整份覆盖与条目级预算/变更流不相容，
-#: 它等于给预算与变更流开一个后门。工具表里不再有它，但分发上留了一个
-#: **一律拒绝**的兼容壳（见 ``_write_memory``）——老客户端与老提示词里可能还写着
-#: 这个名字，让它拿到一句"改用 remember"比抛一个未知工具更可解释。
+#: **``write_memory`` 已退场**：整份覆盖与"一条一条维护"不相容。工具表里不再有它，
+#: 但分发上留了一个**一律拒绝**的兼容壳（见 ``_write_memory``）——老客户端与老提示词
+#: 里可能还写着这个名字，让它拿到一句"改用 remember"比抛一个未知工具更可解释。
 _MEMORY_TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "read_memory",
         "description": (
-            "读**用户档案**（`PROFILE.md`）的原文，用来自查它现在写了什么、"
+            "列出**长期记忆**里的全部条目，每条带 id，用来自查现在记了什么、"
             "某一条的确切文字是什么（更正时 `replaces` 要逐字对得上）。"
-            "它读的是磁盘上那份 Markdown 全文，含四个分区与 frontmatter。"
+            "**记忆每轮已经在你的提示词里**，这里比那一份只多一件事：id。"
         ),
         "inputSchema": {
             "type": "object",
@@ -520,7 +517,7 @@ def _all_specs(
         for item in _LOCAL_TOOLS
         if scope or item["name"] not in _LOCAL_KB_TOOLS
     )
-    # 记忆这一侧的内部工具：`read_memory`（读整份档案，供模型自查它写进去的是什么）。
+    # 记忆这一侧的内部工具：`read_memory`（列全部记忆条目，供模型指出是哪一条）。
     # 它**不跟着开关走**（开关管的是注入与 recall），所以这里那道过滤对它其实不起作用
     # ——留着这条判据是因为 `_MEMORY_SWITCH_TOOLS` 是**一处**定义（谁哪天把某件工具
     # 归进"关着就不摆"，这里自动跟上）。
@@ -1633,35 +1630,34 @@ def _ingest_file(
 
 
 def _read_memory(services: Any, caller: Caller, args: dict[str, Any]) -> ToolOutcome:
-    """读**整份用户档案**（磁盘上那份 Markdown 的原文）。
+    """列出**长期记忆的全部条目**（每条带 id）。
 
-    **它存在的理由**（§7.4）：档案虽然每轮已经注入，但模型写进去之后要能**自查**
-    它落在哪、写成什么样——而"更正一条"（``replaces``）要求**逐字**给出目标，
-    注入块里那几条是渲染过的（标题与条目行的形状可能与文件里不同）。
-    这里给的是文件原文（含 frontmatter 与用户手写的部分），比注入块多一层
-    "文件是什么样"的事实。
+    **它存在的理由**：记忆条目虽然每轮已经注入，但模型改 / 删一条时要能**指出具体是
+    哪一条**——v0.57 起 id 是那个句柄，而注入块里**故意不带 id**（一行的 id 是 36 个
+    字符，200 条就是七千字，那是每轮都发出去的成本）。这个工具给的就是带 id 的那一版。
+    ``replaces`` 那条路仍然要**逐字**给出目标原文，所以这里同时是"那一条确切怎么写的"
+    的出处。
 
     结果渲染成文本而不是 JSON——这段文字是给模型读的，JSON 里换行会变成一屏
     ``\\n``（与 ``_run_file_tool`` 同一个理由）。
     """
     del args
     owner_id = caller.owner_id if caller is not None else None
-    text = str(services.memory.archive_text(owner_id) or "").strip()
-    if not text:
+    items = services.memory.all_items(owner_id)
+    if not items:
         return ToolOutcome(
-            content="档案还是空的（一条都没写）。要用 `remember` 记第一条。",
-            summary="档案还是空的",
+            content="记忆还是空的（一条都没有）。要用 `remember` 记第一条。",
+            summary="记忆还是空的",
         )
-    return ToolOutcome(content=text, summary="读了整份档案")
+    text = render_items(items, with_ids=True)
+    return ToolOutcome(content=text, summary=f"读了 {len(items)} 条记忆")
 
 
 def _write_memory(services: Any, caller: Caller, args: dict[str, Any]) -> ToolOutcome:
     """**已退场的兼容壳**：一律拒绝，并说清现在该用什么。
 
-    ``write_memory``（整份改写 ``PROFILE.md``）在 v0.56 随档案制退场（§7.4）：
-    整份覆盖与"条目级预算 + 变更流"不相容——它一次就能把预算撑爆、又能把变更流
-    整个绕过（删掉一条不留痕）。档案的写入只有 `remember` / `forget` 两条路，
-    外加界面上按条目编辑。
+    ``write_memory`` 是"整份覆盖一份文件"那个时代的工具，它随档案制一起退场了；
+    v0.57 的记忆是**一条一条的**（有自己的 id），整份覆盖这件事已经没有对应的东西。
 
     工具表里已经不摆它（见 ``_MEMORY_TOOLS``），这一支留着只为"老客户端/老提示词
     仍然按名字调它"这一种情况：那时给一句"改用 remember"比抛"未知的工具"更可解释，
@@ -1670,12 +1666,12 @@ def _write_memory(services: Any, caller: Caller, args: dict[str, Any]) -> ToolOu
     del services, caller, args
     return ToolOutcome(
         content=(
-            "`write_memory` 已经不用了：档案是一句一条维护的，整份覆盖会把预算与"
-            "变更流一起绕过去。现在这样写：\n"
+            "`write_memory` 已经不用了：记忆是一条一条维护的，整份覆盖没有对应的东西。"
+            "现在这样写：\n"
             "- 记一条新的：`remember(content)`（可选 `section` 指定分区）；\n"
             "- 更正一条：`remember(content, replaces=旧的那句原文)`——一次调用即可；\n"
             "- 删掉一条：`forget(topic)`；\n"
-            "- 想看档案现在写成什么样：`read_memory`。\n"
+            "- 想看现在记了哪些（每条带 id）：`read_memory`。\n"
             "**`SOUL.md` 与 `AGENTS.md` 是对方自己的东西**：想改就把建议说给他听。"
         )
     )

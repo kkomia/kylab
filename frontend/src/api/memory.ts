@@ -1,18 +1,17 @@
 /**
- * 记忆接口（对应后端 `/api/v1/memory`，档案制三期）。
+ * 记忆接口（对应后端 `/api/v1/memory`，v0.57 起后端是 mem0）。
  *
- * **两个概念别混**（见 `docs/设计/记忆档案-设计-v0.1.md` §7.1）：记忆是"你说的"
- * （无出处、可改、高频写），知识库是"文献说的"。所以这里没有任何字段指向文档、
- * 片段或向量——记忆页只碰记忆那一侧的 Markdown 文件。
+ * **两个概念别混**：记忆是"你说的"（无出处、可改、高频写），知识库是"文献说的"。
+ * 所以这里没有任何字段指向文档、片段或向量——记忆页只碰记忆这一侧。
  *
- * **一份档案**：记忆的本体是工作区里的 `PROFILE.md`（四个固定分区），
- * 外加一份 `changes.md`（变更流，不进注入）。档案的写入只有按条目这一条路——
- * 改一条走 `rememberMemory(..., { replaces })`、删一条走 `forgetMemory`、
- * 还原一条走 `restoreMemory`、项目组改名走 `renameMemoryGroup`。
- * **整份文件的覆盖端点已经删掉**（§6.3）：它是一个绕过预算与变更流的后门。
+ * **一条一条的记忆条目**：库里的本体是 mem0 记下的条目（每条有 id），
+ * 写入只有三条路——加一条 `createMemoryItem`、改一条 `updateMemoryItem`（按 id）、
+ * 删一条 `deleteMemoryItem`（按 id）。旧档案制那几个端点
+ * （`/archive` `/changes` `/remember` `/forget` `/restore` `/group` `/migrate`）
+ * 已经删除，别在这里把它们加回来。
  *
- * `content` 是**原文**（含 frontmatter）：只读展示要逐字还原，所以进出的是完整
- * Markdown 字符串，不解析、不结构化。
+ * `content` 是**原文**（人设文件那一侧含 frontmatter）：只读展示要逐字还原，
+ * 所以进出的是完整字符串，不解析、不结构化。
  */
 
 // 记忆本体本来就在本机（`<data_dir>/memory`）→ 全部走 `requestLocal`。
@@ -24,74 +23,43 @@ type Schema = components['schemas']
 export type MemoryFileDetail = Schema['MemoryFileDetailOut']
 export type MemoryStatus = Schema['MemoryStatusOut']
 export type MemoryOverview = Schema['MemoryOverviewOut']
-export type MemoryHit = Schema['MemoryHitOut']
-export type MemoryRecall = Schema['MemoryRecallOut']
+export type MemoryItem = Schema['MemoryItemOut']
+export type MemoryItems = Schema['MemoryItemsOut']
+export type MemoryWriteResult = Schema['MemoryWriteOut']
+export type MemoryHistory = Schema['MemoryHistoryOut']
+export type MemoryItemHistory = Schema['MemoryItemHistoryOut']
+export type MemoryImport = Schema['MemoryImportOut']
 
-/** 一次写入的结果与回执（`remember` / `forget` / `restore` / 组改名共用）。 */
-export type MemoryWriteResult = Schema['MemoryRememberOut']
-
-export type MemoryEntry = Schema['MemoryEntryOut']
-export type MemoryGroup = Schema['MemoryGroupOut']
-/**
- * 分区与档案顶层的数组字段在 OpenAPI 里是**可选的**（pydantic 的 `default_factory`），
- * 但后端每次都填它们。这里用 `Omit` 把那一层收成必填，字段本身的形状仍然来自生成物
- * （改名会在编译期报错），只是调用点不必到处 `?? []`。
- */
-type RawSection = Schema['MemorySectionOut']
-export type MemorySection = Omit<RawSection, 'groups' | 'items'> & {
-  groups: NonNullable<RawSection['groups']>
-  items: NonNullable<RawSection['items']>
-}
-export type MemoryArchive = Omit<Schema['MemoryArchiveOut'], 'sections'> & {
-  sections: MemorySection[]
-}
-export type MemoryChange = Schema['MemoryChangeOut']
-export type MemoryMigration = Schema['MemoryMigrationOut']
-export type MemoryDraftOrganize = Schema['MemoryDraftOrganizeOut']
-export type MemoryDraftSuggestion = Schema['MemoryDraftSuggestionOut']
-
-/** 这一层的状态（开没开、工作区在哪、几份文件）。**只有状态**——原先那份文件列表
- * 随记忆页上只读的「旧记忆」一起下掉，这份响应里不再有 `files`。 */
+/** 这一层的状态（开没开、库在哪、几条、向量是不是兜底）。**只有状态**。 */
 export function getMemory(): Promise<MemoryOverview> {
   return requestLocal<MemoryOverview>('/memory')
 }
 
 /**
- * 读一个文件的原文（含 frontmatter）。**只读**——档案卡右下角那个「原文」用它，
- * 迁移草稿查看也用它。
+ * 条目列表：给了 `query` 就在库里检索，否则列全部（最近改的在前）。
  *
- * **路径按段编码**（每段单独 `encodeURIComponent`）：`digest/wiki/x.md` 里的
- * 斜杠是路径分隔符、必须原样留着，靠 `:path` 参数接住；而文件名里可能有
- * `#`、`?`、空格这类会截断 URL 的字符，那些要编码。
+ * 检索与知识库那条路**是两条路、永不合并**——这里的 `note` 就是提醒这件事的一句话。
  */
-export function getMemoryFile(path: string): Promise<MemoryFileDetail> {
-  return requestLocal<MemoryFileDetail>(`/memory/files/${encodePath(path)}`)
-}
-
-/** 档案卡：分区、条目、读数，以及迁移入口要的草稿计数与显隐。 */
-export function getMemoryArchive(): Promise<MemoryArchive> {
-  return requestLocal<MemoryArchive>('/memory/archive')
-}
-
-/** 变更流时间线（后端已经倒序给）。 */
-export function getMemoryChanges(): Promise<MemoryChange[]> {
-  return requestLocal<Schema['MemoryChangesOut']>('/memory/changes').then(
-    (body) => body.changes ?? [],
-  )
+export function getMemoryItems(query = '', limit = 0): Promise<MemoryItems> {
+  const params = new URLSearchParams()
+  if (query.trim()) params.set('query', query.trim())
+  if (limit > 0) params.set('limit', String(limit))
+  const suffix = params.toString()
+  return requestLocal<MemoryItems>(`/memory/items${suffix ? `?${suffix}` : ''}`)
 }
 
 /**
- * 记一条（新增或顶替）。
+ * 记一条（新增或更正）。
  *
- * `replaces` 是"更正一次完成"的入口（§4.3）：填要顶替的那条原文，一次调用完成。
+ * `replaces` 是"更正一次完成"的入口：填要改掉的那条原文，一次调用完成。
  * 返回体带 `action`（`added` / `replaced` / `existing` / `rejected`）与 `receipt`
  * ——**回执就是给人看的那一句**，界面直接用，不另编。
  */
-export function rememberMemory(
+export function createMemoryItem(
   content: string,
   options: { section?: string; replaces?: string } = {},
 ): Promise<MemoryWriteResult> {
-  return requestLocal<MemoryWriteResult>('/memory/remember', {
+  return requestLocal<MemoryWriteResult>('/memory/items', {
     method: 'POST',
     body: JSON.stringify({
       content,
@@ -101,56 +69,46 @@ export function rememberMemory(
   })
 }
 
-/** 忘掉一条（界面上行尾的删除）。`topic` 是那一条的原文。 */
-export function forgetMemory(topic: string): Promise<MemoryWriteResult> {
-  return requestLocal<MemoryWriteResult>('/memory/forget', {
-    method: 'POST',
-    body: JSON.stringify({ topic }),
-  })
-}
-
-/** 还原：把变更流里的一条旧值写回档案（§6.2）。 */
-export function restoreMemory(text: string): Promise<MemoryWriteResult> {
-  return requestLocal<MemoryWriteResult>('/memory/restore', {
-    method: 'POST',
-    body: JSON.stringify({ text }),
-  })
-}
-
-/** 项目组改名（§3.1 第 2 条：改名 = 一次顶替）。 */
-export function renameMemoryGroup(
-  section: string,
-  old: string,
-  next: string,
+/** 改一条（按 id）：`content` 留空 = 只改分区标签。 */
+export function updateMemoryItem(
+  id: string,
+  changes: { content?: string; section?: string },
 ): Promise<MemoryWriteResult> {
-  return requestLocal<MemoryWriteResult>('/memory/group', {
-    method: 'POST',
-    body: JSON.stringify({ section, old, new: next }),
+  return requestLocal<MemoryWriteResult>(`/memory/items/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      content: changes.content ?? '',
+      section: changes.section ?? '',
+    }),
   })
 }
 
-/** 跑一遍机械折叠迁移（**零模型调用**，§8.3），返回迁移报告。 */
-export function migrateMemory(): Promise<MemoryMigration> {
-  return requestLocal<MemoryMigration>('/memory/migrate', { method: 'POST' })
+/** 删一条（按 id）。 */
+export function deleteMemoryItem(id: string): Promise<MemoryWriteResult> {
+  return requestLocal<MemoryWriteResult>(`/memory/items/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
+/** 一条记忆的历史（**最旧在前**，只读）。 */
+export function getMemoryItemHistory(id: string): Promise<MemoryItemHistory> {
+  return requestLocal<MemoryItemHistory>(`/memory/items/${encodeURIComponent(id)}/history`)
+}
+
+/** 把旧 `PROFILE.md` 的四区条目搬进新库（**零模型调用**、可重跑、旧文件不动）。 */
+export function importLegacyMemory(): Promise<MemoryImport> {
+  return requestLocal<MemoryImport>('/memory/import-legacy', { method: 'POST' })
 }
 
 /**
- * 跑一次模型整理迁移草稿（§8.3）：把旧条目改写成画像条目并给归区建议。
+ * 读一个文件的原文（含 frontmatter）。**只读**——人设文件与旧档案的查看用它。
  *
- * **用户点一次才发生**（会花钱的默认关），而它**一个字都不写**：返回的是预览，
- * 确认之后前端逐条打 `rememberMemory`——于是这一次模型调用不可能绕过预算、
- * 顶替判据与变更流，每条的回执也仍然从那一处文案来。
+ * **路径按段编码**（每段单独 `encodeURIComponent`）：`digest/wiki/x.md` 里的
+ * 斜杠是路径分隔符、必须原样留着，靠 `:path` 参数接住；而文件名里可能有
+ * `#`、`?`、空格这类会截断 URL 的字符，那些要编码。
  */
-export function organizeMemoryDraft(): Promise<MemoryDraftOrganize> {
-  return requestLocal<MemoryDraftOrganize>('/memory/draft/organize', { method: 'POST' })
-}
-
-/** 在档案的变更流里查证。**与知识库检索是两条路**，结果不合并。 */
-export function recallMemory(query: string, limit?: number): Promise<MemoryRecall> {
-  return requestLocal<MemoryRecall>('/memory/recall', {
-    method: 'POST',
-    body: JSON.stringify({ query, limit: limit ?? null }),
-  })
+export function getMemoryFile(path: string): Promise<MemoryFileDetail> {
+  return requestLocal<MemoryFileDetail>(`/memory/files/${encodePath(path)}`)
 }
 
 function encodePath(path: string): string {

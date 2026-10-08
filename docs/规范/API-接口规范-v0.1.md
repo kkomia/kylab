@@ -328,7 +328,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **125** 条端点。
+共 **122** 条端点。
 
 ### `conversations`
 
@@ -405,16 +405,13 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/memory` | 记忆状态 |
-| `GET` | `/api/v1/memory/archive` | 档案卡（分区、条目、读数） |
-| `GET` | `/api/v1/memory/changes` | 变更流（倒序） |
-| `POST` | `/api/v1/memory/draft/organize` | 整理迁移草稿（一次模型调用，只给建议） |
 | `GET` | `/api/v1/memory/files/{path}` | 读一个记忆文件 |
-| `POST` | `/api/v1/memory/forget` | 忘掉一条 |
-| `POST` | `/api/v1/memory/group` | 项目组改名 |
-| `POST` | `/api/v1/memory/migrate` | 折叠旧记忆（零模型调用） |
-| `POST` | `/api/v1/memory/recall` | 在档案的变更流里查证 |
-| `POST` | `/api/v1/memory/remember` | 记一条（新增或顶替） |
-| `POST` | `/api/v1/memory/restore` | 还原一条旧值 |
+| `POST` | `/api/v1/memory/import-legacy` | 导入旧档案（零模型调用） |
+| `GET` | `/api/v1/memory/items` | 列记忆条目 / 检索 |
+| `POST` | `/api/v1/memory/items` | 记一条（新增或更正） |
+| `DELETE` | `/api/v1/memory/items/{item_id}` | 删一条 |
+| `PATCH` | `/api/v1/memory/items/{item_id}` | 改一条 |
+| `GET` | `/api/v1/memory/items/{item_id}/history` | 一条记忆的历史 |
 
 ### `model-registry`
 

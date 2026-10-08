@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.core.services import reset_services
 from app.core.storage import reset_stores
 from app.services.llm import ChatError, LLMDelta, LLMReply, ToolCall, ToolCallDelta
+from app.services.memory import reset_instances as reset_memory_instances
 from app.services.model_registry import ModelRegistryService
 from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import StoreBundle
@@ -179,9 +180,14 @@ def isolated_data_dir(tmp_path, monkeypatch, request):
     get_settings.cache_clear()
     reset_services()
     reset_stores()
+    # **记忆库也要放掉**：mem0 的实例持有本地 qdrant 的**文件锁**（一个进程只能有一个），
+    # 而每个用例的 `tmp_path` 都不同——不关的话，一次全量要留下几百个打开的文件句柄，
+    # Windows 上还会让临时目录删不掉（`PermissionError`）。
+    reset_memory_instances()
     yield
     reset_services()
     reset_stores()
+    reset_memory_instances()
     get_settings.cache_clear()
 
 

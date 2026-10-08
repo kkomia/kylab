@@ -10,8 +10,8 @@
 2. **文件与执行工具恒在**（它们不依赖知识库，依赖的是会话的工作区与沙箱）；
 3. **渲染是给人/模型读的文本**：文件内容不能包在 JSON 里（一屏 ``\\n``），
    SQL 结果给 Markdown 表（模型对表格形状的读数比一层字段名准）；
-4. **记忆那一侧跟着记忆开关走**：关着时 ``recall`` 与 ``read_memory`` 一起消失，
-   而 ``remember`` 留着（它不看那个开关，见 ``MemoryService.remember``）。
+4. **记忆那一侧跟着记忆开关走**：关着时 ``recall`` 从工具表里消失，
+   而 ``remember`` / ``read_memory`` 留着（它们不看那个开关）。
 """
 
 from __future__ import annotations
@@ -58,6 +58,18 @@ class _FakeRuntime:
 
     def get_int(self, key: str) -> int:
         return 0
+
+    def llm(self):
+        """没配对话模型的那个快照（读记忆不必有模型，这一条顺带钉住它）。"""
+        from app.services.llm import LLMConfig
+
+        return LLMConfig(base_url="", api_key="", model_id="")
+
+    def embedding(self):
+        """**一律没配**：服务层退回开发用确定性嵌入（无语义的词面哈希）。"""
+        from app.services.runtime_config import EmbeddingSettings
+
+        return EmbeddingSettings(base_url="", api_key="", model_id="", dim=0, batch_size=32)
 
 
 def _memory_service(tmp_path: Path) -> MemoryService:
@@ -162,8 +174,8 @@ def test_memory_tools_follow_the_memory_switch() -> None:
     而"给了又拒"正是知识库那一侧已经修过的坑（模型先试一次、再拿一句错误，
     白花一个来回——见 ``_KB_TOOLS``）。
 
-    **``remember`` / ``forget`` / ``read_memory`` 不看那个开关**（§7.3：它管的是
-    注入与 recall，档案的读写不看它）——"关了也能改自己的东西"这条纪律保留。
+    **``remember`` / ``forget`` / ``read_memory`` 不看那个开关**（它管的是
+    注入与 recall，记忆的读写不看它）——"关了也能改自己的东西"这条纪律保留。
     """
     on = _names_with_memory(True, ["kb_x"])
     off = _names_with_memory(False, ["kb_x"])
@@ -176,10 +188,10 @@ def test_memory_tools_follow_the_memory_switch() -> None:
 
 
 def test_read_memory_description_says_what_it_reads() -> None:
-    """描述要写清**它读的是整份档案**、以及为什么还要读它（档案每轮已经注入）。
+    """描述要写清**它列的是记忆条目**、以及为什么还要看它（条目每轮已经注入）。
 
     缺了这一句，模型会问"我不是已经看到了吗"——或者更糟：把注入块里那几条
-    （渲染过的形状）当成文件里的原文，于是 `replaces` 给的字对不上。
+    （渲染过的形状、**不带 id**）当成库里的原文，于是改 / 删时指不准是哪一条。
     """
     specs = {
         spec.name: spec for spec in agent_tools.tool_specs(
@@ -188,8 +200,8 @@ def test_read_memory_description_says_what_it_reads() -> None:
     }
     description = specs["read_memory"].description
 
-    assert "档案" in description
-    assert "原文" in description
+    assert "长期记忆" in description
+    assert "id" in description
 
 
 # ------------------------------------------------------------------ 会话文件区（v0.55）
@@ -390,27 +402,26 @@ def test_ingest_file_says_where_to_find_paths_when_missing() -> None:
     assert "list_files" in outcome.content
 
 
-def test_read_memory_returns_the_whole_archive(tmp_path: Path) -> None:
-    """``read_memory`` 给的是**整份档案的原文**（含 frontmatter 与四个分区）。
+def test_read_memory_lists_every_item_with_its_id(tmp_path: Path) -> None:
+    """``read_memory`` 列的是**库里的全部条目、每条带 id**。
 
-    它服务的是"自查"与"更正要逐字准确"两件事（§7.4）：注入块里那几条是渲染过的，
-    而 `replaces` 要求原文对得上，所以模型需要一个能拿到文件原样的入口。
+    它服务的是"自查"与"指出具体哪一条"两件事：注入块里那几条是渲染过的
+    （按分区排、**不带 id**），而改 / 删都按 id 走，所以模型需要一个能拿到
+    id 的入口；`replaces` 也要求原文对得上。
     """
     service = _memory_service(tmp_path)
-    service.remember("用户要求先给结论", section="长期偏好与风格")
+    item_id = service.remember("用户要求先给结论", section="长期偏好与风格").item_id
 
     outcome = agent_tools._read_memory(
         SimpleNamespace(memory=service), Caller(is_admin=True), {}
     )
 
     assert "## 长期偏好与风格" in outcome.content
-    assert "- 用户要求先给结论" in outcome.content
-    # 原文（含 frontmatter）而不是渲染过的注入块
-    assert outcome.content.startswith("---")
+    assert f"[{item_id}] 用户要求先给结论" in outcome.content
 
 
-def test_read_memory_says_when_the_archive_is_empty(tmp_path: Path) -> None:
-    """空档案要说清"还没有一条"并指出该用什么，而不是回一段空白。"""
+def test_read_memory_says_when_the_store_is_empty(tmp_path: Path) -> None:
+    """空库要说清"还没有一条"并指出该用什么，而不是回一段空白。"""
     service = _memory_service(tmp_path)
 
     outcome = agent_tools._read_memory(

@@ -1602,12 +1602,8 @@ def test_attach_note_reports_an_unreachable_provider(tmp_path, monkeypatch) -> N
 def test_remember_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """**记忆写在本机**（M2 阶段 3）：`remember` → `MemoryService.remember` ✓。
 
-    "记住我喜欢 X"这条链的落点是 `data_dir/memory/PROFILE.md`（档案）——**本机那份**
-    （记忆本体本来就在数据目录下，边车现在读写的正是自己这一份）✓，
-    而且**一次网都不出** ✓。
-
-    期二改了两处口径：``tags`` 这个参数没了（档案没有标签这一层），
-    落点从 ``MEMORY.md`` 换成了四区档案，回执也改成 §4.4 那一句。
+    "记住我喜欢 X"这条链的落点是 `data_dir/memory/local/mem0/`（本机那份 mem0 存储，
+    账号名是字面量 ``local``）——**本机**，而且**一次网都不出** ✓。
     """
     model = _ToolCallingModel(
         "remember",
@@ -1628,10 +1624,14 @@ def test_remember_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # 
     assert done, payload["steps"]
     assert "记下了" in done[0]["result"], done[0]["result"]
     assert payload["answer"] == "记住了"
-    # ② 内容真的写进了本机那份档案
-    memory_file = tmp_path / "data" / "memory" / "PROFILE.md"
-    assert memory_file.is_file(), memory_file
-    assert "用户偏好深色模式" in memory_file.read_text(encoding="utf-8")
+    # ② 内容真的落进了本机那份记忆库
+    assert (tmp_path / "data" / "memory" / "local" / "mem0" / "qdrant").is_dir()
+    items = [
+        item
+        for item in client.get("/api/v1/memory/items").json()["items"]
+        if "深色模式" in item["text"]
+    ]
+    assert items, "写进去的那条读得回来"
 
 
 def test_recall_reads_the_local_memory(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1642,9 +1642,9 @@ def test_recall_reads_the_local_memory(tmp_path, monkeypatch) -> None:  # type: 
     1. **开关的权威在本机了** ✗：`recall` 受 `memory.enabled` 门控，关着时它**明确报错**
        而不是回空 —— 所以先用本机后端那页设置把它打开
        （`PATCH /api/v1/settings`），证明"改的是同一个库、对边车立刻生效" ✓；
-    2. 命中真的从 `data_dir/memory/` 出来（本轮不联网 ✓，靠 `_no_network` + 假模型）；
-    3. **召回池是 `changes.md`**（§5.3，v0.56 改）：档案本身走**注入**不进召回
-       （同一段内容进上下文两次是设计上要避免的），所以这一条把内容放进变更流。
+    2. 命中真的从本机那份记忆库里出来（本轮不联网 ✓，靠 `_no_network` + 假模型）；
+    3. **检索走的是记忆库**（v0.57 起是 mem0 的 ``search``）：所以这一条先把内容
+       通过 `POST /api/v1/memory/items` 写进去，再让模型 `recall` 它。
     """
     model = _ToolCallingModel("recall", json.dumps({"query": "深色模式"}), "你偏好深色模式")
     client = _client(tmp_path, monkeypatch, model)
@@ -1653,14 +1653,9 @@ def test_recall_reads_the_local_memory(tmp_path, monkeypatch) -> None:  # type: 
         "/api/v1/settings", json={"values": [{"key": "memory.enabled", "value": "true"}]}
     )
     assert opened.status_code == 200 and opened.json()["updated"] == 1, opened.text
-    # 往召回池里放一条（`changes.md`，不是 `PROFILE.md` —— 档案走注入，见 docstring 第 3 条）
-    changes = tmp_path / "data" / "memory" / "changes.md"
-    changes.parent.mkdir(parents=True, exist_ok=True)
-    changes.write_text(
-        "- 2026-10-01 09:20 · 新增 · 长期偏好与风格 · 来源：显式\n"
-        "  - 新：用户偏好深色模式 #偏好\n",
-        encoding="utf-8",
-    )
+    # 往库里放一条（走本机后端那个写口，与界面上"加一条"同一条路）
+    written = client.post("/api/v1/memory/items", json={"content": "用户偏好深色模式"})
+    assert written.status_code == 200, written.text
 
     payload = client.post("/turn", json={"message": "我之前说过什么偏好？"}).json()
 
@@ -1670,9 +1665,9 @@ def test_recall_reads_the_local_memory(tmp_path, monkeypatch) -> None:  # type: 
         if step.get("tool") == "recall" and step.get("status") == "done"
     ]
     assert done, payload["steps"]
-    # 命中的正文与来源路径都在（`tools.py::_recall` 那份读法 ✓）
+    # 命中的正文与 id 都在（`tools.py::_recall` 那份读法 ✓）
     assert "深色模式" in done[0]["result"], done[0]["result"]
-    assert "changes.md" in done[0]["result"], done[0]["result"]
+    assert written.json()["item_id"] in done[0]["result"], done[0]["result"]
     assert payload["answer"] == "你偏好深色模式"
 
 

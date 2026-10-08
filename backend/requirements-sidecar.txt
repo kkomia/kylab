@@ -64,6 +64,11 @@ python-multipart==0.0.32  # FastAPI 表单/上传（导入链带进来）
 markdown-it-py==4.2.0     # 技能/文档渲染那条链带进来
 mdurl==0.1.2              #   ↑ 的依赖
 PyYAML==6.0.3             # 配置/技能 frontmatter 那条链带进来
+numpy==2.5.3              # ★ mem0 的打分那条链（`mem0.utils.scoring` 模块级 import）
+requests==2.34.2          # ★ mem0 → posthog 的传输层（`posthog/__init__.py` 导进闭包）
+urllib3==2.8.0            #   ↑ 的依赖（Phase B 曾把 urllib3 从闭包赶出去，mem0 又把它带回来了）
+charset-normalizer==3.5.1 #   ↑ 的编码探测
+distro==1.9.0             # ★ openai SDK 的（mem0 的 llm 基类那条链）
 
 # ---------------------------------------------------------------- 2b) **运行期按需**（不在导入闭包里，但工具真调时必须装）
 #
@@ -124,3 +129,49 @@ pycparser==3.0                # cffi 解析 C 声明
 # → 桌面端调 `recall` 会在调用那一刻 `ModuleNotFoundError` ✗。两条出路：
 # 往这里加 jieba（约 +40.9 MB），或让记忆召回在缺 jieba 时只用"相邻字对"那条通道
 # （`memory_files._word_pairs` 不依赖分词）。**留给架构师定**（见阶段 3 报告）。
+
+# ---------------------------------------------------------------- 6) v0.57 记忆换成 mem0：闭包 18 → 33（顶层模块）/ 15 → 31（发行包）
+#
+# 背景：记忆层从"自研档案（Markdown 文件）"换成 **mem0**（`mem0ai`），
+# 而 mem0 在 import 期就把 qdrant 客户端、openai SDK、sqlalchemy、posthog、protobuf
+# 一起拽进来 —— `services/memory_providers.py` 是**模块级 import mem0**（不是惰性），
+# 所以这一整条链真的落在边车的闭包里。实测（`scripts/sidecar-closure.py`，2026-10-09）：
+#
+#   顶层模块 **18 → 33**；新进来的 15 个是：
+#   mem0 / qdrant_client / grpc / google（protobuf 的命名空间）/ posthog / requests /
+#   urllib3 / charset_normalizer / certifi / idna / distro / click / Pygments /
+#   httpx / numpy
+#
+# 三处值得单独说清：
+#
+# ① **httpx 又回到闭包里了**：Phase B / 阶段 3 曾用 `core.lazy_httpx` 把它赶出去
+#    （省下 click + Pygments 约 5 MB）。mem0 的 openai SDK 链在导入期就用 httpx，
+#    那次优化被抵掉了 —— 所以 click / Pygments 也跟着回来了。**不要**为了让闭包好看
+#    去改那三处 `lazy_httpx`：它们省的是我们自己的 import，省不掉依赖的。
+# ② **qdrant-client 用的是本地模式**（`path=`，进程内、sqlite 落盘），
+#    所以运行期**不需要**一个 qdrant 服务；但它自带 numpy 与 grpc 的链。
+# ③ **`MEM0_DIR` / `MEM0_TELEMETRY` 由 `memory_providers.py` 在 import mem0 之前设定**
+#    （见那个文件的头两行）：遥测关掉、簿记目录指到数据目录下 —— 否则进程会往
+#    `~/.mem0` 写东西，而且会往 PostHog 发事件。
+mem0ai==2.2.1               # 记忆本体（Apache-2.0）—— 这一节里唯一"我们自己要的"依赖
+qdrant-client==1.19.1       # mem0 的默认向量库；本地模式（path=）不需要服务
+grpcio==1.84.0              #   ↑ qdrant 的 gRPC 客户端（本地模式其实用不到，但它在导入链上）
+protobuf==6.33.6            #   ↑（`google/` 命名空间那一坨）
+posthog==7.66.0             # mem0 的遥测客户端。**默认关**（MEM0_TELEMETRY=false），但包还得在
+openai==3.26.1              # mem0 的 llm 基类那条链（我们自己的模型通道也走它对面的 OpenAI 兼容端点）
+sqlalchemy==2.1.4           # mem0 的历史库（`history.db`）用它
+portalocker==3.2.0          #   ↑ qdrant 本地模式的文件锁（"同一个 path 一个进程只能有一个实例"就是它）
+backoff==2.2.1              # mem0 的重试装饰器
+jiter==0.17.0               # openai SDK 的 JSON 解析加速
+h2==4.4.1                   # httpx 的 HTTP/2（openai SDK 那条链）
+hpack==4.2.0                #   ↑
+hyperframe==6.1.0           #   ↑
+pytz==2026.5                # posthog / sqlalchemy 那条链的时区表
+
+# 注意：一处**运行期按需**（同 2b/5 的口径，但这次是**新增**的已知缺口）：
+# **没配嵌入模型时**记忆走的是开发兜底嵌入（`DeterministicEmbedder`，无语义的词面哈希），
+# 它在调用那一刻惰性 import **jieba** —— 而打包运行时里没有 jieba ✗。
+# 也就是说：**没配嵌入模型 + 打包运行时** ⇒ 记忆的写入与检索会在那一刻
+# `ModuleNotFoundError`。两条出路（与 5) 那条同源，一起定）：
+# 往这里加 jieba（约 +40.9 MB），或让兜底嵌入也走一条不依赖分词的路。
+# **闭包脚本看不见它**（惰性 import），所以这一条只能靠人记住。

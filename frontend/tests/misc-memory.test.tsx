@@ -1,36 +1,30 @@
 /**
- * 记忆页（档案卡 + 变更流）的用例。
- *
- * 这一页在档案制三期被整页重做（`docs/设计/记忆档案-设计-v0.1.md` §6）：
- * 从"文件 / 图谱 / 召回"三分段换成**一页两块**——档案卡与变更流时间线。
+ * 记忆页（条目列表）的用例。v0.57 起后端是 mem0，这一页从"档案卡 + 变更流"
+ * 换成了**一屏条目**：搜索框、条目（改 / 删 / 看历史）、加一条、迁移入口、
+ * 人设文件只读查看。
  *
  * 用例按"用户能看见的那件事"分组：
- * 1. 档案卡：四个分区、项目分组、行内编辑/删除、读数格式与变色、未知分区标记；
- * 2. 变更流：倒序、旧值/新值、还原；
- * 3. 原文：只读展示；
- * 4. 迁移：入口显隐、报告、草稿提示。
+ * 1. 列表与状态：条目怎么画、空态说什么、兜底提示什么时候出现；
+ * 2. 搜索：回车才检索（不是每敲一个字发一次）、关着时如实报错；
+ * 3. 按 id 改与删：走的是那个 id、回执用后端那一句；
+ * 4. 历史：只读、按需加载；
+ * 5. 加一条与迁移：入口与报告；
+ * 6. 人设文件：只读打开、`PROFILE.md` 明确写"不再注入"。
  *
- * ## 被删掉的旧用例与理由（§6.3 下线清单）
+ * ## 被删掉的旧用例与理由
  *
- * 旧页对应的那些用例不是"顺手删的"，每一条都有一句为什么——原来它们钉住的界面
- * 已经不存在了，留着只会变成对不存在功能的断言：
+ * 那批用例钉的界面已经不存在了（档案制下线），留着只会变成对不存在功能的断言：
  *
- * - **文件列表 / 整份文件编辑**（`改了草稿点保存`、`有未保存改动时切文件先弹确认`、
- *   `保存失败时草稿仍留在编辑器里`、`列表行：标题即路径…`）——`PUT /memory/files/{path}`
- *   已经删掉，整份覆盖是绕过预算与变更流的后门（§6.3）；档案的写入只有按条目这一条路；
- * - **图谱页**（`布局纯函数：同一份输入算两次一致` 等两条）——`MemoryGraph.tsx` /
- *   `GET /memory/graph` 一起退场，被删的组件没有可断言的界面；
- * - **召回试验框**（`召回结果给出处与判据…`）——那一格是"试一下搜不搜得到"，档案全量
- *   进了上下文之后它不再是一个用户要做的动作；
- * - **待整合 / 已整合标记**（`按固定顺序分组…`、`状态只说本地事实…`）——`daily`/`digest`
- *   与整合那一层随档案制退场，标记没有对象了；
- * - **页签原语**（`页签的当前态由原语自己画`）——一页两块不再有页签；
- * - **旧记忆（只读）**（`旧记忆（只读）按 injected=false 识别并展示`）——那一节与
- *   `/memory` 上喂它的文件列表一起退场：`MEMORY.md` 已经退场（§7.2），界面上不再有
- *   展示它的地方，后端也不再报 `files` / `injected`。
+ * - **分区读数与变色**（`按后端给的顺序画四个分区，项目区按组显示`、读数格式）——
+ *   分区不再是界面上的组织方式（条目列表按时间倒序），预算那一层也退场了；
+ * - **项目组与组改名**（`archive-group*`）——mem0 没有"组"这个概念；
+ * - **变更流与还原**（`倒序给`、`还原`）——变更流随档案制退场，历史改成
+ *   点开某一条时按需读（只读，没有"还原"）；
+ * - **迁移草稿与「整理初稿」**——那一步是一次模型整理，已经删掉；
+ *   现在只有"导入旧档案"这一条零模型调用的路。
  *
- * 保留下来的旧口径只有两条，换成新形状继续钉：**界面不解释机制**（`不出现实现细节`）
- * 与**界面凭据不落到这一页**。
+ * 保留下来的旧口径只有两条，换成新形状继续钉：**界面不解释机制**与
+ * **界面不出现凭据**。
  */
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -38,16 +32,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/memory', () => ({
   getMemory: vi.fn(),
+  getMemoryItems: vi.fn(),
   getMemoryFile: vi.fn(),
-  getMemoryArchive: vi.fn(),
-  getMemoryChanges: vi.fn(),
-  rememberMemory: vi.fn(),
-  forgetMemory: vi.fn(),
-  restoreMemory: vi.fn(),
-  renameMemoryGroup: vi.fn(),
-  migrateMemory: vi.fn(),
-  organizeMemoryDraft: vi.fn(),
-  recallMemory: vi.fn(),
+  createMemoryItem: vi.fn(),
+  updateMemoryItem: vi.fn(),
+  deleteMemoryItem: vi.fn(),
+  getMemoryItemHistory: vi.fn(),
+  importLegacyMemory: vi.fn(),
 }))
 
 vi.mock('@/api/settings', () => ({
@@ -56,137 +47,84 @@ vi.mock('@/api/settings', () => ({
 }))
 
 import {
-  forgetMemory,
+  createMemoryItem,
+  deleteMemoryItem,
   getMemory,
-  getMemoryArchive,
-  getMemoryChanges,
   getMemoryFile,
-  migrateMemory,
-  organizeMemoryDraft,
-  rememberMemory,
-  restoreMemory,
-  type MemoryArchive,
-  type MemoryChange,
-  type MemoryEntry,
+  getMemoryItemHistory,
+  getMemoryItems,
+  importLegacyMemory,
+  updateMemoryItem,
+  type MemoryItem,
   type MemoryOverview,
-  type MemorySection,
 } from '@/api/memory'
-import { resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
+import { setLocalBackendForTest } from '@/api/local'
 import { MemoryPage } from '@/features/misc/memory/MemoryPage'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
 import { useSessionStore } from '@/lib/session'
 
 const getMemoryMock = vi.mocked(getMemory)
-const getMemoryFileMock = vi.mocked(getMemoryFile)
-const getMemoryArchiveMock = vi.mocked(getMemoryArchive)
-const getMemoryChangesMock = vi.mocked(getMemoryChanges)
-const rememberMock = vi.mocked(rememberMemory)
-const forgetMock = vi.mocked(forgetMemory)
-const restoreMock = vi.mocked(restoreMemory)
-const migrateMock = vi.mocked(migrateMemory)
-const organizeMock = vi.mocked(organizeMemoryDraft)
+const getItemsMock = vi.mocked(getMemoryItems)
+const getFileMock = vi.mocked(getMemoryFile)
+const createMock = vi.mocked(createMemoryItem)
+const updateMock = vi.mocked(updateMemoryItem)
+const deleteMock = vi.mocked(deleteMemoryItem)
+const historyMock = vi.mocked(getMemoryItemHistory)
+const importMock = vi.mocked(importLegacyMemory)
 
-/** 档案卡的数据是可变的：写入之后后端读到的是新的一份，用例模拟这件事。 */
-let archiveState: MemoryArchive
-let changesState: MemoryChange[]
+/** 列表数据是可变的：写入之后后端读到新的一份，用例模拟这件事。 */
+let itemsState: MemoryItem[]
 
-function entryOf(text: string, extra: Partial<MemoryEntry> = {}): MemoryEntry {
-  return { text, group: '', source: '', change_at: '', change_index: -1, ...extra }
-}
-
-function sectionOf(overrides: Partial<MemorySection> & { name: string }): MemorySection {
+function itemOf(id: string, text: string, extra: Partial<MemoryItem> = {}): MemoryItem {
   return {
-    known: true,
-    entries: 0,
-    chars: 0,
-    limit: 20,
-    suggested_chars: 800,
-    group_limit: 0,
-    groups: [],
-    items: [],
-    ...overrides,
+    id,
+    text,
+    section: '长期偏好与风格',
+    source: '显式',
+    created_at: '2026-10-04T09:00:00+00:00',
+    updated_at: '2026-10-04T09:00:00+00:00',
+    score: null,
+    ...extra,
   }
 }
 
-function archiveOf(overrides: Partial<MemoryArchive> = {}): MemoryArchive {
-  return {
-    path: 'PROFILE.md',
-    updated: '2026-10-04',
-    budget: { entries: 4, chars: 80, entry_limit: 60, char_limit: 4000 },
-    sections: [
-      sectionOf({
-        name: '身份与称呼',
-        limit: 10,
-        suggested_chars: 400,
-        entries: 1,
-        chars: 10,
-        items: [entryOf('用户叫小又。')],
-      }),
-      sectionOf({
-        name: '长期偏好与风格',
-        entries: 1,
-        chars: 30,
-        items: [
-          entryOf('用户要求回答先给结论。', {
-            source: '界面',
-            change_at: '2026-10-04 09:00',
-            change_index: 1,
-          }),
-        ],
-      }),
-      sectionOf({
-        name: '进行中的项目',
-        limit: 0,
-        group_limit: 8,
-        groups: [{ name: '内网知识库', entries: 1 }],
-        entries: 1,
-        chars: 20,
-        items: [entryOf('用户的目标是把知识库放在内网。', { group: '内网知识库' })],
-      }),
-      sectionOf({ name: '工具与环境', limit: 12, suggested_chars: 480 }),
-    ],
-    draft: { exists: false, path: 'import-draft.md', entries: 0 },
-    migration_available: false,
-    ...overrides,
-  }
-}
-
-function overviewOf(overrides: Partial<MemoryOverview> = {}): MemoryOverview {
+function overviewOf(overrides: Partial<MemoryOverview['status']> = {}): MemoryOverview {
   return {
     status: {
       enabled: true,
       workspace: 'D:\\kylab\\memory',
       detail: '',
-      file_count: 2,
-      last_changed_at: '2026-10-04T09:00:00Z',
+      items: itemsState.length,
+      last_changed_at: '2026-10-04T09:00:00+00:00',
+      embedder: 'dev/deterministic-hash',
+      development: false,
+      ...overrides,
     },
-    ...overrides,
   }
-}
-
-/**
- * 找到某个分区的元素（多个同名 testid 时按 `data-section` 定位）。 */
-function sectionEl(name: string): HTMLElement {
-  const found = screen
-    .getAllByTestId('archive-section')
-    .find((node) => node.getAttribute('data-section') === name)
-  if (!found) throw new Error(`找不到分区：${name}`)
-  return found
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   resetToasts()
   useSessionStore.setState({ token: '' })
+  // 这些页面走"本机档"那条链（`/memory` 挂在本机后端上）
+  setLocalBackendForTest('local')
 
-  archiveState = archiveOf()
-  changesState = []
+  itemsState = [itemOf('m1', '用户要求回答先给结论')]
 
   getMemoryMock.mockImplementation(async () => overviewOf())
-  getMemoryArchiveMock.mockImplementation(async () => archiveState)
-  getMemoryChangesMock.mockImplementation(async () => changesState)
-  getMemoryFileMock.mockImplementation(async (path) => ({
+  getItemsMock.mockImplementation(async (query = '') =>
+    query
+      ? {
+          query,
+          items: itemsState.filter((item) => item.text.includes(query)),
+          total: 1,
+          note: '这是**长期记忆**，不是知识库原文。',
+        }
+      : { query: '', items: itemsState, total: itemsState.length, note: '' },
+  )
+  getFileMock.mockImplementation(async (path) => ({
     path,
     name: path,
     title: path,
@@ -195,421 +133,324 @@ beforeEach(() => {
     tags: [],
     size_bytes: 10,
     modified_at: '2026-10-04T09:00:00Z',
-    links: [],
-    retrievable: false,
-    consolidated: null,
-    content: path === 'import-draft.md' ? '- 旧条目甲\n- 旧条目乙\n' : `# ${path}\n\n正文\n`,
+    content: `# ${path}\n\n正文\n`,
     meta: {},
     truncated: false,
   }))
-  rememberMock.mockResolvedValue({
+  createMock.mockResolvedValue({
+    action: 'added',
+    receipt: '记下了：新的一条',
+    text: '新的一条',
+    section: '长期偏好与风格',
+    replaced: '',
+    item_id: 'm2',
+  })
+  updateMock.mockResolvedValue({
     action: 'replaced',
-    receipt: '改成：新（旧的已留档，可还原）',
-    text: '新',
-    section: '',
-    replaced: '',
-    entries: 4,
+    receipt: '改成：新的一条（旧的留在历史里）',
+    text: '新的一条',
+    section: '长期偏好与风格',
+    replaced: '旧的一条',
+    item_id: 'm1',
   })
-  forgetMock.mockResolvedValue({
+  deleteMock.mockResolvedValue({
     action: 'forgotten',
-    receipt: '忘掉了：X（旧的已留档，可还原）',
-    text: 'X',
-    section: '',
-    replaced: 'X',
-    entries: 3,
+    receipt: '忘掉了：用户要求回答先给结论。',
+    text: '用户要求回答先给结论',
+    section: '长期偏好与风格',
+    replaced: '用户要求回答先给结论',
+    item_id: 'm1',
   })
-  restoreMock.mockResolvedValue({
-    action: 'restored',
-    receipt: '还原成：旧',
-    text: '旧',
-    section: '',
-    replaced: '',
+  importMock.mockResolvedValue({
+    source: 'PROFILE.md',
     entries: 4,
-  })
-  migrateMock.mockResolvedValue({
-    added: 5,
-    replaced: 1,
-    existing: 2,
-    dropped_sensitive: 3,
-    downgraded: 4,
-    trimmed: 2,
+    imported: 3,
+    existing: 1,
+    dropped_sensitive: 0,
     skipped: false,
-    archive_changed: true,
-    draft_entries: 6,
-    per_source: [],
+    changed: true,
   })
-})
-
-describe('记忆页 · 档案卡', () => {
-  it('按后端给的顺序画四个分区，项目区按组显示', async () => {
-    renderMisc(<MemoryPage />)
-
-    const sections = await screen.findAllByTestId('archive-section')
-    expect(sections.map((node) => node.getAttribute('data-section'))).toEqual([
-      '身份与称呼',
-      '长期偏好与风格',
-      '进行中的项目',
-      '工具与环境',
-    ])
-    expect(within(sectionEl('进行中的项目')).getByTestId('archive-group')).toHaveAttribute(
-      'data-group',
-      '内网知识库',
-    )
-  })
-
-  it('改一条：失焦保存走一次顶替，条目变成新值', async () => {
-    const user = userEvent.setup()
-    renderMisc(<MemoryPage />)
-
-    await user.click(await screen.findByText('用户叫小又。'))
-    const input = screen.getByTestId('archive-entry-input')
-    await user.clear(input)
-    await user.type(input, '用户叫小柚。')
-
-    rememberMock.mockImplementation(async () => {
-      archiveState = archiveOf({
-        sections: [
-          sectionOf({
-            name: '身份与称呼',
-            limit: 10,
-            suggested_chars: 400,
-            entries: 1,
-            chars: 10,
-            items: [entryOf('用户叫小柚。')],
-          }),
-        ],
-      })
-      return {
-        action: 'replaced',
-        receipt: '改成：用户叫小柚。',
-        text: '用户叫小柚。',
-        section: '身份与称呼',
-        replaced: '用户叫小又。',
-        entries: 1,
-      }
-    })
-    fireEvent.blur(input)
-
-    await waitFor(() =>
-      expect(rememberMock).toHaveBeenCalledWith('用户叫小柚。', {
-        section: '身份与称呼',
-        replaces: '用户叫小又。',
-      }),
-    )
-    await waitFor(() => expect(screen.getByText('用户叫小柚。')).toBeInTheDocument())
-  })
-
-  it('删除一条：走忘掉，条目消失', async () => {
-    const user = userEvent.setup()
-    renderMisc(<MemoryPage />)
-
-    const line = (await screen.findByText('用户叫小又。')).closest('li') as HTMLElement
-
-    forgetMock.mockImplementation(async () => {
-      archiveState = archiveOf({
-        sections: [
-          sectionOf({ name: '身份与称呼', limit: 10, suggested_chars: 400 }),
-          sectionOf({ name: '长期偏好与风格' }),
-          sectionOf({ name: '进行中的项目', limit: 0, group_limit: 8 }),
-          sectionOf({ name: '工具与环境', limit: 12, suggested_chars: 480 }),
-        ],
-      })
-      return {
-        action: 'forgotten',
-        receipt: '忘掉了：用户叫小又。',
-        text: '用户叫小又。',
-        section: '身份与称呼',
-        replaced: '用户叫小又。',
-        entries: 3,
-      }
-    })
-    await user.click(within(line).getByTestId('archive-entry-delete'))
-
-    await waitFor(() => expect(forgetMock).toHaveBeenCalledWith('用户叫小又。'))
-    await waitFor(() => expect(screen.queryByText('用户叫小又。')).not.toBeInTheDocument())
-  })
-
-  it('读数按 X/Y 条 · X/Y 字的格式渲染，接近上限变色', async () => {
-    archiveState = archiveOf({
-      budget: { entries: 29, chars: 100, entry_limit: 60, char_limit: 4000 },
-      sections: [
-        sectionOf({ name: '身份与称呼', limit: 10, suggested_chars: 400, entries: 9, chars: 300 }),
-        sectionOf({ name: '长期偏好与风格', entries: 20, chars: 900, suggested_chars: 800 }),
-      ],
-    })
-    renderMisc(<MemoryPage />)
-
-    expect(await screen.findByTestId('archive-budget')).toHaveTextContent('29/60 条 · 100/4000 字')
-    // 全局读数没到八成 → 不变色
-    expect(screen.getByTestId('archive-budget')).toHaveAttribute('data-tone', 'ok')
-
-    const reads = screen.getAllByTestId('archive-section-readout')
-    expect(reads[0]).toHaveTextContent('9/10 条 · 300/400 字')
-    expect(reads[0]).toHaveAttribute('data-tone', 'warn')
-    expect(reads[1]).toHaveAttribute('data-tone', 'over')
-  })
-
-  it('未知分区照常显示，并标「分区不认识」', async () => {
-    archiveState = archiveOf({
-      sections: [
-        sectionOf({ name: '身份与称呼', limit: 10, suggested_chars: 400 }),
-        sectionOf({
-          name: '朋友与家人',
-          known: false,
-          limit: 0,
-          suggested_chars: 0,
-          entries: 1,
-          chars: 12,
-          items: [entryOf('用户有个弟弟在读书。')],
-        }),
-      ],
-    })
-    renderMisc(<MemoryPage />)
-
-    const unknown = await waitFor(() => sectionEl('朋友与家人'))
-    expect(within(unknown).getByTestId('archive-unknown-section')).toHaveTextContent('分区不认识')
-    expect(within(unknown).getByText('用户有个弟弟在读书。')).toBeInTheDocument()
-  })
-
-  it('「原文」只读展示 PROFILE.md 全文与磁盘路径', async () => {
-    const user = userEvent.setup()
-    renderMisc(<MemoryPage />)
-
-    await user.click(await screen.findByTestId('archive-original'))
-
-    await waitFor(() =>
-      expect(screen.getByTestId('archive-original-path')).toHaveTextContent(
-        'D:\\kylab\\memory/PROFILE.md',
-      ),
-    )
-    expect(screen.getByTestId('archive-original-content')).toHaveTextContent('# PROFILE.md')
-  })
-
-  it('来源小字点击后高亮变更流里那一条', async () => {
-    const user = userEvent.setup()
-    changesState = [
+  historyMock.mockResolvedValue({
+    id: 'm1',
+    items: [
       {
-        index: 1,
-        at: '2026-10-04 09:00',
-        action: '顶替',
-        section: '长期偏好与风格',
-        source: '界面',
-        old: '旧偏好',
-        new: '用户要求回答先给结论。',
-        restorable: true,
-      },
-    ]
-    renderMisc(<MemoryPage />)
-
-    await user.click(await screen.findByTestId('archive-entry-source'))
-
-    await waitFor(() =>
-      expect(screen.getByTestId('change-item')).toHaveAttribute('data-highlight', 'true'),
-    )
-  })
-})
-
-describe('记忆页 · 变更流', () => {
-  it('倒序（最新在最前），旧值/新值各一行', async () => {
-    changesState = [
-      {
-        index: 1,
-        at: '2026-10-04 09:30',
-        action: '顶替',
-        section: '长期偏好与风格',
-        source: '界面',
-        old: '旧偏好',
-        new: '新偏好',
-        restorable: true,
-      },
-      {
-        index: 0,
-        at: '2026-10-04 09:00',
-        action: '新增',
-        section: '身份与称呼',
-        source: '显式',
+        at: '2026-10-04T09:00:00+00:00',
+        event: 'ADD',
         old: '',
-        new: '用户叫小又。',
-        restorable: false,
+        new: '用户要求回答先给结论',
+        deleted: false,
       },
-    ]
-    renderMisc(<MemoryPage />)
-
-    const items = await screen.findAllByTestId('change-item')
-    // 后端已经倒序给，前端不重排
-    expect(items.map((node) => node.getAttribute('data-action'))).toEqual(['顶替', '新增'])
-    expect(items[0]).toHaveTextContent('新偏好')
-    expect(within(items[0]).getByTestId('change-old')).toHaveTextContent('旧偏好')
-  })
-
-  it('「还原」把那条的旧值写回去', async () => {
-    const user = userEvent.setup()
-    changesState = [
       {
-        index: 0,
-        at: '2026-10-04 09:30',
-        action: '忘掉',
-        section: '长期偏好与风格',
-        source: '界面',
-        old: '用户不看客套话。',
-        new: '',
-        restorable: true,
+        at: '2026-10-04T09:05:00+00:00',
+        event: 'UPDATE',
+        old: '用户要求回答先给结论',
+        new: '用户要求回答简短，先给结论',
+        deleted: false,
       },
-    ]
-    renderMisc(<MemoryPage />)
-
-    await user.click(await screen.findByTestId('change-restore'))
-
-    await waitFor(() => expect(restoreMock).toHaveBeenCalledWith('用户不看客套话。'))
-  })
-
-  it('没有可还原的旧值时不显示还原按钮', async () => {
-    changesState = [
-      {
-        index: 0,
-        at: '2026-10-04 09:00',
-        action: '新增',
-        section: '身份与称呼',
-        source: '显式',
-        old: '',
-        new: '用户叫小又。',
-        restorable: false,
-      },
-    ]
-    renderMisc(<MemoryPage />)
-
-    await screen.findByTestId('change-item')
-    expect(screen.queryByTestId('change-restore')).not.toBeInTheDocument()
+    ],
   })
 })
 
-describe('记忆页 · 迁移', () => {
-  it('可迁移时出现入口，跑完展示迁移报告', async () => {
-    const user = userEvent.setup()
-    archiveState = archiveOf({ migration_available: true })
+// ------------------------------------------------------------------ 列表与状态
+
+describe('记忆页 · 条目列表', () => {
+  it('按后端给的顺序画条目，每条带 id、分区标签与来源', async () => {
+    itemsState = [itemOf('m1', '第一条'), itemOf('m2', '第二条', { source: '迁移' })]
     renderMisc(<MemoryPage />)
 
-    await user.click(await screen.findByTestId('migration-run'))
-
-    await waitFor(() => expect(migrateMock).toHaveBeenCalled())
-    const report = await screen.findByTestId('migration-report')
-    // 折叠 = 新增 + 顶替 = 5 + 1
-    expect(report).toHaveTextContent('折叠')
-    expect(report).toHaveTextContent('6 条')
-    expect(report).toHaveTextContent('丢弃')
-    expect(report).toHaveTextContent('3 条')
-    expect(report).toHaveTextContent('降级进草稿')
-    expect(report).toHaveTextContent('4 条')
-    expect(report).toHaveTextContent('裁剪')
-    expect(report).toHaveTextContent('2 条')
+    const rows = await screen.findAllByTestId('memory-item')
+    expect(rows.map((node) => node.getAttribute('data-id'))).toEqual(['m1', 'm2'])
+    expect(within(rows[0]).getByTestId('memory-item-text')).toHaveTextContent('第一条')
+    expect(within(rows[0]).getByTestId('memory-item-section')).toHaveTextContent('长期偏好与风格')
+    // 来源是事实，不是机制说明
+    expect(within(rows[1]).getByTestId('memory-item-meta')).toHaveTextContent('来自旧档案')
   })
 
-  it('没有可折叠的旧数据时不出现迁移入口', async () => {
+  it('状态报条数、路径与上次更新（读数都是后端给的）', async () => {
     renderMisc(<MemoryPage />)
 
-    await screen.findByTestId('archive-card')
-    expect(screen.queryByTestId('migration-entry')).not.toBeInTheDocument()
+    expect(await screen.findByTestId('memory-count')).toHaveTextContent('1 条')
+    expect(screen.getByTestId('memory-workspace')).toHaveTextContent('D:\\kylab\\memory')
+    expect(screen.getByTestId('memory-updated')).toHaveTextContent('2026-10-04 09:00')
   })
 
-  it('草稿有货时提示还有几条，展开可只读查看', async () => {
-    const user = userEvent.setup()
-    archiveState = archiveOf({
-      migration_available: false,
-      draft: { exists: true, path: 'import-draft.md', entries: 3 },
-    })
+  it('一条都没有时说清"还是空的"，而不是画一块空白', async () => {
+    itemsState = []
     renderMisc(<MemoryPage />)
 
-    expect(await screen.findByTestId('draft-count')).toHaveTextContent('还有 3 条旧条目没进档案')
-    await user.click(within(screen.getByTestId('draft-hint')).getByRole('button', { name: '展开' }))
-    await waitFor(() => expect(screen.getByTestId('draft-content')).toHaveTextContent('旧条目甲'))
+    expect(await screen.findByText('记忆还是空的')).toBeTruthy()
   })
 
-  it('「整理初稿」先给预览，点「写进档案」才逐条写入（§8.3）', async () => {
-    const user = userEvent.setup()
-    organizeMock.mockResolvedValue({
-      items: [{ text: '用户要求先给结论。', section: '长期偏好与风格' }],
-      note: '这些还只是建议。',
-    })
-    rememberMock.mockResolvedValue({
-      action: 'added',
-      receipt: '记下了：用户要求先给结论。',
-      text: '用户要求先给结论。',
-      section: '长期偏好与风格',
-      replaced: '',
-      entries: 5,
-    })
-    archiveState = archiveOf({ draft: { exists: true, path: 'import-draft.md', entries: 2 } })
+  it('平时不提示兜底', async () => {
     renderMisc(<MemoryPage />)
 
-    await user.click(await screen.findByTestId('draft-organize'))
-
-    const preview = await screen.findByTestId('draft-preview')
-    expect(preview).toHaveTextContent('用户要求先给结论。')
-    expect(rememberMock).not.toHaveBeenCalled()
-
-    await user.click(screen.getByTestId('draft-apply'))
-
-    await waitFor(() =>
-      expect(rememberMock).toHaveBeenCalledWith('用户要求先给结论。', {
-        section: '长期偏好与风格',
-      }),
-    )
-    await waitFor(() => expect(screen.queryByTestId('draft-preview')).not.toBeInTheDocument())
+    await screen.findByTestId('memory-count')
+    expect(screen.queryByTestId('memory-development')).toBeNull()
   })
-})
 
-describe('记忆页 · 去解释化', () => {
-  it('不在界面上解释机制，也不出现服务地址/端口/版本号', async () => {
+  it('向量是兜底时明说这件事（免得用户把词面重合当语义）', async () => {
+    getMemoryMock.mockImplementation(async () => overviewOf({ development: true }))
     renderMisc(<MemoryPage />)
-    await screen.findByTestId('archive-card')
+
+    const notice = await screen.findByTestId('memory-development')
+
+    expect(notice.textContent).toContain('兜底')
+  })
+
+  it('界面不出现实现细节词（token / 向量库 / embedding 这类）', async () => {
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-count')
 
     const text = document.body.textContent ?? ''
-    for (const word of ['注入', '提示词', 'token', '接口', '服务', '127.0.0.1', 'localhost']) {
+    for (const word of ['token', 'qdrant', 'mem0', 'embedding', 'SQLite', '提示词预算']) {
       expect(text).not.toContain(word)
     }
   })
 
-  it('档案编辑不看开关：未启用时照样能改', async () => {
-    getMemoryMock.mockImplementation(async () =>
-      overviewOf({
-        status: {
-          ...overviewOf().status,
-          enabled: false,
-        },
-      }),
-    )
+  it('界面不出现凭据', async () => {
     renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-count')
 
-    expect(await screen.findByTestId('archive-card')).toBeInTheDocument()
-    expect(screen.getAllByTestId('archive-entry-delete')[0]).toBeEnabled()
-  })
-
-  it('页面上不再有图谱、召回试验、待整合或新建文件这些入口', async () => {
-    renderMisc(<MemoryPage />)
-    await screen.findByTestId('archive-card')
-
-    for (const word of ['图谱', '召回', '待整合', '已整合', '新建记忆文件']) {
-      expect(screen.queryByText(word)).not.toBeInTheDocument()
-    }
-  })
-
-  it('没有本机后端那一档看不到「设置」入口（那一档的记忆一族不在本机）', async () => {
-    // 「不是管理员」现在只剩这一种现场（`lib/useIsAdmin`：本机档的用户就是管理员）
-    setLocalBackendForTest('absent')
-    renderMisc(<MemoryPage />)
-    await screen.findByTestId('archive-card')
-    expect(screen.queryByRole('button', { name: '设置' })).not.toBeInTheDocument()
-    resetLocalBackendForTest()
+    const text = document.body.textContent ?? ''
+    expect(text).not.toContain('sk-')
+    expect(text).not.toContain('Bearer')
   })
 })
 
-// 本机档单列一条：与上面那条相对，钉住入口按"有没有本机后端"显隐
-describe('记忆页 · 设置入口', () => {
-  it('本机档（本机主人）能看到「设置」', async () => {
-    setLocalBackendForTest('local')
+// ------------------------------------------------------------------ 搜索
+
+describe('记忆页 · 搜索', () => {
+  it('回车才检索（不是每敲一个字发一次）', async () => {
+    const user = userEvent.setup()
     renderMisc(<MemoryPage />)
-    await screen.findByTestId('archive-card')
-    expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
-    resetLocalBackendForTest()
+    await screen.findByTestId('memory-item')
+
+    const box = screen.getByTestId('memory-search')
+    await user.type(box, '先给结论')
+    expect(getItemsMock).toHaveBeenCalledTimes(1) // 只有首屏那次
+
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(getItemsMock).toHaveBeenCalledTimes(2))
+    expect(getItemsMock).toHaveBeenLastCalledWith('先给结论')
+    // 结果里只剩命中的条目：那句"这是长期记忆、不是知识库原文"是给模型看的
+    // （工具那一侧用它），**界面上不放**——人不需要被解释这一层是什么
+    expect(screen.queryByText(/不是知识库原文/)).toBeNull()
+  })
+
+  it('清空之后回到列表（并说明"没有匹配"是检索的空态）', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-item')
+
+    await user.type(screen.getByTestId('memory-search'), '不相干的话{Enter}')
+
+    expect(await screen.findByText('没有匹配的条目')).toBeTruthy()
+    await user.click(screen.getByTestId('memory-search-clear'))
+    expect(await screen.findByTestId('memory-item')).toBeTruthy()
+  })
+
+  it('记忆关着时搜索如实报错（它是检索，受那道闸管）', async () => {
+    getItemsMock.mockImplementation(async (query = '') => {
+      if (query) throw new Error('未启用长期记忆。请在「设置 → 长期记忆」里打开')
+      return { query: '', items: itemsState, total: itemsState.length, note: '' }
+    })
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-item')
+
+    await user.type(screen.getByTestId('memory-search'), '先给结论{Enter}')
+
+    expect(await screen.findByTestId('memory-items-error')).toHaveTextContent('未启用长期记忆')
+  })
+})
+
+// ------------------------------------------------------------------ 改与删
+
+describe('记忆页 · 改与删', () => {
+  it('改一条：点正文变输入框，失焦保存走一次 PATCH（带上那个 id）', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-item')
+
+    await user.click(screen.getByTestId('memory-item-text'))
+    const input = screen.getByTestId('memory-item-input')
+    await user.clear(input)
+    await user.type(input, '新的一条')
+    fireEvent.blur(input)
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalledWith('m1', { content: '新的一条' }))
+    // 回执是后端那一句，界面不另编
+    expect(await screen.findByText(/改成：新的一条/)).toBeTruthy()
+  })
+
+  it('内容没变时不发请求（点开又关掉不该写一次历史）', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-item')
+
+    await user.click(screen.getByTestId('memory-item-text'))
+    fireEvent.blur(screen.getByTestId('memory-item-input'))
+
+    await waitFor(() => expect(screen.queryByTestId('memory-item-input')).toBeNull())
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  it('删一条按 id 走，回执照样弹出来', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-item')
+
+    await user.click(screen.getByTestId('memory-item-delete'))
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith('m1'))
+    expect(await screen.findByText(/忘掉了/)).toBeTruthy()
+  })
+})
+
+// ------------------------------------------------------------------ 历史
+
+describe('记忆页 · 历史', () => {
+  it('点开才读历史，画成"旧 → 新"', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-item')
+    expect(historyMock).not.toHaveBeenCalled()
+
+    await user.click(screen.getByTestId('memory-item-history'))
+
+    await waitFor(() => expect(historyMock).toHaveBeenCalledWith('m1'))
+    const rows = await screen.findAllByTestId('memory-history-row')
+    expect(rows).toHaveLength(2)
+    expect(within(rows[0]).getByText('记下')).toBeTruthy()
+    expect(within(rows[1]).getByText('改成')).toBeTruthy()
+    expect(within(rows[1]).getByText('用户要求回答先给结论')).toBeTruthy()
+    // **只读**：历史里没有任何"还原"入口
+    expect(screen.queryByText('还原')).toBeNull()
+  })
+})
+
+// ------------------------------------------------------------------ 加一条与迁移
+
+describe('记忆页 · 加一条', () => {
+  it('加一条走 POST 并把回执弹出来', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-item')
+
+    await user.click(screen.getByTestId('memory-add'))
+    await user.type(screen.getByTestId('memory-add-input'), '新的一条')
+    await user.click(screen.getByTestId('memory-add-save'))
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledWith('新的一条'))
+    expect(await screen.findByText(/记下了：新的一条/)).toBeTruthy()
+  })
+
+  it('空内容时保存键不可点', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findByTestId('memory-item')
+
+    await user.click(screen.getByTestId('memory-add'))
+
+    expect(screen.getByTestId('memory-add-save')).toBeDisabled()
+  })
+})
+
+describe('记忆页 · 迁移', () => {
+  it('导入旧档案之后弹出报告（计数与源文件）', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+
+    await user.click(await screen.findByTestId('migration-run'))
+
+    await waitFor(() => expect(importMock).toHaveBeenCalledTimes(1))
+    const report = await screen.findByTestId('migration-report')
+    expect(within(report).getByText('3 条')).toBeTruthy()
+    expect(within(report).getByText('PROFILE.md')).toBeTruthy()
+  })
+})
+
+// ------------------------------------------------------------------ 人设文件
+
+describe('记忆页 · 人设文件（只读）', () => {
+  it('列出真的读得到的那几份，并把"不再注入"写在旧档案上', async () => {
+    getFileMock.mockImplementation(async (path) => {
+      if (path === 'SOUL.md') throw new Error('记忆文件不存在：SOUL.md')
+      return {
+        path,
+        name: path,
+        title: path,
+        kind: 'core',
+        summary: '',
+        tags: [],
+        size_bytes: 10,
+        modified_at: '2026-10-04T09:00:00Z',
+        content: `# ${path}\n`,
+        meta: {},
+        truncated: false,
+      }
+    })
+    renderMisc(<MemoryPage />)
+
+    const files = await screen.findAllByTestId('persona-file')
+    // 读不到的（SOUL.md）不显示；读得到的两份都在
+    expect(files.map((node) => node.textContent)).toEqual([
+      expect.stringContaining('AGENTS.md'),
+      expect.stringContaining('PROFILE.md'),
+    ])
+    const old = files.find((node) => node.textContent?.includes('PROFILE.md'))
+    expect(old?.textContent).toContain('不再注入')
+  })
+
+  it('点开只读展示原文，路径是工作区里的那一条', async () => {
+    const user = userEvent.setup()
+    renderMisc(<MemoryPage />)
+    await screen.findAllByTestId('persona-file')
+
+    await user.click(screen.getAllByTestId('persona-file-open')[0])
+
+    expect(await screen.findByTestId('persona-file-content')).toHaveTextContent('# SOUL.md')
+    expect(screen.getByTestId('persona-file-path')).toHaveTextContent('D:\\kylab\\memory/SOUL.md')
   })
 })

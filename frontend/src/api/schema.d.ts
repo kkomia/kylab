@@ -1080,15 +1080,123 @@ export interface paths {
          * 记忆状态
          * @description 记忆页首屏要的状态。
          *
-         *     **状态是纯本地的**（数一遍工作区）：没有第二个进程、没有探测，
+         *     **状态是纯本地的**（数一遍库与工作区）：没有第二个进程、没有探测，
          *     所以"打开记忆页"不会变成一次网络等待。
-         *
-         *     原先这里还带一份文件列表（`GET /memory` 的 ``files``）：它只服务那节只读的
-         *     「旧记忆」，那一节退场之后没有消费者，随它一起删掉。
          */
         get: operations["get_memory_api_v1_memory_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/memory/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列记忆条目 / 检索
+         * @description 界面上的条目列表：**给了 ``query`` 就在库里按意思检索，否则列全部**。
+         *
+         *     检索与知识库那条路**是两条路、永不合并**（记忆是"对方说的"，文献是有出处的）；
+         *     也不返回空冒充"没有"——库里真没有时才是空列表。
+         *
+         *     列全部时按改动时间**倒序**（最近改的在前）：mem0 的 ``get_all`` 不承诺顺序，
+         *     而"最近改的在前"是界面上唯一能预期的顺序。
+         */
+        get: operations["list_memory_items_api_v1_memory_items_get"];
+        put?: never;
+        /**
+         * 记一条（新增或更正）
+         * @description 写进记忆库。**不经过任何外部东西**（``infer=False``：零模型调用）。
+         *
+         *     三件事与工具那一侧**同源**：
+         *
+         *     - **不看 ``memory.enabled``**：记忆关着时照样可写（打开就会被注入）；
+         *     - **``replaces`` 让"更正"一次完成**：填要改掉的那条原文；
+         *     - **返回体带 ``action`` 与 ``receipt``**：``action`` 是
+         *       ``added`` / ``replaced`` / ``existing`` / ``rejected``，``receipt`` 是
+         *       给人看的那一句——**界面与模型用的是同一句**，谁也不该自己另编。
+         */
+        post: operations["create_memory_item_api_v1_memory_items_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/memory/items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删一条
+         * @description 按 id 删一条。旧值留在 mem0 自己的历史里（要回看走 ``/history``）。
+         */
+        delete: operations["delete_memory_item_api_v1_memory_items__item_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * 改一条
+         * @description 按 id 改一条（界面上点开来改的那条路）。
+         *
+         *     ``content`` 留空 = 只改分区标签。两条与新增同源的检查（长度、敏感信息）
+         *     照样生效：**换了一条路进来，判据不能松**。
+         */
+        patch: operations["update_memory_item_api_v1_memory_items__item_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/memory/items/{item_id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 一条记忆的历史
+         * @description 这条记忆被改过什么（**最旧在前**）——mem0 自己的 ``history.db``。
+         *
+         *     **只读**：v0.57 没有"还原"这条路（历史留着是为了让人看清"它以前是什么"）。
+         */
+        get: operations["memory_item_history_api_v1_memory_items__item_id__history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/memory/import-legacy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 导入旧档案（零模型调用）
+         * @description 把旧 ``PROFILE.md`` 的四区条目搬进记忆库。
+         *
+         *     **只读旧文件、只写新库**：``PROFILE.md`` 一字不动；可重跑、幂等
+         *     （源指纹与水位一致时 ``skipped=true``，净改动为零）。
+         *     **零模型调用**——它不请模型判断哪条该留，原样搬。
+         */
+        post: operations["import_legacy_memory_api_v1_memory_import_legacy_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1104,240 +1212,15 @@ export interface paths {
         };
         /**
          * 读一个记忆文件
-         * @description 读原文（含 frontmatter）。
+         * @description 读原文（含 frontmatter）——人设文件（``SOUL.md`` / ``AGENTS.md``）与旧档案的只读查看。
          *
          *     路径里的 ``path:path`` 让 ``digest/wiki/xxx.md`` 这种带斜杠的路径能当**一个**
          *     路径参数传进来，前端不必把斜杠编码成 ``%2F``（有些反代会先解开再匹配，反而更脆）。
+         *     只认 ``.md``（见 ``memory_files.safe_path``）。
          */
         get: operations["read_memory_file_api_v1_memory_files__path__get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/recall": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 在档案的变更流里查证
-         * @description 与知识库检索**两条路、永不合并**（设计文档 §2.1）——连索引都不共用。
-         *
-         *     **池子只有 ``changes.md``**（档案制 §5.3）：用户档案每轮已经全量注入，
-         *     再召回一次就是把同一段内容进两次上下文。所以这里回答的是"这条以前是什么、
-         *     什么时候改的"，``path`` 恒为 ``changes.md``，排序是纯字面判据（无分词、无索引）。
-         *
-         *     **没启用时明确报错**，不返回空结果（§2.3）——返回空会让模型（和用户）
-         *     以为"没有相关记忆"，然后基于错误前提继续。启用着而真的没有相关记录时，
-         *     返回空列表才是诚实的答案（那时检索确实跑过了）。
-         */
-        post: operations["recall_memory_api_v1_memory_recall_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/remember": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 记一条（新增或顶替）
-         * @description 写进 ``PROFILE.md``（档案）的一个分区，**不经过任何外部东西**。
-         *
-         *     三件事与工具那一侧**同源**：
-         *
-         *     - **不看 ``memory.enabled``**：档案关着时照样可写（写进去下一轮就注入）；
-         *     - **``replaces`` 让"更正"一次完成**（§4.3）：填要顶替的那条原文；
-         *     - **返回体带 ``action`` 与 ``receipt``**（§4.4）：``action`` 是
-         *       ``added`` / ``replaced`` / ``existing`` / ``rejected``，``receipt`` 是
-         *       给人看的那一句——**界面与模型用的是同一句**，谁也不该自己另编。
-         *
-         *     ``existing`` 与 ``rejected`` 都**不是错误**（一个是"本来就有"，一个是"越线了、
-         *     回执里给了两条出路"），所以它们照样 200：调用方按 ``action`` 分派。
-         */
-        post: operations["remember_api_v1_memory_remember_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/archive": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 档案卡（分区、条目、读数）
-         * @description 档案卡首屏要的一切：四个分区（含未知分区）的条目与读数、草稿计数、迁移入口显隐。
-         *
-         *     **未知分区照常返回**（§3.5 第 4 条）：用户拿外部编辑器加的 ``## 某区`` 也算进来，
-         *     只是 ``known=false``，界面标"分区不认识"。
-         *
-         *     条目的来源小字取自变更流（最近一条把它写进来的记录）：`显式/隐式` 来自会话、
-         *     `界面` 来自这一页、`迁移` 来自旧记忆折叠；对不上记录的就是空（外部编辑器直接改的）。
-         */
-        get: operations["get_memory_archive_api_v1_memory_archive_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/changes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 变更流（倒序）
-         * @description 变更流时间线，**最新的在前**（§6.2）。
-         *
-         *     ``index`` 是它在这份文件里的位置（**文件顺序，最旧为 0**）——档案卡上那条来源小字
-         *     靠它指回来，所以这里的排序与 ``index`` 是两件事：显示倒序，索引按文件顺序。
-         */
-        get: operations["get_memory_changes_api_v1_memory_changes_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/forget": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 忘掉一条
-         * @description 从档案删除 + 变更流留痕 + 可还原（§9.2 第 6 条）。**不看 ``memory.enabled``**。
-         *
-         *     对得上不止一条时**不猜**：``action`` 是 ``rejected``，回执列出候选让它说清。
-         */
-        post: operations["forget_memory_api_v1_memory_forget_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 还原一条旧值
-         * @description 把一条旧值写回档案，新值作为一次新的顶替进流（§3.4、§6.2）。
-         *
-         *     ``text`` 是**要还原的那条旧值原文**（变更流里 ``旧：`` 后面那一行）。
-         */
-        post: operations["restore_memory_api_v1_memory_restore_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/group": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 项目组改名
-         * @description 项目段的组标题改名（§3.1 第 2 条：改名 = 一次顶替，旧名进变更流）。
-         *
-         *     改的是这一组全部条目的分组名，正文不动；变更流只留一条记录。
-         */
-        post: operations["rename_memory_group_api_v1_memory_group_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/migrate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 折叠旧记忆（零模型调用）
-         * @description 跑一遍机械折叠迁移（§8）：把旧文件折成档案初稿，返回迁移报告。
-         *
-         *     **只读旧文件、只写新文件**（§8.4）：``MEMORY.md`` / ``digest/**`` / ``daily/**``
-         *     一字不动；可重跑、幂等（源文件指纹没变且档案已存在时 ``skipped=true``，净改动为零）。
-         *     **零模型调用**——模型整理初稿那一步不在这里。
-         */
-        post: operations["migrate_memory_api_v1_memory_migrate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/draft/organize": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 整理迁移草稿（一次模型调用，只给建议）
-         * @description 跑一次模型，把 ``import-draft.md`` 里的旧条目改写成画像条目（§8.3）。
-         *
-         *     **用户显式点一次才发生**（"会花钱的默认关"），而它**一个字都不写**：
-         *     返回的是预览建议，用户确认之后前端逐条打 ``POST /memory/remember``——
-         *     于是这一次模型调用不可能绕过预算、顶替判据与变更流（§3.3–§3.4），
-         *     每一条的回执也仍然是从那一处文案来的。
-         *
-         *     **失败与"没整理出东西"都如实报错**（映射成可读的错误信封）：
-         *     这一次是花过钱的，静默返回空列表会让用户以为"点了没反应"。
-         */
-        post: operations["organize_memory_draft_api_v1_memory_draft_organize_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4283,187 +4166,6 @@ export interface components {
              */
             installed: boolean;
         };
-        /**
-         * MemoryArchiveOut
-         * @description 档案卡首屏要的一切（一页两块里的第一块）。
-         */
-        MemoryArchiveOut: {
-            /**
-             * Path
-             * @default
-             */
-            path: string;
-            /**
-             * Updated
-             * @default
-             */
-            updated: string;
-            budget: components["schemas"]["MemoryBudgetOut"];
-            /** Sections */
-            sections?: components["schemas"]["MemorySectionOut"][];
-            draft: components["schemas"]["MemoryDraftOut"];
-            /**
-             * Migration Available
-             * @default false
-             */
-            migration_available: boolean;
-        };
-        /**
-         * MemoryBudgetOut
-         * @description 顶部那条全局读数（§5.2、§6.1）。
-         */
-        MemoryBudgetOut: {
-            /**
-             * Entries
-             * @default 0
-             */
-            entries: number;
-            /**
-             * Chars
-             * @default 0
-             */
-            chars: number;
-            /**
-             * Entry Limit
-             * @default 0
-             */
-            entry_limit: number;
-            /**
-             * Char Limit
-             * @default 0
-             */
-            char_limit: number;
-        };
-        /**
-         * MemoryChangeOut
-         * @description 变更流里的一条（§3.4）。``old`` / ``new`` 是逐字节的原文。
-         */
-        MemoryChangeOut: {
-            /**
-             * Index
-             * @default 0
-             */
-            index: number;
-            /**
-             * At
-             * @default
-             */
-            at: string;
-            /**
-             * Action
-             * @default
-             */
-            action: string;
-            /**
-             * Section
-             * @default
-             */
-            section: string;
-            /**
-             * Source
-             * @default
-             */
-            source: string;
-            /**
-             * Old
-             * @default
-             */
-            old: string;
-            /**
-             * New
-             * @default
-             */
-            new: string;
-            /**
-             * Restorable
-             * @default false
-             */
-            restorable: boolean;
-        };
-        /** MemoryChangesOut */
-        MemoryChangesOut: {
-            /** Changes */
-            changes?: components["schemas"]["MemoryChangeOut"][];
-        };
-        /**
-         * MemoryDraftOrganizeOut
-         * @description 一次「整理初稿」的结果。
-         *
-         *     **这一步不写任何东西**：它只跑一次模型、把草稿里的旧条目改写成画像条目并把
-         *     归区建议带回来，用户在界面上确认之后才逐条走 ``POST /memory/remember``
-         *     ——于是这一次模型调用**不可能绕过预算与变更流**（§3.3–§3.4）。
-         */
-        MemoryDraftOrganizeOut: {
-            /** Items */
-            items?: components["schemas"]["MemoryDraftSuggestionOut"][];
-            /**
-             * Note
-             * @default
-             */
-            note: string;
-        };
-        /**
-         * MemoryDraftOut
-         * @description ``import-draft.md``：迁移时没挤进档案的旧条目（§8.2 第 3、4 类）。
-         */
-        MemoryDraftOut: {
-            /**
-             * Exists
-             * @default false
-             */
-            exists: boolean;
-            /**
-             * Path
-             * @default
-             */
-            path: string;
-            /**
-             * Entries
-             * @default 0
-             */
-            entries: number;
-        };
-        /**
-         * MemoryDraftSuggestionOut
-         * @description 「整理初稿」给出的一条建议（§8.3）：**只是建议，还没有写进档案**。
-         */
-        MemoryDraftSuggestionOut: {
-            /** Text */
-            text: string;
-            /**
-             * Section
-             * @default
-             */
-            section: string;
-        };
-        /**
-         * MemoryEntryOut
-         * @description 档案里的一条（界面按区渲染，项目区还按 ``group`` 分组）。
-         */
-        MemoryEntryOut: {
-            /** Text */
-            text: string;
-            /**
-             * Group
-             * @default
-             */
-            group: string;
-            /**
-             * Source
-             * @default
-             */
-            source: string;
-            /**
-             * Change At
-             * @default
-             */
-            change_at: string;
-            /**
-             * Change Index
-             * @default -1
-             */
-            change_index: number;
-        };
         /** MemoryFileDetailOut */
         MemoryFileDetailOut: {
             /** Path */
@@ -4510,76 +4212,56 @@ export interface components {
             truncated: boolean;
         };
         /**
-         * MemoryForgetIn
-         * @description 忘掉一条（界面上行尾的删除）。``topic`` 是那一条的原文。
+         * MemoryHistoryOut
+         * @description 一条记忆历史上的一步（mem0 自己的 ``history.db``）。
          */
-        MemoryForgetIn: {
-            /** Topic */
-            topic: string;
+        MemoryHistoryOut: {
+            /**
+             * At
+             * @default
+             */
+            at: string;
+            /**
+             * Event
+             * @default
+             */
+            event: string;
+            /**
+             * Old
+             * @default
+             */
+            old: string;
+            /**
+             * New
+             * @default
+             */
+            new: string;
+            /**
+             * Deleted
+             * @default false
+             */
+            deleted: boolean;
         };
-        /** MemoryGroupOut */
-        MemoryGroupOut: {
-            /** Name */
-            name: string;
+        /**
+         * MemoryImportOut
+         * @description ``POST /memory/import-legacy`` 的报告。
+         */
+        MemoryImportOut: {
+            /**
+             * Source
+             * @default
+             */
+            source: string;
             /**
              * Entries
              * @default 0
              */
             entries: number;
-        };
-        /**
-         * MemoryGroupRenameIn
-         * @description 项目段的组改名（§3.1 第 2 条：改名 = 一次顶替，旧名进变更流）。
-         */
-        MemoryGroupRenameIn: {
             /**
-             * Section
-             * @default
-             */
-            section: string;
-            /** Old */
-            old: string;
-            /** New */
-            new: string;
-        };
-        /** MemoryHitOut */
-        MemoryHitOut: {
-            /** Text */
-            text: string;
-            /**
-             * Path
-             * @default
-             */
-            path: string;
-            /** Start Line */
-            start_line?: number | null;
-            /** End Line */
-            end_line?: number | null;
-            /** Score */
-            score?: number | null;
-            /** Coverage */
-            coverage?: number | null;
-            /**
-             * Source
-             * @default text
-             */
-            source: string;
-        };
-        /**
-         * MemoryMigrationOut
-         * @description 一次机械折叠迁移的计数（§8.4 的迁移报告）。
-         */
-        MemoryMigrationOut: {
-            /**
-             * Added
+             * Imported
              * @default 0
              */
-            added: number;
-            /**
-             * Replaced
-             * @default 0
-             */
-            replaced: number;
+            imported: number;
             /**
              * Existing
              * @default 0
@@ -4591,77 +4273,25 @@ export interface components {
              */
             dropped_sensitive: number;
             /**
-             * Downgraded
-             * @default 0
-             */
-            downgraded: number;
-            /**
-             * Trimmed
-             * @default 0
-             */
-            trimmed: number;
-            /**
              * Skipped
              * @default false
              */
             skipped: boolean;
             /**
-             * Archive Changed
+             * Changed
              * @default false
              */
-            archive_changed: boolean;
-            /**
-             * Draft Entries
-             * @default 0
-             */
-            draft_entries: number;
-            /** Per Source */
-            per_source?: [
-                string,
-                number
-            ][];
+            changed: boolean;
         };
         /**
-         * MemoryOverviewOut
-         * @description ``GET /memory`` 的响应：只有状态。
-         *
-         *     原先这里还带一份**文件列表**（``files`` / ``truncated``，每项有个 ``injected``
-         *     标记）：它服务的是记忆页上那节只读的「旧记忆」（靠 ``injected=false`` 认那份
-         *     ``MEMORY.md``）。那一节与那条链一起退场（"历史的东西就删了"），列表也就没有
-         *     消费者了——**列表能力本身一并删掉**，不留一个没人读的字段。
-         */
-        MemoryOverviewOut: {
-            status: components["schemas"]["MemoryStatusOut"];
-        };
-        /** MemoryRecallIn */
-        MemoryRecallIn: {
-            /** Query */
-            query: string;
-            /** Limit */
-            limit?: number | null;
-        };
-        /** MemoryRecallOut */
-        MemoryRecallOut: {
-            /** Query */
-            query: string;
-            /** Hits */
-            hits?: components["schemas"]["MemoryHitOut"][];
-            /**
-             * Note
-             * @default
-             */
-            note: string;
-        };
-        /**
-         * MemoryRememberIn
-         * @description 写一条进档案（§7.4 的 ``POST /memory/remember``）。
+         * MemoryItemCreateIn
+         * @description ``POST /memory/items``：写一条新的（新增或按机械判据顶替）。
          *
          *     ``section`` 留空或不认识时服务层按内容机械归区；``replaces`` 是"更正一次完成"
-         *     的入口（要顶替的那条原文）。``content`` 的 ``max_length`` 只是协议层的一道
-         *     粗护栏（500），**真正的单条上限是 120 字**——它由服务层以**回执**的形式拒绝
-         *     （"请拆成两条，或写进 AGENTS.md"），不是 422：被拒时调用方要拿到那条出路。
+         *     的入口（填要改掉的那条原文）。``content`` 的 ``max_length`` 是协议层的护栏，
+         *     **与真正的单条上限是同一个数**（500）——超过它的内容属于笔记或知识库。
          */
-        MemoryRememberIn: {
+        MemoryItemCreateIn: {
             /** Content */
             content: string;
             /**
@@ -4676,14 +4306,149 @@ export interface components {
             replaces: string;
         };
         /**
-         * MemoryRememberOut
-         * @description 一次写入的结果与回执（§4.4）。
+         * MemoryItemHistoryOut
+         * @description ``GET /memory/items/{id}/history`` 的响应，**最旧在前**。
+         */
+        MemoryItemHistoryOut: {
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /** Items */
+            items?: components["schemas"]["MemoryHistoryOut"][];
+        };
+        /**
+         * MemoryItemOut
+         * @description 库里的一条记忆（D9 的条目列表用它）。
+         */
+        MemoryItemOut: {
+            /** Id */
+            id: string;
+            /** Text */
+            text: string;
+            /**
+             * Section
+             * @default
+             */
+            section: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
+             * Created At
+             * @default
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * @default
+             */
+            updated_at: string;
+            /** Score */
+            score?: number | null;
+        };
+        /**
+         * MemoryItemPatchIn
+         * @description ``PATCH /memory/items/{id}``：改一条（按 id）。
+         *
+         *     两个字段都给了才算改；``content`` 留空 = 只改分区标签。
+         */
+        MemoryItemPatchIn: {
+            /**
+             * Content
+             * @default
+             */
+            content: string;
+            /**
+             * Section
+             * @default
+             */
+            section: string;
+        };
+        /**
+         * MemoryItemsOut
+         * @description ``GET /memory/items`` 的响应。
+         */
+        MemoryItemsOut: {
+            /**
+             * Query
+             * @default
+             */
+            query: string;
+            /** Items */
+            items?: components["schemas"]["MemoryItemOut"][];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /**
+         * MemoryOverviewOut
+         * @description ``GET /memory`` 的响应：只有状态。
+         */
+        MemoryOverviewOut: {
+            status: components["schemas"]["MemoryStatusOut"];
+        };
+        /**
+         * MemoryStatusOut
+         * @description 记忆层的状态。**全是本地数字**：
+         *
+         *     没有"连没连上"这一项——记忆跑在我们自己的进程里，没有第二个进程可连。
+         *     ``development`` 报的是"向量是开发兜底"（没配嵌入模型，退回无语义的词面哈希）：
+         *     界面据此说清"检索质量不代表真实效果"，而不是让它看起来和真嵌入一样。
+         */
+        MemoryStatusOut: {
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Workspace
+             * @default
+             */
+            workspace: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Items
+             * @default 0
+             */
+            items: number;
+            /**
+             * Last Changed At
+             * @default
+             */
+            last_changed_at: string;
+            /**
+             * Embedder
+             * @default
+             */
+            embedder: string;
+            /**
+             * Development
+             * @default false
+             */
+            development: boolean;
+        };
+        /**
+         * MemoryWriteOut
+         * @description 一次写入的结果与回执。
          *
          *     ``action`` 四种：``added`` / ``replaced`` / ``existing`` / ``rejected``
-         *     （``forget`` 那条路还会给 ``forgotten``）。``receipt`` 是**给人看的那一句话**，
+         *     （删除那条路还会给 ``forgotten``）。``receipt`` 是**给人看的那一句话**，
          *     界面与模型共用同一个来源——谁也不该自己另编一句。
          */
-        MemoryRememberOut: {
+        MemoryWriteOut: {
             /** Action */
             action: string;
             /**
@@ -4707,92 +4472,10 @@ export interface components {
              */
             replaced: string;
             /**
-             * Entries
-             * @default 0
-             */
-            entries: number;
-        };
-        /**
-         * MemoryRestoreIn
-         * @description 还原：把一条旧值写回档案（界面上变更流的「还原」）。
-         */
-        MemoryRestoreIn: {
-            /** Text */
-            text: string;
-        };
-        /**
-         * MemorySectionOut
-         * @description 一个分区的读数与条目。**未知分区照常报**（``known=false``），界面标"分区不认识"。
-         */
-        MemorySectionOut: {
-            /** Name */
-            name: string;
-            /**
-             * Known
-             * @default true
-             */
-            known: boolean;
-            /**
-             * Entries
-             * @default 0
-             */
-            entries: number;
-            /**
-             * Chars
-             * @default 0
-             */
-            chars: number;
-            /**
-             * Limit
-             * @default 0
-             */
-            limit: number;
-            /**
-             * Suggested Chars
-             * @default 0
-             */
-            suggested_chars: number;
-            /**
-             * Group Limit
-             * @default 0
-             */
-            group_limit: number;
-            /** Groups */
-            groups?: components["schemas"]["MemoryGroupOut"][];
-            /** Items */
-            items?: components["schemas"]["MemoryEntryOut"][];
-        };
-        /**
-         * MemoryStatusOut
-         * @description 记忆层的状态。**全是本地数字**（v0.46）：
-         *
-         *     没有"连没连上"这一项——记忆跑在我们自己的进程里，没有第二个进程可连。
-         *     原先那对 ``base_url`` / ``reachable``（三态）随 ReMe 一起删了：
-         *     它们的存在只为了让界面说清"服务在不在"，而现在这件事不存在。
-         */
-        MemoryStatusOut: {
-            /** Enabled */
-            enabled: boolean;
-            /**
-             * Workspace
+             * Item Id
              * @default
              */
-            workspace: string;
-            /**
-             * Detail
-             * @default
-             */
-            detail: string;
-            /**
-             * File Count
-             * @default 0
-             */
-            file_count: number;
-            /**
-             * Last Changed At
-             * @default
-             */
-            last_changed_at: string;
+            item_id: string;
         };
         /** ModelListOut */
         ModelListOut: {
@@ -8702,6 +8385,190 @@ export interface operations {
             };
         };
     };
+    list_memory_items_api_v1_memory_items_get: {
+        parameters: {
+            query?: {
+                /** @description 给了就在库里检索，留空列全部 */
+                query?: string;
+                /** @description 最多返回几条 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_memory_item_api_v1_memory_items_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryItemCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryWriteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_memory_item_api_v1_memory_items__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryWriteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_memory_item_api_v1_memory_items__item_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryItemPatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryWriteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    memory_item_history_api_v1_memory_items__item_id__history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemHistoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_legacy_memory_api_v1_memory_import_legacy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryImportOut"];
+                };
+            };
+        };
+    };
     read_memory_file_api_v1_memory_files__path__get: {
         parameters: {
             query?: never;
@@ -8729,251 +8596,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    recall_memory_api_v1_memory_recall_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MemoryRecallIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryRecallOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    remember_api_v1_memory_remember_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MemoryRememberIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryRememberOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_memory_archive_api_v1_memory_archive_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryArchiveOut"];
-                };
-            };
-        };
-    };
-    get_memory_changes_api_v1_memory_changes_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryChangesOut"];
-                };
-            };
-        };
-    };
-    forget_memory_api_v1_memory_forget_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MemoryForgetIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryRememberOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    restore_memory_api_v1_memory_restore_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MemoryRestoreIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryRememberOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    rename_memory_group_api_v1_memory_group_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MemoryGroupRenameIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryRememberOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    migrate_memory_api_v1_memory_migrate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryMigrationOut"];
-                };
-            };
-        };
-    };
-    organize_memory_draft_api_v1_memory_draft_organize_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryDraftOrganizeOut"];
                 };
             };
         };

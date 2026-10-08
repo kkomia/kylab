@@ -433,10 +433,11 @@ def test_recall_says_disabled_instead_of_returning_nothing(
 
 
 def test_remember_reports_the_action_and_the_receipt(services: Services, admin: Caller) -> None:
-    """``remember`` 写的是**用户档案**，并把 `action` 与 `receipt` 交给模型（§4.4）。
+    """``remember`` 写的是**记忆库**，并把 `action` 与 `receipt` 交给模型。
 
-    四种动作在工具这一层也要走通（模型据此才知道"到底记上了没有"）：
-    added → existing → replaced（带 ``replaces``）→ rejected（超单条上限）。
+    三种动作在工具这一层也要走通（模型据此才知道"到底记上了没有"）：
+    added → existing → replaced（带 ``replaces``）。**超长那条不走这里**：
+    工具表没有 `maxLength`，服务层那道回执是唯一护栏，它由 test_memory 钉。
     """
     services.runtime.set({"memory.enabled": "true"})
     try:
@@ -448,37 +449,38 @@ def test_remember_reports_the_action_and_the_receipt(services: Services, admin: 
             {"content": "用户偏好简短回答，先给结论", "replaces": "用户偏好简短回答"},
             caller=admin,
         )
-        fourth = call_tool(services, "remember", {"content": "长" * 121}, caller=admin)
 
         assert first["action"] == "added" and "记下了" in first["receipt"]
         # 同一件事记第二遍不写第二条
         assert second["action"] == "existing" and "已经有了" in second["receipt"]
         assert third["action"] == "replaced" and third["replaced"] == "用户偏好简短回答"
-        assert fourth["action"] == "rejected" and "拆成两条" in fourth["receipt"]
 
-        body = services.memory.archive_text()
-        assert body.count("先给结论") == 1
-        assert "## 长期偏好与风格" in body
+        items = services.memory.all_items()
+        assert [item.text for item in items] == ["用户偏好简短回答，先给结论"]
+        assert items[0].section == "长期偏好与风格"
     finally:
         services.runtime.set({"memory.enabled": "false"})
 
 
-def test_forget_removes_the_entry_and_keeps_it_restorable(
+def test_forget_removes_the_entry_and_keeps_its_history(
     services: Services, admin: Caller
 ) -> None:
-    """``forget`` 删一条（§7.4）：档案里没了、变更流里有、回执说得出删了哪条。"""
+    """``forget`` 删一条：库里没了、历史里留着、回执说得出删了哪条。
+
+    **历史是只读的**：v0.57 没有"还原"这条路（档案制那个端点随变更流一起退场了），
+    历史留着是为了让人看清"这条以前是什么"。
+    """
     services.runtime.set({"memory.enabled": "true"})
     try:
-        call_tool(services, "remember", {"content": "项目代号叫 kylab"}, caller=admin)
+        added = call_tool(services, "remember", {"content": "项目代号叫 kylab"}, caller=admin)
 
         outcome = call_tool(services, "forget", {"topic": "kylab"}, caller=admin)
 
         assert outcome["action"] == "forgotten"
         assert "忘掉了" in outcome["receipt"]
-        assert "项目代号叫 kylab" not in services.memory.archive_text()
-        # 留痕可还原（服务层那一侧的方法，界面的「还原」用它）
-        assert services.memory.restore("项目代号叫 kylab").action == "restored"
-        assert "项目代号叫 kylab" in services.memory.archive_text()
+        assert services.memory.all_items() == []
+        events = [row.event for row in services.memory.item_history(added["item_id"])]
+        assert events == ["ADD", "DELETE"]
     finally:
         services.runtime.set({"memory.enabled": "false"})
 
