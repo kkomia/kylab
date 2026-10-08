@@ -63,7 +63,6 @@ from app.services.runtime_config import RuntimeConfigService
 __all__ = [
     "ARCHIVE_FILE",
     "CAPTURE_SIGNALS",
-    "CORE_MEMORY_FILE",
     "MAX_ENTRY_CHARS",
     "MAX_RECALL",
     "PERSONA_FILES",
@@ -81,8 +80,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-CORE_MEMORY_FILE = "MEMORY.md"
-
 #: 人格文件。与记忆并列的第二类持久文件（见 ``soul_text`` 的说明）。
 SOUL_FILE = "SOUL.md"
 
@@ -98,18 +95,15 @@ PROFILE_FILE = "PROFILE.md"
 #: 档案文件名（与 ``archive_files.ARCHIVE_FILENAME`` 同源，这里只是给本模块一个好读的名字）。
 ARCHIVE_FILE = af.ARCHIVE_FILENAME
 
-#: **每轮进 system prompt 的那几份文件**（`GET /memory` 的 ``injected`` 标记就报它）。
-#:
-#: 三份：两份人设（不看开关）+ 档案（``memory.enabled`` 关着时不进，但它的**位置**
-#: 仍然是"每轮在场的设定"）。``MEMORY.md`` **不在里面**——它已经退场（§7.2），
-#: 界面上它显示成"旧记忆（只读）"。
-INJECTED_FILES: tuple[str, ...] = (SOUL_FILE, ARCHIVE_FILE, AGENTS_FILE)
-
 #: 注入 system prompt 的**人设**文件与固定顺序。
 #:
 #: v0.56 起只剩两份：``PROFILE.md``（档案）改由**独立的贡献者**注入（§5.1），
 #: ``MEMORY.md`` 退场（§7.2：内容是画像的另一半，已经折进档案；文件留盘但不再注入、
 #: 不再写入）。留下的两份是纯粹的"设定"：先"我是谁"（人格）→ 再"这类活怎么干"（规程）。
+#:
+#: **每轮的注入全集就是这三份**（这两份 + 档案那一块）——原先另有一个
+#: ``INJECTED_FILES`` 常量把这句话报给 ``GET /memory`` 的 ``injected`` 标记，
+#: 那个标记随"旧记忆（只读）"一起退场，常量也就没有读者了。
 PERSONA_FILES: tuple[tuple[str, str], ...] = (
     (SOUL_FILE, "人格"),
     (AGENTS_FILE, "操作规程"),
@@ -565,7 +559,6 @@ class MemoryStatus:
 
     enabled: bool
     workspace: str
-    core_file_exists: bool
     file_count: int = 0
     """工作区里的记忆文件份数。"""
 
@@ -819,14 +812,6 @@ class MemoryService:
     def workspace(self) -> Path:
         """共享桶的工作区（兼容旧调用：``workspace_for(None)``）。"""
         return self.workspace_for(None)
-
-    def core_file_for(self, user_id: str | None = None) -> Path:
-        return self.workspace_for(user_id) / CORE_MEMORY_FILE
-
-    @property
-    def core_file(self) -> Path:
-        """共享桶的 ``MEMORY.md``（``core_file_for(None)`` 的兼容写法）。"""
-        return self.core_file_for(None)
 
     def _require_enabled(self) -> None:
         """**注入与 recall** 的那道闸（§7.3）。
@@ -1260,7 +1245,6 @@ class MemoryService:
         return MemoryStatus(
             enabled=self.enabled,
             workspace=str(space),
-            core_file_exists=self.core_file_for(user_id).exists(),
             file_count=stats.file_count,
             last_changed_at=stats.last_changed_at,
             detail=""
@@ -1303,20 +1287,13 @@ class MemoryService:
 
     # ------------------------------------------------------------------ 文件
     #
-    # 只读：浏览走**本地目录**，这几个方法**不要求 ``memory.enabled``**——
-    # 记忆关着的时候，用户依然该能打开自己的记忆文件看看写了什么。
+    # 只读：读一个文件的原文走**本地目录**，这条路**不要求 ``memory.enabled``**——
+    # 记忆关着的时候，用户依然该能打开自己的档案看看写了什么。
     # 写那一侧（PUT/DELETE /memory/files/{path}）已经随档案制退场（§6.3）：
     # 留在那里就是一个绕过预算与变更流的后门。
-
-    def files(self, user_id: str | None = None) -> list[MemoryFile]:
-        """列出这个账号工作区里的 Markdown 文件（分类、摘要、大小、时间）。"""
-        return memory_files.scan(self.workspace_for(user_id))
-
-    @property
-    def scan_limit(self) -> int:
-        """一次最多列多少个文件。界面要拿它判断"列表是不是被截断了"——
-        截断了却不说，用户会以为"我的文件丢了"。"""
-        return memory_files.MAX_LISTED_FILES
+    # **列表那一侧也退场了**（``files`` / ``scan_limit`` 连同 ``GET /memory`` 的
+    # ``files`` 字段）：它只喂过界面上那节只读的「旧记忆」，那一节已经下掉，
+    # 没有消费者的字段与能力一起删（`GET /memory` 现在只报状态）。
 
     def describe(self, path: str, user_id: str | None = None) -> MemoryFile:
         """单个文件的元信息（不含正文）。见 ``memory_files.describe``。"""

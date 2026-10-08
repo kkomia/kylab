@@ -2,17 +2,19 @@
 
 镜像同构：``app/services/memory_files.py`` → 本文件。
 
-这一层现在只做两件事：**列的出**（工作区里有哪些 Markdown、多大、什么时候改的）
-与**读得进**（一个文件的原文）。检索、切块、图谱、当天索引页已经随档案制退场，
-所以这里只钉住剩下的那几条安静错法：
+这一层现在只做两件事：**读得进**（一个文件的原文）与**数得出**（工作区几份文件、
+最后改动时间）。**列表已经退场**（``scan``）：它最后的消费者是记忆页上那节只读的
+「旧记忆」，那一节下掉之后列表没有读者了。检索、切块、图谱、当天索引页更早随档案制
+退场，所以这里只钉住剩下的那几条安静错法：
 
 1. **路径越界**：它由前端传进来（``GET /memory/files/{path}``），不拦就等于
    把整个文件系统开放出去。``safe_path`` 的每一道检查都要有对应用例；
 2. **派生物目录要跳过**：``session/`` 与 ``resource/`` 里的 .md 不是记忆，
-   列出来只会把真正要改的东西淹掉；
-3. **列表与单文件读的字段必须一致**：两边曾各拼一份，加字段必漏一边；
-4. **读得进、读不到要如实 404**（不是"返回空内容"：那会让编辑器把一份不存在的
-   文件显示成空白，用户一存就把它造出来了）。
+   数进状态读数只会让"几份文件"骗人；
+3. **读得进、读不到要如实 404**（不是"返回空内容"：那会让编辑器把一份不存在的
+   文件显示成空白，用户一存就把它造出来了）；
+4. **单文件的元信息与正文必须对得上**（同一处装配）：读一个文件的两面各拼一份的话，
+   以后加字段必然漏掉一边。
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ from app.services.memory_files import (
     parse_frontmatter,
     read_file,
     safe_path,
-    scan,
     stats,
 )
 
@@ -161,41 +162,47 @@ def test_classify(path: str, expected: str) -> None:
 # --------------------------------------------------------------------- 扫描
 
 
-def test_scan_skips_derived_dirs(tmp_path: Path) -> None:
-    """``session/`` 与 ``resource/`` 是**派生物**：原始对话与外部资料就算存成 .md
-    也不是记忆，列出来只会把真正要改的东西淹掉。"""
-    paths = [item.path for item in scan(_workspace(tmp_path))]
-    assert "session/dialog/conv_x.md" not in paths
-    assert "resource/外部资料.md" not in paths
-    assert paths == sorted(paths, key=paths.index)  # 顺序稳定
-    assert {"MEMORY.md", "SOUL.md"} <= set(paths)
-
-
-def test_scan_core_title_is_filename_not_heading(tmp_path: Path) -> None:
+def test_core_title_is_filename_not_heading(tmp_path: Path) -> None:
     """``MEMORY.md`` 正文里那个 ``## 核心长期记忆`` 是章节名、不是它的名字。
-    取成标题的话，列表里会出现一个叫"核心长期记忆"的条目，而用户找的是 MEMORY.md。"""
-    by_path = {item.path: item for item in scan(_workspace(tmp_path))}
-    assert by_path["MEMORY.md"].title == "MEMORY.md"
-    assert by_path["SOUL.md"].title == "SOUL.md"
-    assert by_path["MEMORY.md"].is_core is True
+    取成标题的话，读它的人会看到一个叫"核心长期记忆"的东西，而他要找的是 MEMORY.md。"""
+    root = _workspace(tmp_path)
+
+    assert describe(root, "MEMORY.md").title == "MEMORY.md"
+    assert describe(root, "SOUL.md").title == "SOUL.md"
+    assert describe(root, "MEMORY.md").is_core is True
 
 
-def test_scan_reads_frontmatter_and_heading(tmp_path: Path) -> None:
-    by_path = {item.path: item for item in scan(_workspace(tmp_path))}
-    daily = by_path["daily/2026-09-16/会话一.md"]
+def test_describe_reads_frontmatter_and_heading(tmp_path: Path) -> None:
+    """非核心文件的显示名取 frontmatter 的 ``title`` 或正文首个标题。"""
+    root = _workspace(tmp_path)
+
+    daily = describe(root, "daily/2026-09-16/会话一.md")
     assert daily.summary == "现场"
     assert daily.title == "今天的现场"
     assert daily.kind == "daily"
     assert daily.tags == ()
     assert daily.size_bytes > 0
     assert daily.modified_at
-    digest = by_path["digest/personal/锂价.md"]
+
+    digest = describe(root, "digest/personal/锂价.md")
     assert digest.tags == ("锂价", "成本")
 
 
-def test_scan_empty_workspace(tmp_path: Path) -> None:
-    """工作区还不存在时返回空列表，**不报错**：记忆没启用过的部署就是这样。"""
-    assert scan(tmp_path / "没有这个目录") == []
+def test_stats_on_a_missing_workspace_counts_zero(tmp_path: Path) -> None:
+    """工作区还不存在时是"零份文件"，**不报错**：记忆没启用过的部署就是这样。"""
+    result = stats(tmp_path / "没有这个目录")
+
+    assert result.file_count == 0
+    assert result.last_changed_at == ""
+
+
+def test_stats_skips_derived_dirs(tmp_path: Path) -> None:
+    """``session/`` 与 ``resource/`` 是**派生物**：原始对话与外部资料就算存成 .md
+    也不是记忆，数进状态读数只会让"几份文件"骗人。"""
+    result = stats(_workspace(tmp_path))
+
+    # 核心 2 份 + daily 1 份 + digest 1 份 = 4 份（派生物两目录不算）
+    assert result.file_count == 4
 
 
 def test_stats_counts_files_and_reports_the_last_change(tmp_path: Path) -> None:
@@ -236,12 +243,16 @@ def test_read_outside_workspace_is_rejected(tmp_path: Path) -> None:
         read_file(_workspace(tmp_path), "../secret.md")
 
 
-def test_describe_matches_scan_entry(tmp_path: Path) -> None:
-    """列表与单文件读**必须是同一份装配**（``_entry_of``）：两边各拼一份的话，
-    以后加字段必然漏掉"只读那一个文件"那条路。"""
+def test_describe_and_read_file_describe_the_same_file(tmp_path: Path) -> None:
+    """元信息与正文**必须是同一份装配**（``_entry_of`` 与 ``read_file`` 的
+    读法对齐：按字节读再解码）：两边各拼一份的话，以后加字段必然漏掉一边，
+    而那一边正是"读单个文件"这条路。"""
     root = _workspace(tmp_path)
-    scanned = {item.path: item for item in scan(root)}["daily/2026-09-16/会话一.md"]
+    path = "daily/2026-09-16/会话一.md"
 
-    single = describe(root, "daily/2026-09-16/会话一.md")
+    meta = describe(root, path)
+    detail = read_file(root, path)
 
-    assert single == scanned
+    assert meta.path == detail.path
+    assert meta.size_bytes == detail.size_bytes
+    assert meta.modified_at == detail.modified_at

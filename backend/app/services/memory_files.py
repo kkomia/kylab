@@ -1,8 +1,13 @@
 """记忆工作区的**文件层**（v0.14 三期；档案制见 `docs/设计/记忆档案-设计-v0.1.md`）。
 
-这一层现在只做两件事：**列的出**（工作区里有哪些 Markdown、多大、什么时候改的）
-与**读得进**（一个文件的原文）。它服务的是档案卡右下角那个「原文」、迁移草稿查看，
-以及界面上那份只读的旧记忆。
+这一层现在只做两件事：**读得进**（按路径读一个文件的原文）与**数得出**
+（工作区里几份 Markdown、最后什么时候改的）。它服务的是档案卡右下角那个「原文」
+与迁移草稿查看，以及 `GET /memory` 的状态读数。
+
+**列表那一侧也退场了**（``scan``）：原先它还负责"列得出工作区里有哪些文件"，
+而那份列表最后只剩一个消费者——记忆页上那节只读的「旧记忆」（界面靠列表项上的
+``injected=false`` 认那份退场的 ``MEMORY.md``）。那一节下掉之后列表没有任何读者，
+能力本身一并删掉（`GET /memory` 不再返回 ``files``）。
 
 **检索、切块、图谱、当天索引页已经随档案制退场**（设计 §1.3）：那些机制服务的是
 ``daily/`` / ``digest/`` 那一层流水（用 BM25 + 分词在几百 KB 里排准序、用 wikilink
@@ -48,8 +53,8 @@ __all__ = [
     "CORE_KIND",
     "DAILY_KIND",
     "DIGEST_KIND",
-    "MAX_LISTED_FILES",
     "MAX_READ_BYTES",
+    "MAX_SCANNED_FILES",
     "MemoryFile",
     "MemoryFileDetail",
     "WorkspaceStats",
@@ -58,7 +63,6 @@ __all__ = [
     "parse_frontmatter",
     "read_file",
     "safe_path",
-    "scan",
     "stats",
     "to_relative",
 ]
@@ -76,10 +80,10 @@ DAILY_KIND = "daily"
 DIGEST_KIND = "digest"
 OTHER_KIND = "other"
 
-#: 扫描上限。工作区可能被塞进很多东西（``resource/`` 下可能有成百上千个
-#: 解析产物），而这是**给人浏览**的列表，不是全量索引——超过就截断并在
-#: 返回值里说明，而不是让一次页面请求去遍历一万个文件。
-MAX_LISTED_FILES = 2000
+#: 遍历上限。工作区可能被塞进很多东西（``resource/`` 下可能有成百上千个
+#: 解析产物），而状态读数（几份文件、上次改动）不需要遍历一万个文件才准——
+#: 到此为止，别让一次打开记忆页变成一次全盘走查。
+MAX_SCANNED_FILES = 2000
 
 #: 读文件的上限（编辑器要把它整个塞进 textarea）。记忆文件该是几 KB 量级，
 #: 1 MB 已经远超"一条记忆"的合理体积；超了就截断并标记，而不是拒绝打开。
@@ -102,7 +106,12 @@ _HEADING = re.compile(r"^#{1,2}\s+(.+?)\s*$", re.MULTILINE)
 
 @dataclass(frozen=True, slots=True)
 class MemoryFile:
-    """列表项。**body 不在这里**——列表可能有上千条，正文按需再读（渐进式）。"""
+    """一个文件的元信息（**不含正文**）。
+
+    由 ``describe`` 装配，随 ``GET /memory/files/{path}`` 的响应出去；
+    正文在 :class:`MemoryFileDetail` 里——两件事分开，读一个文件的元信息
+    就不必把它整份读进来。
+    """
 
     path: str
     """相对工作区的路径，**统一用正斜杠**（Windows 的 ``\\`` 写进链接里就点不动了）。"""
@@ -199,8 +208,10 @@ def to_relative(workspace: Path, target: Path) -> str:
 #: 少列一个的后果是那份文件被当成普通文件，而用户看到的现象是
 #: "我改了它，但助手好像没读到"。
 #:
-#: ``MEMORY.md`` 仍在这份清单里（它还在磁盘上、还在这个列表里），但它**不再注入**
-#: （v0.56 起退场，见 §7.2）——界面按 ``injected`` 那个标记把它显示成"旧记忆（只读）"。
+#: ``MEMORY.md`` 仍在清单里，但身份已经变了：v0.56 起它**不再注入**（§7.2）、
+#: 也不再被任何界面展示（那节只读的「旧记忆」已经下掉）。留着它是因为**别人的盘上
+#: 可能还躺着这份文件**（旧部署的现场，退场不等于删用户的东西）：它仍该被当成核心文件
+#: 分类，别被当成一份随手写的普通笔记。
 CORE_FILES: tuple[str, ...] = ("MEMORY.md", "SOUL.md", "PROFILE.md", "AGENTS.md")
 
 
@@ -277,7 +288,10 @@ def _tags_of(meta: dict[str, Any]) -> tuple[str, ...]:
 
 def _iter_markdown(workspace: Path) -> list[Path]:
     """遍历工作区里的 .md，跳过派生物目录与隐藏目录。结果**排序**，
-    这样列表顺序稳定（否则 os.scandir 的顺序会让界面每次刷新都换一个样子）。"""
+    这样状态读数稳定（否则 os.scandir 的顺序会让"上次更新"看起来在抖）。
+
+    上限见 :data:`MAX_SCANNED_FILES`：这是**状态读数**的遍历，不是全量索引。
+    """
     found: list[Path] = []
     if not workspace.is_dir():
         return found
@@ -286,19 +300,17 @@ def _iter_markdown(workspace: Path) -> list[Path]:
         for name in sorted(files):
             if name.lower().endswith(".md"):
                 found.append(Path(root) / name)
-        if len(found) >= MAX_LISTED_FILES:
+        if len(found) >= MAX_SCANNED_FILES:
             break
-    return found[:MAX_LISTED_FILES]
+    return found[:MAX_SCANNED_FILES]
 
 
 def _entry_of(workspace: Path, target: Path) -> MemoryFile:
-    """一个文件 → 一条列表项。**``scan`` 与 ``describe`` 共用这一处字段装配**：
-    两边各拼一份的话，以后加字段必然漏掉一边，而漏掉的那边是"读单个文件"
-    ——它只在打开那一个文件时才走到。
+    """一个文件 → 它的元信息（``describe`` 用这一处装配）。
 
-    读法也与 ``read_file`` 对齐（按字节读再解码），这样两条路径看到的是同一份文本；
-    解码失败用 ``errors="replace"`` 兜住——**语法错误的手工编辑不该让整个列表 500**，
-    那个文件本来就该被打开来修。
+    读法与 ``read_file`` 对齐（按字节读再解码），这样"元信息"与"正文"两条路径
+    看到的是同一份文本；解码失败用 ``errors="replace"`` 兜住——**语法错误的手工编辑
+    不该让读取整个 500**，那个文件本来就该被打开来修。
     """
     raw = target.read_bytes().decode("utf-8", errors="replace")
     stat = target.stat()
@@ -317,20 +329,8 @@ def _entry_of(workspace: Path, target: Path) -> MemoryFile:
     )
 
 
-def scan(workspace: Path) -> list[MemoryFile]:
-    """列出工作区里所有记忆文件（含解析出的 frontmatter 摘要与标签）。"""
-    workspace = workspace.resolve()
-    entries: list[MemoryFile] = []
-    for target in _iter_markdown(workspace):
-        try:
-            entries.append(_entry_of(workspace, target))
-        except OSError:
-            logger.warning("读记忆文件失败：%s", target, exc_info=True)
-    return entries
-
-
 def describe(workspace: Path, path: str) -> MemoryFile:
-    """单个文件的列表项（不含正文）。
+    """单个文件的元信息（不含正文）。
 
     **单独有它，是为了不让"读一个文件"去扫整个工作区**：打开一个文件时走这条路，
     而工作区可能有上千个文件。

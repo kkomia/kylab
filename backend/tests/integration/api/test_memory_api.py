@@ -88,7 +88,8 @@ def workspace(client: TestClient):
     (root / "session" / "dialog").mkdir(parents=True)
     (root / "PROFILE.md").write_bytes(_ARCHIVE.encode())
     (root / "changes.md").write_bytes(_CHANGES.encode())
-    # 旧记忆（已退场）：文件留盘、界面显示成只读，后端不再消费它
+    # 旧部署留下的那份 ``MEMORY.md``：**折叠迁移**还读它（把旧条目折进档案），
+    # 界面上已经没有任何地方展示它了（那节只读的「旧记忆」下掉了）
     (root / "MEMORY.md").write_bytes(
         "---\nsummary: 核心\n---\n\n## 核心长期记忆\n\n- 用户偏好先给结论\n".encode()
     )
@@ -119,40 +120,26 @@ def _enable(client: TestClient, **values: str) -> None:
     assert response.json()["rejected"] == [], response.text
 
 
-# --------------------------------------------------------------- 状态与列表
+# --------------------------------------------------------------- 状态
 
 
-def test_overview_lists_files_and_counts(client: TestClient, workspace) -> None:
+def test_overview_reports_status_only(client: TestClient, workspace) -> None:
+    """``GET /memory`` 只报状态。
+
+    原先它还带一份**文件列表**（每项有个 ``injected`` 标记，界面上靠它认出那份
+    退场的 ``MEMORY.md``）：列表只服务记忆页上那节只读的「旧记忆」，那一节下掉之后
+    它没有读者，字段与能力一起删——所以这里**逐条钉住它们不再出现**。
+    """
     body = client.get("/api/v1/memory").json()
-    paths = [item["path"] for item in body["files"]]
 
     # **默认开**（v0.56 改，§7.3）：注入一次模型调用都不产生，所以"默认关"
     # 只等于"这个功能默认不存在"
     assert body["status"]["enabled"] is True
-    # 夹具里留着旧的 ``MEMORY.md``（"旧记忆（只读）"，§7.2）：它还在，但已经不注入了
-    assert body["status"]["core_file_exists"] is True
-    assert body["status"]["file_count"] == len(paths)
-    # 派生物目录不进列表：原始对话不是记忆
-    assert "session/dialog/conv_x.md" not in paths
-    assert {
-        "PROFILE.md",
-        "changes.md",
-        "MEMORY.md",
-        "SOUL.md",
-        "daily/2026-09-16/会话一.md",
-    } <= set(paths)
-    assert body["truncated"] is False
-
-
-def test_overview_reports_which_files_are_injected(client: TestClient, workspace) -> None:
-    """``injected`` 报的是**那三份设定文件**（两份人设 + 档案）——
-    ``MEMORY.md`` **不在里面**：它已经退场（§7.2），界面上显示成"旧记忆（只读）"。"""
-    by_path = {item["path"]: item for item in client.get("/api/v1/memory").json()["files"]}
-
-    assert by_path["MEMORY.md"]["injected"] is False
-    assert by_path["PROFILE.md"]["injected"] is True
-    assert by_path["SOUL.md"]["injected"] is True
-    assert by_path["daily/2026-09-16/会话一.md"]["injected"] is False
+    assert "files" not in body, "文件列表随「旧记忆（只读）」一起下掉"
+    assert "truncated" not in body
+    assert "injected" not in body["status"]
+    # ``core_file_exists`` 是旧 ``MEMORY.md`` 的存在性读数，同样没有消费者了
+    assert "core_file_exists" not in body["status"]
 
 
 def test_overview_reports_local_counts(client: TestClient, workspace) -> None:

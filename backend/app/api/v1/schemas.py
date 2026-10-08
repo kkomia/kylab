@@ -1479,7 +1479,7 @@ class PluginListOut(BaseModel):
 
 
 class MemoryFileOut(BaseModel):
-    """记忆工作区里的一个文件（列表项，不含正文）。"""
+    """记忆工作区里的一个文件（不含正文）。"""
 
     path: str
     name: str
@@ -1489,14 +1489,6 @@ class MemoryFileOut(BaseModel):
     tags: list[str] = Field(default_factory=list)
     size_bytes: int = 0
     modified_at: str = ""
-
-    injected: bool = False
-    """每轮对话会不会被注入 system prompt（`SOUL.md` / 档案 / `AGENTS.md`）。
-
-    ``MEMORY.md`` **不在里面**：它已经退场（§7.2），内容折进了档案；
-    界面上它据此显示成"旧记忆（只读）"。"""
-
-
 
 
 class MemoryFileDetailOut(MemoryFileOut):
@@ -1518,7 +1510,6 @@ class MemoryStatusOut(BaseModel):
 
     enabled: bool
     workspace: str = ""
-    core_file_exists: bool = False
     detail: str = ""
     file_count: int = 0
     """工作区里的记忆文件份数。"""
@@ -1528,9 +1519,15 @@ class MemoryStatusOut(BaseModel):
 
 
 class MemoryOverviewOut(BaseModel):
+    """``GET /memory`` 的响应：只有状态。
+
+    原先这里还带一份**文件列表**（``files`` / ``truncated``，每项有个 ``injected``
+    标记）：它服务的是记忆页上那节只读的「旧记忆」（靠 ``injected=false`` 认那份
+    ``MEMORY.md``）。那一节与那条链一起退场（"历史的东西就删了"），列表也就没有
+    消费者了——**列表能力本身一并删掉**，不留一个没人读的字段。
+    """
+
     status: MemoryStatusOut
-    files: list[MemoryFileOut] = Field(default_factory=list)
-    truncated: bool = False
 
 
 class MemoryRecallIn(BaseModel):

@@ -13,9 +13,11 @@
  * 2. **档案的读写不看开关**（§7.3）：`memory.enabled` 关着时这一页照旧能改，
  *    只有注入与 recall 停下——所以这里没有"未启用就不能编辑"这种闸。
  *
- * 另外两块是迁移入口与只读旧档（§8）：检测到可折叠的旧数据时给「导入旧记忆」，
- * `import-draft.md` 有货时提示还有几条没进档案，`MEMORY.md` 存在时只读展示它
- * （供用户确认折叠结果，不可编辑）。
+ * 另一块是迁移入口（§8）：检测到可折叠的旧数据时给「导入旧记忆」，
+ * `import-draft.md` 有货时提示还有几条没进档案。
+ *
+ * 原先侧栏底部还有一节**「旧记忆（只读）」**（展示旧的 `MEMORY.md`）：那一节连同
+ * 后端喂它的文件列表一起退场了——`MEMORY.md` 已经退场（§7.2），这一页不再认它。
  */
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -38,7 +40,6 @@ import { Button } from '@/ui/button'
 
 import { SettingGroupPanel } from '../settings/SettingGroupPanel'
 import {
-  EmptyState,
   Modal,
   Notice,
   PageShell,
@@ -72,17 +73,6 @@ export function MemoryPage() {
   const [draftItems, setDraftItems] = useState<MemoryDraftSuggestion[] | null>(null)
 
   const status = overview.data?.status ?? null
-
-  /** `MEMORY.md` 已退场：它不再进注入，识别口径就是后端给的 `injected=false`。 */
-  const oldMemory = (overview.data?.files ?? []).find(
-    (item) => item.kind === 'core' && !item.injected,
-  )
-
-  const oldMemoryText = useQuery({
-    queryKey: ['memory', 'file', oldMemory?.path ?? ''],
-    queryFn: () => getMemoryFile(oldMemory!.path),
-    enabled: Boolean(oldMemory),
-  })
 
   const draftPath = archive.data?.draft.path ?? ''
   const draftText = useQuery({
@@ -254,20 +244,6 @@ export function MemoryPage() {
             ) : changes.data ? (
               <ChangeTimeline changes={changes.data} highlight={highlight} />
             ) : null}
-
-            {oldMemory && (
-              <section className="m-old" data-testid="old-memory" aria-label="旧记忆">
-                <header className="m-section-head">
-                  <h2 className="m-section-title">旧记忆（只读）</h2>
-                  <Badge variant="secondary">{oldMemory.path}</Badge>
-                </header>
-                <pre className="m-original-body" data-testid="old-memory-content">
-                  {oldMemoryText.data?.content ?? ''}
-                </pre>
-              </section>
-            )}
-
-            {!oldMemory && <EmptyState title="没有旧记忆文件" hint="折叠完成后这里会显示结果。" />}
           </div>
         </div>
       ) : null}

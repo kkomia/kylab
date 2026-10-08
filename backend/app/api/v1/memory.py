@@ -1,10 +1,10 @@
 """记忆端点（v0.14 三期；v0.56 起是**一份档案**，设计见 ``docs/设计/记忆档案-设计-v0.1.md``）。
 
-四件事：看状态、用档案（查变更 / 记住 / 忘掉 / 还原 / 组改名）、跑迁移、读文件（名单与原文）。
+四件事：看状态、用档案（查变更 / 记住 / 忘掉 / 还原 / 组改名）、跑迁移、读一个文件的原文。
 
 **记忆与知识库是两个池子**（设计文档 §2.1），这里的一切都只碰记忆那一侧：
-没有任何一个端点会去读文档、片段或向量。``GET /memory`` 列的是工作区里的
-Markdown 文件，不是知识库文档。
+没有任何一个端点会去读文档、片段或向量。``GET /memory`` 报的是**这一层的状态**
+（开没开、工作区在哪、几份文件），不是知识库文档。
 
 **文件级写入端点与图谱端点已经删掉**（档案制 §6.3、§7.4）：
 
@@ -14,8 +14,12 @@ Markdown 文件，不是知识库文档。
   还原走 ``POST /memory/restore``）；
 - ``GET /memory/graph``：图谱退场（wikilink 那一层随 ``daily/``/``digest/`` 一起清理）。
 
+**``GET /memory`` 那份文件列表也删掉了**：它服务的是记忆页上那节只读的「旧记忆」
+（靠列表项上的 ``injected=false`` 认出那份退场的 ``MEMORY.md``），那一节退场之后
+没有任何消费者——列表能力本身一并下掉，只剩状态。
+
 只读的 ``GET /memory/files/{path}`` **保留**：档案卡右下角那个「原文」要展示磁盘上
-那份 Markdown，迁移草稿也要能看。
+那份 Markdown，迁移草稿也要能看。它是"按路径读一个文件"，不是"列一份旧记忆"。
 
 **鉴权档位与 MCP 那份保持一致**（读用 ``ReadDep``、写用 ``WriteDep``）：
 MCP 上 ``recall`` / ``remember`` / ``forget`` 对 API Key 是开放的（外部 agent 得能用记忆），
@@ -61,7 +65,6 @@ from app.core.services import Services, get_services
 from app.services import archive_files as af
 from app.services import tools as tools_service
 from app.services.archive import WriteResult
-from app.services.memory import INJECTED_FILES
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -96,10 +99,6 @@ def _file_out(record) -> MemoryFileOut:  # type: ignore[no-untyped-def]
         tags=list(record.tags),
         size_bytes=record.size_bytes,
         modified_at=record.modified_at,
-        # "会被注入"是**那几份设定文件**的专属性质（每轮进 system prompt，见 §5.1），
-        # 名字清单由记忆层给（`INJECTED_FILES`）：v0.56 起 `MEMORY.md` **不在里面**
-        # ——它已经退场（§7.2），界面上它显示成"旧记忆（只读）"。
-        injected=record.path in INJECTED_FILES,
     )
 
 
@@ -110,32 +109,26 @@ def _status_out(record) -> MemoryStatusOut:  # type: ignore[no-untyped-def]
     return MemoryStatusOut(
         enabled=record.enabled,
         workspace=record.workspace,
-        core_file_exists=record.core_file_exists,
         file_count=record.file_count,
         last_changed_at=record.last_changed_at,
         detail=record.detail,
     )
 
 
-@router.get("", response_model=MemoryOverviewOut, summary="记忆状态与文件列表")
+@router.get("", response_model=MemoryOverviewOut, summary="记忆状态")
 def get_memory(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> MemoryOverviewOut:
-    """一次给全页面首屏要的东西（状态 + 文件列表）。
+    """记忆页首屏要的状态。
 
     **状态是纯本地的**（数一遍工作区）：没有第二个进程、没有探测，
     所以"打开记忆页"不会变成一次网络等待。
+
+    原先这里还带一份文件列表（`GET /memory` 的 ``files``）：它只服务那节只读的
+    「旧记忆」，那一节退场之后没有消费者，随它一起删掉。
     """
-    scope = _scope(caller)
-    files = services.memory.files(scope)
-    status_out = _status_out(services.memory.status(scope))
-    return MemoryOverviewOut(
-        status=status_out,
-        files=[_file_out(item) for item in files],
-        # 服务层的扫描上限（见 memory_files.MAX_LISTED_FILES）
-        truncated=len(files) >= services.memory.scan_limit,
-    )
+    return MemoryOverviewOut(status=_status_out(services.memory.status(_scope(caller))))
 
 
 @router.get("/files/{path:path}", response_model=MemoryFileDetailOut, summary="读一个记忆文件")

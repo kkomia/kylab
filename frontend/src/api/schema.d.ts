@@ -1145,11 +1145,14 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 记忆状态与文件列表
-         * @description 一次给全页面首屏要的东西（状态 + 文件列表）。
+         * 记忆状态
+         * @description 记忆页首屏要的状态。
          *
          *     **状态是纯本地的**（数一遍工作区）：没有第二个进程、没有探测，
          *     所以"打开记忆页"不会变成一次网络等待。
+         *
+         *     原先这里还带一份文件列表（`GET /memory` 的 ``files``）：它只服务那节只读的
+         *     「旧记忆」，那一节退场之后没有消费者，随它一起删掉。
          */
         get: operations["get_memory_api_v1_memory_get"];
         put?: never;
@@ -4560,11 +4563,6 @@ export interface components {
              */
             modified_at: string;
             /**
-             * Injected
-             * @default false
-             */
-            injected: boolean;
-            /**
              * Content
              * @default
              */
@@ -4578,45 +4576,6 @@ export interface components {
              * @default false
              */
             truncated: boolean;
-        };
-        /**
-         * MemoryFileOut
-         * @description 记忆工作区里的一个文件（列表项，不含正文）。
-         */
-        MemoryFileOut: {
-            /** Path */
-            path: string;
-            /** Name */
-            name: string;
-            /** Title */
-            title: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "core" | "daily" | "digest" | "other";
-            /**
-             * Summary
-             * @default
-             */
-            summary: string;
-            /** Tags */
-            tags?: string[];
-            /**
-             * Size Bytes
-             * @default 0
-             */
-            size_bytes: number;
-            /**
-             * Modified At
-             * @default
-             */
-            modified_at: string;
-            /**
-             * Injected
-             * @default false
-             */
-            injected: boolean;
         };
         /**
          * MemoryForgetIn
@@ -4730,16 +4689,17 @@ export interface components {
                 number
             ][];
         };
-        /** MemoryOverviewOut */
+        /**
+         * MemoryOverviewOut
+         * @description ``GET /memory`` 的响应：只有状态。
+         *
+         *     原先这里还带一份**文件列表**（``files`` / ``truncated``，每项有个 ``injected``
+         *     标记）：它服务的是记忆页上那节只读的「旧记忆」（靠 ``injected=false`` 认那份
+         *     ``MEMORY.md``）。那一节与那条链一起退场（"历史的东西就删了"），列表也就没有
+         *     消费者了——**列表能力本身一并删掉**，不留一个没人读的字段。
+         */
         MemoryOverviewOut: {
             status: components["schemas"]["MemoryStatusOut"];
-            /** Files */
-            files?: components["schemas"]["MemoryFileOut"][];
-            /**
-             * Truncated
-             * @default false
-             */
-            truncated: boolean;
         };
         /** MemoryRecallIn */
         MemoryRecallIn: {
@@ -4886,11 +4846,6 @@ export interface components {
              * @default
              */
             workspace: string;
-            /**
-             * Core File Exists
-             * @default false
-             */
-            core_file_exists: boolean;
             /**
              * Detail
              * @default

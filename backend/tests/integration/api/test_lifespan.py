@@ -81,8 +81,9 @@ def test_lifespan_lays_down_the_memory_templates(wired_app) -> None:
 
     **v0.56 起只铺三份**（`SOUL.md` / `PROFILE.md` / `AGENTS.md`）：`MEMORY.md`
     随"记忆档案"退场（档案制 §7.2）——不再被播种、也不再被注入或写入
-    （见 `services/memory.py::seed_persona`）。旧盘上已有的那份仍然在、仍然读得到，
-    但那是"旧记忆（只读）"，不是"新装好的桌面第一次打开有什么"。
+    （见 `services/memory.py::seed_persona`）。旧盘上已有的那份仍然在、也仍读得到
+    （`GET /memory/files/{path}` 是按路径读文件），但界面上已经没有任何地方展示它，
+    更不是"新装好的桌面第一次打开有什么"。
     **这一条更新于 2026-10-05**：它原来断言四份（含 ``MEMORY.md``），
     而代码在 v0.56 就只铺三份了——那是一次**漏改的期望**，与退役那一轮无关，
     顺手在这里对齐（`test_local_backend.py` 里早就写着"v0.56 起只种三份"）。

@@ -7,18 +7,14 @@
 3. **单个贡献者抛异常只跳过它自己** —— 某个来源读文件失败在真实部署里一定会发生，
    而"人设读不出来导致整轮对话失败"是完全不可接受的因果关系。
 
-人设文件那一侧还有一条：`MEMORY.md` 要带"可能已经过时、以对方当下为准"的声明，
+人设文件那一侧还有一条：档案要带"可能已经过时、以对方当下为准"的声明，
 否则模型会把记忆当成对方这一轮说的话。
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from app.services.memory import (
     AGENTS_FILE,
-    CORE_MEMORY_FILE,
-    INJECTED_FILES,
     PERSONA_FILES,
     PROFILE_FILE,
     SOUL_FILE,
@@ -241,7 +237,7 @@ def test_seeding_writes_templates_then_leaves_them_alone(tmp_path) -> None:  # t
     created = service.seed_persona("u1")
 
     assert sorted(created) == sorted([SOUL_FILE, PROFILE_FILE, AGENTS_FILE])
-    assert not (service.workspace_for("u1") / CORE_MEMORY_FILE).exists()
+    assert not (service.workspace_for("u1") / "MEMORY.md").exists()
     # 第二次不再新建
     assert service.seed_persona("u1") == []
     # 用户改过的内容不会被覆盖
@@ -301,49 +297,47 @@ def test_persona_does_not_depend_on_the_memory_service_switch(tmp_path) -> None:
     assert "【你的人格" in text and "以下是用户档案" not in text
 
 
-def test_persona_files_are_listed_and_editable_through_the_memory_layer(
-    tmp_path,
-) -> None:  # type: ignore[no-untyped-def]
-    """人设文件的**编辑入口是白捡的**：它们落在记忆工作区里，而那一页本来就在列文件。
+def test_seeded_core_files_are_classified_as_core(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """铺下去的那几份人设，在文件层被认成**核心文件**（按文件名判，不猜内容）。
 
-    这条钉的是这个复用关系本身——如果哪天把核心文件从 ``scan`` 里排掉，
-    用户就再也改不了自己的人格了（而那是这一层存在的全部理由）。
+    这条钉的是两处的名字必须认识同一批：``memory.py`` 铺什么（``SOUL.md`` /
+    ``PROFILE.md`` / ``AGENTS.md``）与 ``memory_files.py`` 的 ``CORE_FILES`` 认什么。
+    分类错了的现象是"这张卡片读得出来，但那几个名字在文件层里不算数"。
+
+    显示名**一律用文件名**：``PROFILE.md`` 正文里的 ``## 身份与称呼`` 是章节名，
+    取成标题的话用户找的就不是这份文件了。
     """
     from app.services import memory_files
 
     service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
     service.seed_persona("u1")
+    workspace = service.workspace_for("u1")
 
-    listed = {Path(item.path).name: item for item in memory_files.scan(service.workspace_for("u1"))}
-
-    assert set(listed) == {SOUL_FILE, PROFILE_FILE, AGENTS_FILE}
-    for name, item in listed.items():
-        # 核心文件按文件名判（它们在根下），分类不猜内容
+    for name in (SOUL_FILE, PROFILE_FILE, AGENTS_FILE):
+        item = memory_files.describe(workspace, name)
         assert item.kind == "core", name
-    # 改得动（用户拿别的编辑器改自己的文件）
-    (service.workspace_for("u1") / SOUL_FILE).write_bytes("改过的人格".encode())
-    assert (service.workspace_for("u1") / SOUL_FILE).read_text(encoding="utf-8") == "改过的人格"
+        assert item.title == name
 
 
 def test_the_injected_and_core_file_lists_cannot_drift() -> None:
-    """两份清单的关系：**注入的那几份必须是核心文件的一部分**。
+    """两份清单的关系：**注入的人设必须是核心文件的一部分**。
 
-    `memory.py` 决定"注入哪些与顺序"，`memory_files.py` 决定"哪些算核心文件"
-    （按路径安全与分类）。分成两处是**依赖方向**逼的（memory 依赖 memory_files，
-    反过来会成环），所以用这条用例把它们钉在一起：往注入清单里加一个不在
-    CORE_FILES 里的名字（或反过来）都会在这里红。
+    `memory.py` 决定"注入哪些与顺序"（``PERSONA_FILES`` 那两张表，档案走它自己的
+    贡献者），`memory_files.py` 决定"哪些算核心文件"（分类与 ``memory.persona_files``
+    白名单）。分成两处是**依赖方向**逼的（memory 依赖 memory_files，反过来会成环），
+    所以用这条用例把它们钉在一起：往人设清单里加一个不在 ``CORE_FILES`` 里的名字
+    就会在这里红。
 
-    v0.56 起两边的**成员不再相等**：``MEMORY.md`` 仍在 ``CORE_FILES`` 里
-    （它还是工作区根下那份"旧记忆"，文件级白名单要认得它），但**不再注入**——
-    所以断言从"相等"改成"包含"。
+    ``MEMORY.md`` 仍在 ``CORE_FILES`` 里但它不在人设清单里：v0.56 起它已退场
+    （§7.2，不再注入、也不再被任何界面展示），留着那个名字是为了**别人盘上可能
+    还躺着的那份旧文件**仍被当成核心文件分类。
     """
     from app.services import memory_files
 
-    injected = set(INJECTED_FILES)
-    assert injected <= set(memory_files.CORE_FILES)
-    assert {name for name, _label in PERSONA_FILES} <= injected
-    assert CORE_MEMORY_FILE in memory_files.CORE_FILES, "旧文件仍要能被列出来（只读）"
-    assert CORE_MEMORY_FILE not in injected, "但它不再注入"
+    persona = {name for name, _label in PERSONA_FILES}
+    assert persona <= set(memory_files.CORE_FILES)
+    assert "MEMORY.md" in memory_files.CORE_FILES, "旧文件仍要认得出来（分类用）"
+    assert "MEMORY.md" not in persona, "但它不再进人设清单"
 
 
 # --------------------------------------------------- 人设文件的模板（照抄 QwenPaw）

@@ -404,7 +404,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/v1/memory` | 记忆状态与文件列表 |
+| `GET` | `/api/v1/memory` | 记忆状态 |
 | `GET` | `/api/v1/memory/archive` | 档案卡（分区、条目、读数） |
 | `GET` | `/api/v1/memory/changes` | 变更流（倒序） |
 | `POST` | `/api/v1/memory/draft/organize` | 整理迁移草稿（一次模型调用，只给建议） |

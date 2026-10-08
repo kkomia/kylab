@@ -7,7 +7,7 @@
  * 用例按"用户能看见的那件事"分组：
  * 1. 档案卡：四个分区、项目分组、行内编辑/删除、读数格式与变色、未知分区标记；
  * 2. 变更流：倒序、旧值/新值、还原；
- * 3. 原文与旧记忆：只读展示；
+ * 3. 原文：只读展示；
  * 4. 迁移：入口显隐、报告、草稿提示。
  *
  * ## 被删掉的旧用例与理由（§6.3 下线清单）
@@ -24,10 +24,13 @@
  *   进了上下文之后它不再是一个用户要做的动作；
  * - **待整合 / 已整合标记**（`按固定顺序分组…`、`状态只说本地事实…`）——`daily`/`digest`
  *   与整合那一层随档案制退场，标记没有对象了；
- * - **页签原语**（`页签的当前态由原语自己画`）——一页两块不再有页签。
+ * - **页签原语**（`页签的当前态由原语自己画`）——一页两块不再有页签；
+ * - **旧记忆（只读）**（`旧记忆（只读）按 injected=false 识别并展示`）——那一节与
+ *   `/memory` 上喂它的文件列表一起退场：`MEMORY.md` 已经退场（§7.2），界面上不再有
+ *   展示它的地方，后端也不再报 `files` / `injected`。
  *
- * 保留下来的两条旧口径，换成新形状继续钉：**界面不解释机制**（`不出现实现细节`）与
- * **界面凭据不落到这一页**。
+ * 保留下来的旧口径只有两条，换成新形状继续钉：**界面不解释机制**（`不出现实现细节`）
+ * 与**界面凭据不落到这一页**。
  */
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -154,36 +157,10 @@ function overviewOf(overrides: Partial<MemoryOverview> = {}): MemoryOverview {
     status: {
       enabled: true,
       workspace: 'D:\\kylab\\memory',
-      core_file_exists: true,
       detail: '',
       file_count: 2,
       last_changed_at: '2026-10-04T09:00:00Z',
     },
-    files: [
-      {
-        path: 'PROFILE.md',
-        name: 'PROFILE.md',
-        title: 'PROFILE.md',
-        kind: 'core',
-        summary: '',
-        tags: [],
-        size_bytes: 100,
-        modified_at: '2026-10-04T09:00:00Z',
-        injected: true,
-      },
-      {
-        path: 'MEMORY.md',
-        name: 'MEMORY.md',
-        title: 'MEMORY.md',
-        kind: 'core',
-        summary: '',
-        tags: [],
-        size_bytes: 80,
-        modified_at: '2026-10-01T09:00:00Z',
-        injected: false,
-      },
-    ],
-    truncated: false,
     ...overrides,
   }
 }
@@ -220,7 +197,6 @@ beforeEach(() => {
     modified_at: '2026-10-04T09:00:00Z',
     links: [],
     retrievable: false,
-    injected: path === 'PROFILE.md',
     consolidated: null,
     content: path === 'import-draft.md' ? '- 旧条目甲\n- 旧条目乙\n' : `# ${path}\n\n正文\n`,
     meta: {},
@@ -507,7 +483,7 @@ describe('记忆页 · 变更流', () => {
   })
 })
 
-describe('记忆页 · 迁移与旧档', () => {
+describe('记忆页 · 迁移', () => {
   it('可迁移时出现入口，跑完展示迁移报告', async () => {
     const user = userEvent.setup()
     archiveState = archiveOf({ migration_available: true })
@@ -579,15 +555,6 @@ describe('记忆页 · 迁移与旧档', () => {
       }),
     )
     await waitFor(() => expect(screen.queryByTestId('draft-preview')).not.toBeInTheDocument())
-  })
-
-  it('旧记忆（只读）按 injected=false 识别并展示', async () => {
-    renderMisc(<MemoryPage />)
-
-    const block = await screen.findByTestId('old-memory')
-    await waitFor(() =>
-      expect(within(block).getByTestId('old-memory-content')).toHaveTextContent('MEMORY.md'),
-    )
   })
 })
 

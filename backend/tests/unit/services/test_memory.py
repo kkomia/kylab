@@ -29,7 +29,6 @@ from app.services.llm import LLMConfig
 from app.services.memory import (
     AGENTS_FILE,
     CAPTURE_SIGNALS,
-    CORE_MEMORY_FILE,
     PROFILE_FILE,
     SOUL_FILE,
     MemoryHit,
@@ -485,7 +484,6 @@ def test_status_is_local_and_counts_the_files(tmp_path: Path) -> None:
     # 档案 + 变更流 + digest + daily = 4 份（`PROFILE.md` 与 `changes.md` 是期二
     # 新写进来的两份；`daily`/`digest` 那一层还在盘上，只是代码不再消费）
     assert status.file_count == 4
-    assert status.core_file_exists is False, "MEMORY.md 退场：新部署不再有这份文件"
     assert status.last_changed_at, "有文件就该有'上次更新'时间"
     assert status.detail == ""
 
@@ -956,7 +954,7 @@ def test_seed_persona_lays_down_the_three_files(tmp_path: Path) -> None:
     created = service.seed_persona()
 
     assert sorted(created) == sorted([SOUL_FILE, PROFILE_FILE, AGENTS_FILE])
-    assert not (tmp_path / "memory" / CORE_MEMORY_FILE).exists()
+    assert not (tmp_path / "memory" / "MEMORY.md").exists()
     # 幂等：第二次一个都不新建
     assert service.seed_persona() == []
     body = (tmp_path / "memory" / PROFILE_FILE).read_text(encoding="utf-8")

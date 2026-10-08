@@ -21,10 +21,6 @@ import type { components } from './schema'
 
 type Schema = components['schemas']
 
-/** 文件分类，按它在工作区里的位置分（位置就是它的分层）。 */
-export type MemoryKind = Schema['MemoryFileOut']['kind']
-
-export type MemoryFile = Schema['MemoryFileOut']
 export type MemoryFileDetail = Schema['MemoryFileDetailOut']
 export type MemoryStatus = Schema['MemoryStatusOut']
 export type MemoryOverview = Schema['MemoryOverviewOut']
@@ -54,6 +50,8 @@ export type MemoryMigration = Schema['MemoryMigrationOut']
 export type MemoryDraftOrganize = Schema['MemoryDraftOrganizeOut']
 export type MemoryDraftSuggestion = Schema['MemoryDraftSuggestionOut']
 
+/** 这一层的状态（开没开、工作区在哪、几份文件）。**只有状态**——原先那份文件列表
+ * 随记忆页上只读的「旧记忆」一起下掉，这份响应里不再有 `files`。 */
 export function getMemory(): Promise<MemoryOverview> {
   return requestLocal<MemoryOverview>('/memory')
 }

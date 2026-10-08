@@ -233,7 +233,7 @@ def test_the_local_files_are_seeded_at_startup(tmp_path, monkeypatch) -> None:  
 
     # **v0.56 起只种三份**：``MEMORY.md`` 随"记忆档案"退场（§7.2），不再被播种
     # （见 `services/memory.py` 的 `seed_persona`，那份 docstring 里写着这一条）。
-    # 老用户盘上已有的 ``MEMORY.md`` 仍在、仍读得到，但那是"旧记忆（只读）"，
+    # 老用户盘上已有的 ``MEMORY.md`` 仍在（折叠迁移还会读它），
     # 与"新装好的桌面第一次打开有什么"是两件事 ✓。
     seeded = {path.name for path in (data_dir / "memory").iterdir()}
     assert seeded >= {"SOUL.md", "PROFILE.md", "AGENTS.md"}, seeded
