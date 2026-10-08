@@ -1,17 +1,18 @@
 """页标记（``<!-- page:N -->``）的写入与读取约定。
 
 一份多页文档的解析产物是**一整段 Markdown**，"这条命中在第几页"这个问题只能靠
-标记来回答。标记有三个使用方，必须共用同一个格式：
+标记来回答。标记由解析器逐页写入，**读取侧一律走这里的常量与函数**，不许各写一份：
 
 - **写入**：解析器逐页产出时（PaddleOCR 天然逐页；MinerU 靠 ``content_list.json``
-  的 ``page_idx`` 定位）；大文件切分器按段合并时（``services/splitting.py``）。
-- **读取**：``services/chunking.py`` 把标记当切块的硬边界，把页码落到 ``chunk.page``。
+  的 ``page_idx`` 定位，见 :func:`locate_block_offsets`）；
+- **读取**：``PAGE_MARKER_RE`` 整行匹配一个标记、:func:`strip_page_markers` 把标记行
+  整行剥干净——两者是"标记长什么样"这份格式的唯一落点。
 
 **放在 ``app/core`` 而不是 ``services``**：解析器是插件层，禁止反向依赖 services
 （工程规范 L4），而写侧读侧又必须共用同一个格式——各写一份必然漂。
 
 标记长这样：``<!-- page:3 -->``，**独占一行**。用 HTML 注释是因为它对 Markdown
-渲染器不可见，且天然不参与正文检索；读取侧把它整行剥掉，不进入 chunk 文本。
+渲染器不可见，且天然不参与正文检索；读取侧把它整行剥掉，不进入正文。
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ def insert_page_markers(markdown: str, boundaries: Sequence[tuple[int, int]]) ->
 
     ``boundaries`` 是 ``(offset, page)``，按 offset 升序；offset 必须是原串里的
     合法切点（一般来自 :func:`locate_block_offsets`）。重复页码会被跳过——
-    同一页里出现两个标记没有意义，只会把 chunker 的硬边界切得更碎。
+    同一页里出现两个标记没有意义，只会让读取侧多做一次无用功。
     """
     if not boundaries:
         return markdown

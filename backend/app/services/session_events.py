@@ -133,8 +133,8 @@ TURN_OK = "ok"
 """正常收尾：模型给出了回答，而且这一轮没降级。"""
 
 TURN_DEGRADED = "degraded"
-"""**降级收尾**：工具步数或整轮墙钟用尽，按现有信息作答（v0.32 起界面据此给
-「继续」入口，判定见 ``services/resume.degraded_reason``）。"""
+"""**降级收尾**：工具步数或整轮墙钟用尽，按现有信息作答（界面据步骤里的
+``degraded`` 标记在回答上方挂一条"这次没跑完"，见 ``services/agent.StepEvent``）。"""
 
 TURN_ERROR = "error"
 """这一轮在流里失败了（模型调用、检索都算）。"""

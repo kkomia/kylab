@@ -1,20 +1,20 @@
 r"""本机库 schema 的创建、校验、增量迁移与**迁移前自动备份**（M2 §1.1）。
 
-职责边界与 PG 侧一致：**DDL 的唯一属主是应用**。启动时由 ``ensure_schema`` 建库 /
-补迁移，不靠人工 ``sqlite3`` 命令（那会造出第二个真相来源）。
+职责边界：**DDL 的唯一属主是应用**。启动时由 ``ensure_schema`` 建库 / 补迁移，
+不靠人工 ``sqlite3`` 命令（那会造出第二个真相来源）。
 
-与 ``postgres_impl/schema.py`` 的三处有意差异：
+三处刻意的设计，逐条给理由：
 
-1. **版本号住 ``schema_metadata`` 而不是 ``schema_migrations`` 表**，且**不另写
-   ``PRAGMA user_version``**——那会变成第二处真相来源（§1.1，与 PG 侧"不建分区
-   登记表"同一条理由）。``schema_metadata`` 是那张 ``key/value`` 表，同时装
-   ``version`` / ``created_at_ms`` / ``last_backup`` / ``migration_log``。
-2. **迁移前自动备份**（规范化要求，PG 那边没有）：迁移一旦跑错，库就是一个既不是
-   旧版也不是新版的状态。用 ``sqlite3.Connection.backup()``（在线备份 API）
-   在迁移前落一份整库副本——WAL 下它安全，目标已存在也不怕。
+1. **版本号住 ``schema_metadata`` 而不是另立登记表**，且**不另写
+   ``PRAGMA user_version``**——那会变成第二处真相来源（§1.1）。``schema_metadata``
+   是那张 ``key/value`` 表，同时装 ``version`` / ``created_at_ms`` / ``last_backup``
+   / ``migration_log``。
+2. **迁移前自动备份**：迁移一旦跑错，库就是一个既不是旧版也不是新版的状态。用
+   ``sqlite3.Connection.backup()``（在线备份 API）在迁移前落一份整库副本——
+   WAL 下它安全，目标已存在也不怕。
 3. **每条迁移一个事务、版本号写在同一事务里**：DDL 在中途失败时要么整条生效、
    要么整条回滚，不会留下"表建了但版本没记"的半截状态。SQLite 的 DDL 是事务性的，
-   所以这条真的能成立（PG 那边也照这个写法）。
+   所以这条真的能成立。
 """
 
 from __future__ import annotations
@@ -40,8 +40,7 @@ SCHEMA_VERSION = 3
 """应用期望的 schema 版本：基线 + ``MIGRATIONS`` 里已追加的增量。
 
 比它低 → 按序补上缺的迁移；比它高 → 报错（库被更新版应用升过级，**不降级**）。
-本机库与 PG 库是两份独立的 schema，所以这个数字与 ``postgres_impl`` 的 17 **无关**，
-不要拿两边对齐——它们记的是各自家当的演进。
+本机库只有这一份 schema，所以这个数字只记**它自己**家当的演进，没有第二处需要对齐。
 
 **v3 = 备份待传队列**（M5 §3.1）。两条增量都只加表、不动任何旧表，理由同下。
 

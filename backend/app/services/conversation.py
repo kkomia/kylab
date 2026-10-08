@@ -373,13 +373,16 @@ class ConversationService:
         return self.get(created.id)
 
     def last_turn(self, conversation_id: str) -> LastTurn | None:
-        """最后一轮的快照。**给续跑用**，没有就返回 None。
+        """最后一轮的快照，没有就返回 None。
 
         与 ``rewind`` 的区别：那个删掉整轮（提问 + 回答）把问题还给调用方重发；
-        这里只看不删——续跑要的是"同一轮接着做"，提问得留在原地。
+        这里只看不删——"同一轮接着做"要的是提问留在原地。
 
-        找不到"提问 + 回答"的成对结构就返回 None（会话只有提问、或刚被回退过）：
-        能不能续由调用方判断（它还要看那条回答有没有降级标记，见 services/resume.py）。
+        找不到"提问 + 回答"的成对结构就返回 None（会话只有提问、或刚被回退过）；
+        能不能接着做由调用方判断（它还要看那条回答有没有降级标记）。
+
+        **注意**：今天没有调用方（唯一那个随 `services/resume.py` 一起删了）——它只读、
+        不改任何状态，去掉它属于接口收缩，等确认没有第二条"接着上一轮做"的路再说。
         """
         messages = self._stores.meta.list_messages(conversation_id)
         for index in range(len(messages) - 1, -1, -1):

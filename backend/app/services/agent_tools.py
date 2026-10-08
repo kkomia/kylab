@@ -1052,10 +1052,10 @@ def build_runner(
     # 有些调用点（子 Agent 的测试、脚本）没有凭据主体，那就是**共享桶**
     # （``None``），与"管理员/API Key 通道"同一档——不是错误，不给它编一个身份。
     owner_id = caller.owner_id if caller is not None else None
-    # ``seed_sources``：**续跑**时把上一轮已经拿到的出处接着带上（见 services/resume.py）。
-    # 必须从这里进来，不能只写进提示词——提示词里告诉模型"[3] 是那份共识"，
-    # 而账本里没有第 3 条，它引用出来的编号就会指向别的资料。
-    # 编号从 1 重排：与提示词里给它的编号是同一套。
+    # ``seed_sources``：把上一轮已经拿到的出处先放进账本（编号从 1 重排，与提示词里
+    # 给模型的编号是同一套）。必须从这里进来、不能只写进提示词——提示词里告诉模型
+    # "[3] 是那份共识"，而账本里没有第 3 条，它引用出来的编号就会指向别的资料。
+    # **注意**：今天没有调用方传它（唯一那个随 `services/resume.py` 一起删了）。
     book: list[SourceRef] = _renumber(list(seed_sources), offset=0)
     book_lock = threading.Lock()
 

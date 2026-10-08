@@ -38,7 +38,6 @@ from app.services.knowledge_provider import (
     KnowledgeProviderClient,
 )
 from app.services.llm import ChatError, ChatMessage, LLMDelta, ToolCallDelta, ToolSpec
-from app.services.model_client import ModelClient
 from app.services.remote_clients import RemoteUnavailableError
 from app.services.tool_loop import ToolLoop, ToolOutcome
 
@@ -590,9 +589,8 @@ def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[n
     assert isinstance(clients.knowledge, KnowledgeProviderClient)
     assert isinstance(clients.knowledge, KnowledgeClient)
     assert clients.knowledge is clients.provider
-    # **模型：本机直连** ✓ —— 结构性满足 `ModelClient`（循环那一侧只认协议 ✓），
-    # 而且**不是**打 `/model-proxy` 的那个远端实现 ✗。
-    assert isinstance(clients.model, ModelClient)
+    # **模型：本机直连** ✓ —— 循环那一侧只认那三个方法名，而且**不是**打
+    # `/model-proxy` 的那个远端实现 ✗。
     assert isinstance(clients.model, sidecar._LocalModel)
     assert not isinstance(clients.model, remote_clients.RemoteModelClient)
     # 没配模型时它**明确报"没配"**（不是空回答、也不是 500 ✓）——失败路径的第一档。

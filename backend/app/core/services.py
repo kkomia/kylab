@@ -742,7 +742,7 @@ def _build_graph(
         return run_scheduled_task(runner_slot[0], scheduled_id)
 
     kb = KbServices(
-        api_keys=ApiKeyService(bundle),
+        api_keys=ApiKeyService(),
         ingest=ingest_gateway,
         documents=enqueue_gateway,
     )

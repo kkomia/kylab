@@ -6,6 +6,7 @@
 **注册怎么钉**（Lead 用真请求验过 ✓，判据记在这里以免下次误判）：
 `POST /api/v1/model-proxy/complete` 空 body → **502**（说明路由**已注册**、handler 真跑了 ✓，
 502 是因为没配模型/上游失败 ✗）；**404 才是没注册** ✗。
+（**注意**：那条路由随服务器档 API 面拆掉了，本文件只钉客户端这一侧的解析与分档。）
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ import pytest
 
 from app.services.knowledge_client import KnowledgeClient
 from app.services.llm import ChatMessage, ToolSpec
-from app.services.model_client import ModelClient
 from app.services.remote_clients import (
     RemoteKnowledgeClient,
     RemoteModelClient,
@@ -39,13 +39,15 @@ def _model(handler) -> RemoteModelClient:  # type: ignore[no-untyped-def]
 # ------------------------------------------------------------------ 契约
 
 
-def test_both_remote_clients_satisfy_their_protocols() -> None:
-    """远端实现**就是协议的一份实现** ✓（换装配点时循环不用改 ✗）。"""
+def test_the_remote_knowledge_client_satisfies_its_protocol() -> None:
+    """`RemoteKnowledgeClient` **就是协议的一份实现** ✓（换装配点时循环不用改 ✗）。
+
+    模型那一侧今天**没有协议可对**：`ModelClient` 那份纯声明随本轮死代码清理删了
+    （`sidecar._LocalModel` 与本类都只是**结构上**满足循环要的三个方法）。
+    """
     knowledge = _knowledge(lambda request: httpx.Response(200, json={"hits": []}))
-    model = _model(lambda request: httpx.Response(200, json={"text": ""}))
 
     assert isinstance(knowledge, KnowledgeClient)
-    assert isinstance(model, ModelClient)
 
 
 # ------------------------------------------------------------------ KB

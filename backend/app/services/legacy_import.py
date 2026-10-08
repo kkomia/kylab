@@ -4,7 +4,7 @@ r"""旧会话一次性导入与本机回滚（M2 阶段 5，方案 §3.1 与 §7
 
 导入走 HTTP（``GET {server}/conversations/export``，六型 NDJSON，见
 ``services/conversation_export.py``），不 dump 服务器库（v0.3 §4 的分界线、§8-3）。
-所以这个模块不认识 psycopg，也不认识 sqlite3——它只用两样东西：
+所以这个模块里一行数据库代码都没有——它只用两样东西：
 
 - ``StoreBundle`` 的接口（会话 / 消息 / 事件 / 产物 / 摘要的读写）；
 - ``StoreBundle.ledger``（本机独有的导入台账，见 ``app/storage/base.py::ImportLedger``）。

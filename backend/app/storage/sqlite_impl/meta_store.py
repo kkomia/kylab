@@ -1,34 +1,32 @@
 r"""``MetaStore`` 本机域的 SQLite 实现（M2 §2.1 / §7 阶段 1）。
 
-与 ``postgres_impl/meta_store.py`` 的对应关系：**逐方法平移**，接口、返回值语义与
-异常类型都保持一致。机械差异只有下面几类，逐条说明为什么（§7 阶段 1 那两条：
+同一份 ``MetaStore`` 接口在这份库里怎么落地，逐条说清：
 
-- **占位符**：``%s`` → ``?``。
+- **占位符**：``?``（sqlite3 的参数风格）。
 - **时间戳**：列是 INTEGER（UTC 毫秒，列名带 ``_ms``）。``_dump`` / ``_load``
-  与 PG 侧同名同形，但不再是恒等助手——它们真的做 ``datetime`` ↔ 毫秒的换算，
-  读侧再把毫秒变回 aware UTC ``datetime``，于是服务层看到的东西两边一样。
+  真的做 ``datetime`` ↔ 毫秒的换算，读侧再把毫秒变回 aware UTC ``datetime``，
+  于是服务层看到的与接口约定一致。
 - **JSON**：列是 ``TEXT`` + ``CHECK (json_valid(...))``。写入走 :func:`_json`
-  （``json.dumps(..., ensure_ascii=False)``），读回要 ``json.loads``——
-  PG 那边是 ``jsonb``，psycopg 已经替你反序列化了，这边得自己来。
+  （``json.dumps(..., ensure_ascii=False)``），读回要自己 ``json.loads``——
+  sqlite3 不会替我们反序列化。
 - **布尔**：列是 INTEGER 0/1，写 ``int(...)``、读 ``bool(...)``；
   **可空的三态列**（``thinking`` / ``next_run_at`` 那几处）保持 ``None`` 不动
   ——``None`` 的语义是"跟随默认"，折成 False 就丢了一个状态。
-- **方言**：``ILIKE`` → ``LIKE``（SQLite 的 LIKE 对 ASCII 默认就不敏感，与 PG 的
-  ILIKE 同口径）；``IS NOT DISTINCT FROM`` → ``IS``；``DISTINCT ON`` → 窗口函数；
-  ``= ANY(%s)`` → ``IN (?,?,…)``；``to_jsonb`` → 列别名。
-- **并发**：``FOR UPDATE`` 删掉——写路径走 ``BEGIN IMMEDIATE`` 的**库级写锁**
+- **方言**：``ILIKE`` 换成 ``LIKE``（SQLite 的 LIKE 对 ASCII 默认就不敏感）；
+  ``DISTINCT ON`` 用窗口函数写；``= ANY(...)`` 写成 ``IN (?,?,…)``。
+- **并发**：没有行级锁，写路径走 ``BEGIN IMMEDIATE`` 的**库级写锁**
   （整个事务独占写者），语义等价（§1.5）。
 
 **毫秒精度带来的新纪律**：时间戳只到毫秒，所以"必须推进"的写（``touch_conversation``
 与各 ``update_*``）落值是 ``max(now_ms, 旧值 + 1)``，见下面那段"毫秒推进纪律"。
 同一毫秒里的两次推进会因此排得出先后，而"最近活动"这类排序正是靠它。
 
-**只实现本机域**：本模块的公开方法集合**恰好**是**本机域那一块 + 四块"本机独有"**的并集
+**只实现本机域**：本模块的公开方法集合**恰好**是**本机域那一块 + 五块"本机独有"**的并集
 （机械导出，见 ``app.storage.sqlite_impl``）——``LOCAL_METHODS``（本机域那八个协议）、
 ``LOCAL_LEDGER_METHODS``（旧会话导入的台账，只有本机有那两张表）、
 ``LOCAL_CACHE_METHODS``（知识库元数据快照，服务 KB 域的读路径但人不在 KB 域）、
 ``LOCAL_SNAPSHOT_METHODS``（快照打包与读回，M5 阶段 2）、``LOCAL_BACKUP_METHODS``
-（备份待传队列，M5 阶段 3）。
+（备份待传队列，M5 阶段 3）、``LOCAL_ERASER_METHODS``（安全擦除，M5 阶段 6 收尾）。
 知识库 / 文档 / 切块 / 向量 / 全文 / Wiki / 任务队列 / 回收站 / 账号会话
 一个都不在这里——它们是 NAS 的家当。分档路由（``RouterMetaStore``）是阶段 2 的事。
 """
@@ -80,8 +78,8 @@ logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ 三个 helper
 #
-# 与 `postgres_impl/meta_store.py:121/125/135` 同名同形，但这里真的在换算：
-# PG 的目标列是 timestamptz（psycopg 原生适配 datetime），本机是 INTEGER 毫秒。
+# 这三个 helper 都真的在换算，不是恒等助手：列是 INTEGER 毫秒，
+# 而接口给的是 aware UTC ``datetime``。
 
 
 def _now() -> datetime:
@@ -114,7 +112,7 @@ def _load(value: int | None) -> datetime | None:
 
 
 def _json(value: object) -> str:
-    """写 JSON 文本列（对应 PG 侧的 ``_json()`` 包 ``Jsonb``）。"""
+    """写 JSON 文本列：``json.dumps`` 且中文不转义（列上有 ``json_valid`` 约束）。"""
     return json.dumps(value, ensure_ascii=False)
 
 
@@ -131,7 +129,7 @@ def _json(value: object) -> str:
 
 
 def _placeholders(count: int) -> str:
-    """生成 ``?,?,…``（对应 PG 侧的 ``%s, %s, …``）。"""
+    """生成 ``?,?,…``（参数个数 → 占位符串）。"""
     return ",".join(["?"] * count)
 
 
@@ -193,7 +191,7 @@ LAST_ASSISTANT_PREVIEWS_SQL = (
 )
 """每个会话最后一条回答的**开头 PREVIEW_CHARS 字**。
 
-PG 那边是 ``DISTINCT ON (conversation_id)``；SQLite 没有这个语法，用窗口函数
+这份 SQL 要"每个会话最后一条回答"，而 SQLite 没有 ``DISTINCT ON``，用窗口函数
 （3.25+，远低于本库的 3.37 下限）等价表达：分组内按时间倒序取第一行。
 ``rowid DESC`` 是同一毫秒里的兜底——否则"最后一条"在毫秒内没有确定的答案。
 
@@ -545,8 +543,7 @@ class SqliteMetaStore:
     def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]:
         """按 ``created_at_ms`` 升序；同一毫秒里用 ``rowid``（插入序）兜底。
 
-        PG 那边用的是系统列 ``ctid``，同一个用意。这张表不改消息内容
-        （「重新生成」是删尾部再追加），所以 rowid 就是插入序。
+        这张表不改消息内容（「重新生成」是删尾部再追加），所以 rowid 就是插入序。
         """
         with self._db.read() as conn:
             rows = conn.execute(
@@ -996,9 +993,8 @@ class SqliteMetaStore:
         """认领一次运行（CAS）。**判定写进 WHERE**，不靠"先读后写"——
         两个 worker 同时扫到同一条时，只有一条 UPDATE 能改到行（见协议里的说明）。
 
-        PG 那边用 ``IS NOT DISTINCT FROM`` 是为了让 ``NULL = NULL`` 成立
-        （一次性任务的认领正是从 NULL 认领）；SQLite 的 ``IS`` 就是同一个语义，
-        而且读起来更像一句话。
+        ``IS`` 让 ``NULL = NULL`` 成立——一次性任务的认领正是从 NULL 认领出来的，
+        而 ``IS`` 可以参数化，所以这里不分"无筛选 / 等值"两支写。
         """
         with self._db.session() as conn:
             cursor = conn.execute(
@@ -1270,10 +1266,10 @@ class SqliteMetaStore:
     ) -> tuple[ModelProviderRecord, RegisteredModelRecord] | None:
         """一条 JOIN 解出绑定（见 base.py 的同名方法：这是热路径）。
 
-        PG 那边为了绕开"两张表都有 id / name / created_at"的列名打架，用了
-        ``to_jsonb(m)``；SQLite 没有这个函数，改用**列别名 + 就地构造**：
-        一条语句仍然是原子的（分成两条查询会让"供应商刚好在这中间被删掉"
-        变成一个要额外处理的中间态）。
+        ``model_registry`` 与 ``model_providers`` 都有 ``id`` / ``name`` /
+        ``created_at`` 这些列名，撞在一起就分不出是谁的，所以逐列给别名 +
+        **就地构造**：一条语句仍然是原子的（分成两条查询会让"供应商刚好在这中间
+        被删掉"变成一个要额外处理的中间态）。
         """
         with self._db.read() as conn:
             row = conn.execute(
@@ -1337,7 +1333,7 @@ class SqliteMetaStore:
     def record_usage(self, record: UsageEventRecord) -> UsageEventRecord:
         """落一条用量。
 
-        **不写 `reported` 列**（与 PG 侧一致）：它是 schema 里照搬过来的一列，
+        **不写 `reported` 列**：它是 schema 里留着的一列，
         而 ``UsageEventRecord.reported`` 是从 ``source`` 算出来的属性——
         写入路径从来不填那个列，别在这里"顺手补上"，那会让两份口径并存。
         """
@@ -1413,8 +1409,7 @@ class SqliteMetaStore:
 
         ``user_id=None`` 表示**不过滤归属**（管理员/API Key 通道要看全部，
         与 ``list_conversations`` 同口径）；成员传自己的 id，只看自己的。
-        PG 那边因为 ``IS`` 不能参数化而写成"无筛选 / ``= %s``"两个分支，
-        这里照同一形状写（SQLite 本来也支持 ``IS ?``，但没理由让它成为两边的差异）。
+        SQLite 的 ``IS ?`` 可以参数化，所以这里就是"无筛选 / 等值"两支。
 
         ``folder_id`` / ``unfiled`` 是同一个轴上的两种取法，**由调用方保证不同时给**
         （``unfiled`` 优先，与文档列表那边一致）。
@@ -1488,8 +1483,8 @@ class SqliteMetaStore:
 
     @staticmethod
     def _insert_tags(conn: sqlite3.Connection, note_id: str, tags: Iterable[str]) -> None:
-        # `executemany` 是 sqlite3.Connection 上的原生方法（psycopg3 那边没有，
-        # 所以 PG 实现得走 cursor）——这里是两边少数**真的不一样**的手法之一。
+        # `executemany` 是 sqlite3.Connection 上的原生方法，一次把整批标签写下去
+        # （不用自己攒 ``VALUES (?,?),(?,?)…``）。
         conn.executemany(
             "INSERT INTO note_tags (note_id, tag) VALUES (?, ?)"
             " ON CONFLICT (note_id, tag) DO NOTHING",
@@ -1589,8 +1584,8 @@ class SqliteMetaStore:
     def list_note_tags(self, *, user_id: str | None) -> list[tuple[str, int]]:
         where = "" if user_id is None else "WHERE n.user_id = ?"
         params: tuple[Any, ...] = () if user_id is None else (user_id,)
-        # 计数的别名刻意叫 `cnt`、笔记表别名叫 `n`——PG 那边 `ORDER BY n DESC` 里的
-        # `n` 是**别名**，而这边 `n` 同时是表别名，照抄会被解析成表名。
+        # 计数的别名刻意叫 `cnt` 而不是 `n`：`n` 在这里已经是笔记表的**表别名**，
+        # 拿它当排序列会被解析成表名。
         sql = (
             "SELECT t.tag AS tag, COUNT(*) AS cnt FROM note_tags t"  # noqa: S608
             f" JOIN notes n ON n.id = t.note_id {where}"

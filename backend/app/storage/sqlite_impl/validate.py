@@ -10,9 +10,8 @@
 缺 ``--data-dir`` 且没配 ``KYLAB_DATA_DIR`` 时用 ``./data``（与 ``Settings`` 的
 默认一致），并**把它打印出来**——"我刚才查的是哪个库"不该靠猜。
 
-与 ``postgres_impl/validate.py`` 的差异：那边查扩展（pgvector）与距离运算，
-这边查 ``STRICT`` 表是否真的生效、``foreign_keys`` 开没开、WAL 是不是立住了——
-三件都是"这个库能不能被当成本机权威库用"的硬条件。
+自检查三件硬条件：``STRICT`` 表是否真的生效、``foreign_keys`` 开没开、WAL 是不是
+立住了——三件都是"这个库能不能被当成本机权威库用"的前提，缺一条就该停下来修。
 """
 
 from __future__ import annotations

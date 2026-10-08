@@ -7,10 +7,12 @@
 自己的机器上，**能打到那个端口的就是这台机器的主人**（`api/auth.py::current_caller`
 恒返回 `LOCAL_CALLER`）。所以这里只钉还成立的那几条：
 
-1. 本机主人是管理员档：`check_access` 直接放行，不碰任何存储（**本机连 api_keys
-   那张表都没有**，真去查会 AttributeError）；
-2. `require_admin` 那道闸对它也是放行——"本机不设门禁"这句话要能被验；
-3. 判定**只有一处**：端点的依赖最终都走到 `ApiKeyService.check_access`，
+1. 本机主人是管理员档：`check_access` 直接放行——而且服务本身**没有任何存储入口**
+   （`ApiKeyService` 连构造函数都没有）；
+2. 非本机主人一律 403：本机库里判不出库范围（没有 `api_keys` / `shares` 两张表），
+   判不出来就拒绝；
+3. `require_admin` 那道闸对它也是放行——"本机不设门禁"这句话要能被验；
+4. 判定**只有一处**：端点的依赖最终都走到 `ApiKeyService.check_access`，
    不是在协议层各写一遍。
 """
 
@@ -19,12 +21,13 @@ from __future__ import annotations
 import pytest
 
 from app.core.caller import LOCAL_USER_ID
+from app.core.exceptions import ForbiddenError
 from app.services.api_key import LOCAL_CALLER, READ, WRITE, ApiKeyService, Caller
 
 
 @pytest.fixture
-def service(bundle) -> ApiKeyService:  # type: ignore[no-untyped-def]
-    return ApiKeyService(bundle)
+def service() -> ApiKeyService:
+    return ApiKeyService()
 
 
 def test_the_local_caller_is_the_machine_owner() -> None:
@@ -45,18 +48,28 @@ def test_current_caller_returns_it_without_looking_at_headers() -> None:
 
 
 @pytest.mark.parametrize("need", [READ, WRITE])
-def test_access_check_passes_without_touching_storage(service: ApiKeyService, need) -> None:  # type: ignore[no-untyped-def]
-    """本机主人放行，且**一个仓储方法都不调**（调了就会 AttributeError）。
-
-    判据不是"没抛异常"而是"没碰库"：`bundle.meta` 里没有 api_keys 那一族方法，
-    所以只要判定真去查了，这条会以 AttributeError 红。
-    """
+def test_access_check_passes_for_the_local_owner(service: ApiKeyService, need) -> None:  # type: ignore[no-untyped-def]
+    """本机主人放行：两条形状都不抛（`kb_ids` 给了具体库、或表示"不涉及库"）。"""
     service.check_access(LOCAL_CALLER, need=need, kb_ids=["kb_任意"])
     service.check_access(LOCAL_CALLER, need=need, kb_ids=None)
 
 
+def test_a_non_owner_is_refused(service: ApiKeyService) -> None:
+    """**不是本机主人 → 403**（默认值是"不通过"）。
+
+    本机库里没有 `api_keys` / `shares` 两张表，范围判不出来；判不出来就拒绝，
+    不能因为"没有依据"而放行——那是一个不会报错的洞。
+    """
+    from app.storage.base import UserRecord
+
+    stranger = Caller(user=UserRecord(id="u_1", name="别人", username="u1"))
+
+    with pytest.raises(ForbiddenError):
+        service.check_access(stranger, need=READ, kb_ids=["kb_1"])
+
+
 def test_the_admin_gate_also_passes() -> None:
-    """`require_admin` 那道闸对本机主人放行（设置页 / 密钥管理那些端点靠它）。"""
+    """`require_admin` 那道闸对本机主人放行（设置页 / 模型注册那些端点靠它）。"""
     from app.api.auth import require_admin
 
     assert require_admin(LOCAL_CALLER) is LOCAL_CALLER
@@ -66,7 +79,7 @@ def test_a_member_shape_is_still_honest_about_being_a_member() -> None:
     """`Caller` 仍然分得出"成员"这一档——本机不用它，但判定本身不能撒谎。
 
     留着这条是因为它是"哪种主体"这件事唯一的定义（`Caller.owner_id` /
-    `is_admin` 两处派生都从它算）；哪天真的接进第二个主体，判定不用重写。
+    `is_admin` 两处派生都从它算）。
     """
     from app.storage.base import UserRecord
 

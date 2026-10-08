@@ -53,8 +53,7 @@ class StepEvent:
     """这一步**没按设计跑成**，走了降级路径。
 
     现在的生产者是工具循环的两道闸（``tool_loop.py``）：步数用尽与整轮墙钟用尽
-    都会发一条 ``degraded=True`` 的步骤，用户据此看到"这次没跑完"，
-    也据此拿到「继续」（接着做，见 ``services/resume.py``）。
+    都会发一条 ``degraded=True`` 的步骤，用户据此看到"这次没跑完"。
     界面那条横幅的措辞取自 ``detail``（不写死），所以两种原因的文案各说各的。
     """
     added: int | None = None

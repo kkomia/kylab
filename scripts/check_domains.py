@@ -65,7 +65,7 @@ from pathlib import Path
 # - `app.services.chat` / `app.services.tools` / `app.api.v1.schemas` 是**混合体**
 #   （§4 第 2/3/5 条）：不许整模块归入一侧，单列第三类（越界只记录、不拦门）；
 # - `kb_cache`（M4 降级链）、`schedule_runner`、`skill*`、`site_icons` / `web` /
-#   `model_client` / `legacy_import` 按语义补齐；
+#   `legacy_import` 按语义补齐；
 # - 逐条判断的理由写在 `CLAIM_NOTES`（报告第 2 节会打出来），**有争议的都在那里**。
 
 KB = "kb"
@@ -81,7 +81,6 @@ DOMAIN_LABELS = {KB: "KB 域", AGENT: "Agent 域", SHARED: "共享底座", MIXED
 KB_MODULES: tuple[str, ...] = (
     # api（15 个）
     # services
-    "app.services.chunking",
     "app.services.embedding",
     "app.services.office",
     # 账号体系（2026-10-08 口径）：库分享、库范围钥匙、管理员都是 KB 语义的资产
@@ -139,13 +138,11 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.services.cron",
     "app.services.conversation*",
     "app.services.session_events",
-    "app.services.resume",
     "app.services.modes",
     "app.services.prompt",
     "app.services.thinking",
     "app.services.plan_gate",
     "app.services.tool_meta",
-    "app.services.failures",
     "app.services.deck",
     "app.services.memory*",
     "app.services.archive*",
@@ -177,10 +174,9 @@ SHARED_MODULES: tuple[str, ...] = (
     "app.core",
     "app.models.enums",
     # 模型接入：两边各拷一份（`llm` 是实现、`model_registry` 是注册表、
-    # `model_proxy` 是出面、`model_client` 是那条接缝的协议声明）。
+    # `api/v1/model_registry` 是出面）。
     "app.services.llm",
     "app.services.model_registry",
-    "app.services.model_client",
     "app.api.v1.model_registry",
     "app.services.provider_presets",
     "app.services.runtime_config",
@@ -252,11 +248,11 @@ CLAIM_NOTES: dict[str, str] = {
     "（与 health/frontend/router 同一条）。**主代理 2026-10-08 已确认这一条**；"
     "若改判 KB，会立刻多出一批 agent→kb：Agent 侧各 api 模块都 import 它，"
     "剥离线会变成 13 处「各留一个 shim」的工作项——那是阶段 1 的事",
-    "app.services.api_key": "账号体系在 services 侧的实现"
-    "（`check_access` / `visible_kb_ids` 直接读 KB 表，见方案 §4 第 7 条）→ KB 域。"
+    "app.services.api_key": "账号体系在 services 侧**剩下的那一处准入判定**"
+    "（`check_access`，见方案 §4 第 7 条）→ KB 域。"
     "**身份契约已搬走**（`Caller` / `READ` / `WRITE` / `LOCAL_CALLER` / `LOCAL_USER_ID` → "
-    "`app.core.caller`，见报告第 10.1 节）：本模块只留发放与校验，"
-    "那几个名字仍从这里的 `__all__` 再导出，KB 侧调用点一行没动",
+    "`app.core.caller`，见报告第 10.1 节）：发放/校验/成员与分享那几件随知识库产品剥离"
+    "一起删了，那几个名字仍从这里的 `__all__` 再导出，KB 侧调用点一行没动",
     "app.core.caller": "**身份契约**：`Caller`（frozen dataclass，含 `permission` / "
     "`knowledge_base_ids` / `owner_id` 三个派生属性）、`READ` / `WRITE`（权限别名）、"
     "`LOCAL_CALLER` + `LOCAL_USER_ID`（本机档唯一的调用主体）。"
@@ -273,12 +269,6 @@ CLAIM_NOTES: dict[str, str] = {
     "读共享底座的 `runtime_config` 合法。这一刀同时修掉它原来的两处 KB import："
     "身份契约改从 `app.core.caller` 取，`NOT_CONFIGURED_HINT` 复制一份（双份并存期，"
     "权威在 KB 侧的 `services/embedding/__init__.py`，KB 面收口时删）",
-    "app.services.model_client": "**模型调用接缝的协议声明**"
-    "（`ModelClient`，只有 Protocol、无实现）。"
-    "按 2026-10-08 的另一条口径「llm 接入 → 共享底座（两边各拷一份）」归共享底座；"
-    "口径原句把 `model_client` 列在「按语义归 Agent 侧」那串里，"
-    "但它语义上就是 `llm.py` 那条接缝——"
-    "**这一处判错了也不影响数字：今天没有任何模块 import 它**（只有注释里提到）",
     "app.storage.split_impl": "**刀 1**：方案 §3.1 自己写着「历史使命结束，"
     "可留 Agent 侧做降级实现」，而它唯一的外部依赖是 Agent 侧的 `sqlite_impl`"
     "（取 `LOCAL_METHODS`）。归 KB 会一直红着；"
@@ -1136,8 +1126,8 @@ def build_report(root: Path, result: Scan) -> str:
             "### 10.1 契约型（0 处）——**2026-10-08 已切完**",
             "",
             "身份契约（`Caller` / `READ` / `WRITE` / `LOCAL_CALLER` / `LOCAL_USER_ID`）已搬到 "
-            "`app.core.caller`，`services/api_key.py` 只留账号体系的实现"
-            "（`check_access` / `visible_kb_ids` / `authenticate` / `resolve_caller`）并从那里"
+            "`app.core.caller`，`services/api_key.py` 只留那条准入判定"
+            "（`check_access`，发放/校验/成员与分享那几件随知识库产品剥离删了）并从那里"
             "再导出——**KB 侧调用点一行没动**（还有 17 个 KB 侧 api 模块 + `mcp_server/auth.py` "
             "经再导出取它）。需要契约的模块（Agent 侧 19 个、共享侧 2 个）改从共享底座取，"
             "这一簇随之归零。同类的一件：`parsers/html_format.py` 例外上移到 "
@@ -1145,7 +1135,7 @@ def build_report(root: Path, result: Scan) -> str:
             "`services/web.py` 那处越界也一并消失。",
             "",
             "**顺带说明**：`app.api.auth`（请求级鉴权依赖）与 `core/services.py` 仍从 "
-            "`api_key` 取（前者混取 `resolve_caller`、后者取 `ApiKeyService` 实现），"
+            "`api_key` 取（前者取那三个名字、后者取 `ApiKeyService` 实现），"
             "那是共享底座 → KB 的方向，只记录、不拦门——真正的切法是阶段 1 的拆组合根。",
             "",
         ]
@@ -1154,8 +1144,8 @@ def build_report(root: Path, result: Scan) -> str:
             f"### 10.1 契约型（{len(contract_imports)} 处）：身份类型与权限常量被两侧共用",
             "",
             "`app.services.api_key` 里同时住着两样东西：**身份契约**（`Caller` 这个 frozen "
-            "dataclass、`READ` / `WRITE` / `LOCAL_CALLER` 三个常量）和**账号体系的实现**"
-            "（`check_access` / `visible_kb_ids`，方案 §4 第 7 条说它「既是 Agent 工具准入闸，"
+            "dataclass、`READ` / `WRITE` / `LOCAL_CALLER` 三个常量）和**那条准入判定**"
+            "（`check_access`，方案 §4 第 7 条说它「既是 Agent 工具准入闸，"
             "又直接读 KB 表」）。Agent 侧的每个 api/服务模块都要那个契约（拿 `Caller` 当类型、"
             "判 `WRITE`），于是它们全被算成 agent→kb。**切法**：把契约上移共享底座"
             "（`app/core/caller.py`），`api_key.py` 再导出一次，行为不变。",

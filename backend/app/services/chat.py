@@ -1335,7 +1335,7 @@ class ChatService:
         （见 `tool_loop` 模块头第 6 条与《开发计划》§12.199）。
         """
         extra: dict[str, object] = {}
-        # 预算只由调用方在**续跑**时抬高（见 services/resume.py 的三个常量）：
+        # 两道预算闸只由调用方抬高（两个可选入参）：
         # 默认值留在 ToolLoop 自己那里，这里不复制一份
         if max_steps is not None:
             extra["max_steps"] = max_steps
@@ -1401,8 +1401,8 @@ class ChatService:
                 config, thinking_effort=normalize_effort(thinking_effort, config.thinking_effort)
             )
         if not config.is_configured:
-            # reason 是给用户那句话用的（见 services/failures.py）：不能靠 message，
-            # 那一句里带着设置页的内部叫法
+            # reason 只用于分类（`not_configured` 不在可重试白名单里）：用户看到的是
+            # 上面那句 message，措辞与 `sidecar._LocalModel` 逐字一致
             raise ChatError(
                 "尚未配置对话模型，请到设置 → 模型配置里填写 API Key 与模型 ID",
                 reason="not_configured",

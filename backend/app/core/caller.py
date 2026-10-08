@@ -2,7 +2,7 @@
 
 两侧都要它，所以它住共享底座：
 
-- **KB 侧**：`services/api_key.py` 的 `check_access` / `visible_kb_ids` 按它判准入；
+- **KB 侧**：`services/api_key.py` 的 `check_access` 按它判准入；
 - **Agent 侧**：每个 api 模块拿它当 `Depends` 的类型、判 `WRITE`；工具执行器、
   会话/笔记/记忆的归属都从它取（`owner_id`）。
 
@@ -12,8 +12,7 @@
 在域间引用检查里全被算成越界（报告第 10.1 节）。搬到这里之后：
 
 - 需要契约的模块从 `app.core.caller` 取（Agent 侧 + 共享侧）；
-- KB 侧调用点一行没动：`services/api_key.py` 仍从 `__all__` 再导出这几个名字；
-- `resolve_caller`（要靠 `Services` 做分流）留在实现侧，它不属于契约。
+- KB 侧调用点一行没动：`services/api_key.py` 仍从 `__all__` 再导出这几个名字。
 
 **`Caller` 的三个派生属性（`permission` / `knowledge_base_ids` / `owner_id`）也在这份
 契约里**，而不是散到调用点：它们已经有过几份副本，而"同一份数据在两个页面里看到的

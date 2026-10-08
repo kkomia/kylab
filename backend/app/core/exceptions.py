@@ -112,11 +112,10 @@ class EmbeddingError(Exception):
     改基类会同时改掉异常信封与各处 ``except`` 的行为。
 
     **为什么住在这里而不是 ``services/embedding/base.py``**（2026-10-08 剥离阶段 0）：
-    Agent 侧的 `services/failures.py` 要把"向量化失败"翻成用户能读懂的一句话，
-    而它是**按类型**分档的（``EmbeddingNotConfiguredError`` 先于 ``EmbeddingError``）——
-    类型搬走就翻不了，复制一份又会让 ``isinstance`` 落空。
-    故按本模块既有的那条约定（``SecretStoreUnavailable`` 同一个理由）：
-    **领域异常一律住这里**，``services/embedding/base.py`` 再导出一次，调用点不用改。
+    按本模块既有的那条约定（``SecretStoreUnavailable`` 同一个理由）——
+    **领域异常一律住这里**：``services/embedding/base.py`` 再导出一次，调用点不用改；
+    而按**类型**分档的调用点（``isinstance`` 判种类再决定给用户哪句话 / 哪一步动作）
+    不必为此 import 一个实现包。
     """
 
     def __init__(self, message: str, *, stage: str = "embedding") -> None:

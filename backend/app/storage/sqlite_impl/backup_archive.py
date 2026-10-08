@@ -108,7 +108,7 @@ _EXCLUDED_SETTINGS_PREDICATE = (
 
 # 下面两条是**同一段判据**（`_EXCLUDED_SETTINGS_PREDICATE`）的两个动作：查出来报数、
 # 删掉。拼接的是模块级常量（没有任何外部输入进 SQL 文本），参数永远走 `?`——
-# 这正是 `noqa: S608` 允许的形状（与 `postgres_impl` / `duckdb_impl` 里那几处同一口径）。
+# 这正是 `noqa: S608` 允许的形状。
 _SELECT_EXCLUDED_SETTINGS = (
     "SELECT key FROM app_settings WHERE " + _EXCLUDED_SETTINGS_PREDICATE + " ORDER BY key"  # noqa: S608
 )

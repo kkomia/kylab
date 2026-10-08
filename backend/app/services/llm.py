@@ -98,9 +98,9 @@ class ChatError(UpstreamError):
         super().__init__(message)
         #: 失败原因（分类用，见 ``RETRYABLE_REASONS``）。空串 = 没归类，按不可重试算。
         self.reason = reason
-        #: 上游的 HTTP 状态码（连接层失败没有）。**面给用户的文案只认它和 ``reason``**，
-        #: 不认 ``message``——那句里带着端点地址与上游返回体，是给日志看的
-        #: （见 ``services/failures.py``）。资源在连接层失败时是 ``None``。
+        #: 上游的 HTTP 状态码（连接层失败时是 ``None``）。**今天没有读取方**：
+        #: 给用户的文案由 ``message`` 自己带（见 ``_error_hint``——它写明状态码与
+        #: 下一步动作，协议层原样显示），分类由 ``reason`` 担。留着纯为排错线索。
         self.status = status
 
     @property
@@ -606,10 +606,11 @@ def _status_reason(status: int) -> str:
 
 
 def _status_error(response: httpx.Response) -> ChatError:
-    """非 200 的响应 → **带分类**的 ``ChatError``（文案仍是 ``_error_hint`` 那份）。
+    """非 200 的响应 → **带分类**的 ``ChatError``（文案仍是 ``_error_hint`` 那份，
+    它自己就带着状态码与下一步动作，协议层把它原样显示给用户）。
 
-    ``status`` 一并带上：401/404 这些给不出 ``reason``（它们不可重试），但**给用户的
-    那句话要按状态码挑**（见 ``services/failures.py`` 的 ``_BY_STATUS``）。
+    ``status`` 另存一份：401/404 这些给不出 ``reason``（它们不可重试），
+    状态码留在异常上便于排错。
     """
     return ChatError(
         _error_hint(response),
@@ -624,7 +625,7 @@ def _transport_error(exc: httpx.TransportError) -> ChatError:
     超时（``TimeoutException`` 那一族）与"连不上 / 中途断开"分开写：它们对用户是
     两件事（一个是慢，一个是没通上），而两者都进可重试白名单。
     """
-    # 连接层失败没有 HTTP 状态码（``status`` 留空）：给用户的文案只按 ``reason`` 挑
+    # 连接层失败没有 HTTP 状态码（``status`` 留空）
     if isinstance(exc, httpx.TimeoutException):
         return ChatError(f"对话端点超时：{exc}", reason="timeout")
     return ChatError(f"对话端点连不上或中途断开：{exc}", reason="network_error")

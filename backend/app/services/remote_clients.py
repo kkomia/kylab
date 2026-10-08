@@ -1,6 +1,6 @@
 """两条接缝的**远端实现**（Phase B · P2，2026-09-29）。
 
-P1 已经把接缝抽成协议（`model_client.ModelClient` / `knowledge_client.KnowledgeClient` ✓），
+P1 已经把检索那条接缝抽成协议（`knowledge_client.KnowledgeClient` ✓），
 这一层补上"**打我们自己的后端**"的那两份实现 ✓ —— 边车（P3）只要在装配点换上它们即可 ✓，
 **循环一行都不用改** ✗（这正是 P1 那一刀的目的 ✓）。
 
@@ -185,10 +185,15 @@ class RemoteKnowledgeClient:
 
 
 class RemoteModelClient:
-    """`ModelClient` 的远端实现：打服务器上的**模型代理** ✓（key 不下发 ✓）。
+    """远端实现：打服务器上的**模型代理** ✓（key 不下发 ✓）。
 
-    三个方法与协议同名同签名 ✓；`stream` / `stream_events` 都吃 SSE ✓
-    （代理把上游的增量原样转出 ✓，见 `api/v1/model_proxy.py`）。
+    三个方法与循环要的模型能力同名同签名（`complete` / `stream` / `stream_events`）；
+    `stream` / `stream_events` 都吃 SSE ✓（代理把上游的增量原样转出 ✓，见
+    `api/v1/model_proxy.py`）。
+
+    **注意**：本机档**不用它**（模型在本机直连，见 `sidecar._LocalModel`），而它对面的
+    `/model-proxy` 端点也随服务器档 API 面从本仓库拆掉了——这一层是留给
+    "客户端不带 key、由服务端代发"那种部署的接缝。
     """
 
     def __init__(

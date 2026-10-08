@@ -1,8 +1,7 @@
 r"""SQLite 连接管理（M2 本机档）。
 
-``postgres_impl/connection.py`` 的开头写着"与 ``sqlite_impl/connection.py`` 的对应关系"
-——那份说明反过来就是这份的依据。两边的 ``read()`` / ``session()`` **语义一致**，
-所以 ``meta_store`` 的方法体可以在两边近乎逐行对照；差异只有下面几条，逐条给理由：
+``read()`` / ``session()`` 这两个入口是 ``meta_store`` 全部方法的地基，口径是
+**读不拿锁、写串行化**。下面几条逐条给理由：
 
 - **连接是"每线程一条、长期持有"**，不是连接池。SQLite 是嵌在进程里的库文件，
   连它没有握手成本，池化只增加一层状态；而 ``sqlite3.Connection`` 默认
