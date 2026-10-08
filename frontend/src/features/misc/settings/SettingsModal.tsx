@@ -483,7 +483,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     onError: (error: unknown) => notifyError(messageOf(error, '删除失败')),
   })
 
-  /** 退出登录：吊销当前会话并清本地令牌。**服务端失败也清本地**——用户点的是退出。 */
+  /**
+   * 退出登录：吊销当前会话并清本地令牌。**服务端失败也清本地**——用户点的是退出。
+   *
+   * 退完回概览（原先跳登录页，登录页已删：本机档免登录、本产品不再有 web 登录那一环，
+   * 见 `app/App.tsx` 的文件头）。
+   */
   async function doLogout(): Promise<void> {
     try {
       await apiLogout()
@@ -492,7 +497,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     }
     clearSessionToken()
     onClose()
-    await navigate('/login')
+    await navigate('/')
   }
 
   function openEdit(target: SettingGroup): void {

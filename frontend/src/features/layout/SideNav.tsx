@@ -6,23 +6,23 @@
  * ```
  * 品牌位（环行星标 + 折叠开关）
  * 新建会话（`/chat?new=1`，带快捷键提示）
- * 主导航：笔记 / 记忆 / 能力 / 知识库▸（所有知识库 / 概览 / 任务中心）
+ * 主导航：概览 / 笔记 / 记忆 / 能力 / 任务中心
  * 项目节：标题右侧「新增项目」（打开新建弹窗）+ 项目行（带条数，悬停时右端出现「+」= 在这个项目里新开会话，以及「⋯」= 重命名 / 归档 / 删除）+ 各自的项目内会话（超过 5 条先收起）+ 清单底部的「已归档」入口（v0.55）
  * 对话节：没归项目的会话（前 8 条）+ 查看全部会话
  * 页脚：账号（头像 + 名字 → 向上展开的菜单）
  * ```
  *
- * ## 知识库组：固定三条子项、**无条件渲染**（R5 拍板，回到推送前的结构）
+ * ## 2026-10-08：「知识库」那一组整组下线，概览与任务中心回到主导航
  *
- * 这一组曾经按提供者状态整组显隐（M3 阶段 6），并把「概览」「任务中心」搬去主导航，
- * 理由是"知识库连不上不该把概览与任务中心一起带走"。**R5 起回到推送前的结构**：
+ * 知识库的**界面**搬去了 kybase（那边有自己的管理台），本仓库只剩"对话里怎么用它"——
+ * 所以这一栏里跟着摘掉的是「知识库」那个可折叠子菜单与它的三条子项
+ * （所有知识库 / 概览 / 任务中心）。**概览与任务中心不是知识库的东西**，
+ * 它们只是从 M3 阶段 6 起借住在那一组里（R5 又把它们留在那儿），
+ * 现在回到顶层主导航（`NAV_ITEMS`）——照旧两个都进得去。
  *
- * 1. **组无条件渲染**（不再看 `state == ready`，也不看有没有探过）：连不上时
- *    由各页面自己处理断连状态（路由守卫仍在 `features/knowledge/ProviderRoute.tsx`）；
- * 2. **三条子项、顺序照旧**：所有知识库 / 概览（`/`，exact）/ 任务中心（`/tasks`）；
- *    组头的归属因此重新覆盖 `/` 与 `/tasks`（站在概览或任务中心时组头点亮，
- *    正是"用户看得出自己在哪一节里"要的那件事）；
- * 3. 顶层主导航只剩 笔记 / 记忆 / 能力（+ 这一组的组头）。
+ * 一并摘掉的是这一组的两件挂件：`preloadKnowledgeBases`（划过预热那页的 chunk）与
+ * 它读的提供者状态。**提供者探测本身没删**：那是对话里那颗「知识库」胶囊与上传上限
+ * 要的（`ProviderBoot`，见 `app/App.tsx`），只是不再和这一栏有关系。
  *
  * ## 备份入口搬进设置（R5）
  *
@@ -44,13 +44,12 @@
  * | 笔记 | `sticky-note-line` | `IconNote.vue` |
  * | 记忆 | `robot-line` | `IconRobot.vue` |
  * | 能力 | `server-line` | `IconServer.vue` |
- * | 知识库 / 所有知识库 | `book-2-line` | `IconLibrary.vue` |
  * | 概览 | `dashboard-line` | `IconDashboard.vue` |
  * | 任务中心 | `task-line` | `IconTasks.vue` |
  * | 项目 / 移至项目 | `folder-line` | `IconFolder.vue` |
  * | 新建项目 | `folder-add-line` | `IconFolderPlus.vue`（自绘） |
  * | 查看全部会话 | `time-line` | `IconClock.vue` |
- * | 分节箭头 / 组内箭头 | `arrow-down-s-line` / `arrow-right-s-line` | `IconChevronDown/Right.vue` |
+ * | 分节箭头 | `arrow-down-s-line` | `IconChevronDown.vue` |
  * | 品牌标 | 环行星（自绘） | `IconLogo.vue`（React 版在 `chat/ui/Logo.tsx`） |
  * | 折叠开关 / 新建会话 | 自绘 | `IconSidebar.vue` / `IconChatNew.vue`（见 `./icons.tsx`） |
  *
@@ -68,8 +67,8 @@
  *
  * 1. **「新对话」在最上面**：它是这一栏里最高频的动作（Kimi Work / ChatGPT 同款位置）。
  *    带上 `?new=1` 才是"新建"，裸 `/chat` 表示"回到最近一次对话"；
- * 2. **知识库是可折叠的子菜单**，里面只列三条固定子项、**不列库名**：
- *    库可能几十个，全铺在侧栏上正是"知识库占的地方太多"的根源；
+ * 2. **导航项只放"每一页都是独立入口"的那几件**（概览 / 笔记 / 记忆 / 能力 / 任务中心），
+ *    不往这里塞清单：库可能几十个、会话上百条，全铺在侧栏上正是"这一栏占的地方太多"的根源；
  * 3. **设置入口只给管理员**，且放在账号的二级菜单里：退出登录低频且不可逆、
  *    主题属于"这台机器怎么显示"，摊在页脚上都不合适；
  * 4. **会话行的「⋯」、项目行的「+」与节标题右侧的加号都是"悬停才显形、但始终可 Tab 到"**
@@ -96,13 +95,13 @@
  * 并广播 `kylab:sidebar-toggle`）。本组件既是那个键的读者、也是那次广播的听众，
  * 于是"按 Ctrl+B"和"点那颗折叠按钮"最终落到同一个状态上。
  *
- * ## 2026-10-05：没有本机后端的那一份只剩「知识库」这一组
+ * ## 没有本机后端的那一份：整栏几乎是空的
  *
- * NAS 网页端退役（路由表那一段写在 `app/App.tsx` 的文件头）：判据是
- * `api/local.ts::localBackendPresent()`——**与路由表同源**，于是菜单里没有的、
- * 敲地址也进不去。这一栏里跟着摘掉的是：新建会话、笔记 / 记忆 / 能力三项、
- * 以及整段项目节与对话节（它们的数据面在那一档已经不服务了）；
- * 知识库那一组的三个子项（所有知识库 / 概览 / 任务中心）**留着**，它们就是那一档的全部。
+ * 判据是 `api/local.ts::localBackendPresent()`——**与路由表、门禁同源**
+ * （门禁见 `app/App.tsx` 的文件头，2026-10-08 起那一档直接是「本机后端未启动」那一页，
+ * 连壳都不渲染）。所以这一栏里那几条判断只是**给探测结论回来之前那一小段**兜底：
+ * 没有本机后端时，新建会话、笔记 / 记忆 / 能力 / 概览 / 任务中心，以及整段项目节与
+ * 对话节都跟着摘掉。
  *
  * 那三笔清单（会话 / 项目 / 已归档）在那一档**一次都不读**：读下去只会得到 404，
  * 而"启动时打一串注定失败的请求"没有任何收益（`/local/status` 那一探已经把结论给了）。
@@ -119,8 +118,6 @@ import { useLiveTurn } from '@/features/chat/model/liveTurn'
 import {
   RiAddLine,
   RiArrowDownSLine,
-  RiArrowRightSLine,
-  RiBook2Line,
   RiDashboardLine,
   RiFolderAddLine,
   RiFolderLine,
@@ -141,8 +138,6 @@ import {
 import { WorkspaceCreateDialog } from '@/features/misc/workspaces/WorkspaceCreateDialog'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
-import { useKnowledgeProviderStatus } from '@/api/provider'
-import { warmKnowledgeBases } from '@/features/knowledge/store'
 import { formatCount, formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -257,11 +252,11 @@ const SIDE_ROW_ADD =
 /**
  * 导航项顺序 = 使用频率（《界面信息架构草案》§1）。
  *
- * **「知识库」不在这里**：它是一个可折叠的子菜单（见 `KNOWLEDGE_GROUP`），
- * 「概览」「任务中心」也**在那一组里**（R5 拍板回到推送前的结构——它们曾在
- * M3 阶段 6 被搬到这里）。
- * **「对话」也不在这里**：它与下面的会话列表、以及最上面的「新对话」是同一件事的三个入口，
+ * **「对话」不在这里**：它与下面的会话列表、以及最上面的「新对话」是同一件事的三个入口，
  * 并排时用户会犹豫该点哪个——**会话列表本身就是那个入口**（Kimi / ChatGPT / Claude 同款）。
+ *
+ * 「概览」「任务中心」2026-10-08 从「知识库」那一组搬回这里（那一组随知识库管理台
+ * 一起去掉了，见文件头）：两者本来就不是知识库的东西，只是 M3 阶段 6 起借住在那一组里。
  *
  * `motion` 是这个条目的**悬停动效族**（v0.18）：一项一个动作，取的是"这个图标画的是什么"
  * 该有的动作（便签自下放上 / 记忆歪一头再正过来 / 能力上电弹一下 / 书脊滑进来）。
@@ -269,6 +264,16 @@ const SIDE_ROW_ADD =
  * （概览=面板自上落下、任务中心=干完弹一下）。
  */
 const NAV_ITEMS = [
+  // 「概览」= 驾驶舱，住 `/`（与旧前端一致：落地页就是概览，书签不用改）。
+  // `/dashboard` 只是同一页的旧入口，在路由表里是一条重定向。
+  {
+    to: '/',
+    label: '概览',
+    icon: RiDashboardLine,
+    exact: true,
+    motion: 'drop',
+    page: 'dashboard',
+  },
   {
     to: '/notes',
     label: '笔记',
@@ -288,50 +293,15 @@ const NAV_ITEMS = [
     motion: 'spring',
     page: 'capabilities',
   },
+  {
+    to: '/tasks',
+    label: '任务中心',
+    icon: RiTaskLine,
+    exact: false,
+    motion: 'spring',
+    page: 'tasks',
+  },
 ] as const
-
-/**
- * 知识库组：**三条固定子项**（所有知识库 / 概览 / 任务中心），**无条件渲染**。
- *
- * R5 拍板回到推送前的结构：概览与任务中心回到这一组里（M3 阶段 6 曾把它们搬去主导航），
- * 组也不再按提供者状态显隐——连不上的处置在各页面自己身上（路由守卫照旧）。
- * 子项不列每个库的名字（见文件头第 2 条）。
- *
- * 这一项照抄 Kimi 的原样动作（右侧滑入 + 放大落定）：它是这一栏里唯一的分组头，
- * 动作与"把一叠东西从右边推上来"的语义对得上。
- */
-const KNOWLEDGE_GROUP = {
-  label: '知识库',
-  icon: RiBook2Line,
-  motion: 'slide',
-  children: [
-    {
-      to: '/knowledge-bases',
-      label: '所有知识库',
-      icon: RiBook2Line,
-      exact: true,
-      page: 'knowledgeBases',
-    },
-    // 「概览」= 驾驶舱，住 `/`（与旧前端一致：落地页就是概览，书签不用改）。
-    // `/dashboard` 只是同一页的旧入口，在新路由表里是一条重定向。
-    {
-      to: '/',
-      label: '概览',
-      icon: RiDashboardLine,
-      exact: true,
-      motion: 'drop',
-      page: 'dashboard',
-    },
-    {
-      to: '/tasks',
-      label: '任务中心',
-      icon: RiTaskLine,
-      exact: false,
-      motion: 'spring',
-      page: 'tasks',
-    },
-  ],
-} as const
 
 /** 会话行：链接 + 右端的「⋯」。菜单是链接的**兄弟**，不套在链接里。 */
 function ConversationRow({
@@ -439,29 +409,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const loadArchivedProjects = useWorkspaceStore((state) => state.loadArchived)
   const workspaceError = useWorkspaceStore((state) => state.error)
   const loadWorkspaces = useWorkspaceStore((state) => state.load)
-  /**
-   * 知识库提供者的状态：R5 起**只用来做预取**（第 ② 条在下面 `preloadKnowledgeBases` 里）。
-   *
-   * 它**不再决定那一组显不显示**——组无条件渲染（R5 拍板回到推送前的结构），
-   * 连不上的处置由各页面自己负责（路由守卫照旧在 `features/knowledge/ProviderRoute.tsx`）。
-   */
-  const provider = useKnowledgeProviderStatus()
-
-  /**
-   * 知识库那一项被划过/聚焦时顺手做的两件事（M4 阶段 5，照开发计划 12.55 的预取先例）：
-   *
-   * ① 把那一页的代码拉下来（点进去不必等 chunk，与导航项、会话行同一条做法）；
-   * ② 把「上次看到的库列表」先取回来（**本机回环**，个位数毫秒）——点进去标题与卡片
-   *    就已经在了，页面上那一行小字如实说它是什么时候看到的。
-   *
-   * ②只在本机档做（`provider.gate`）：服务器档的知识库就是它自己，没有"本机留的那份"。
-   * 叫一次**不等于**打一次请求：内存已有、或那一份已经画过/实时到了，它就地返回。
-   */
-  function preloadKnowledgeBases(): void {
-    preloadPage('knowledgeBases')
-    if (!provider.gate) return
-    void warmKnowledgeBases()
-  }
 
   /** 滚动的那一层（项目 + 对话两节）。滚动条按"用时才出现"显示。 */
   const sideScroll = useRef<HTMLDivElement | null>(null)
@@ -473,16 +420,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   // 之后每次打开都是收着的，而他会以为坏了。
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
-  /**
-   * 「知识库」那一组的两行状态：**用户手动开合过没有**、以及他手动选的档。
-   *
-   * 默认档按"这一份有没有本机后端"取（没有本机后端时这一组是整条栏里唯一的内容，
-   * 默认收起等于把唯一的入口藏起来）；手动点过一次之后**永远听用户的**——
-   * 把默认值写成受控的、用户改不动，那颗箭头就成了一个点了没反应的按钮。
-   */
-  const [knowledgeTouched, setKnowledgeTouched] = useState(false)
-  const [knowledgeOpenManual, setKnowledgeOpenManual] = useState(false)
-  const knowledgeOpen = knowledgeTouched ? knowledgeOpenManual : !local.present
   /** 手动展开了哪几个项目。 */
   const [expandedProjects, setExpandedProjects] = useState<string[]>([])
   /** 「新增项目」弹窗开着吗（按钮在「项目」标题右边）。 */
@@ -573,20 +510,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   function isActive(to: string, exact: boolean): boolean {
     return exact ? location.pathname === to : location.pathname.startsWith(to)
   }
-
-  /**
-   * 「知识库」这一组里的当前项。
-   *
-   * **按组里那三个子项自己算**（`isActive`），外加库详情 / Wiki（`/kb/:id`，它们不在
-   * 侧栏里单列）——手写一条条前缀的那一版漏了 `/` 与 `/tasks`：站在概览或任务中心时
-   * 整组一声不响（默认又是收起的），用户看不出自己在哪一节里。
-   *
-   * R5：概览与任务中心回到这一组里，所以它们**又把组头点亮**了——与上面那条理由一致
-   * （"站在组里的哪一页，组头就该说着我在这一节里"）。
-   */
-  const knowledgeActive =
-    KNOWLEDGE_GROUP.children.some((item) => isActive(item.to, item.exact)) ||
-    location.pathname.startsWith('/kb/')
 
   // 会话只有**一份**平铺清单，分组在这里做（两处各存一份的话，
   // "把某条会话挪进工作区"就得同时改两个地方）。
@@ -701,8 +624,9 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
       )}
 
       <nav className="flex flex-col px-2 pb-2" aria-label="主导航">
-        {/* 笔记 / 记忆 / 能力：**只在有本机后端的那一份里**（数据面同源，见文件头）。
-            没有的那一份里导航整段就只剩下面「知识库」那一组。 */}
+        {/* 概览 / 笔记 / 记忆 / 能力 / 任务中心：**只在有本机后端的那一份里**（数据面同源，
+            见文件头）。没有本机后端时这一栏到这儿基本就空了——那一档现在由门禁拦在
+            「本机后端未启动」那一页上（`app/App.tsx`）。 */}
         {local.present &&
           NAV_ITEMS.map((item) => (
             <Link
@@ -729,68 +653,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
               <span className="ly-collapsible">{item.label}</span>
             </Link>
           ))}
-
-        {/* 知识库组（v0.17）：**三条固定子项**（所有知识库 / 概览 / 任务中心），**不列库名**；
-            **无条件渲染**（R5：不再按提供者状态整组显隐，见文件头那一节）。
-            选中态只在收起时亮：展开之后"当前在这一组里"由子项自己说。 */}
-        <div className="flex flex-col" data-testid="nav-knowledge-group">
-          <button
-            type="button"
-            className={cn(
-              NAV_ROW,
-              collapsed && NAV_ROW_COLLAPSED,
-              'w-full cursor-pointer border-0 text-left',
-              knowledgeActive && !knowledgeOpen ? 'bg-[var(--bg-selected)]' : 'bg-transparent',
-            )}
-            aria-expanded={knowledgeOpen}
-            title={collapsed ? KNOWLEDGE_GROUP.label : undefined}
-            onClick={() => {
-              setKnowledgeTouched(true)
-              setKnowledgeOpenManual(!knowledgeOpen)
-            }}
-          >
-            <KNOWLEDGE_GROUP.icon
-              size={18}
-              className={`ly-nav-motion-${KNOWLEDGE_GROUP.motion} shrink-0`}
-              aria-hidden="true"
-            />
-            <span className="ly-collapsible">{KNOWLEDGE_GROUP.label}</span>
-            {!collapsed && (
-              <RiArrowRightSLine
-                size={13}
-                aria-hidden="true"
-                className={
-                  knowledgeOpen
-                    ? 'shrink-0 rotate-90 text-text-tertiary transition-transform'
-                    : 'shrink-0 text-text-tertiary transition-transform'
-                }
-              />
-            )}
-          </button>
-          {knowledgeOpen && !collapsed && (
-            <ul className="mt-0 mb-1 list-none p-0 pl-6">
-              {KNOWLEDGE_GROUP.children.map((item) => (
-                <li key={item.to}>
-                  <Link
-                    to={item.to}
-                    /* 划过就先把知识库那一页的代码、以及"上次看到的那份"一起拿回来（M4 阶段 5） */
-                    onMouseEnter={() => preloadKnowledgeBases()}
-                    onFocus={() => preloadKnowledgeBases()}
-                    aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
-                    className={
-                      isActive(item.to, item.exact)
-                        ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-selected)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
-                        : 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control px-2 text-[length:var(--text-meta-size)] text-text-secondary no-underline transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
-                    }
-                  >
-                    <item.icon size={14} aria-hidden="true" />
-                    <span className="truncate">{item.label}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
       </nav>
 
       {/* 下半栏（v0.22，照 Kimi Work 的实际形态）：**两节，默认都展开**。
@@ -801,7 +663,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
           是在回答"你还能往下滚"——而那个问题只在鼠标进到这一栏时才存在。
 
           **没有本机后端的那一份里整段不存在**：项目与会话都在本机库里，那一档一条都读不到
-          （见文件头那一段）。这时侧栏就是"品牌位 + 知识库那一组 + 账号"三块。 */}
+          （见文件头那一段）。 */}
       {local.present && !collapsed && (
         <div ref={sideScroll} className="scroll-quiet flex-1 overflow-y-auto px-2 pb-2">
           {/* ------------------------------------------------------------ 项目 */}

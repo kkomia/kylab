@@ -38,8 +38,8 @@
  * 3. **窗口重新获得焦点**时 `refresh=1`（revalidate-on-focus，与 §6.3 同一条口径）；
  * 4. 设置面板保存地址 / 点「测试连接」→ `refresh()` 强制重探。
  *
- * 轮询与焦点监听挂在**模块级**（按订阅者计数开关，与 `features/knowledge/store.ts`
- * 的单飞 + 订阅同一套写法）：组件卸载了就不该继续打接口，而同一时刻只该有一份计时器。
+ * 轮询与焦点监听挂在**模块级**（按订阅者计数开关，模块级单飞 + 订阅同一套写法）：
+ * 组件卸载了就不该继续打接口，而同一时刻只该有一份计时器。
  *
  * ## 单次调用失败**不改状态**
  *
@@ -294,7 +294,7 @@ let store: ProviderStore = {
 
 const listeners = new Set<() => void>()
 
-/** 正在飞的那一次（单飞：并发调用合并成一次，与 `features/knowledge/store.ts` 同一写法）。 */
+/** 正在飞的那一次（单飞：并发调用合并成一次）。 */
 let inflight: Promise<unknown> | null = null
 
 /** 正在飞的那一次是不是**强制重探**（决定"再来一次"能不能并进来，见 `run`）。 */
@@ -564,8 +564,8 @@ export function useKnowledgeProviderStatus(options: { enabled?: boolean } = {}):
 /* ------------------------------------------------------------------ 用例用的窄接口 */
 
 /**
- * 用例用：把模块状态清干净（模块级缓存必须靠调用方复位——`features/knowledge/store.ts`
- * 的 `resetKnowledgeBaseCache` 同一条纪律）。
+ * 用例用：把模块状态清干净（模块级缓存必须靠调用方复位，`api/local.ts`
+ * 的 `resetLocalBackendForTest` 同一条纪律）。
  */
 export function resetProviderStore(): void {
   // 复位也**作废所有在飞的请求**（见 `generation`）：复位之后回来的结论不许写进来

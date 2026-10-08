@@ -71,14 +71,14 @@ export function Welcome() {
         </div>
       ) : null}
 
-      {/* 一个库都没有时，提问无从谈起：指路比给一排点了没反应的样例好 */}
+      {/* 一个库都没有时，提问无从谈起：说一句实话比给一排点了没反应的样例好。
+          **不再指路**（2026-10-08）：原先它是个指向 `/knowledge-bases` 的链接，
+          而那一族页面随知识库管理台一起搬去 kybase——本界面里没有可去的地址了，
+          所以只留这句话，不留一颗点了会 404 的链接。 */}
       {chat.kbs.length === 0 && !chat.kbLoading ? (
-        <a
-          className="text-[length:var(--text-meta-size)] text-[var(--accent-text)] hover:underline"
-          href="/knowledge-bases"
-        >
-          还没有知识库，先去建一个并上传文档
-        </a>
+        <p className="text-[length:var(--text-meta-size)] text-[var(--text-secondary)]">
+          还没有可用的知识库。在知识库管理台里建库并上传文档，再接上它。
+        </p>
       ) : null}
     </div>
   )

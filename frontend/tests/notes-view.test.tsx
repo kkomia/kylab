@@ -537,7 +537,6 @@ describe('笔记页：搜索 / 新建 / 删除 / 移动', () => {
       expect(saveOrder).toBeLessThan(attachNote.mock.invocationCallOrder[0])
     })
     expect(await screen.findByText('已加入知识库「资料库」')).toBeTruthy()
-    expect(screen.getByText('查看文档').closest('a')?.getAttribute('href')).toBe('/documents/d9')
     // 文案 2026-09-24 压短（后半句"之后可以在检索里命中这条笔记"是在解释入库之后会怎样）
     expect(toastSuccess).toHaveBeenCalledWith('已加入知识库')
   })
@@ -548,7 +547,7 @@ describe('笔记页：搜索 / 新建 / 删除 / 移动', () => {
 
     fireEvent.click(screen.getByLabelText('加入知识库'))
 
-    expect(toastError).toHaveBeenCalledWith('还没有知识库，先去「知识库」新建一个')
+    expect(toastError).toHaveBeenCalledWith('还没有知识库，先在知识库管理台里新建一个')
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

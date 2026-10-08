@@ -2,15 +2,19 @@
  * 应用壳（侧栏导航 / 折叠 / 快捷键 / 用户区 / 历史面板的开合）的用例。
  *
  * 对照的旧实现是 `frontend/src/components/layout/SideNav.vue`（1,632 行）与 `App.vue`。
- * 这一节覆盖六件**迁移里最容易被简化掉**的事：
+ * 这一节覆盖五件**迁移里最容易被简化掉**的事：
  *
  * 1. 主导航项与当前路由高亮（旧版只有一个 CSS class，这里同时钉 `aria-current`）；
  * 2. 折叠：窄条形态、`kylab-sidebar-collapsed` 持久化、**读**这个键、以及
  *    `kylab:sidebar-toggle` 广播的联动（chat 域的快捷键就是靠它把状态传过来的）；
  * 3. 两条全局快捷键（`chat.new` / `layout.toggleSidebar`）真的能用，且**输入框里不抢**；
- * 4. 用户区：账号、管理员多一项「设置」、主题翻转、退出登录三件事（清令牌 + 清缓存 + 跳登录）；
- * 5. 历史会话面板：点「查看全部会话」能开、**Esc 关**、**换页关**（§12.194 那个 bug）；
- * 6. 登录页不长出侧栏。
+ * 4. 用户区：账号、管理员多一项「设置」、主题翻转、退出登录三件事（清令牌 + 清缓存 + 回概览）；
+ * 5. 历史会话面板：点「查看全部会话」能开、**Esc 关**、**换页关**（§12.194 那个 bug）。
+ *
+ * 2026-10-08 跟着两处一起删的用例：「登录页不长出侧栏」与「知识库组」——
+ * 登录页与那一族知识库页面都删了（本机档免登录、知识库界面搬去 kybase，
+ * 见 `app/App.tsx` 的文件头）。「概览」「任务中心」回到主导航，所以它们的高亮
+ * 由第 1 条那几条覆盖。
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -104,14 +108,11 @@ function renderShell(initialPath = '/notes') {
             <Route path="/notes" element={<div>笔记页</div>} />
             <Route path="/memory" element={<div>记忆页</div>} />
             <Route path="/capabilities" element={<div>能力页</div>} />
-            <Route path="/knowledge-bases" element={<div>知识库列表页</div>} />
-            <Route path="/kb/:kbId" element={<div>知识库详情页</div>} />
             <Route path="/dashboard" element={<div>概览页</div>} />
             <Route path="/tasks" element={<div>任务中心页</div>} />
             <Route path="/workspaces" element={<LocationProbe />} />
             <Route path="/chat/:conversationId?" element={<LocationProbe />} />
           </Route>
-          <Route path="/login" element={<LocationProbe />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -141,69 +142,35 @@ describe('侧栏导航', () => {
     renderShell('/notes')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
-    for (const label of ['笔记', '记忆', '能力', '知识库']) {
+    for (const label of ['概览', '笔记', '记忆', '能力', '任务中心']) {
       expect(within(nav).getByText(label)).toBeInTheDocument()
     }
     // 当前页那一项标了 aria-current（旧版只有一个 CSS class）
     expect(within(nav).getByRole('link', { name: '笔记' })).toHaveAttribute('aria-current', 'page')
     expect(within(nav).getByRole('link', { name: '记忆' })).not.toHaveAttribute('aria-current')
-  })
-
-  it('知识库是可折叠的子菜单：默认收起，展开后是三条固定子项（不列库名）', async () => {
-    const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
-    renderShell('/knowledge-bases')
-
-    const group = await screen.findByRole('button', { name: '知识库' })
-    expect(group).toHaveAttribute('aria-expanded', 'false')
+    // 知识库那一组与它的子项都不在了（2026-10-08，见文件头）
+    expect(within(nav).queryByText('知识库')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '所有知识库' })).not.toBeInTheDocument()
-
-    await user.click(group)
-    expect(group).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByRole('link', { name: '所有知识库' })).toBeInTheDocument()
-    // **R5：概览与任务中心回到这一组里**（M3 阶段 6 曾把它们搬去主导航 `NAV_ITEMS`）
-    const nav = screen.getByRole('navigation', { name: '主导航' })
-    expect(within(nav).getByRole('link', { name: '概览' })).toBeInTheDocument()
-    expect(within(nav).getByRole('link', { name: '任务中心' })).toBeInTheDocument()
-    // 选中态：当前就在知识库列表页
-    expect(screen.getByRole('link', { name: '所有知识库' })).toHaveAttribute('aria-current', 'page')
   })
 
-  it('「概览」在知识库组里仍指向 `/`（与旧前端一致：落地页就是驾驶舱，书签不用改）', async () => {
-    const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
-    renderShell('/')
-
-    // R5：概览回到知识库组里，组默认收起——先展开再断言
-    const group = await screen.findByRole('button', { name: '知识库' })
-    await user.click(group)
-    const nav = screen.getByRole('navigation', { name: '主导航' })
-    const overview = within(nav).getByRole('link', { name: '概览' })
-    expect(overview).toHaveAttribute('href', '/')
-    expect(overview).toHaveAttribute('aria-current', 'page')
-  })
-
-  it('概览与任务中心回到知识库组里，所以它们**又**把组头点亮（R5）', async () => {
-    const user = userEvent.setup()
+  it('「概览」与「任务中心」回到主导航，各自指向 `/` 与 `/tasks`', async () => {
     useSessionStore.setState({ currentUser: account('member') })
     renderShell('/tasks')
 
-    const group = await screen.findByRole('button', { name: '知识库' })
-    expect(group).toHaveAttribute('aria-expanded', 'false')
-    // 站在任务中心时组头亮着（收起态下这是"我在这一节里"的唯一提示）
-    expect(group.className).toContain('bg-[var(--bg-selected)]')
-    await user.click(group)
-    const nav = screen.getByRole('navigation', { name: '主导航' })
-    expect(within(nav).getByRole('link', { name: '任务中心' })).toHaveAttribute(
+    const nav = await screen.findByRole('navigation', { name: '主导航' })
+    expect(within(nav).getByRole('link', { name: '概览' })).toHaveAttribute('href', '/')
+    const tasks = within(nav).getByRole('link', { name: '任务中心' })
+    expect(tasks).toHaveAttribute('href', '/tasks')
+    expect(tasks).toHaveAttribute('aria-current', 'page')
+
+    // 站在落地页时「概览」点亮（`/` 是 exact 那一档）
+    cleanup()
+    renderShell('/')
+    const atHome = await screen.findByRole('navigation', { name: '主导航' })
+    expect(within(atHome).getByRole('link', { name: '概览' })).toHaveAttribute(
       'aria-current',
       'page',
     )
-
-    // 概览（`/`，exact）也在这一组里：站在落地页时同样点亮组头
-    cleanup()
-    renderShell('/')
-    const atHome = await screen.findByRole('button', { name: '知识库' })
-    expect(atHome.className).toContain('bg-[var(--bg-selected)]')
   })
 
   it('能力页在主导航里有归属：当前项标 aria-current 并带选中底', async () => {
@@ -276,12 +243,6 @@ describe('侧栏导航', () => {
     await user.click(screen.getByRole('button', { name: '展开（还有 2 条）' }))
     expect(screen.getByText('会话 6')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^展开（还有/ })).not.toBeInTheDocument()
-  })
-
-  it('登录页不长出侧栏', async () => {
-    renderShell('/login')
-    expect(await screen.findByTestId('location')).toHaveTextContent('/login')
-    expect(screen.queryByRole('navigation', { name: '主导航' })).not.toBeInTheDocument()
   })
 })
 
@@ -459,7 +420,7 @@ describe('用户区', () => {
     expect(await screen.findByRole('menuitem', { name: '切换为浅色' })).toBeInTheDocument()
   })
 
-  it('退出登录：吊销会话 + 清会话清单与名册 + 跳登录页', async () => {
+  it('退出登录：吊销会话 + 清会话清单与名册 + 回概览', async () => {
     const user = userEvent.setup()
     useSessionStore.setState({ currentUser: account('admin') })
     setSessionToken('tok-1')
@@ -476,8 +437,8 @@ describe('用户区', () => {
     expect(useConversationStore.getState().query).toBe('')
     expect(useOperatorStore.getState().roster).toEqual([])
     expect(window.localStorage.getItem('kylab-session-token')).toBeNull()
-    // 落在登录页（壳在登录页不长侧栏）
-    expect(await screen.findByTestId('location')).toHaveTextContent('/login')
+    // 落在概览（落地页）——登录页已删，退完之后没有"登录那一页"可去（见文件头）
+    expect(await screen.findByText('概览页')).toBeInTheDocument()
   })
 })
 
@@ -497,35 +458,33 @@ describe('历史会话面板的开合', () => {
     )
   })
 
-  it('会话失效（401）：跳登录页并把原地址带在 redirect 上', async () => {
+  it('会话失效（401）：清掉本地凭据，**不跳登录页**（登录页已删）', async () => {
     useSessionStore.setState({ currentUser: account('member'), token: 'tok-1' })
+    setSessionToken('tok-1')
     renderShell('/notes')
     await screen.findByRole('navigation', { name: '主导航' })
 
     // 任何请求拿到 401 都会走这一个信号（api/client.ts）
     requestRelogin()
 
-    await waitFor(() =>
-      expect(screen.getByTestId('location')).toHaveTextContent(
-        `/login?redirect=${encodeURIComponent('/notes')}`,
-      ),
-    )
+    // 令牌被清掉（本机档照常能用），页面**留在原处**——没有登录页可去了
+    await waitFor(() => expect(useSessionStore.getState().token).toBe(''))
+    expect(screen.getByText('笔记页')).toBeInTheDocument()
   })
 
-  it('计数只在"变了"那一次动手：重新登录后（计数还没归零）再进来不会被弹回登录页', async () => {
-    useSessionStore.setState({ currentUser: account('member'), token: 'tok-2' })
+  it('计数只在"变了"那一次动手：带着一个非零计数挂载不会再清一次', async () => {
+    // 计数不会归零，所以判据只能是"这个数变了"——写成"计数非零就清"的话，
+    // 每次挂载都会清一遍（用户刚拿到的凭据又被抹掉）。
+    useSessionStore.setState({ currentUser: account('member'), token: 'tok-2', reloginCount: 3 })
+    setSessionToken('tok-2')
     renderShell('/notes')
     await screen.findByRole('navigation', { name: '主导航' })
 
-    requestRelogin()
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/login'))
+    expect(useSessionStore.getState().token).toBe('tok-2')
 
-    // 从登录页回到业务页 = 重新登录成功（`login()` 只重置令牌，不碰这个计数）。
-    // 若把这条判成"计数非零就跳"，这里会被再弹一次、与接入层的守卫来回拉锯。
-    cleanup()
-    renderShell('/notes')
-    expect(await screen.findByText('笔记页')).toBeInTheDocument()
-    expect(screen.queryByTestId('location')).not.toBeInTheDocument()
+    // 真的变了才动手
+    requestRelogin()
+    await waitFor(() => expect(useSessionStore.getState().token).toBe(''))
   })
 
   it('换页就关（§12.194：浮层没关等于菜单点不动）', async () => {

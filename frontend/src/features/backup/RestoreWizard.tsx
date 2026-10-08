@@ -22,7 +22,7 @@
  * 话：**默认只补不覆盖，本机改过的那几条保留**（后端那两条路都是这么办的：记忆只补
  * 本机没有的、会话按台账比对、本机改过的一律保留）。
  *
- * ## 轮询的三条纪律（与 `features/knowledge/store.ts::usePolling` 同一套）
+ * ## 轮询的三条纪律
  *
  * 1. **标签页隐藏时暂停**（后台标签页不该一直打接口）；
  * 2. **上一次还没回来就不发下一次**（慢请求不叠成雪崩）；
@@ -115,8 +115,8 @@ export function RestoreWizard({
   const batchId = receipt?.batch_id ?? ''
 
   /**
-   * `onSettled` 走 ref（与 `features/knowledge/store.ts::usePolling` 同一手法）：
-   * 调用方每次渲染都会给一个新函数，把它放进依赖表会把计时器反复推倒重来。
+   * `onSettled` 走 ref：调用方每次渲染都会给一个新函数，
+   * 把它放进依赖表会把计时器反复推倒重来。
    */
   const settledRef = useRef(onSettled)
   settledRef.current = onSettled

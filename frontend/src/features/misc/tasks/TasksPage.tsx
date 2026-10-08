@@ -28,8 +28,6 @@ import { TASKS_QUERY_KEY } from '@/features/misc/queryKeys'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, FileText, RefreshCw } from 'lucide-react'
-import { useNavigate } from 'react-router'
-
 import { useLocalBackend } from '@/api/local'
 import { useKnowledgeProviderStatus } from '@/api/provider'
 import { cancelTasks, getTaskLoad, listTasks, type TaskSummary } from '@/api/tasks'
@@ -118,7 +116,6 @@ function matchesHealth(task: TaskSummary, filter: string): boolean {
 }
 
 export function TasksPage() {
-  const navigate = useNavigate()
   const [view, setView] = useState<TaskView>('tasks')
 
   const [kb, setKb] = useState('')
@@ -604,17 +601,9 @@ export function TasksPage() {
                       取消这个任务
                     </Button>
                   )}
-                  {detail.document_id && (
-                    <Button
-                      onClick={() => {
-                        const documentId = detail.document_id
-                        setDetail(null)
-                        if (documentId) void navigate(`/documents/${documentId}`)
-                      }}
-                    >
-                      打开文档
-                    </Button>
-                  )}
+                  {/* 原先这里还有一颗「打开文档」：它跳 `/documents/{id}`，而文档详情页
+                      随知识库管理台一起下线了（2026-10-08，见 `app/App.tsx` 的文件头）——
+                      本界面里没有那个去处了，跳过去只会是一页 404。 */}
                 </>
               ) : null
             }

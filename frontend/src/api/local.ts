@@ -190,20 +190,20 @@ export async function rollbackImportBatch(batchId: string): Promise<ImportBatch>
 /* ------------------------------------------------ 这一档有没有本机后端（显隐的唯一判据） */
 
 /**
- * 浏览器里那一份（**没有壳**）从 2026-10-05 起只剩知识库管理台。
+ * 浏览器里那一份（**没有壳**）从 2026-10-05 起与桌面端不同源：那一份读的是服务器那几张表。
  *
- * NAS 上跑的网页端与桌面端共用这一套前端，而浏览器里没有 Tauri 壳 → 会话面那几页
- * 读的是 NAS 的 PG（`sidecar.ts::resolveLocalBase` 在"无壳"那一支直接回 `API_BASE`）。
- * 产品判定：**那一个网页端退役**，服务器档从那一轮起也不再挂会话面那几族端点
- * （`backend/app/api/v1/router.py`）。于是"这一份有没有本机后端"不只是一个数据选址问题，
- * 它直接决定**哪几页存在**：有本机后端 = 完整产品；没有 = 知识库 + 备份 + 健康。
+ * 产品判定随后改过一次（2026-10-08）：**这一份界面就是本机产品的界面**——没有本机后端时
+ * 它不再有第二种形态（原先"只剩知识库管理台"那一套随知识库管理台搬去 kybase 而作废），
+ * 门禁（`app/App.tsx` 的 `LocalBackendGate`）直接换成一页「本机后端未启动」。
+ * 所以这一条判据现在只回答一件事：**这份界面背后有没有本机后端**。
  *
  * ## 判据用已有的信号：本机后端答不答 `/local/status`
  *
- * 与 `lib/sessionActions.ts::localOnlyDeployment` **同一个判据、同一个端点**
- * （那条是登录守卫用的，见它的说明）：`/local/status` 只在 `local_router` 上，
- * 服务器档里**根本不存在**这条路径。所以这里不新发明模式探测——
- * 端口、环境变量、`navigator.onLine` 都不该用来判这件事。
+ * **判据只有这一处**（2026-10-08 收拢）：原先登录守卫那边还有一份同名副本
+ * （`lib/sessionActions.ts::localOnlyDeployment`，删因写在那个文件尾），两份问的是
+ * 同一个端点，而门禁要的是**同步、可订阅**的结论——渲染时就要用，只有这里的模块级
+ * 缓存给得了。`/local/status` 只在 `local_router` 上，服务器档里**根本不存在**这条路径，
+ * 所以不新发明模式探测——端口、环境变量、`navigator.onLine` 都不该用来判这件事。
  *
  * 与那两个"本机档才显隐"的既有函数（`provider.ts::providerGateApplies` /
  * `backup.ts::backupGateApplies`）同形：先看显式关掉的逃生门，再看"壳在不在"，
@@ -263,6 +263,26 @@ export function probeLocalBackend(): Promise<void> {
   return inflight
 }
 
+/**
+ * 再探一次（「本机后端未启动」那一页的「重试」，2026-10-08）。
+ *
+ * 与 `probeLocalBackend` 只差一处：**把上一次的结论与在途请求清掉**再探——
+ * 那一条是"只探一次"的（结论一到 `inflight` 就一直挂着，再叫也是同一次）。
+ *
+ * 清结论之前先广播一次，界面于是回到"还不知道"（那时按完整产品渲染），
+ * 探出结论再广播一次：中间那一帧不会把用户晾在降级页上。
+ *
+ * **不动订阅者**（这正是它与 `resetLocalBackendForTest` 的关键差别）：
+ * 调它的就是那个挂着订阅的页面，清了订阅它再也收不到结论。
+ */
+export function reprobeLocalBackend(): Promise<void> {
+  answer = null
+  settled = false
+  inflight = null
+  publish()
+  return probeLocalBackend()
+}
+
 /** 给界面读的那一份（`useLocalBackend` 的返回值）。 */
 export interface LocalBackendView {
   /** 这一份界面**有没有**本机后端（会话面那几页在不在只看它）。 */
@@ -272,13 +292,16 @@ export interface LocalBackendView {
 }
 
 /**
- * 同步结论（**任何地方都能读**：路由表、侧栏、账号菜单）。
+ * 同步结论（**任何地方都能读**：门禁、侧栏、账号菜单）。
  *
  * 三条分支：
  *
- * 1. 本机数据面被显式关掉（`VITE_LOCAL_DATA=0`，排障用的逃生门）→ **没有**：
- *    那一档界面读的就是服务器上的数据，与"本机后端"无关
- *    （与 `providerGateApplies` / `backupGateApplies` 的头两条逐字同形）；
+ * 1. 本机数据面被显式关掉（`VITE_LOCAL_DATA=0`，排障用的逃生门）→ **没有**。
+ *    2026-10-08 起这一支的后果是**整壳换成「本机后端未启动」那一页**
+ *    （门禁读的就是本条的结论）：那一档已经没有"换个数据源照常跑"的第二种形态了
+ *    （服务器档退役、知识库管理台搬去 kybase）——**这个逃生门现在是"把界面关掉"**，
+ *    留着是给"想看某条链在服务器档怎么跑"的排障用的，别再拿它当日常形态。
+ *    （写法上与 `providerGateApplies` / `backupGateApplies` 的头两条逐字同形）；
  * 2. **壳里恒真有**（`inDesktopShell()`）：本机后端由壳拉起，那是"本机档"成立的地方。
  *    这一条必须是**同步**的——它是主产品形态，不能在首屏先按"没有"渲染一帧再纠正；
  * 3. 其余（浏览器里的这一份）看那一趟探测的结论：`local` → 有；`absent` → 没有；

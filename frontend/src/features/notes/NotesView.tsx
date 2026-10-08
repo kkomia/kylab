@@ -604,7 +604,7 @@ export function NotesView() {
 
   function openAttach(): void {
     if (!kbOptions.length) {
-      toast.error('还没有知识库，先去「知识库」新建一个')
+      toast.error('还没有知识库，先在知识库管理台里新建一个')
       return
     }
     setAttachKb(draftRef.current?.kb_id ?? kbOptions[0].value)
@@ -1184,9 +1184,9 @@ export function NotesView() {
                     <div className="doc-status">
                       <Check size={13} aria-hidden="true" />
                       已加入知识库「{activeKbName}」
-                      <Link className="doc-link" to={`/documents/${draft.doc_id}`}>
-                        查看文档
-                      </Link>
+                      {/* 「查看文档」那个链接删了（2026-10-08）：它指向 `/documents/{id}`，
+                          而那一页随知识库管理台一起搬去 kybase——本界面里再没有它的去处，
+                          留一颗点了会 404 的链接不如不留。 */}
                     </div>
                   )}
                 </>

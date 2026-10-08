@@ -659,11 +659,6 @@ U2_ALLOWED: tuple[tuple[str, str, str], ...] = (
         "插入链接时补的协议前缀，写进正文 markdown，不是文案",
     ),
     (
-        "frontend/src/features/knowledge/SourcePanel.tsx",
-        "example.com",
-        "输入框的示例地址（占位符）：它示范「这一格该填什么」的格式，本身就是数据",
-    ),
-    (
         "frontend/src/features/misc/capabilities/CapabilitiesPage.tsx",
         "example.com",
         "同上：MCP 地址栏的示例格式，不是对实现的解释",
@@ -1037,11 +1032,6 @@ U3_ALLOWED: tuple[tuple[str, str, str], ...] = (
     ),
     # ① 失败/停滞态：说清"现在怎么了、能做什么"。
     (
-        "frontend/src/features/knowledge/ProcessingTimeline.tsx",
-        "这一步停住了",
-        "① 停滞失败态：进程可能重启过 + 自动重跑 + 手动「重新摄入」这条出路",
-    ),
-    (
         "frontend/src/api/local.ts",
         "批没跑完（重跑同一来源即可续上）",
         "① 失败态：`planned`/`running` 的导入批次是**上次没跑完**（被杀/断电）留下的，"
@@ -1063,11 +1053,6 @@ U3_ALLOWED: tuple[tuple[str, str, str], ...] = (
         "避免再发明一个概念）",
     ),
     # ② 空态/首态：现在是什么、点哪儿开始。
-    (
-        "frontend/src/features/misc/auth/LoginPage.tsx",
-        "第一次使用",
-        "② 登录页首态：第一次使用怎么进（建管理员账号），不是解释登录页是什么",
-    ),
     # 数据：字符串本身就是内容（发出去的正文 / 系统提示词原文），不是对界面的解释。
     (
         "frontend/src/features/chat/runtime/ChatProvider.tsx",

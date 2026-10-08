@@ -2,7 +2,8 @@
  * 概览 = 驾驶舱（《前端设计规范》§6）——与旧前端 `views/DashboardView.vue` 逐条对应。
  *
  * 回答"这个知识库系统现在什么状态、最近在不在动"，而不是"有哪些库"——
- * 库的清单有自己的页面（侧栏「知识库」）。
+ * 库的清单与增删改在**知识库管理台**里（本界面 2026-10-08 起不再有那一族页面，
+ * 见 `app/App.tsx` 的文件头），这里只读它的规模与活跃度。
  *
  * 三条自我约束：
  * 1. **只画有数据支撑的图**：调用量走 `/stats/usage`；宁可少一块图，也不放一个编出来的数字；
@@ -19,7 +20,7 @@
  * （`backend/app/api/v1/router.py` 的"明确不挂"那一段），这条端点**不挂本机档**——
  * 没接上还硬打它，屏幕上只会是一行 `Not Found` 加一片空白。所以五个大数、活跃度、
  * 构成、知识库规模那几块只在 `kbReady` 时画：还没问出结论时画一个占位（按缺席渲染，
- * 与 `features/knowledge/ProviderRoute.tsx` 同一条口径），问出结论且没接上时换成一块
+ * 与 `api/provider.ts` 那条"一次读失败不改状态"同一条口径），问出结论且没接上时换成一块
  * 空态（原因与下一步用后端给的那句 `reason`，这里不另写一句把它盖掉）。
  *
  * **模型用量那一节不受影响**：它走 `/stats/usage`，那是本机挂了的
@@ -28,13 +29,11 @@
 import { DASHBOARD_WINDOW_DAYS, USAGE_WINDOW_DAYS } from '@/features/misc/queryKeys'
 import { lazy, Suspense, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link } from 'react-router'
 
 import { useLocalBackend } from '@/api/local'
 import { useKnowledgeProviderStatus } from '@/api/provider'
 import type { ActivityPoint } from '@/api/stats'
 import { getDashboard, getUsage } from '@/api/stats'
-import { Button } from '@/ui/button'
 import { formatBytes, formatCount, formatRelativeTime } from '@/lib/format'
 
 import { documentStageView } from '../shared/status'
@@ -496,14 +495,12 @@ export function DashboardPage() {
           <>
             <h2 className="m-group-title">知识库规模</h2>
             {!hasAnyDocument ? (
+              /* 空态：不摆"去知识库"那颗按钮了（2026-10-08）——本界面没有那一页了
+                 （管理台在 kybase），指一个不存在的去处比只说一句实话更糟。 */
               <EmptyState
                 title="还没有文档"
-                hint="到「知识库」页建一个库并上传文档，这里会出现规模与活跃度统计。"
-              >
-                <Button asChild>
-                  <Link to="/knowledge-bases">去知识库</Link>
-                </Button>
-              </EmptyState>
+                hint="在知识库管理台里建库并上传文档，这里会出现规模与活跃度统计。"
+              />
             ) : (
               <div className="panel">
                 <div className="panel-head m-list-head" aria-hidden="true">
@@ -515,7 +512,10 @@ export function DashboardPage() {
                 <ul className="m-list">
                   {summary.knowledge_bases.map((kb) => (
                     <li key={kb.id} className="m-list-item">
-                      <Link className="m-kb-link" to={`/kb/${kb.id}`}>
+                      {/* 这一行原先是指向 `/kb/{id}` 的链接（那一页随知识库管理台一起
+                          下线了，2026-10-08）：现在只读地铺一份规模，不做跳转。
+                          类名与结构一个字没动，所以排版仍是那份对照过的行。 */}
+                      <div className="m-kb-link">
                         <span className="m-col-name">
                           <span className="m-kb-name">{kb.name}</span>
                           {/* 模型 id 与库名之间**必须有缝**：`.m-col-name` 是纯 flex:1 容器，
@@ -535,7 +535,7 @@ export function DashboardPage() {
                             <StatusTag tone="neutral" label="还没有文档" />
                           )}
                         </span>
-                      </Link>
+                      </div>
                     </li>
                   ))}
                 </ul>

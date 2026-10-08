@@ -3,28 +3,30 @@
  *
  * ## 主控接线（`src/app/**` 归主控，本域不改它）
  *
- * 把业务路由放进壳里，**登录页留在壳外**：
+ * 把业务路由放进壳里：
  *
  * ```tsx
  * import { AppShell } from '@/features/layout'
  *
  * <BrowserRouter>
- *   <AuthGate>
- *     <Suspense fallback={<div className="h-dvh bg-canvas" />}>
+ *   <LocalBackendGate>            // 门禁：没有本机后端就换成一页提示
+ *     <Suspense fallback={<BootSkeleton />}>
  *       <Routes>
- *         <Route path="/login" element={<LoginPage />} />
  *         <Route element={<AppShell />}>
  *           ...业务路由原样搬进这条布局路由（内容经 <Outlet/> 落进内容区）...
  *         </Route>
  *       </Routes>
  *     </Suspense>
- *   </AuthGate>
+ *   </LocalBackendGate>
  * </BrowserRouter>
  * ```
  *
+ * （`/login` 那条路由与登录页已删，本机档免登录、门禁只认"有没有本机后端"，
+ * 见 `app/App.tsx` 的文件头。）
+ *
  * 也支持"包住整张路由表"的写法：`<AppShell><Routes>…</Routes></AppShell>`
  * （`children` 给了就用它，没给就渲染 `<Outlet/>`）。
- * 两种写法都必须在 `BrowserRouter` 之内；壳自己在 `/login` 上也会退化成"只有内容区"。
+ * 两种写法都必须在 `BrowserRouter` 之内。
  *
  * ## 本域提供的三件事
  *

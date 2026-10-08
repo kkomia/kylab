@@ -402,7 +402,7 @@ export function KnowledgeBaseControl() {
             </DropdownMenu.CheckboxItem>
           ))}
           {chat.kbs.length === 0 ? (
-            <p className={NOTE}>还没有知识库。去「所有知识库」建一个。</p>
+            <p className={NOTE}>还没有知识库。在知识库管理台里建一个。</p>
           ) : visible.length === 0 ? (
             <p className={NOTE}>没有匹配的知识库。</p>
           ) : null}

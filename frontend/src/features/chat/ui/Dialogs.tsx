@@ -67,7 +67,7 @@ export function IngestDialog() {
             </ul>
           ) : (
             <p className="m-0 text-[length:var(--text-meta-size)] text-[var(--text-secondary)]">
-              还没有知识库。先去「知识库」建一个，再回来存。
+              还没有知识库。先在知识库管理台里建一个，再回来存。
             </p>
           )}
         </div>

@@ -283,7 +283,7 @@ describe('驾驶舱', () => {
     expect(screen.getByTestId('chart-line').getAttribute('data-series')).toContain('[10,30]')
   })
 
-  it('没有文档时给"去知识库"的出口，而不是一张空表', async () => {
+  it('没有文档时给一句实话，而不是一张空表（也没有"去知识库"那颗按钮了）', async () => {
     getDashboardMock.mockResolvedValue(
       dashboard({
         total_documents: 0,
@@ -297,10 +297,11 @@ describe('驾驶舱', () => {
 
     // 大数卡片的注解与空态标题是同一句话，两处都要在
     expect((await screen.findAllByText('还没有文档')).length).toBeGreaterThan(0)
-    expect(screen.getByRole('link', { name: '去知识库' })).toHaveAttribute(
-      'href',
-      '/knowledge-bases',
-    )
+    expect(screen.getByText(/在知识库管理台里建库并上传文档/)).toBeInTheDocument()
+    // 本界面里没有知识库那一族页面了（2026-10-08），所以不再指路——
+    // 一颗点了只会 404 的按钮比如实说一句糟
+    expect(screen.queryByRole('link', { name: '去知识库' })).toBeNull()
+    expect(screen.queryByRole('link', { name: '产品手册' })).toBeNull()
   })
 
   it('趋势 x 轴标签抽稀：27 个标签糊成一条，最多留 7 个', async () => {

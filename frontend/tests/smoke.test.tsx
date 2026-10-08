@@ -1,29 +1,47 @@
 /**
  * 应用壳的冒烟用例（P2 起升级成真用例：P0 那句占位断言已经被 ChatPage 替换掉了）。
  *
- * 钉住三件事：路由挂得上、登录守卫拦得住、全局容器（Toaster）在。
- * 守卫要的两件网络事（引导状态、会话恢复）都在 `@/api/auth` 这一层 mock 掉。
+ * 钉住三件事：路由挂得上、**本机后端门禁**的两条分支、全局容器（Toaster）在。
+ *
+ * 门禁的判据只有一处（`@/api/local.ts::localBackendPresent`），这一份里**直接摆结论**
+ * （`setLocalBackendForTest`），所以启动时不发任何探测请求——原先那两件"守卫要的网络事"
+ * （引导状态、会话恢复）随登录页一起下线了（本机档免登录，见 `app/App.tsx` 的文件头）。
  */
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '@/app/App'
 import { resetBackupStore } from '@/api/backup'
-import { SESSION_TOKEN_STORAGE_KEY, setSessionToken, useSessionStore } from '@/lib/session'
+import { resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
 
+/**
+ * 「能力」那一页**永远不落地**（`PAGES.capabilities` 换成一个永不 resolve 的 promise）。
+ *
+ * 只为「启动期的骨架」那一条：真实的懒加载只有 20–62ms，`render()` 返回时 chunk
+ * 早就到位了，那一帧根本读不到。**挑的正是这一份里唯一没人渲染的那一页**，
+ * 所以其余用例（壳、概览、对话页、备份页）一个字都不受影响。
+ */
+vi.mock('@/app/routes', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/app/routes')>()
+  return {
+    ...actual,
+    PAGES: { ...actual.PAGES, capabilities: () => new Promise(() => undefined) as never },
+  }
+})
+
+// 账号那一族**不再参与启动**（登录页已删、门禁不问账号）：这个替身留着只为
+// "哪个页面误触到它时也不发真请求"，不承载任何断言。
 vi.mock('@/api/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/auth')>()
   return {
     ...actual,
-    getAuthBootstrapStatus: vi.fn(async () => ({ needs_setup: false, auth_enabled: true })),
+    getAuthBootstrapStatus: vi.fn(async () => ({ needs_setup: false })),
     me: vi.fn(async () => ({
       id: 'u1',
       username: 'kkomia',
       name: '管理员',
       role: 'admin',
-      disabled: false,
-      avatar_url: null,
-      created_at: null,
+      avatar_url: '',
     })),
   }
 })
@@ -114,19 +132,20 @@ vi.mock('@/api/users', async (importOriginal) => {
 describe('应用壳', () => {
   beforeEach(() => {
     window.history.pushState({}, '', '/')
-    // 两头都要写：localStorage 那行走的是真实持久化路径，
-    // `setSessionToken` 让**已经加载过**的会话 store 跟上
-    // （store 在模块加载时读一次 localStorage，而测试是先 import 再 beforeEach）
-    window.localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, 'kylab_st_smoke')
-    setSessionToken('kylab_st_smoke')
+    resetLocalBackendForTest()
   })
 
-  it('带凭据时放行，并落在壳里（侧栏主导航在）', async () => {
+  // **门禁只认"有没有本机后端"**（2026-10-08）：本机档（边车在跑）直接进壳，
+  // 一个字都不问——不问登录、也不问远端账号体系。所以这一条里**一个凭据都没有**。
+  it('本机档：没有凭据也放行，不问登录', async () => {
+    setLocalBackendForTest('local')
     render(<App />)
 
-    await waitFor(() => {
-      expect(screen.getByRole('navigation', { name: '主导航' })).toBeInTheDocument()
-    })
+    // 落地页是概览（`/`）：标题跟着路由走，这一条不依赖那一页的 chunk
+    await waitFor(() => expect(document.title).toBe('概览 · KYLAB'))
+    // 地址没被改成登录页（登录页已经不存在了），也没有落到降级页上
+    expect(window.location.pathname).toBe('/')
+    expect(screen.queryByText('本机后端未启动')).toBeNull()
   })
 
   // 反向验证的**确定性守卫**：这一条要等整壳（懒加载的对话页 chunk + Provider 挂载链）才
@@ -163,17 +182,15 @@ describe('应用壳', () => {
     )
   })
 
-  it('没有凭据时把人送到登录页，并带上 redirect', async () => {
-    window.localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY)
-    setSessionToken('')
+  it('没有本机后端：换成一页「本机后端未启动」，不是登录页', async () => {
+    setLocalBackendForTest('absent')
+    window.history.pushState({}, '', '/')
 
     render(<App />)
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/login')
-    })
-    // 落地页是概览（`/`），所以 redirect 记的是它
-    expect(window.location.search).toContain('redirect=%2F')
+    expect(await screen.findByText('本机后端未启动')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
+    expect(screen.queryByRole('navigation', { name: '主导航' })).toBeNull()
   })
 
   /**
@@ -183,12 +200,16 @@ describe('应用壳', () => {
    * 这一条同时在验两件事：路由指向的是 `BackupRoute`+`BackupPage`（不是 404 页），
    * 以及"不是本机档"那一条分支说得清楚。本机档那一支（提供者连不上也放行）
    * 在 `tests/backup-gate.test.tsx` 里逐条钉着。
+   *
+   * 门禁那一道**先摆成"有本机后端"**：`/backup` 是壳里的一页，没有本机后端时
+   * 整壳都不渲染（门禁换成一页提示，见 `tests/local-backend-gate.test.tsx`）。
    */
   it('`/backup` 落在备份页（本机档专属那一页挂上了路由）', { timeout: 15_000 }, async () => {
     // **这一条只看路由挂没挂上**，与"这台机器上有没有边车在跑"无关：开发机上真有一套
     // 边车时（`.tmp/m5-evidence/` 那种真机物证），`/backup` 是"本机档"、页面会照常渲染，
-    // 那句"只有本机档才有"就不会出现——所以这里把模块状态清干净、`fetch` 换成一律失败，
-    // 让这一档稳定落在"浏览器档"上（跑起来不会因为旁边有没有边车而红）。
+    // 那句"只有本机档才有"就不会出现——所以这里把门禁与提供者状态都摆稳
+    // （跑起来不会因为旁边有没有边车而红）。
+    setLocalBackendForTest('local')
     resetBackupStore()
     vi.stubGlobal(
       'fetch',
@@ -209,32 +230,28 @@ describe('应用壳', () => {
   })
 })
 
-describe('启动期的骨架（D30，2026-09-28 走查）', () => {
-  it('启动期显示骨架，而不是一块白画布', async () => {
-    // 把"探身份"挂住不放行 → `AuthGate` 的 `ready` 停在 false，正是真实启动期那一段
-    // （走查实测 146–513ms 里 `bodyText` 是空的、也没有任何骨架）。
-    // **先清掉"已经探过身份"的缓存**：`ensureAuthStatus` 把结果存在 store 里，
-    // 前面的用例填过之后，这一条会直接拿到 ready=true、根本不经过启动期那一帧
-    // （症状就是"单跑绿、整文件跑红"）。
-    useSessionStore.setState({ authStatus: null })
-    const auth = await import('@/api/auth')
-    let release: ((value: { needs_setup: boolean; auth_enabled: boolean }) => void) | null = null
-    vi.mocked(auth.getAuthBootstrapStatus).mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          release = resolve
-        }) as never,
-    )
+/**
+ * 启动期那一帧（D30，2026-09-28 走查）。
+ *
+ * 走查那会儿这里是"探身份期间（146–513ms）的纯空白"，骨架是为那一段加的。
+ * 2026-10-08 起门禁**不再探身份**（本机档免登录，判据是同步的），所以那一段没有了——
+ * 骨架如今只剩一个用途：**路由懒加载那一段**的兜底，这一条钉的就是它。
+ *
+ * **首页那一页在这里被按成"永远不落地"**（见本文件顶部那个 `@/app/routes` 替身）：
+ * 真实的懒加载只有 20–62ms，`render()` 返回时 chunk 早就到位了（实测过，
+ * `getByTestId` 直接报 not found）——不挂住它，这一帧根本读不到。
+ */
+describe('启动期的骨架（D30）', () => {
+  it('懒加载那一帧显示骨架，而不是一块白画布', () => {
+    setLocalBackendForTest('local')
+    window.history.pushState({}, '', '/capabilities')
 
     render(<App />)
 
-    // 那段空白里现在有骨架（形状照着应用壳摆：侧栏一栏 + 内容块）
-    expect(await screen.findByTestId('app-boot-skeleton')).toBeInTheDocument()
-
-    // 放行之后骨架让位
-    await act(async () => {
-      release?.({ needs_setup: false, auth_enabled: true })
-    })
-    await waitFor(() => expect(screen.queryByTestId('app-boot-skeleton')).not.toBeInTheDocument())
+    // **同步读**（不能 await）：「能力」那一页在本文件里被按成永不落地，
+    // 所以 `Suspense` 的兜底就停在这一帧上。
+    const skeleton = screen.getByTestId('app-boot-skeleton')
+    // 形状照着应用壳摆（侧栏一栏 + 内容块），不是一块什么都没有的画布
+    expect(skeleton.querySelectorAll('span').length).toBeGreaterThan(3)
   })
 })

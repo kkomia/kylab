@@ -9,52 +9,21 @@
  * "用户从没管过"是同一件事——那窄屏默认就没法只在后者上生效（用户点开侧栏之后
  * 会被下一次渲染收回去）。键变成 `'1'` / `'0'` / 不存在三档之后才分得开。
  *
- * ## 后半段：知识库组的三态（M3 阶段 6）
- *
- * 「知识库」整组**只在提供者 `ready` 时渲染**（方案 §3.3），而「概览」「任务中心」
- * 已从这一组搬进主导航（决策点 D1）。三态各有一条用例：
- * `ready` 在 / `unavailable` 不在 / 还没探过也不在（按缺席），加上"服务器档不管它"
- * ——那一档知识库就是它自己，这一组一直在。
+ * 这一份只钉这几条纯判定（读偏好 / 点开关 / 快捷键两路），**不渲染组件**：
+ * 侧栏导航项的用例在 `tests/layout-shell.test.tsx`（那要整壳），
+ * 而原先这里后半段的"知识库组三态"随那一组一起删掉了（2026-10-08，
+ * 知识库界面搬去 kybase，见 `app/App.tsx` 的文件头）。
  */
 
-import { createElement } from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router'
-import { render, screen, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('@/api/conversations', () => ({
-  listConversations: vi.fn(async () => ({ items: [] })),
-  updateConversation: vi.fn(),
-  deleteConversation: vi.fn(),
-  getConversation: vi.fn(),
-  createConversation: vi.fn(),
-  rewindConversation: vi.fn(),
-}))
-
-vi.mock('@/api/workspaces', () => ({
-  listWorkspaces: vi.fn(async () => ({ items: [] })),
-  createWorkspace: vi.fn(),
-  updateWorkspace: vi.fn(),
-  deleteWorkspace: vi.fn(),
-  browseDirectories: vi.fn(),
-  createDirectory: vi.fn(),
-  renameDirectory: vi.fn(),
-}))
-
-import { resetProviderStore, setProviderStatusForTest, type ProviderStatus } from '@/api/provider'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
-import { SideNav } from '@/features/layout/SideNav'
-import { useConversationStore } from '@/features/layout/conversations'
 import {
   SIDEBAR_COLLAPSED_STORAGE_KEY,
   isSidebarCollapsed,
   toggleSidebar,
   useSidebarStore,
 } from '@/features/layout/useSidebar'
-import { useWorkspaceStore } from '@/features/layout/workspaces'
-import { useSessionStore } from '@/lib/session'
 
 /** 让 `matchMedia` 对这条 query 回一个固定答案（其余 query 一律 false）。 */
 function stubViewport(narrow: boolean, query = '(max-width: 760px)'): void {
@@ -112,117 +81,5 @@ describe('侧栏折叠：窄屏默认（D29）', () => {
     stubViewport(false)
     expect(toggleSidebarPreference()).toBe(true)
     expect(window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY)).toBe('1')
-  })
-})
-
-/* ------------------------------------------------------------ 知识库组的三态（M3 阶段 6） */
-
-function providerStatus(overrides: Partial<ProviderStatus> = {}): ProviderStatus {
-  return {
-    state: 'ready',
-    available: true,
-    reason: '',
-    checked_at: '2026-10-03T10:00:00Z',
-    base_url: 'http://nas:8000/api/v1',
-    credential: 'configured',
-    ...overrides,
-  }
-}
-
-/** 渲染一个真的侧栏（它要 Router 与 react-query：预热会话正文那一步用得上）。 */
-function renderNav() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    createElement(
-      QueryClientProvider,
-      { client },
-      createElement(
-        MemoryRouter,
-        { initialEntries: ['/notes'] },
-        createElement(SideNav, { onOpenHistory: () => undefined }),
-      ),
-    ),
-  )
-}
-
-describe('知识库组：无条件渲染，固定三条子项（R5 拍板，回到推送前的结构）', () => {
-  beforeEach(() => {
-    window.localStorage.clear()
-    useSidebarStore.setState({ collapsed: false })
-    useConversationStore.getState().reset()
-    useWorkspaceStore.getState().reset()
-    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
-    resetProviderStore()
-    // 这一档是**本机档**（桌面壳），而网络那一层不参与：结论由用例直接摆
-    //（`fetch` 挂一个永不回答的替身，免得那一次探测真打出去）
-    vi.stubGlobal('__TAURI__', {
-      core: { invoke: vi.fn(async () => ({ port: 8766, base: 'http://127.0.0.1:8766' })) },
-    })
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => new Promise(() => {})),
-    )
-  })
-
-  it('`ready`：组里是**三条**子项，顺序照旧（所有知识库 / 概览 / 任务中心）', async () => {
-    const user = userEvent.setup()
-    setProviderStatusForTest(providerStatus())
-
-    renderNav()
-
-    const group = await screen.findByRole('button', { name: '知识库' })
-    // 默认收起：三条子项一条都不在
-    expect(screen.queryByRole('link', { name: '所有知识库' })).not.toBeInTheDocument()
-    await user.click(group)
-
-    const nav = screen.getByRole('navigation', { name: '主导航' })
-    const links = within(nav)
-      .getAllByRole('link')
-      .filter((link) => ['所有知识库', '概览', '任务中心'].includes(link.textContent ?? ''))
-    expect(links.map((link) => link.textContent)).toEqual(['所有知识库', '概览', '任务中心'])
-    expect(within(nav).getByRole('link', { name: '所有知识库' })).toHaveAttribute(
-      'href',
-      '/knowledge-bases',
-    )
-    expect(within(nav).getByRole('link', { name: '概览' })).toHaveAttribute('href', '/')
-    expect(within(nav).getByRole('link', { name: '任务中心' })).toHaveAttribute('href', '/tasks')
-  })
-
-  it('`unavailable`：组**照旧在**（R5：整组不再按提供者状态显隐）', async () => {
-    setProviderStatusForTest(
-      providerStatus({ state: 'unavailable', available: false, reason: '连不上这台 NAS' }),
-    )
-
-    renderNav()
-
-    // 连不上的处置在页面自己身上（`ProviderRoute` 那道守卫），导航里这一项不再消失
-    expect(await screen.findByTestId('nav-knowledge-group')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '知识库' })).toBeInTheDocument()
-  })
-
-  it('`unconfigured`：同样在（下一步是"去设置里填地址"，那条路要走导航/设置，不该连门都没有）', async () => {
-    setProviderStatusForTest(
-      providerStatus({ state: 'unconfigured', available: false, reason: '还没接提供者' }),
-    )
-
-    renderNav()
-
-    expect(await screen.findByTestId('nav-knowledge-group')).toBeInTheDocument()
-  })
-
-  it('**还没探过**：也在（不再"按缺席渲染"——R5 起它不参与显隐判定）', async () => {
-    // 模块初始态就是"还没探过"：结论一个都没有
-    renderNav()
-
-    expect(await screen.findByTestId('nav-knowledge-group')).toBeInTheDocument()
-  })
-
-  it('服务器档（这一档没有 /local/provider）：这一组**一直在**（知识库就是它自己）', async () => {
-    setProviderStatusForTest(null, { unsupported: true })
-
-    renderNav()
-
-    const nav = await screen.findByRole('navigation', { name: '主导航' })
-    expect(within(nav).getByText('知识库')).toBeInTheDocument()
   })
 })

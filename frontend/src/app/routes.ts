@@ -7,21 +7,18 @@
  * - `PAGES['notes']` 这类**函数**给 `React.lazy` 用（同一个函数引用，React 才会复用同一个 chunk）；
  * - `preloadPage(name)` 给预热用（内部吞掉失败——预热失败不该影响任何交互，真正点进去时
  *   该报的错照旧由那一页自己报）。
+ *
+ * 2026-10-08：知识库那四页（列表 / 库详情 / Wiki / 文档详情）与登录页一并删掉
+ * （知识库管理台搬去 kybase、本机档免登录，见 `app/App.tsx` 文件头）——这里是**页面
+ * 清单的唯一来源**，路由表与侧栏预热都从这里取，删一处就够了。
  */
 export const PAGES = {
   // 对话页：**必须懒加载**——它带着 assistant-ui + katex + highlight.js，
   // 静态 import 会把整包打进主 chunk（实测：主 chunk 1423.9 kB、首屏合计 ~1.6 MB）。
   // 旧前端也是懒加载的（`ChatView` 走 `() => import(...)`）。
   chat: () => import('@/features/chat/ChatPage').then((m) => ({ default: m.ChatPage })),
-  login: () => import('@/features/misc/auth/LoginPage').then((m) => ({ default: m.LoginPage })),
   dashboard: () =>
     import('@/features/misc/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })),
-  knowledgeBases: () =>
-    import('@/features/knowledge').then((m) => ({ default: m.KnowledgeBasesView })),
-  knowledgeBase: () =>
-    import('@/features/knowledge').then((m) => ({ default: m.KnowledgeBaseView })),
-  wiki: () => import('@/features/knowledge').then((m) => ({ default: m.WikiView })),
-  document: () => import('@/features/knowledge').then((m) => ({ default: m.DocumentView })),
   notes: () => import('@/features/notes/NotesView').then((m) => ({ default: m.NotesView })),
   // 备份（M5 阶段 7）：**本机档专属**的一页，路由外面还包一层 `BackupRoute`
   // （那一层只判"这一档有没有本机后端"，不判提供者连没连上）。

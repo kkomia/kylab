@@ -25,7 +25,7 @@ export function NotFoundPage() {
     <div className="flex min-h-full flex-col items-center justify-center gap-6 px-[var(--page-gutter)] py-[var(--space-12)] text-center">
       <div className="flex flex-col items-center gap-3">
         <h1 className="m-page-title">页面不存在</h1>
-        <p className="m-empty-hint">链接可能已失效，或者知识库/文档已经被删除。</p>
+        <p className="m-empty-hint">链接可能已失效。</p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
         {/* 主按钮样式的链接：`Button asChild` 把类名给到 `<a>` 本身，
