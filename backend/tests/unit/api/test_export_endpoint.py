@@ -1,4 +1,4 @@
-"""导出端点的契约（M2 §6.3 第三条，`@pytest.mark.local`）。
+"""导出端点的契约（M2 §6.3 第三条，本机档）。
 
 `GET /api/v1/conversations/export` 是本机导入器**唯一**的源端入口，所以它的形状
 （首行 / 末行 / 流式 / 归属）就是那份契约本身。这条用例钉住四件事：
@@ -40,8 +40,6 @@ from app.storage.base import (
     SessionEventRecord,
     UserRecord,
 )
-
-pytestmark = pytest.mark.local
 
 T0 = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
 

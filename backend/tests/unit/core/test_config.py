@@ -5,11 +5,8 @@
 这些用例全是"读一遍配置对象"，不建库、不碰磁盘——配置错了要在构造那一刻就报出来。
 """
 
-import pytest
 
 from app.core.config import API_VERSION, Settings, get_settings
-
-pytestmark = pytest.mark.local
 
 
 def test_api_version_is_v1() -> None:

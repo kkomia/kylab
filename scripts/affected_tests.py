@@ -650,7 +650,7 @@ def default_workers() -> int:
     ``-n 8``    166s       4.5x（全绿，零失败）
     ==========  =========  ========
 
-    瓶颈是**共用的 NAS PostgreSQL**（xdist 每个 worker 建一个自己的临时库，
+    瓶颈是**共用的临时目录**（xdist 每个 worker 各建自己的库，
     见 ``conftest.py`` 的会话级 ``pg_database``）：连接、清库、DDL 全压在同一台库上。
     所以并行度不是越高越好——一半的核在跑应用代码，另一半在等库往返。
     ``-n auto``（=16）会把 16 份连接与 16 个临时库压上去，收益未必更高、风险更大，
@@ -715,9 +715,6 @@ def execute(decision: dict, *, parallel: bool, extra: list[str], dry_run: bool) 
 
     backend_info = decision["backend"]
     if backend_info["force_all"] or backend_info["targets"]:
-        if not os.environ.get("KYLAB_TEST_DATABASE_URL"):
-            print("!! 未设置 KYLAB_TEST_DATABASE_URL：需要 PostgreSQL 的用例会整体跳过，")
-            print("   门禁会变成'绿得没有意义'。用 scripts/test-changed.sh 跑（它会从 .env 借）。")
         argv = pytest_argv(decision, extra, parallel=parallel)
         print(f"==> {' '.join(argv[:6])} …")
         sys.stdout.flush()

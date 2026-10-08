@@ -31,10 +31,9 @@ jobs:
         with:
           enable-cache: true
 
-      # **必须带 `--all-extras`**：`app/core/storage.py` 会无条件构造 DuckDB 表格副本，
-      # 少了 `tabular` 这个 extra，`import app.main` 直接 ModuleNotFoundError，
-      # 测试在收集阶段就整体失败（实测 11s 红）。parsers/mcp 虽然是在函数内惰性导入、
-      # 对应测试也写了 `importorskip`，但 CI 的职责是跑全量，不该让它们默认被跳过。
+      # **带 `--all-extras`**：解析器与导出链（docx / xlsx / pptx / pdf / 图表）
+      # 都在 extras 里，而 CI 的职责是跑全量，不该让它们默认被跳过。
+      # 不需要任何外部服务：存储只有本机一套（SQLite + 数据目录），用例自带临时目录。
       - name: 安装依赖
         working-directory: backend
         run: uv sync --all-extras

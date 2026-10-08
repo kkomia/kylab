@@ -40,8 +40,6 @@ from app.services.credentials import MIGRATED_SETTING_KEYS, CredentialsService
 from app.services.secrets import InMemorySecretStore, NullSecretStore, setting_target
 from app.storage.base import MCPServerRecord, ModelProviderRecord, StoreBundle
 
-pytestmark = pytest.mark.local
-
 SEARCH_KEY = "web.search_api_key"
 SEARCH_SENTINEL = "tavily_SENTINEL_phase6_9f2c"
 MODEL_SENTINELS = {

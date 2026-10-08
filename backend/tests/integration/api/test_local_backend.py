@@ -1,4 +1,4 @@
-"""**断 NAS 时的对话全流程**（M2 §6.1 的验收用例，`@pytest.mark.local`）。
+"""**断 NAS 时的对话全流程**（M2 §6.1 的验收用例，本机档）。
 
 这条用例要回答的是 M2 的核心那句话："**断 NAS 的时候，对话还跑得完吗**"，而且
 **不需要 PostgreSQL**（`local` 这个 marker 的全部意义，见 `conftest.py` 里那段说明）。
@@ -41,8 +41,6 @@ from app.services.knowledge_provider import KnowledgeProviderClient
 from app.services.llm import LLMReply
 from app.services.remote_clients import RemoteKnowledgeClient, RemoteUnavailableError
 from tests.conftest import FakeChatModel, search_tool_call
-
-pytestmark = pytest.mark.local
 
 #: 这一轮的模型剧本：先查资料（NAS 断着，这一步会失败），再作答。
 #: 第二步带一段 `reasoning` —— 会话详情里"思考也在"就是靠它验的 ✓。

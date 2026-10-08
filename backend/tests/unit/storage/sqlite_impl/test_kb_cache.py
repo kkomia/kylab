@@ -49,8 +49,6 @@ from app.storage.sqlite_impl.schema import (
 )
 from app.storage.sqlite_impl.validate import main as validate_main
 
-pytestmark = pytest.mark.local
-
 #: 一台"家里的 NAS"（归一化后的 base_url）。另一台见 ``OFFICE``。
 HOME = "https://nas-home.local/kylab/api/v1"
 OFFICE = "https://nas-office.local/kylab/api/v1"

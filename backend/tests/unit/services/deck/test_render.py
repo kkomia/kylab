@@ -38,8 +38,6 @@ from app.services.deck import (
 )
 from app.services.deck import render as render_module
 
-pytestmark = pytest.mark.local
-
 #: 缺 Node 时的 skip 说明。**必须写清"什么没被验证"**，而不只是"没有 node"。
 _NO_NODE = (
     "本机没有 Node.js：端到端渲染没跑（`scripts/deck/render.mjs` 是 Node 脚本）。"

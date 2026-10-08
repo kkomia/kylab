@@ -31,19 +31,15 @@ PROTOCOL_FORBIDDEN = ("app.storage", "app.parsers", "app.workers")
 PROTOCOL_MSG = "协议适配层只能转发 services/，禁止直接依赖存储/解析器/队列"
 
 # L2：业务层不得直接使用数据库驱动，也不得依赖具体存储实现。
-# **只允许 `app.storage.base`**（抽象契约）：具体实现（postgres_impl / s3_impl / local_impl / duckdb_impl）
-# 只被组合根装配。写成"允许清单"而不是"禁止前缀"是有意的——原来的禁止清单漏了
-# `app.storage.duckdb_impl`，也漏了 `from app.storage import postgres_impl`（目标是
-# 包名 `app.storage`，任何前缀规则都不命中），等于留了口子。
+# **只允许 `app.storage.base`**（抽象契约）：具体实现（sqlite_impl / local_impl /
+# split_impl）只被组合根装配。写成"允许清单"而不是"禁止前缀"是有意的——
+# 禁止清单那种写法漏过具体实现（`from app.storage import xxx_impl` 这类目标的包名是
+# `app.storage`，任何前缀规则都不命中），等于留了口子。
 SERVICE_LAYER = "app.services"
 SERVICE_FORBIDDEN_MODULES = (
     "sqlite3",
     "sqlite_vec",
-    "duckdb",
     "sqlalchemy",
-    # v0.12 起存储转向 PostgreSQL：psycopg 与 sqlite3 同级，业务层同样不得直连
-    "psycopg",
-    "psycopg_pool",
 )
 SERVICE_STORAGE_ALLOWED = "app.storage.base"
 SERVICE_MSG = "业务层禁止直连数据库，存储访问必须经 storage/base.py 的 Repository 接口"
@@ -98,7 +94,7 @@ APP_ROOT_MSG = (
 # A1：协议层的 `async def` 端点**必须真的 await 点什么**。
 #
 # 起因是一次实测：38 个端点里有 33 个是 `async def` 但内部一行 await 都没有，
-# 它们调的是同步的 psycopg / httpx。这会把这些阻塞调用**全部按在事件循环线程上**，
+# 它们调的是同步的库调用 / httpx。这会把这些阻塞调用**全部按在事件循环线程上**，
 # 于是"并发"完全不成立——实测不碰库的 /health 在并发 20 下，中位延迟从 4.7ms
 # 涨到 140ms（整个循环在等别人的同步 IO）。
 #
@@ -626,7 +622,7 @@ U2_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # "这是给用户看的性能口径"即可——留了出口，所以不必提前松口。
     (
         "运行时语汇",
-        re.compile(r"WinError|Traceback|httpx|psycopg|debounce|幂等|缓存"),
+        re.compile(r"WinError|Traceback|httpx|debounce|幂等|缓存"),
     ),
     # 版本串：屏幕上不该出现后端/前端版本号（`v0.1.1`）。它与 `V1` 不冲突：
     # V1 查的是**配置文件里手写的版本号必须一致**（pyproject / package.json / compose），

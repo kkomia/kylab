@@ -42,8 +42,6 @@ from app.services.deck.theme_tokens import (
     ThemeTokens,
 )
 
-pytestmark = pytest.mark.local
-
 ALL_ARCHETYPES = (Archetype.COVER, Archetype.SECTION, Archetype.BULLETS)
 
 

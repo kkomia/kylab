@@ -1,4 +1,4 @@
-"""旧会话导入与回滚（M2 §6.3 的验收用例，`@pytest.mark.local`）。
+"""旧会话导入与回滚（M2 §6.3 的验收用例，本机档）。
 
 这条用例要证明的是方案 §3.1 那三句话**逐条成立**，而且**不需要 PostgreSQL**
 （`local` 这个 marker 的意义，见 `conftest.py`）：
@@ -54,8 +54,6 @@ from app.storage.base import (
     WorkspaceRecord,
 )
 from app.storage.sqlite_impl.connection import Database
-
-pytestmark = pytest.mark.local
 
 NAS = "http://nas.test/api/v1"
 T0 = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)

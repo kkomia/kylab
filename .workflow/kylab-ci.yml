@@ -11,6 +11,9 @@
 # 若某一步失败，先看"执行器里有没有那个工具"，而不是怀疑门禁内容——
 # 门禁内容在本地是绿的（`scripts/ci.ps1` 退出码 0，2026-09-11，876+93 测试）。
 #
+# 不需要任何外部服务（没有数据库容器、没有对象存储）：存储只有本机一套
+# （SQLite + 数据目录），用例自带临时目录。
+#
 # 依赖的三个工具及其安装方式（写在这里免得下次再猜）：
 #   node    执行器自带（build@nodejs 指定版本）
 #   pnpm    `npm install -g pnpm@11`——**不用 corepack enable**：
@@ -60,8 +63,8 @@ stages:
           - uv --version
           - ''
           - '# ---- 后端依赖（ruff 与 pytest 都在这里）----'
-          - '# --all-extras 不能省：storage 组合根无条件构造 DuckDB 表格副本，'
-          - '# 少 tabular 这个 extra 时 import app.main 直接失败、收集阶段整体红'
+          - '# --all-extras：解析器与导出链（docx / xlsx / pptx / pdf / 图表）都在 extras 里，'
+          - '# 门禁的职责是跑全量，不该让它们默认被跳过'
           - cd backend && uv sync --all-extras && cd ..
           - ''
           - '# ---- 前端依赖 ----'

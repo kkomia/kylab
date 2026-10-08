@@ -27,8 +27,6 @@ from fastapi.testclient import TestClient
 
 from app.core.http import shared_client
 
-pytestmark = pytest.mark.local
-
 PAGE = "https://news.example.com/a"
 PAGE_ENDPOINT = "/api/v1/web/page"
 EMBED_ENDPOINT = "/api/v1/web/embed-check"

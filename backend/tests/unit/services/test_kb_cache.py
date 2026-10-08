@@ -70,8 +70,6 @@ from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 from app.storage.sqlite_impl.schema import prepare
 
-pytestmark = pytest.mark.local
-
 #: 一台「家里的 NAS」与一台「单位的 NAS」：**同一个库 id**，名字不同（R2 的判据）。
 HOME = "http://nas-home.test/api/v1"
 OFFICE = "http://nas-office.test/api/v1"

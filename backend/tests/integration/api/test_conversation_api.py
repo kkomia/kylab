@@ -24,8 +24,6 @@ from fastapi.testclient import TestClient
 
 from app.core.services import get_services
 
-pytestmark = pytest.mark.local
-
 #: 会话的库范围：一个**占位 id**。
 #:
 #: 本机档**没有知识库**（KB 在 NAS 上，`/knowledge-bases` 不挂本机档），而 `kb_ids`

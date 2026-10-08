@@ -36,8 +36,6 @@ from app.storage.sqlite_impl.schema import (
     prepare,
 )
 
-pytestmark = pytest.mark.local
-
 #: 本机库里应该有哪 19 张表（§1.3 逐行列出的那份清单 + M4 的快照表 + M5 的队列表）。
 #: **注意**：实施方案的标题写"18 张"，但那份清单逐行数是 17 张；这里按**清单**守，
 #: 于是"哪天真的少了一张或多了一张"会立刻红，而不是被一个错误的数字掩盖。

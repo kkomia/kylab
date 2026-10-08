@@ -44,8 +44,6 @@ from app.services.secrets import (
     use_keychain,
 )
 
-pytestmark = pytest.mark.local
-
 WINDOWS = os.name == "nt"
 requires_windows = pytest.mark.skipif(not WINDOWS, reason="Windows 凭据管理器只在 Windows 上")
 requires_no_windows = pytest.mark.skipif(WINDOWS, reason="这一条说的是别的平台上没有凭据管理器")

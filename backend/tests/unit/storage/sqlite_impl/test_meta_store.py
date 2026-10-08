@@ -78,8 +78,6 @@ from app.storage.sqlite_impl.meta_store import (
 )
 from app.storage.sqlite_impl.schema import prepare
 
-pytestmark = pytest.mark.local
-
 #: 记录里的时间字段：它们在表上叫 `<名字>_ms`。
 #:
 #: ``fetched_at`` / ``checked_at`` 是 M4 那对**不许混**的时间戳（快照：这份内容什么时候

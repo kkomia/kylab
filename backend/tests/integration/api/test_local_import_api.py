@@ -1,4 +1,4 @@
-"""导入端点（`/local/import*`）的整条链（M2 §6.3，`@pytest.mark.local`）。
+"""导入端点（`/local/import*`）的整条链（M2 §6.3，本机档）。
 
 这条用例要回答的是"**界面点了那个按钮会发生什么**"：本机后端（真的 app）+
 假 NAS（``httpx.MockTransport``，绝不打真网络）+ 真的本机库（SQLite，落在 ``tmp_path``）。
@@ -36,8 +36,6 @@ from app.storage.base import (
     ConversationTransfer,
     SessionEventRecord,
 )
-
-pytestmark = pytest.mark.local
 
 NAS = "http://nas.test/api/v1"
 T0 = datetime(2026, 9, 25, 9, 0, tzinfo=UTC)

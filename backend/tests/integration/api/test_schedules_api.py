@@ -33,8 +33,6 @@ from fastapi.testclient import TestClient
 
 from app.core.services import get_services
 
-pytestmark = pytest.mark.local
-
 
 @pytest.fixture
 def client(local_client: TestClient) -> TestClient:

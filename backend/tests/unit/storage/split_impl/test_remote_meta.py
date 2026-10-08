@@ -33,8 +33,6 @@ from app.storage.base import KnowledgeBaseRecord, KnowledgeBaseUnavailable
 from app.storage.split_impl import RemoteMetaStore, RouterMetaStore, UnavailableMetaStore
 from app.storage.split_impl import remote_meta as remote_meta_module
 
-pytestmark = pytest.mark.local
-
 BASE = "http://nas.test/api/v1"
 TOKEN = "kylab_sk_not_a_real_key_but_from_the_shell"
 

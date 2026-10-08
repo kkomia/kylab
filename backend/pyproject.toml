@@ -1,7 +1,7 @@
 [project]
 name = "kylab-backend"
 version = "0.1.1"
-description = "KYLAB 知识库后端服务：FastAPI + MCP Server（架构设计 v0.2 §2.1）"
+description = "KYLAB 桌面端本机后端（FastAPI 边车）：会话、笔记、记忆、模型凭据都落这一台机器"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,20 +12,10 @@ dependencies = [
     "httpx>=0.27",
     # FastAPI 的文件上传（multipart/form-data）依赖它，属于核心能力
     "python-multipart>=0.0.9",
-    # 存储与检索是核心能力（M1 起），不再放进 extras。
-    # `sqlite-vec` 已于 v0.12 随 SQLite 一起删除，别再加回来：向量走 pgvector（HNSW）。
+    # 中文分词：本机库的全文检索与展示用它（app/storage/text.py）。
     "jieba>=0.42",
-    # 目标存储：PostgreSQL。psycopg3 同时支持同步/异步，这里用同步以保持
-    # storage 层接口不变（详见 storage/postgres_impl/connection.py 的说明）；
-    # binary 版免去本地编译。pgvector 的 Python 类型适配待向量层落地时再加。
-    "psycopg[binary]>=3.2",
-    "psycopg-pool>=3.2",
-    # 对象存储（原件 / Markdown 产物 / 图片）。放基础依赖而不是 extra：
-    # Dockerfile 虽然 --all-extras，但漏装 extra 的后果是"第一次上传才炸"，
-    # 而不是启动时炸——这类失败不该赌。
-    "boto3>=1.35",
-    # 口令慢哈希（多用户登录）。SHA-256 不得用于口令（core/security.py 的约定），
-    # 口令熵低、必须抗离线爆破；选 argon2 而不是 bcrypt：后者有 72 字节截断的坑
+    # 口令/令牌的慢哈希（core/security.py）。SHA-256 不得用于凭据；选 argon2 而不是
+    # bcrypt：后者有 72 字节截断的坑。本机没有账号体系，但下载签名与令牌哈希仍用它。
     "argon2-cffi>=23.1",
     # 负载面板要读**本机** CPU / 内存（services/system_load.py）。
     # 不用 /proc 自己解析：那只在 Linux 上成立，而这个项目要在 Windows 上开发。
@@ -40,14 +30,9 @@ dependencies = [
 
 # 按里程碑分层引入的重依赖
 [project.optional-dependencies]
-# 表格结构化副本（架构 §5.2，MVP 缓做，仅先保留写入路径）
-tabular = [
-    "duckdb>=1.1",
-]
-# 解析插件层（M2 起启用）
+# 解析插件层
 parsers = [
     "pypdf>=5.1",
-    "pymupdf>=1.24",
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "pandas>=2.2",
@@ -153,7 +138,6 @@ addopts = "-ra --strict-markers"
 markers = [
     "cloud: 需要真实云端解析/embedding API（默认跳过，避免消耗免费额度）",
     "bench: 性能与容量基准（手动触发，发布前执行）",
-    "local: 只依赖本机 SQLite 与文件系统，不需要 PostgreSQL",
 ]
 
 # ---------------------------------------------------------------- coverage

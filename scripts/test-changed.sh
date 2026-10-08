@@ -19,12 +19,10 @@
 #   sh scripts/test-changed.sh --all                # 强制全量
 #   sh scripts/test-changed.sh --extra "-x -vv"     # 透传给 pytest/vitest
 #
-# 没设 KYLAB_TEST_DATABASE_URL 时**从 backend/.env 借**（与 test-backend.sh 同一口径：
-# 夹具只把它当维护连接，建一个 kylab_test_<随机> 临时库、跑完即删，那个库本身不会被写）。
+# 不需要任何外部服务：存储只有本机一套（SQLite + 数据目录），用例自带临时目录。
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-ENV_FILE="$ROOT/backend/.env"
 
 VENV_PY="$ROOT/backend/.venv/Scripts/python.exe"
 [ -x "$VENV_PY" ] || VENV_PY="$ROOT/backend/.venv/bin/python"
@@ -32,17 +30,6 @@ if [ ! -x "$VENV_PY" ]; then
     echo "找不到 venv 解释器：$VENV_PY" >&2
     echo "先建虚拟环境并装依赖（见 backend/README.md）" >&2
     exit 2
-fi
-
-if [ -z "${KYLAB_TEST_DATABASE_URL:-}" ] && [ -f "$ENV_FILE" ]; then
-    DSN=$(sed -n 's/^KYLAB_DATABASE_URL=//p' "$ENV_FILE" 2>/dev/null | head -n 1)
-    if [ -n "$DSN" ]; then
-        KYLAB_TEST_DATABASE_URL="$DSN"
-        export KYLAB_TEST_DATABASE_URL
-        # 只露主机名与库名：口令留在变量里（与 test-backend.sh 同）
-        SAFE=$(printf '%s' "$DSN" | sed -e 's|^[^:]*://[^@]*@||')
-        echo "==> 借 backend/.env 里的库作维护连接：$SAFE"
-    fi
 fi
 
 # 只想看判定结果（--list / --json / --dry-run）时不要顺手跑起来。

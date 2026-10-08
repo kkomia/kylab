@@ -48,8 +48,6 @@ from app.services.knowledge_provider import (
     KnowledgeProviderClient,
 )
 
-pytestmark = pytest.mark.local
-
 NAS = "http://nas.test/api/v1"
 OTHER = "http://other-nas.test/api/v1"
 TOKEN = "kylab_sk_not_a_real_key_but_must_not_leak"

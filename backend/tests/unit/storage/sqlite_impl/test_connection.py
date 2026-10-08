@@ -25,8 +25,6 @@ from app.storage.sqlite_impl.connection import (
 )
 from app.storage.sqlite_impl.schema import prepare
 
-pytestmark = pytest.mark.local
-
 
 @pytest.fixture
 def database(tmp_path: Path) -> Iterator[Database]:

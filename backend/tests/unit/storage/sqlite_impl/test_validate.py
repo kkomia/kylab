@@ -19,8 +19,6 @@ from app.storage.sqlite_impl import validate as validate_module
 from app.storage.sqlite_impl.schema import SCHEMA_VERSION
 from app.storage.sqlite_impl.validate import DB_FILENAME, main
 
-pytestmark = pytest.mark.local
-
 
 def test_fresh_directory_passes_and_builds_the_library(tmp_path: Path, capsys) -> None:
     data_dir = tmp_path / "data"

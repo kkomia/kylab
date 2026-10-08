@@ -42,8 +42,6 @@ from app.services.model_client import ModelClient
 from app.services.remote_clients import RemoteUnavailableError
 from app.services.tool_loop import ToolLoop, ToolOutcome
 
-pytestmark = pytest.mark.local
-
 #: 边车钉档会改的环境变量，由 `conftest.py` 的兜底夹具登记好（用例之间不会互相污染）；
 #: 这一份只是给读者一个索引，别在这里再 `monkeypatch.setenv` 一遍。
 _PINNED_ENV = ("KYLAB_DEPLOYMENT", "KYLAB_DATABASE_URL", "KYLAB_DATA_DIR", "KYLAB_SERVER_URL")

@@ -47,8 +47,6 @@ from app.storage.sqlite_impl.backup_archive import (
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.schema import SCHEMA_VERSION, prepare
 
-pytestmark = pytest.mark.local
-
 #: 三类明文凭据各用一个**互不相同**的哨兵串：grep 判据要能指认是谁漏的。
 MODEL_SENTINEL = "kylab_sk_SENTINELmodel7f3a91bc"
 MCP_SENTINEL = "mcp_SENTINELtoken91bc7de2"

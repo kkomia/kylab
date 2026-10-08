@@ -80,73 +80,21 @@ DOMAIN_LABELS = {KB: "KB 域", AGENT: "Agent 域", SHARED: "共享底座", MIXED
 #: 方案 §3.1「KB 带走」+ 老板口径的账号体系。
 KB_MODULES: tuple[str, ...] = (
     # api（15 个）
-    "app.api.v1.knowledge_bases",
-    "app.api.v1.documents",
-    "app.api.v1.folders",
-    "app.api.v1.search",
-    "app.api.v1.chunks",
-    "app.api.v1.wiki",
-    "app.api.v1.tabular",
-    "app.api.v1.data_sources",
-    "app.api.v1.shares",
-    "app.api.v1.tasks",
-    "app.api.v1.lifecycle",
-    "app.api.v1.webhooks",
-    "app.api.v1.maintenance",
-    "app.api.v1.stats",
-    "app.api.v1.provider",
     # services
-    "app.services.knowledge_base",
-    "app.services.documents",
-    "app.services.folder",
-    "app.services.chunk",
     "app.services.chunking",
-    "app.services.batch",
-    "app.services.ingest",
-    "app.services.parser_router",
-    "app.services.splitting",
-    "app.services.retrieval",
     "app.services.embedding",
-    "app.services.summary",
-    "app.services.timeline",
-    "app.services.wiki",
-    "app.services.suggested_questions",
-    "app.services.kb_prompt",
-    "app.services.tabular",
-    "app.services.tabular_sql",
     "app.services.office",
-    "app.services.sources",
-    "app.services.connectors",
-    "app.services.retrieval_eval",
-    "app.services.lifecycle",
-    "app.services.maintenance",
-    "app.services.share",
-    "app.services.stats",
-    "app.services.webhook",
-    "app.services.observability",
     # 账号体系（2026-10-08 口径）：库分享、库范围钥匙、管理员都是 KB 语义的资产
-    "app.api.v1.auth",
-    "app.api.v1.users",
-    "app.api.v1.api_keys",
-    "app.api.v1.avatars",
-    "app.services.auth",
-    "app.services.users",
     "app.services.api_key",
-    "app.services.avatars",
     # 插件层与摄入状态机、KB 侧存储、摄入消费者、对外 MCP 面
     "app.parsers",
     "app.pipeline.state_machine",
-    "app.storage.postgres_impl",
-    "app.storage.duckdb_impl",
-    "app.workers.queue_worker",
-    "app.mcp_server",
 )
 
 #: 方案 §3.1「Agent 留下」+ 老板口径补齐的那几件。
 AGENT_MODULES: tuple[str, ...] = (
     # api
     "app.api.v1.conversations",
-    "app.api.v1.chat",
     "app.api.v1.notes",
     "app.api.v1.memory",
     "app.api.v1.skills",
@@ -158,7 +106,10 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.api.v1.web",
     "app.api.v1.site_icons",
     "app.api.v1.local",
-    "app.api.v1.backup",
+    # 对话侧四条只读端点（事件日志 / 上下文用量 / 命令目录 / 用量面板）：它们读的是
+    # **本机库**里的东西，原先是 chat.py / stats.py 的薄重声明，那两个模块随服务器档
+    # 一起拆掉之后，它们搬来这里成了真实现（见那个模块的模块头）。
+    "app.api.v1.local_chat",
     # 2026-10-08 主代理拍板：设置面是 agent 产品设置页的 API 面（读共享底座的
     # `runtime_config` 合法），归 Agent 域。
     "app.api.v1.settings",
@@ -188,7 +139,6 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.services.cron",
     "app.services.conversation*",
     "app.services.session_events",
-    "app.services.live_turns",
     "app.services.resume",
     "app.services.modes",
     "app.services.prompt",
@@ -204,6 +154,10 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.services.site_icons",
     "app.services.web",
     "app.services.legacy_import",
+    # 可选重排（用户自配一个 OpenAI 兼容端点）。原先住在 services/retrieval/，
+    # 那个包是服务器档的进程内检索链路、已整体删掉；重排这块留下是因为
+    # 设置页（`rerank_enabled`）与模型注册器的「测试连接」还要读它。
+    "app.services.rerank",
     # 备份（§5.3：备份的是本机数据，`BackupProvider` 本来就是与 KB 平行的第二个提供者）
     "app.services.backup_*",
     # `split_impl/` 改归 Agent：方案 §3.1 自己说它"历史使命结束，可留 Agent 侧做降级实现"，
@@ -228,7 +182,6 @@ SHARED_MODULES: tuple[str, ...] = (
     "app.services.model_registry",
     "app.services.model_client",
     "app.api.v1.model_registry",
-    "app.api.v1.model_proxy",
     "app.services.provider_presets",
     "app.services.runtime_config",
     "app.services.credentials",
@@ -237,16 +190,13 @@ SHARED_MODULES: tuple[str, ...] = (
     # 剥离后两侧各留一份——理由见 `CLAIM_NOTES`。
     "app.api.auth",
     "app.services.usage",
-    "app.services.idempotency",
     "app.services.system_load",
     "app.storage.base",
-    "app.storage.s3_impl",
     "app.storage.local_impl",
     "app.storage.repositories",
     "app.storage.text",
     # 两档都要用、阶段 1 才分家的那几个入口与出面
     "app.api.v1.health",
-    "app.api.v1.frontend",
     "app.api.v1.router",
     "app.main",
 )

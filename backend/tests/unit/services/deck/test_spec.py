@@ -35,8 +35,6 @@ from app.services.deck.spec import (
     load_deck_spec,
 )
 
-pytestmark = pytest.mark.local
-
 LEGAL_SPEC: dict = {
     "title": "2026 年 Q1 经营复盘",
     "author": "经营分析组",

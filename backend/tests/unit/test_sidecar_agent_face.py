@@ -30,8 +30,6 @@ from .test_sidecar import (
     _ToolCallingModel,
 )
 
-pytestmark = pytest.mark.local
-
 
 def _skill_dir(tmp_path, name: str = "local-demo") -> Any:
     """在本机数据目录里放一个**真的技能**（`<数据目录>/skills/<name>/SKILL.md` ✓）。

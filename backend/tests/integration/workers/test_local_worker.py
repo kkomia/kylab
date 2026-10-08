@@ -12,7 +12,7 @@
 4. **两个入口都装得上**（`bind_local_scheduler`）：边车与 `app.main` 各有自己的
    lifespan，但"谁来跑这条到点的任务"只能有一个答案。
 
-没有测试库（``pytest -m local``）也能跑：它只用本机 SQLite 与文件系统。
+不需要任何外部服务：它只用本机 SQLite 与文件系统。
 """
 
 from __future__ import annotations
@@ -30,8 +30,6 @@ from app.core.storage import get_stores, reset_stores
 from app.models.enums import TaskKind, TaskState
 from app.services.schedules import ScheduleService
 from app.storage.base import KnowledgeBaseUnavailable, ScheduledTaskRecord, TaskRecord
-
-pytestmark = pytest.mark.local
 
 
 @contextlib.contextmanager

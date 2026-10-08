@@ -512,7 +512,6 @@ def keyed_registry(local_bundle: StoreBundle, keychain: InMemorySecretStore):
     return ModelRegistryService(local_bundle, secrets=keychain)
 
 
-@pytest.mark.local
 def test_a_new_provider_keeps_its_key_in_the_keychain_only(
     keyed_registry: ModelRegistryService,
     local_bundle: StoreBundle,
@@ -528,7 +527,6 @@ def test_a_new_provider_keeps_its_key_in_the_keychain_only(
     assert created.api_key == "sk-real-key", "API 形状不变：调用方照旧读得到它"
 
 
-@pytest.mark.local
 def test_reads_fill_the_key_from_the_keychain(
     keyed_registry: ModelRegistryService, keychain: InMemorySecretStore
 ) -> None:
@@ -557,7 +555,6 @@ def test_reads_fill_the_key_from_the_keychain(
         keyed_registry.chat_target(model.id)
 
 
-@pytest.mark.local
 def test_updating_the_key_lands_in_the_keychain_and_empty_clears_it(
     keyed_registry: ModelRegistryService,
     local_bundle: StoreBundle,
@@ -578,7 +575,6 @@ def test_updating_the_key_lands_in_the_keychain_and_empty_clears_it(
     assert cleared.api_key == "" and keychain.get(model_provider_target(created.id)) is None
 
 
-@pytest.mark.local
 def test_a_masked_key_is_treated_as_unchanged(
     keyed_registry: ModelRegistryService, keychain: InMemorySecretStore
 ) -> None:
@@ -591,7 +587,6 @@ def test_a_masked_key_is_treated_as_unchanged(
     assert keychain.get(model_provider_target(created.id)) == "sk-abcdefghij"
 
 
-@pytest.mark.local
 def test_deleting_a_provider_takes_its_key_out_of_the_keychain(
     keyed_registry: ModelRegistryService, keychain: InMemorySecretStore
 ) -> None:
@@ -604,7 +599,6 @@ def test_deleting_a_provider_takes_its_key_out_of_the_keychain(
     assert keychain.names() == ()
 
 
-@pytest.mark.local
 def test_without_a_keychain_the_column_stays_the_home(local_bundle: StoreBundle) -> None:
     """不传钥匙串（服务器档 / 手工装配）时**一条行为都不变**：库那一列就是凭据的家。"""
     registry = ModelRegistryService(local_bundle)

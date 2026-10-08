@@ -36,17 +36,15 @@ from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.core.services import reset_services
+from app.core.signing import URL_SIGNING_SECRET_SETTING
 from app.core.storage import get_stores, reset_stores
 from app.services import runtime_config
-from app.core.signing import URL_SIGNING_SECRET_SETTING
 from app.storage.base import (
     ARTIFACT_IN_OBJECTS,
     ConversationArtifactRecord,
     ConversationRecord,
     ConversationTransfer,
 )
-
-pytestmark = pytest.mark.local
 
 DEVICE = "dev-signing-0001"
 KEY = "art_signing_0001"

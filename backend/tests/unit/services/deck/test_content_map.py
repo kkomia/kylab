@@ -38,8 +38,6 @@ from app.services.deck.layouts import Archetype, Density, get_layout
 from app.services.deck.spec import SlideSpec, load_deck_spec
 from app.services.deck.theme_tokens import DEFAULT_THEME
 
-pytestmark = pytest.mark.local
-
 SAMPLE_SPEC: dict = {
     "title": "2026 年 Q1 经营复盘",
     "author": "经营分析组",

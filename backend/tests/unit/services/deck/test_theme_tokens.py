@@ -31,8 +31,6 @@ from app.services.deck.theme_tokens import (
     theme_with_brand,
 )
 
-pytestmark = pytest.mark.local
-
 
 def test_canvas_is_16_9_13_333_by_7_5() -> None:
     """画布尺寸是硬约束：整个几何层（`layouts.py`）都以它为准。"""

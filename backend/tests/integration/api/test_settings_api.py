@@ -27,10 +27,7 @@ NAS 上的设置页随网页端一起退役。所以这一份用 `local_client`�
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
-
-pytestmark = pytest.mark.local
 
 
 def test_behavior_settings_can_be_written(local_client: TestClient) -> None:

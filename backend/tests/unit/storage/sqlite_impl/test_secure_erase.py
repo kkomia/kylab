@@ -31,8 +31,6 @@ from app.storage.base import LocalEraser, StorageError, StoreBundle
 from app.storage.sqlite_impl import connection as connection_module
 from app.storage.sqlite_impl.connection import Database
 
-pytestmark = pytest.mark.local
-
 SEARCH_KEY = "web.search_api_key"
 SEARCH_SENTINEL = "tavily_SENTINEL_erase_7c31"
 MODEL_SENTINEL = "kylab_sk_SENTINEL_erase_2b95"

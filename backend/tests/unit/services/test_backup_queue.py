@@ -59,8 +59,6 @@ from app.storage.base import (
     StoreBundle,
 )
 
-pytestmark = pytest.mark.local
-
 DEVICE_ID = "3f1c8b2e-0a4d-4a77-9d55-2c6a1b7e9f01"
 T0 = datetime(2026, 10, 5, 8, 3, 0, tzinfo=UTC)
 

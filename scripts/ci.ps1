@@ -36,27 +36,11 @@ Invoke-Step '规范检查（scripts/lint.ps1）' $hostExe @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'lint.ps1')
 )
 
-# **没有测试库就不许装绿**：v0.12 起存储只有 PostgreSQL（SQLite 已退役），
-# 没有 KYLAB_TEST_DATABASE_URL 时，依赖仓储的用例与所有走 create_app 的集成用例
-# 会**整体跳过**——实测 `13 passed, 3207 skipped in 19.5s`，而本脚本照样打印
-# "CI 门禁全绿"。这正是 check-backend.sh 里那条纪律要挡的东西（"绿得没有意义"），
-# 两个入口的门槛必须一致，否则本地这份门禁就是一份假的。
-if (-not $env:KYLAB_TEST_DATABASE_URL) {
-    Write-Host '!! 未设置 KYLAB_TEST_DATABASE_URL' -ForegroundColor Red
-    Write-Host '   v0.12 起存储只有 PostgreSQL，没有它仓储测试与所有走 create_app 的'
-    Write-Host '   集成测试都会整体跳过，门禁会变成"绿得没有意义"。请指向一个带 pgvector 的库：'
-    Write-Host '   $env:KYLAB_TEST_DATABASE_URL="postgresql://用户:口令@主机:5432/postgres"'
-    Write-Host '   powershell -ExecutionPolicy Bypass -File scripts\ci.ps1'
-    Write-Host '   只想跑测试（允许从 backend\.env 借库作维护连接）：'
-    Write-Host '   powershell -ExecutionPolicy Bypass -File scripts\test-changed.ps1    # 或 sh scripts\test-backend.sh'
-    $script:failures++
-}
-else {
-    Invoke-Step '后端测试' 'uv' @(
-        'run', '--directory', "$root/backend", 'pytest', 'tests',
-        '-m', 'not bench and not cloud', '--cov=app', '--cov-report=term-missing'
-    )
-}
+# 存储只有本机一套（SQLite + 数据目录），用例自带临时目录，不需要任何外部服务
+Invoke-Step '后端测试' 'uv' @(
+    'run', '--directory', "$root/backend", 'pytest', 'tests',
+    '-m', 'not bench and not cloud', '--cov=app', '--cov-report=term-missing'
+)
 
 if (Test-Path "$root/frontend/package.json") {
     Invoke-Step '前端测试' 'pnpm' @('--dir', "$root/frontend", 'test')

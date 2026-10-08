@@ -51,8 +51,6 @@ from app.storage.split_impl import (
 )
 from app.storage.sqlite_impl import LOCAL_METHODS as SQLITE_LOCAL_METHODS
 
-pytestmark = pytest.mark.local
-
 #: backend/（本文件在 backend/tests/unit/storage/ 下，上溯三级）
 BACKEND = Path(__file__).resolve().parents[3]
 

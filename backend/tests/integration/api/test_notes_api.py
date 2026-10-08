@@ -19,8 +19,6 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-pytestmark = pytest.mark.local
-
 
 @pytest.fixture
 def client(local_client: TestClient) -> TestClient:

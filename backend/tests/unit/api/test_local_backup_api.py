@@ -46,8 +46,6 @@ from app.core.storage import get_stores, reset_stores
 from app.services import backup_provider, runtime_config
 from app.services.backup_provider import PROTOCOL_VERSION
 
-pytestmark = pytest.mark.local
-
 NAS = "http://nas.test/api/v1"
 TOKEN = "kylab_sk_not_a_real_key_but_must_not_leak"
 DEVICE = "3f1c8b2e-0a4d-4a77-9d55-2c6a1b7e9f01"

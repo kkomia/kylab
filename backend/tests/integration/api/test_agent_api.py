@@ -15,12 +15,12 @@
 
 ## 两档分用（NAS 网页端退役，2026-10-05）
 
-这一份整体打**本机档**（`pytestmark = pytest.mark.local`）：工作区是机器本地的路径、
+这一份整体打**本机档**（整份用例都是本机档）：工作区是机器本地的路径、
 技能与插件目录在本机、MCP 配置属于这台机器，**这几族只在本机档存在**。
 
 唯一的例外是 `POST /sandbox/exec`（含准入规则那几条）——那一条**只在服务器档**
 （2026-10-05 起本机档**不挂**它：一条裸 HTTP 执行口、没有任何调用方，见
-`api/v1/router.py` 里 `_sandbox_local` 那一段），而一个 `pytestmark` 里混不了两档，
+`api/v1/router.py` 里 `_sandbox_local` 那一段），而两档混不进同一份文件，
 所以它们搬去了 `test_sandbox_api.py`（同一个模块的镜像文件）。
 
 配套的两处改动：``_set_rules`` 原来走 `PATCH /settings`，而 `/settings` **只在本机档**
@@ -37,8 +37,6 @@ from fastapi.testclient import TestClient
 
 from app.core.services import get_services
 from app.services.skill_categories import CATEGORIES
-
-pytestmark = pytest.mark.local
 
 
 @pytest.fixture

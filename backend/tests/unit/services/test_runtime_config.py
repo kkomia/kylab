@@ -478,7 +478,6 @@ def keyed_runtime(local_bundle: StoreBundle, keychain: InMemorySecretStore) -> R
     return RuntimeConfigService(local_bundle, secrets=keychain)
 
 
-@pytest.mark.local
 def test_the_redirect_list_matches_the_migrator() -> None:
     """改道的那几个 == 迁移器真正会搬的那几个（两份清单必须一致）。
 
@@ -491,7 +490,6 @@ def test_the_redirect_list_matches_the_migrator() -> None:
     assert frozenset({"web.search_api_key"}) == KEYCHAIN_SETTING_KEYS
 
 
-@pytest.mark.local
 def test_a_collected_key_is_read_from_the_keychain(
     keyed_runtime: RuntimeConfigService,
     local_bundle: StoreBundle,
@@ -509,7 +507,6 @@ def test_a_collected_key_is_read_from_the_keychain(
     assert keyed_runtime.get("web.search_api_key") == "", "读不到 = 没配"
 
 
-@pytest.mark.local
 def test_a_collected_key_is_read_from_the_keychain_in_bulk_too(
     keyed_runtime: RuntimeConfigService, keychain: InMemorySecretStore
 ) -> None:
@@ -525,7 +522,6 @@ def test_a_collected_key_is_read_from_the_keychain_in_bulk_too(
     assert values["chat.top_k"] == DEFAULTS["chat.top_k"], "没改道的键照旧"
 
 
-@pytest.mark.local
 def test_writing_a_collected_key_lands_in_the_keychain_only(
     keyed_runtime: RuntimeConfigService,
     local_bundle: StoreBundle,
@@ -547,7 +543,6 @@ def test_writing_a_collected_key_lands_in_the_keychain_only(
     assert local_bundle.meta.get_setting("web.search_api_key") is None
 
 
-@pytest.mark.local
 def test_a_masked_value_is_never_written_into_the_keychain(
     keyed_runtime: RuntimeConfigService, keychain: InMemorySecretStore
 ) -> None:
@@ -559,7 +554,6 @@ def test_a_masked_value_is_never_written_into_the_keychain(
     assert keychain.get(setting_target("web.search_api_key")) == "the-real-key"
 
 
-@pytest.mark.local
 def test_a_registered_only_key_still_reads_and_writes_the_database(
     keyed_runtime: RuntimeConfigService,
     local_bundle: StoreBundle,
@@ -580,7 +574,6 @@ def test_a_registered_only_key_still_reads_and_writes_the_database(
     assert "kylab:setting:mineru.token" not in keychain.names(), "没收编的键不进钥匙串"
 
 
-@pytest.mark.local
 def test_describe_keeps_the_same_contract(
     keyed_runtime: RuntimeConfigService, keychain: InMemorySecretStore
 ) -> None:
@@ -599,7 +592,6 @@ def test_describe_keeps_the_same_contract(
     assert "sk-abcdefghij" not in str(entry), "原值一个字节都不出去"
 
 
-@pytest.mark.local
 def test_without_a_keychain_everything_stays_as_before(
     local_bundle: StoreBundle,
 ) -> None:
@@ -614,7 +606,6 @@ def test_without_a_keychain_everything_stays_as_before(
     assert local_bundle.meta.get_setting("web.search_api_key") == "db-plaintext-2"
 
 
-@pytest.mark.local
 def test_an_unavailable_store_keeps_the_database_as_the_home(
     local_bundle: StoreBundle,
 ) -> None:

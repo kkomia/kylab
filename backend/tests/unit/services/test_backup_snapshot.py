@@ -35,9 +35,9 @@ import pytest
 
 from app.core.config import Settings
 from app.core.exceptions import InvalidRequestError
+from app.core.signing import URL_SIGNING_SECRET_SETTING
 from app.core.storage import build_stores, reset_stores
 from app.services import backup_snapshot as module
-from app.core.signing import URL_SIGNING_SECRET_SETTING
 from app.services.backup_snapshot import (
     COUNT_KEYS,
     FORMAT_NAME,
@@ -64,8 +64,6 @@ from app.storage.base import (
 )
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.schema import SCHEMA_VERSION
-
-pytestmark = pytest.mark.local
 
 DEVICE_ID = "3f1c8b2e-0a4d-4a77-9d55-2c6a1b7e9f01"
 SNAPSHOT_AT = datetime(2026, 10, 5, 8, 3, 0, tzinfo=UTC)

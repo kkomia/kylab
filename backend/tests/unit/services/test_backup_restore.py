@@ -72,8 +72,6 @@ from app.storage.base import (
     SnapshotDbView,
 )
 
-pytestmark = pytest.mark.local
-
 DEVICE = "dev-restore-0001"
 SEGMENT = "2026-10-05T08-03-00Z-ab12cd34"
 SOURCE = f"backup://{DEVICE}/{SEGMENT}"

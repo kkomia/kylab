@@ -52,7 +52,6 @@ def test_every_error_has_a_machine_readable_code(error_class: type[KylabError]) 
     assert code and code.islower() and " " not in code
 
 
-@pytest.mark.local
 def test_knowledge_base_unavailable_maps_to_503() -> None:
     """本机档没有知识库数据源（在 NAS 上）→ **503 + 那句话**。
 

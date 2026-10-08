@@ -19,12 +19,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from app.services.deck.verify import DeckCheck, verify_pptx
 from tests.unit.services.deck.test_render import png_bytes
-
-pytestmark = pytest.mark.local
 
 _CT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-types"
 _A = "http://schemas.openxmlformats.org/drawingml/2006/main"

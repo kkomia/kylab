@@ -12,7 +12,7 @@
     ..\\.venv\\Scripts\\python.exe ..\\scripts\\sidecar-closure.py --json     # 机器用（含发行包）
 
 判据（P4-3 Phase B）：**改了惰性导入之后重跑本脚本** ✓ —— 期望被治掉的包
-（`psycopg` / `duckdb` / `boto3` / `botocore` / `jieba` …）从 `sys.modules` 里消失 ✓✓。
+（`boto3` / `botocore` / `jieba` …）从 `sys.modules` 里消失 ✓✓。
 "看代码觉得不该有" **不是**判据 ✗。
 """
 

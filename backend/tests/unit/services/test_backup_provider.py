@@ -48,8 +48,6 @@ from app.services.remote_clients import (
     RemoteUnavailableError,
 )
 
-pytestmark = pytest.mark.local
-
 NAS = "http://nas.test/api/v1"
 OTHER = "http://other.test/api/v1"
 TOKEN = "kylab_sk_not_a_real_key_but_must_not_leak"
