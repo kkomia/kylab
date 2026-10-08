@@ -561,6 +561,12 @@ def test_spawn_subagent_is_offered_and_returned_with_sources() -> None:
             def list():  # type: ignore[no-untyped-def]
                 return []
 
+        class kb:
+            class api_keys:
+                @staticmethod
+                def check_access(caller, *, kb_ids):  # type: ignore[no-untyped-def]
+                    return None
+
     runner = build_runner(
         _Services(),  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
@@ -620,7 +626,11 @@ def test_spawn_subagent_requires_a_task() -> None:
 
 
 class _SearchServices:
-    """``search`` 那条路要用到的两样：凭据判定与"资料从哪来"。"""
+    """``search`` 那条路要用到的两样：凭据判定与"资料从哪来"。
+
+    凭据判定挂在 ``kb`` 那一格上（`services.kb.api_keys`）——工具层经组合根取它，
+    本机这一档那个主体是管理员、判定直接放行，所以替身只要"有这个属性、不抛"即可。
+    """
 
     def __init__(self, batches: list[list[SourceRef]]) -> None:
         self._batches = list(batches)
@@ -631,6 +641,12 @@ class _SearchServices:
             def check_access(caller, *, kb_ids):  # type: ignore[no-untyped-def]
                 return None
 
+        class _Kb:
+            class api_keys:
+                @staticmethod
+                def check_access(caller, *, kb_ids):  # type: ignore[no-untyped-def]
+                    return None
+
         class _Chat:
             def __init__(self, outer) -> None:  # type: ignore[no-untyped-def]
                 self._outer = outer
@@ -639,7 +655,7 @@ class _SearchServices:
                 self._outer.queries.append(query)
                 return self._outer._batches.pop(0) if self._outer._batches else []
 
-        self.api_keys = _Keys()
+        self.kb = _Kb()
         self.chat = _Chat(self)
 
 
@@ -1070,13 +1086,19 @@ def test_two_searches_at_the_same_time_never_share_a_number() -> None:
             def check_access(caller, *, kb_ids):  # type: ignore[no-untyped-def]
                 return None
 
+        class _Kb:
+            class api_keys:
+                @staticmethod
+                def check_access(caller, *, kb_ids):  # type: ignore[no-untyped-def]
+                    return None
+
         class _Chat:
             @staticmethod
             def retrieve_sources(*, query, kb_ids, top_k=None):  # type: ignore[no-untyped-def]
                 barrier.wait(timeout=10)  # 把几次检索挤到同一刻，账本才会被抢
                 return [_hit(int(query))]
 
-        api_keys = _Keys()
+        kb = _Kb()
         chat = _Chat()
 
     runner = build_runner(_Services(), None, kb_ids=["kb_1"])  # type: ignore[arg-type]
@@ -1127,12 +1149,18 @@ def test_the_ledger_lets_only_one_thread_in_at_a_time(monkeypatch) -> None:  # t
             def check_access(caller, *, kb_ids):  # type: ignore[no-untyped-def]
                 return None
 
+        class _Kb:
+            class api_keys:
+                @staticmethod
+                def check_access(caller, *, kb_ids):  # type: ignore[no-untyped-def]
+                    return None
+
         class _Chat:
             @staticmethod
             def retrieve_sources(*, query, kb_ids, top_k=None):  # type: ignore[no-untyped-def]
                 return [_hit(int(query))]
 
-        api_keys = _Keys()
+        kb = _Kb()
         chat = _Chat()
 
     runner = agent_tools.build_runner(_Services(), None, kb_ids=["kb_1"])  # type: ignore[arg-type]

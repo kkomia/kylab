@@ -411,7 +411,7 @@ def test_step_label_is_readable_for_external_tools() -> None:
 
 
 def test_step_summary_handles_the_bare_list_shape() -> None:
-    """`list_knowledge_bases` 返回的是**裸 list**，摘要也要认得。
+    """有些工具回的是**裸 list**，摘要也要认得。
 
     实测报过来的现象：过程面板里那一行显示的是原始 JSON
     （`[{"id": "kb_...", "name": "城市建成环境研究现状", "documents": 23…`）。
@@ -420,17 +420,11 @@ def test_step_summary_handles_the_bare_list_shape() -> None:
     """
     from app.services.agent_tools import _summary
 
-    payload = [
-        {"id": "kb_1", "name": "城市建成环境研究现状", "documents": 23},
-        {"id": "kb_2", "name": "另一个库", "documents": 2},
-    ]
-
-    assert _summary("list_knowledge_bases", payload) == "共 2 个知识库"
-    # 其余裸列表也兜住（"共 N 条"总比一串 JSON 强）
+    # 裸列表兜住（"共 N 条"总比一串 JSON 强）
     assert _summary("list_notes", [{}, {}]) == "共 2 条"
     # **具体的措辞不能被兜底那条抢掉**
     assert _summary("recall", {"items": [1, 2, 3]}) == "查到 3 条变更"
-    assert _summary("list_documents", {"total": 23}) == "共 23 篇文档"
+    assert _summary("list_notes", {"total": 23}) == "共 23 条笔记"
 
 
 def test_step_summary_never_dumps_raw_json() -> None:

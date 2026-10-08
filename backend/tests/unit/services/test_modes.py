@@ -30,7 +30,7 @@ from app.services.runtime_config import SETTING_GROUPS, RuntimeConfigService
 from app.services.tool_meta import TOOL_META, ToolMeta, meta_of
 
 #: 三类工具的代表。**取真实的工具名**：判定读的是它们真实的元数据。
-READ_TOOLS = ("search", "list_documents", "read_file", "web_fetch", "list_skills", "query_table")
+READ_TOOLS = ("search", "list_notes", "read_file", "web_fetch", "list_skills", "read_skill")
 WRITE_TOOLS = ("create_note", "upload_document", "export_document", "remember", "spawn_subagent")
 EXEC_TOOLS = ("run_command",)
 

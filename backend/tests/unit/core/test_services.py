@@ -7,37 +7,42 @@
 
 from __future__ import annotations
 
-from app.core.services import build_services
+from app.core.services import KbServices, Services, build_services, get_kb_services
 
 #: 必须装配齐全的字段（新增服务时同步加进来；漏了就在这里红）。
 _EXPECTED = (
-    "knowledge_bases",
-    "documents",
-    "ingest",
-    "retrieval",
-    "chat",
-    "stats",
+    "conversations",
+    "artifacts",
+    "conversation_export",
+    "legacy_import",
+    "notes",
+    "note_ai",
+    "memory",
+    "workspaces",
+    "skills",
+    "skill_market",
+    "skill_sources",
+    "plugins",
+    "mcp",
+    "schedules",
     "runtime",
-    "api_keys",
-    "idempotency",
-    "chunks",
     "models",
     "usage",
-    "users",
-    "auth",
-    "shares",
-    "lifecycle",
-    "sources",
-    "observability",
-    "tabular",
-    "conversations",
-    "suggested_questions",
-    "webhooks",
     "embedder",
     "reranker",
-    "worker",
-    "workers",
+    "chat",
+    "kb",
+    "commands",
+    "approvals",
     "load",
+    "provider",
+    "kb_cache",
+    "backup_snapshot",
+    "backup_provider",
+    "backup_queue",
+    "backup_restore",
+    "secrets",
+    "credentials",
 )
 
 
@@ -48,89 +53,68 @@ def test_build_services_wires_every_component(bundle) -> None:  # type: ignore[n
     assert missing == [], f"这些组件没有装配：{missing}"
 
 
+def test_the_kb_slot_carries_what_is_left_of_the_kb_face(bundle) -> None:  # type: ignore[no-untyped-def]
+    """`Services.kb` 那一格只装三样：凭据判定 + 入库两条接缝。
+
+    **名字不能改**：`scripts/check_domains.py` 用 `services.kb.<字段>` 这个形状识别
+    "经组合根取 KB 域服务"。而**它只装这三样**——知识库服务本体（建库 / 检索 /
+    表格 / 回收站…）随知识库产品剥离搬走了，本机不持有那些数据。
+    """
+    services = build_services(stores=bundle)
+
+    assert isinstance(services.kb, KbServices)
+    assert services.kb.api_keys is not None
+    # 本机这一档两条接缝都是**提供者网关**（打远端），不是进程内那套服务
+    assert not hasattr(services.kb, "knowledge_bases")
+    assert not hasattr(services.kb, "retrieval")
+    assert not hasattr(services.kb, "tabular")
+
+
+def test_get_kb_services_is_the_same_slot(bundle) -> None:  # type: ignore[no-untyped-def]
+    """进程里只有一份图：`get_kb_services()` 就是根上那一格，不二次装配。
+
+    二次装配的后果是两份 `StoreBundle`、两个补传线程、两份运行期配置
+    （于是"设置页存进去了、聊天那边读不到"这类最难查的分叉）。判据是**同一对象**，
+    不是"两个等价的图"。
+    """
+    from app.core.services import get_services
+
+    assert isinstance(get_services(), Services)
+    assert get_kb_services() is get_services().kb
+
+
 def test_build_services_is_pure_wiring_when_stores_are_given(bundle) -> None:  # type: ignore[no-untyped-def]
-    """给了 stores 就不该再去建库/建目录——测试与 MCP 进程都靠这条。"""
-    before = bundle.meta.list_knowledge_bases()
-
+    """给了 stores 就不该再去建库/建目录——测试与 CLI 那条路都靠这条。"""
     services = build_services(stores=bundle)
 
-    assert services.knowledge_bases is not None
-    assert bundle.meta.list_knowledge_bases() == before
+    assert services.conversations is not None
+    # 拿到手的就是传进来的这一份存储（不是又建了一个库）
+    assert services.runtime._stores is bundle
+    assert services.conversations._stores is bundle
 
 
-def test_suggested_questions_and_chat_share_the_same_chat_service(bundle) -> None:  # type: ignore[no-untyped-def]
-    """示例问题用的是同一个对话服务（否则两处的模型选择与未配置报错口径会分叉）。"""
+def test_the_worker_is_not_a_task_worker(bundle) -> None:  # type: ignore[no-untyped-def]
+    """**组合根不再造队列消费者**：摄取那条流水线是知识库那边的家当。
+
+    本机消费者是 `workers/local_worker.py` 的调度器（由 `main.py` 的 lifespan 拉起
+    并 bind 到 `services.schedules`），它不进 `Services`——它没有"认领任务"这件事。
+    """
     services = build_services(stores=bundle)
 
-    assert services.suggested_questions._chat is services.chat
+    assert not hasattr(services, "workers")
+    assert not hasattr(services, "worker")
 
 
-def test_worker_pool_size_follows_the_concurrency_setting(bundle) -> None:  # type: ignore[no-untyped-def]
-    """``KYLAB_WORKER_CONCURRENCY`` 决定**进程里有几个消费者**（§12.115）。
+def test_the_kb_read_line_is_bound_to_the_provider(bundle) -> None:  # type: ignore[no-untyped-def]
+    """**装配期那一处后挂**：`stores.meta.kb` 的 reader 指向提供者客户端。
 
-    钉三件事，每一件写错了都会很安静：数量、owner 互不相同、面板上的槽位与它同源。
-    **owner 必须互不相同**：租约按 owner 校验，同名会让两个消费者互相认领对方的租约
-    （心跳返回真、终态互相覆盖）。
+    没挂上的话，凡是走 `stores.meta` 的 KB 元数据读都会抛"知识库提供者还没接上
+    （组合根未装配）"——而那是**装配漏了一处**，不是"这台机器没接提供者"。
     """
-    from app.core.config import Settings
-
-    services = build_services(settings=Settings(worker_concurrency=3), stores=bundle)
-
-    assert len(services.workers) == 3
-    assert services.worker is services.workers[0]
-    assert len({worker.owner for worker in services.workers}) == 3
-    # 面板上的"并发槽位"与这里同源：上限不能是另一处硬编码的数字
-    slots = services.load.snapshot().queue.slots
-    assert slots == 3
-
-
-def test_single_worker_is_the_default(bundle) -> None:  # type: ignore[no-untyped-def]
-    """默认只 1 个消费者。
-
-    并发要花 CPU 与内存（切词、向量化都在进程内），"默认炸内存"比"默认慢"更糟。
-    """
-    from app.core.config import Settings
-
-    services = build_services(settings=Settings(worker_concurrency=1), stores=bundle)
-
-    assert len(services.workers) == 1
-
-
-def test_server_deployment_keeps_the_real_pipeline(bundle, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**服务器档一切不变**（M3 阶段 3 / R11）：本机档那条换线一个字都不许漏过来。
-
-    本机档在组合根新增的那一支（建提供者、把 `ingest` / `documents` 换成两个网关）如果
-    写漏了档位判断，服务器档会**静默地**失去摄入流水线：`Services.ingest` 变成那个
-    只有 `submit` 的窄视图、`ChatService` 拿着一个远端 KB 客户端（于是"进程内检索"
-    这条主路径被悄悄换掉）。这一条按**可观察的结果**钉住它（组合根里那个 `provider`
-    是局部变量，不对外露）：
-
-    - KB 接缝是 `None`（服务器档走进程内检索）；
-    - `Services.ingest` / `Services.documents` 仍是真服务；
-    - 笔记与产物拿到的是**同一个**真 `IngestService`（三个构造点仍然是"一份实现"）。
-
-    （本机档那一半在 `tests/unit/services/test_client_seams.py` 的守卫用例里：它要建
-    本机档的 SQLite 图，所以标了 `local`；这一条跟着本文件用 PG 夹具。）
-    """
-    from app.core.config import get_settings
-    from app.core.services import reset_services
-    from app.services.documents import DocumentService
-    from app.services.ingest import IngestService
-
-    # 档位是**启动时定一次**的东西（``Settings`` 与 ``get_services`` 都是单例缓存）：
-    # 这里把前提钉死，不吃上一条用例留下的档位
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "server")
-    get_settings.cache_clear()
-    reset_services()
-
     services = build_services(stores=bundle)
 
-    assert get_settings().deployment == "server"
-    assert services.chat._knowledge is None, "服务器档不该有远端 KB 客户端"
-    assert isinstance(services.ingest, IngestService)
-    assert isinstance(services.documents, DocumentService)
-    # 三个构造点**仍是同一份**（本机档那对网关没有漏到这里来）
-    assert services.notes._ingest is services.ingest
-    assert services.artifacts._ingest is services.ingest
-    assert services.notes._documents is services.documents
-    assert services.artifacts._documents is services.documents
+    reader = bundle.meta.kb._reader  # type: ignore[attr-defined]
+    assert reader is not None
+    # 缓存包在 reader **外面**：页面面与 reader 面读的是同一份快照、同一套排程
+    # （两个入口各建一个缓存就会各排各的，那正是"再验证风暴"的来源）
+    assert reader._cache is services.kb_cache

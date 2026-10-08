@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,11 +38,57 @@ def admin() -> Caller:
     return Caller(is_admin=True)
 
 
+KB_ID = "kb_资料库"
+
+
+class _FakeIngestGateway:
+    """假的"提交一份字节进知识库"那条接缝（真身是提供者客户端的网关）。
+
+    本机这一档知识库在别处，所以"库里有没有这份文档"由这一侧记着——入库是**一次
+    远端调用**，本机不落库、也不解析。去重同理：真实现由远端的 content_hash 兜。
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.documents: dict[str, dict[str, str]] = {}
+        self._by_hash: dict[bytes, str] = {}
+
+    def submit(self, *, knowledge_base_id, filename, content, uploaded_by=None, **rest):  # type: ignore[no-untyped-def]
+        self.calls.append({"knowledge_base_id": knowledge_base_id, "filename": filename})
+        known = self._by_hash.get(content)
+        if known is not None:
+            document = self.documents[known]
+            return SimpleNamespace(document=SimpleNamespace(**document), is_duplicate=True)
+        document_id = f"doc_{uuid.uuid4().hex[:8]}"
+        self._by_hash[content] = document_id
+        self.documents[document_id] = {"id": document_id, "name": filename}
+        return SimpleNamespace(
+            document=SimpleNamespace(id=document_id, name=filename), is_duplicate=False
+        )
+
+
+class _FakeEnqueueGateway:
+    """假的"入队"那条接缝：本机是空操作（远端收到上传时自己已经排上了）。"""
+
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    def enqueue_ingest(self, document_id: str) -> None:
+        self.enqueued.append(document_id)
+
+
 @pytest.fixture
-def kb(services: Services) -> str:  # type: ignore[no-untyped-def]
-    return services.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name="资料库"
-    ).id
+def kb_gateway(services: Services) -> tuple[_FakeIngestGateway, _FakeEnqueueGateway]:
+    """把产物那两条接缝换成假网关，返回它们。
+
+    `ArtifactService` 持有的是构造时注入的那对网关（组合根给的），所以这里换的是
+    那个对象上的两个属性——与真装配同一个形状。
+    """
+    ingest = _FakeIngestGateway()
+    enqueue = _FakeEnqueueGateway()
+    services.artifacts._ingest = ingest  # type: ignore[attr-defined]
+    services.artifacts._documents = enqueue  # type: ignore[attr-defined]
+    return ingest, enqueue
 
 
 @pytest.fixture
@@ -170,40 +217,42 @@ def test_missing_workspace_directory_is_an_error_not_a_silent_redirect(
 
 
 def test_saving_does_not_put_anything_in_a_knowledge_base(
-    services: Services, conversation: str, kb: str
+    services: Services, conversation: str, kb_gateway
 ) -> None:
-    """**这是这次改动的核心断言**：导出之后，库里一份文档都没多。"""
-    before = services.documents.count_documents(kb)
+    """**这是这次改动的核心断言**：导出之后，知识库那边一次调用都没发生。"""
+    ingest, _ = kb_gateway
 
     artifact = services.artifacts.save(
         conversation_id=conversation, filename="短诗.docx", content=b"x", kind="docx"
     )
 
     assert artifact.knowledge_base_id is None and artifact.document_id is None
-    assert services.documents.count_documents(kb) == before
+    assert ingest.calls == []
 
 
 def test_ingest_is_the_explicit_step_that_files_it(
-    services: Services, conversation: str, kb: str, admin: Caller
+    services: Services, conversation: str, kb_gateway, admin: Caller
 ) -> None:
+    ingest, _ = kb_gateway
     artifact = services.artifacts.save(
         conversation_id=conversation, filename="短诗.docx", content=b"poem", kind="docx"
     )
 
     document_id, is_duplicate = services.artifacts.ingest(
-        artifact, knowledge_base_id=kb, uploaded_by=None
+        artifact, knowledge_base_id=KB_ID, uploaded_by=None
     )
 
     assert not is_duplicate
-    assert services.documents.get(document_id).name == "短诗.docx"
+    # 提交**原样**打到远端那条接缝上（本机不解释这些参数）
+    assert ingest.calls == [{"knowledge_base_id": KB_ID, "filename": "短诗.docx"}]
     # 记录被就地更新，界面据此把卡片换成"已存进知识库"
-    assert artifact.knowledge_base_id == kb and artifact.document_id == document_id
+    assert artifact.knowledge_base_id == KB_ID and artifact.document_id == document_id
     stored = services.artifacts.get(artifact.id)
-    assert stored.knowledge_base_id == kb
+    assert stored.knowledge_base_id == KB_ID
 
 
 def test_ingest_copies_it_does_not_move(
-    services: Services, workspace_conversation: tuple[str, Path], kb: str
+    services: Services, workspace_conversation: tuple[str, Path], kb_gateway
 ) -> None:
     """入库是**复制**：产物还在原来那个目录里。
 
@@ -213,20 +262,20 @@ def test_ingest_copies_it_does_not_move(
     artifact = services.artifacts.save(
         conversation_id=conversation_id, filename="方案.docx", content=b"body", kind="docx"
     )
-    services.artifacts.ingest(artifact, knowledge_base_id=kb)
+    services.artifacts.ingest(artifact, knowledge_base_id=KB_ID)
 
     assert (root / "方案.docx").read_bytes() == b"body"
 
 
 def test_ingesting_twice_reuses_the_document(
-    services: Services, conversation: str, kb: str
+    services: Services, conversation: str, kb_gateway
 ) -> None:
     """同一份内容重复入库由内容 hash 去重——不会在库里出现两份。"""
     artifact = services.artifacts.save(
         conversation_id=conversation, filename="a.docx", content=b"same", kind="docx"
     )
-    first, _ = services.artifacts.ingest(artifact, knowledge_base_id=kb)
-    second, is_duplicate = services.artifacts.ingest(artifact, knowledge_base_id=kb)
+    first, _ = services.artifacts.ingest(artifact, knowledge_base_id=KB_ID)
+    second, is_duplicate = services.artifacts.ingest(artifact, knowledge_base_id=KB_ID)
 
     assert first == second and is_duplicate
 
@@ -235,7 +284,7 @@ def test_ingesting_twice_reuses_the_document(
 
 
 def test_discard_clears_only_the_temporary_ones(
-    services: Services, kb: str, tmp_path: Path
+    services: Services, tmp_path: Path
 ) -> None:
     """删会话清掉对象存储里的临时产物，**工作区里那份一份都不动**。
 

@@ -19,16 +19,16 @@
 from __future__ import annotations
 
 import base64
-import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from app.core.exceptions import ForbiddenError, InvalidRequestError, NotFoundError
+from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.core.services import Services
 from app.services import tools
-from app.services.api_key import READ, WRITE, Caller
+from app.services.api_key import Caller
 from app.services.deck import Archetype, find_node, load_deck_spec, map_deck, verify_pptx
 from app.services.tools import (
     MAX_TOP_K,
@@ -39,12 +39,75 @@ from app.services.tools import (
     tool_definitions,
 )
 
+#: 用例里那个知识库 id（本机不建库，见 `kb` 夹具）。
+KB_ID = "kb_测试库"
+
+
+class _FakeIngestGateway:
+    """假的"提交一份字节进知识库"那条接缝。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._by_hash: dict[bytes, str] = {}
+        self._count = 0
+
+    def submit(self, *, knowledge_base_id, filename, content, uploaded_by=None, **rest):  # type: ignore[no-untyped-def]
+        self.calls.append(
+            {
+                "knowledge_base_id": knowledge_base_id,
+                "filename": filename,
+                "content": content,
+                "uploaded_by": uploaded_by,
+            }
+        )
+        known = self._by_hash.get(content)
+        if known is not None:
+            return SimpleNamespace(
+                document=SimpleNamespace(id=known, name=filename), is_duplicate=True
+            )
+        self._count += 1
+        document_id = f"doc_{self._count}"
+        self._by_hash[content] = document_id
+        return SimpleNamespace(
+            document=SimpleNamespace(id=document_id, name=filename), is_duplicate=False
+        )
+
+
+class _FakeEnqueueGateway:
+    """假的"入队"那条接缝：本机是空操作（远端收到上传时自己已经排上了）。"""
+
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    def enqueue_ingest(self, document_id: str) -> None:
+        self.enqueued.append(document_id)
+
 
 @pytest.fixture
 def services() -> Services:
+    """真实服务图 + **假的入库两条接缝**（真身是提供者客户端的网关）。
+
+    本机这一档知识库在别处：`Services.kb` 上那两条（`ingest` / `documents`）是打远端的
+    网关，而"库里有没有这份文档"由那一侧记着。用例里没有远端，所以换成假网关——
+    形状与真网关逐字相同（`submit` / `enqueue_ingest`），断言也就能对着调用参数写。
+
+    换的位置有三处而不是一处：产物服务与笔记服务**各自持有**一份入库接缝
+    （组合根给的是同一个网关对象，见 `core/services.py` 那一段），所以三处都要换到
+    同一对假对象上——只换 `Services.kb` 的话，从笔记那条路入库仍然会打真网关。
+    """
+    import dataclasses
+
     from app.core.services import get_services
 
-    return get_services()
+    base = get_services()
+    ingest, enqueue = _FakeIngestGateway(), _FakeEnqueueGateway()
+    base.artifacts._ingest = ingest  # type: ignore[attr-defined]
+    base.artifacts._documents = enqueue  # type: ignore[attr-defined]
+    base.notes._ingest = ingest  # type: ignore[attr-defined]
+    base.notes._documents = enqueue  # type: ignore[attr-defined]
+    return dataclasses.replace(
+        base, kb=dataclasses.replace(base.kb, ingest=ingest, documents=enqueue)
+    )
 
 
 @pytest.fixture
@@ -58,27 +121,13 @@ def admin() -> Caller:
 
 
 @pytest.fixture
-def kb(services: Services) -> str:  # type: ignore[no-untyped-def]
-    # kb_id 由调用方生成——服务层要求显式传入（与 REST 层同一口径）
-    return services.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name="MCP 测试库"
-    ).id
+def kb() -> str:
+    """一个知识库 id。
 
-
-@pytest.fixture
-def key_for(services: Services):  # type: ignore[no-untyped-def]
-    """按"库范围 + 权限"发一把真 Key 并换成 Caller——走真实发放路径，
-    而不是手搓一个 Caller 对象（那样测的就不是判定本身了）。"""
-
-    def make(*, kb_ids: list[str], permission=READ) -> Caller:  # type: ignore[no-untyped-def]
-        issued = services.api_keys.create(
-            name=f"测试密钥 {uuid.uuid4().hex[:6]}",
-            permission=permission,
-            knowledge_base_ids=kb_ids,
-        )
-        return services.api_keys.authenticate(issued.token)
-
-    return make
+    **本机不建库**（那几件事在知识库那一侧），而工具签名里要一个 id 才能把参数
+    拼齐——所以这里给一个常量。真去建库的地方在提供者那一侧的用例里。
+    """
+    return KB_ID
 
 
 MARKDOWN = "# 眼轴\n\n眼轴长度是衡量儿童青少年眼球发育情况的主要参数之一，不受调节能力影响。\n"
@@ -128,171 +177,10 @@ def test_caller_is_required(services: Services) -> None:
     默认为管理员，这个用例会立刻失败。
     """
     with pytest.raises(TypeError):
-        call_tool(services, "list_knowledge_bases", {})  # type: ignore[call-arg]
-
-
-def test_list_only_returns_knowledge_bases_in_scope(
-    services: Services, kb: str, key_for
-) -> None:  # type: ignore[no-untyped-def]
-    """**收口的核心用例**：范围外的库不能出现在列表里。
-
-    收口之前 ``_list_knowledge_bases`` 直接调 ``list_all()``，
-    实测无凭据即可列出全部真实知识库。
-    """
-    other = services.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name="别人的库"
-    ).id
-
-    scoped = key_for(kb_ids=[other])
-    items = call_tool(services, "list_knowledge_bases", {}, caller=scoped)
-
-    ids = {item["id"] for item in items}
-    assert other in ids
-    assert kb not in ids, "范围外的库出现在了列表里"
-
-
-def test_search_without_kb_ids_stays_in_scope(services: Services, kb: str, key_for) -> None:  # type: ignore[no-untyped-def]
-    """不传库时是"查我能看到的全部"，**不是** "查所有人的全部"。"""
-    other = services.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name="别人的库"
-    ).id
-    scoped = key_for(kb_ids=[other])
-
-    result = call_tool(services, "search", {"query": "眼轴"}, caller=scoped)
-
-    # other 是空库，所以这里只该是空结果——关键是**不能因为越权而拿到 kb 的内容**
-    assert result["hits"] == []
-
-
-def test_search_rejects_out_of_scope_knowledge_base(
-    services: Services, kb: str, key_for
-) -> None:  # type: ignore[no-untyped-def]
-    other = services.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name="别人的库"
-    ).id
-    scoped = key_for(kb_ids=[other])
-
-    with pytest.raises(ForbiddenError):
-        call_tool(
-            services,
-            "search",
-            {"query": "眼轴", "knowledge_base_ids": [kb]},
-            caller=scoped,
-        )
-
-
-def test_readonly_key_cannot_upload(services: Services, kb: str, key_for) -> None:  # type: ignore[no-untyped-def]
-    """只读 Key 写不动——而且要在**动手之前**就被拦住。"""
-    readonly = key_for(kb_ids=[kb], permission=READ)
-
-    with pytest.raises(ForbiddenError) as excinfo:
-        call_tool(
-            services,
-            "upload_document",
-            {
-                "knowledge_base_id": kb,
-                "filename": "a.md",
-                "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
-            },
-            caller=readonly,
-        )
-    assert "只读" in str(excinfo.value)
-
-
-def test_readonly_key_cannot_delete(services: Services, kb: str, key_for) -> None:  # type: ignore[no-untyped-def]
-    """删除是写操作：只读凭据连自己范围内的库也不能删。"""
-    writer = key_for(kb_ids=[kb], permission=WRITE)
-    readonly = key_for(kb_ids=[kb], permission=READ)
-    uploaded = call_tool(
-        services,
-        "upload_document",
-        {
-            "knowledge_base_id": kb,
-            "filename": "待删.md",
-            "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
-        },
-        caller=writer,
-    )
-
-    with pytest.raises(ForbiddenError):
-        call_tool(
-            services,
-            "delete_document",
-            {"document_id": uploaded["document_id"]},
-            caller=readonly,
-        )
-
-
-def test_document_status_respects_scope(services: Services, kb: str, key_for) -> None:  # type: ignore[no-untyped-def]
-    """按 id 直查文档也要判范围——否则知道 id 就能绕过列表。"""
-    other = services.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name="别人的库"
-    ).id
-    writer = Caller(is_admin=True)
-    uploaded = call_tool(
-        services,
-        "upload_document",
-        {
-            "knowledge_base_id": kb,
-            "filename": "范围.md",
-            "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
-        },
-        caller=writer,
-    )
-    scoped = key_for(kb_ids=[other])
-
-    with pytest.raises(ForbiddenError):
-        call_tool(
-            services,
-            "get_document_status",
-            {"document_id": uploaded["document_id"]},
-            caller=scoped,
-        )
-
-
-def test_knowledge_base_created_by_a_member_is_owned_by_them(
-    services: Services,
-) -> None:
-    """成员建出来的库要归他所有：不写 owner 的话他自己都看不见
-    （``visible_kb_ids`` 对成员只算"自己拥有的 + 被分享的"）。"""
-    from app.models.enums import ApiKeyPermission
-
-    issued = services.api_keys.create(
-        name="成员密钥", permission=ApiKeyPermission.READWRITE
-    )
-    # 直接用 user 形态：成员会话才是"能建库"的那种身份
-    from app.storage.base import UserRecord
-
-    member = Caller(
-        api_key=issued.record,
-        user=UserRecord(
-            id=f"user_{uuid.uuid4().hex[:8]}",
-            name="成员",
-            password_hash="x",
-        ),
-    )
-    created = call_tool(services, "create_knowledge_base", {"name": "成员建的库"}, caller=member)
-    record = services.knowledge_bases.get(created["id"])
-    assert record.owner_id == member.user.id  # type: ignore[union-attr]
+        call_tool(services, "search", {})  # type: ignore[call-arg]
 
 
 # --------------------------------------------------------------------- 知识库
-
-
-def test_list_knowledge_bases(services: Services, kb: str, admin: Caller) -> None:
-    items = call_tool(services, "list_knowledge_bases", {}, caller=admin)
-
-    assert any(item["id"] == kb for item in items)
-    target = next(item for item in items if item["id"] == kb)
-    assert target["name"] == "MCP 测试库"
-    assert target["documents"] == 0
-
-
-def test_create_knowledge_base(services: Services, admin: Caller) -> None:
-    created = call_tool(services, "create_knowledge_base", {"name": "新建的库"}, caller=admin)
-
-    assert created["name"] == "新建的库"
-    assert created["id"].startswith("kb_")
 
 
 def test_create_knowledge_base_requires_a_name(services: Services, admin: Caller) -> None:
@@ -362,155 +250,16 @@ def test_upload_rejects_oversized_content(services: Services, kb: str, admin: Ca
     assert "上限" in str(excinfo.value)
 
 
-def test_upload_needs_a_real_knowledge_base(services: Services, admin: Caller) -> None:
-    with pytest.raises(NotFoundError):
-        call_tool(
-            services,
-            "upload_document",
-            {
-                "knowledge_base_id": "kb_不存在",
-                "filename": "a.md",
-                "content_base64": base64.b64encode(b"x").decode(),
-            },
-            caller=admin,
-        )
-
-
 # --------------------------------------------------------------------- 数据源
-
-
-def test_add_data_source(services: Services, kb: str, admin: Caller) -> None:
-    result = call_tool(
-        services,
-        "add_data_source",
-        {
-            "knowledge_base_id": kb,
-            "kind": "rss",
-            "url": "https://example.com/feed.xml",
-            "name": "示例订阅",
-        },
-        caller=admin,
-    )
-
-    assert result["name"] == "示例订阅"
-    # 必须说清"登记 ≠ 立刻抓取"，否则模型会以为内容已经进来了
-    assert "不会立刻" in result["note"]
-
-
-def test_add_data_source_rejects_unknown_kind(
-    services: Services, kb: str, admin: Caller
-) -> None:
-    with pytest.raises(InvalidRequestError) as excinfo:
-        call_tool(
-            services,
-            "add_data_source",
-            {"knowledge_base_id": kb, "kind": "webdav", "url": "https://example.com"},
-            caller=admin,
-        )
-    assert "rss" in str(excinfo.value)
-
-
-def test_add_data_source_rejects_non_http(services: Services, kb: str, admin: Caller) -> None:
-    with pytest.raises(InvalidRequestError):
-        call_tool(
-            services,
-            "add_data_source",
-            {"knowledge_base_id": kb, "kind": "html", "url": "file:///etc/passwd"},
-            caller=admin,
-        )
 
 
 # --------------------------------------------------------------------- 检索
 
 
-def test_search_without_any_kb_returns_empty(services: Services, admin: Caller) -> None:
-    """一个库都没有时不能炸——返回空结果并说明原因，让模型知道该怎么继续。"""
-    result = call_tool(services, "search", {"query": "随便问问"}, caller=admin)
-
-    assert result["hits"] == []
-    assert "没有任何知识库" in result["note"]
-
-
-def test_search_caps_top_k(services: Services, kb: str, admin: Caller) -> None:
-    """**上限要生效**：工具是给 Agent 用的，它可能随手要 500 条，
-    那会把上下文塞爆。"""
-    result = call_tool(services, "search", {"query": "眼轴", "top_k": 9999}, caller=admin)
-
-    # 不抛错、也不返回超量——夹到上限即可
-    assert isinstance(result["hits"], list)
-
-
-def test_search_result_shape_is_stable(services: Services, kb: str, admin: Caller) -> None:
-    """字段名要稳定：模型按这些名字读结果，改一个名就等于换了一次工具。"""
-    result = call_tool(
-        services, "search", {"query": "眼轴", "knowledge_base_ids": [kb]}, caller=admin
-    )
-
-    assert set(result) >= {"query", "hits", "filtered_out"}
-
-
 # --------------------------------------------------------------------- 文档状态
 
 
-def test_get_document_status(services: Services, kb: str, admin: Caller) -> None:
-    uploaded = call_tool(
-        services,
-        "upload_document",
-        {
-            "knowledge_base_id": kb,
-            "filename": "状态.md",
-            "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
-        },
-        caller=admin,
-    )
-
-    status = call_tool(
-        services, "get_document_status", {"document_id": uploaded["document_id"]}, caller=admin
-    )
-
-    assert status["stage"] == "uploaded"
-    assert status["searchable"] is False, "还没处理完就标成可检索是最坏的一种错"
-    assert "检索不到" in status["note"]
-
-
-def test_get_document_status_rejects_unknown(services: Services, admin: Caller) -> None:
-    with pytest.raises(NotFoundError):
-        call_tool(services, "get_document_status", {"document_id": "doc_不存在"}, caller=admin)
-
-
 # --------------------------------------------------------------------- 删除
-
-
-def test_delete_document_puts_it_in_trash(services: Services, kb: str, admin: Caller) -> None:
-    uploaded = call_tool(
-        services,
-        "upload_document",
-        {
-            "knowledge_base_id": kb,
-            "filename": "待删.md",
-            "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
-        },
-        caller=admin,
-    )
-
-    result = call_tool(
-        services, "delete_document", {"document_id": uploaded["document_id"]}, caller=admin
-    )
-
-    assert result["trash_id"]
-    assert "7 天" in result["note"]
-    with pytest.raises(NotFoundError):
-        call_tool(
-            services,
-            "get_document_status",
-            {"document_id": uploaded["document_id"]},
-            caller=admin,
-        )
-
-
-def test_delete_unknown_document_raises(services: Services, admin: Caller) -> None:
-    with pytest.raises(NotFoundError):
-        call_tool(services, "delete_document", {"document_id": "doc_不存在"}, caller=admin)
 
 
 # --------------------------------------------------------------------- 参数校验
@@ -537,7 +286,9 @@ def test_missing_required_arguments_raise(
 
 def test_none_arguments_are_treated_as_empty(services: Services, admin: Caller) -> None:
     """MCP 客户端对无参工具可能传 ``None``——那不该炸。"""
-    assert isinstance(call_tool(services, "list_knowledge_bases", None, caller=admin), list)
+    # `search` 那条路由 Agent 工具面直接执行（见 services/tools.py 模块头），
+    # 所以这里用一个参数真的在 call_tool 上执行的工具
+    assert isinstance(call_tool(services, "list_notes", None, caller=admin), dict)
 
 
 def test_max_top_k_is_documented_in_the_schema() -> None:
@@ -619,24 +370,6 @@ def test_note_excerpt_is_bounded(services: Services, admin: Caller) -> None:
     assert len(target["excerpt"]) == NOTE_EXCERPT_CHARS
 
 
-def test_attach_note_needs_write_on_the_target_kb(
-    services: Services, kb: str, admin: Caller, key_for
-) -> None:  # type: ignore[no-untyped-def]
-    """入库是往库里加内容，所以要的是**目标库的写权限**，不是"有笔记权限"。"""
-    created = call_tool(
-        services, "create_note", {"content_md": "# 只读库的笔记"}, caller=admin
-    )
-    readonly = key_for(kb_ids=[kb], permission=READ)
-
-    with pytest.raises(ForbiddenError):
-        call_tool(
-            services,
-            "attach_note_to_kb",
-            {"note_id": created["note_id"], "knowledge_base_id": kb},
-            caller=readonly,
-        )
-
-
 def test_create_note_points_back_to_the_delivery_tool(services: Services, admin: Caller) -> None:
     """用错工具时要能**自己纠正**（v0.41，用户报的第 2 条）。
 
@@ -678,44 +411,6 @@ def test_create_note_requires_content(services: Services, admin: Caller) -> None
 
 
 # --------------------------------------------------------------------- 列文档
-
-
-def test_list_documents_reports_stage_and_searchability(
-    services: Services, kb: str, admin: Caller
-) -> None:
-    """**"库里到底有什么"是 search 答不了的问题**——它只返回与问题相关的片段。
-
-    所以单独一个工具来列文档，并且必须带上"能不能被检索到"。
-    """
-    call_tool(
-        services,
-        "upload_document",
-        {
-            "knowledge_base_id": kb,
-            "filename": "列文档.md",
-            "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
-        },
-        caller=admin,
-    )
-
-    result = call_tool(services, "list_documents", {"knowledge_base_id": kb}, caller=admin)
-
-    assert result["total"] == 1
-    item = result["documents"][0]
-    assert item["name"] == "列文档.md"
-    # 刚上传还没跑流水线，所以此时不可检索——这条信息比文件名更重要
-    assert item["stage"] == "uploaded"
-    assert item["searchable"] is False
-
-
-def test_list_documents_respects_scope(services: Services, kb: str, key_for) -> None:  # type: ignore[no-untyped-def]
-    other = services.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name="别人的库"
-    ).id
-    scoped = key_for(kb_ids=[other])
-
-    with pytest.raises(ForbiddenError):
-        call_tool(services, "list_documents", {"knowledge_base_id": kb}, caller=scoped)
 
 
 # --------------------------------------------------------------------- 记忆
@@ -813,11 +508,10 @@ def test_export_document_writes_a_real_docx(services: Services, kb: str, admin: 
     )
 
     assert result["format"] == "docx" and result["size_bytes"] > 1000
-    stored = services.documents.get(result["document_id"])
-    assert stored.name == "随访方案.docx"
-    raw = services.documents.content(result["document_id"]).data
+    assert services.kb.ingest.calls[-1]["filename"] == "随访方案.docx"
+    raw = services.kb.ingest.calls[-1]["content"]
     parsed = LocalOfficeParser().parse(
-        filename=stored.name,
+        filename="随访方案.docx",
         mime_type=None,
         content=raw,
         probe=ProbeResult(kind="office", text_coverage=1.0),
@@ -848,7 +542,7 @@ def test_export_table_keeps_numbers_as_numbers(services: Services, kb: str, admi
     )
 
     assert result["format"] == "xlsx"
-    raw = services.documents.content(result["document_id"]).data
+    raw = services.kb.ingest.calls[-1]["content"]
     sheet = openpyxl.load_workbook(io.BytesIO(raw))["随访"]
     assert [cell.value for cell in sheet[1]] == ["项目", "频率(月)", "次数"]
     assert sheet.cell(row=2, column=2).value == 3, "纯数字的字符串要落成数值"
@@ -911,7 +605,7 @@ def test_export_deck_builds_slides_from_the_old_shape(
     from app.parsers.base import ProbeResult
     from app.parsers.local_office import LocalOfficeParser
 
-    result = call_tool(
+    call_tool(
         services,
         "export_deck",
         {
@@ -926,7 +620,7 @@ def test_export_deck_builds_slides_from_the_old_shape(
         caller=admin,
     )
 
-    raw = services.documents.content(result["document_id"]).data
+    raw = services.kb.ingest.calls[-1]["content"]
     parsed = LocalOfficeParser().parse(
         filename="方案.pptx",
         mime_type=None,
@@ -1028,8 +722,8 @@ def test_export_deck_new_shape_renders_and_passes_structure_checks(
         ],
     }
 
-    result = call_tool(services, "export_deck", args, caller=admin)
-    raw = services.documents.content(result["document_id"]).data
+    call_tool(services, "export_deck", args, caller=admin)
+    raw = services.kb.ingest.calls[-1]["content"]
     written = tmp_path / "季度复盘.pptx"
     written.write_bytes(raw)
 
@@ -1247,7 +941,7 @@ def test_export_pdf_is_a_readable_pdf(services: Services, kb: str, admin: Caller
 
     from pypdf import PdfReader
 
-    result = call_tool(
+    call_tool(
         services,
         "export_document",
         {
@@ -1258,7 +952,7 @@ def test_export_pdf_is_a_readable_pdf(services: Services, kb: str, admin: Caller
         caller=admin,
     )
 
-    raw = services.documents.content(result["document_id"]).data
+    raw = services.kb.ingest.calls[-1]["content"]
     text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(raw)).pages)
     assert "每三个月测量一次眼轴长度" in text
 
@@ -1315,19 +1009,6 @@ def test_export_enforces_the_limits_with_the_number_in_the_message(
         call_tool(
             services, "export_deck", {"knowledge_base_id": kb, "filename": "空.pptx", "slides": []},
             caller=admin,
-        )
-
-
-def test_export_needs_write_access(services: Services, kb: str, key_for) -> None:  # type: ignore[no-untyped-def]
-    """**只读凭据不能产出**：写文档与上传文档是同一档权限。"""
-    reader = key_for(kb_ids=[kb], permission=READ)
-
-    with pytest.raises(ForbiddenError):
-        call_tool(
-            services,
-            "export_document",
-            {"knowledge_base_id": kb, "filename": "报告.docx", "markdown": "内容"},
-            caller=reader,
         )
 
 
@@ -1590,7 +1271,7 @@ def test_export_in_a_conversation_files_nothing(
     from app.services.tools import ARTIFACT_KEY
 
     conversation_id = services.conversations.create(title="导出短诗").id
-    before = services.documents.count_documents(kb)
+    before = len(services.kb.ingest.calls)
 
     result = call_tool(
         services,
@@ -1603,7 +1284,7 @@ def test_export_in_a_conversation_files_nothing(
     assert result["artifact_id"].startswith("art_")
     assert result["saved_to"] == "本会话"
     assert "没有进知识库" in result["note"]
-    assert services.documents.count_documents(kb) == before
+    assert len(services.kb.ingest.calls) == before
     # 界面那份（卡片）与给模型那份在同一个 dict 里，见 _save_export 的说明
     assert result[ARTIFACT_KEY]["artifact_id"] == result["artifact_id"]
 
@@ -1617,7 +1298,7 @@ def test_export_ignores_a_knowledge_base_id_from_the_model(
     （它在别处见过）。所以这条断言的是"猜出来也没用"——落点由服务端决定。
     """
     conversation_id = services.conversations.create(title="再导出一次").id
-    before = services.documents.count_documents(kb)
+    before = len(services.kb.ingest.calls)
 
     call_tool(
         services,
@@ -1631,7 +1312,7 @@ def test_export_ignores_a_knowledge_base_id_from_the_model(
         conversation_id=conversation_id,
     )
 
-    assert services.documents.count_documents(kb) == before
+    assert len(services.kb.ingest.calls) == before
 
 
 def test_export_document_delivers_a_markdown_file(
@@ -1646,7 +1327,7 @@ def test_export_document_delivers_a_markdown_file(
     from app.services.tools import ARTIFACT_KEY
 
     conversation_id = services.conversations.create(title="交付 .md").id
-    before = services.documents.count_documents(kb)
+    before = len(services.kb.ingest.calls)
     body = "# 随访方案\n\n每三个月测一次。\n"
 
     result = call_tool(
@@ -1671,7 +1352,7 @@ def test_export_document_delivers_a_markdown_file(
     # 不是这条链路改的内容（测试想把这一点也钉住，所以比的是 strip 之后的那份）
     assert services.artifacts.content(record).decode("utf-8") == body.strip()
     # 与 .docx 那条同一口径：交付**不进知识库**，那是另一个显式动作
-    assert services.documents.count_documents(kb) == before
+    assert len(services.kb.ingest.calls) == before
 
 
 def test_export_document_delivers_every_plain_text_kind(
@@ -1720,9 +1401,8 @@ def test_ingest_artifact_files_an_exported_file(
         caller=admin,
     )
 
-    document = services.documents.get(result["document_id"])
-    assert document.name == "随访方案.docx"
-    assert document.knowledge_base_id == kb
+    assert services.kb.ingest.calls[-1]["filename"] == "随访方案.docx"
+    assert services.kb.ingest.calls[-1]["knowledge_base_id"] == kb
     # 卡片按 artifact_id 合并，于是这一步跑完界面立刻显示"已存进知识库"
     assert result[ARTIFACT_KEY]["artifact_id"] == exported["artifact_id"]
     assert result[ARTIFACT_KEY]["knowledge_base_id"] == kb
@@ -1736,14 +1416,14 @@ def test_export_without_a_conversation_still_needs_a_library(
     那条通道没有产物区，唯一的落点就是知识库；而且"外部客户端点名叫了哪个库"
     本身就是显式的——这与对话里"模型替用户挑一个"是两回事。
     """
-    result = call_tool(
+    call_tool(
         services,
         "export_document",
         {"knowledge_base_id": kb, "filename": "外部.docx", "markdown": "正文"},
         caller=admin,
     )
 
-    assert services.documents.get(result["document_id"]).knowledge_base_id == kb
+    assert services.kb.ingest.calls[-1]["knowledge_base_id"] == kb
 
     with pytest.raises(InvalidRequestError, match="knowledge_base_id"):
         call_tool(

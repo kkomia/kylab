@@ -96,7 +96,7 @@ def test_peripheral_tools_are_not_in_the_resident_table() -> None:
     resident = _names(table.resident())
     peripheral = _names(table.peripheral())
 
-    for name in ("export_table", "export_document", "create_knowledge_base", "run_command"):
+    for name in ("export_table", "export_document", "upload_document", "run_command"):
         assert name in peripheral, f"{name} 应当是外围工具"
         assert name not in resident, f"{name} 不该常驻——外围工具默认不进注入"
 

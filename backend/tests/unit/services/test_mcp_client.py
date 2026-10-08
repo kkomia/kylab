@@ -2,19 +2,12 @@
 
 镜像同构：``app/services/mcp_client.py`` → 本文件。
 
-**这里有一部分是"自己连自己"的真实验证**：把 KYLAB 的 MCP **服务端**
-（``app/mcp_server/server.py``，本来就有）当外部服务起起来，用这一侧的**客户端**
-去连、去发现工具。上下游都是真代码、真子进程、真协议，没有打桩——
-用假服务器测的话，"我们发的初始化参数它收不收、它的返回我们解不解得开"
-这两件最容易出问题的事恰好都测不到。
-
-其余用假会话测的是**策略与形状**：命名前缀、策略三档、凭据不回显、
+**全部用假会话测**，一条真网络都不发——测的是**策略与形状**：命名前缀、策略三档、凭据不回显、
 连不上时不返回空清单。
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -199,51 +192,6 @@ def test_update_replaces_credentials_wholesale() -> None:
 
 
 # ------------------------------------------------------- 真连（自己连自己）
-
-
-def _kylab_mcp_record() -> MCPServerRecord:
-    """把 KYLAB 自己的 MCP 服务端当成"外部服务"。
-
-    ``-m app.mcp_server.server`` 从 ``backend/`` 目录起，环境里带上仓库路径，
-    这样它和当前进程用的是同一份代码——**上游改了、这个测试就会跟着动**，
-    这正是我们要的（它不是"另一个产品"，是我们自己的另一半）。
-    """
-    return MCPServerRecord(
-        id="mcp_self",
-        name="kylab-self",
-        transport="stdio",
-        target=sys.executable,
-        args=("-m", "app.mcp_server.server", "--transport", "stdio"),
-        env={"PYTHONPATH": str(BACKEND)},
-        policy="allow",
-    )
-
-
-def test_lists_tools_from_a_real_stdio_server() -> None:
-    """真起子进程、真走 MCP 握手、真拿回工具清单。"""
-    service, _ = _service()
-
-    tools = service.list_tools(_kylab_mcp_record())
-
-    names = {item.name for item in tools}
-    # 这几个是 KYLAB MCP 服务端确实暴露的工具（见 app/services/tools.py）
-    assert {"search", "list_knowledge_bases", "recall"} <= names
-    # 限定名要带上服务名前缀
-    assert all(item.qualified.startswith("mcp__kylab-self__") for item in tools)
-    # 描述要非空：模型就是靠它决定用哪个工具的
-    assert all(item.description for item in tools)
-
-
-def test_probe_reports_tool_count() -> None:
-    service, meta = _service()
-    record = _kylab_mcp_record()
-    meta.records[record.id] = record
-
-    ok, detail, tools = service.probe(record.id, user_id=None)
-
-    assert ok is True
-    assert "连接正常" in detail
-    assert len(tools) == len(service.list_tools(record))
 
 
 def test_probe_reports_failure_without_raising() -> None:

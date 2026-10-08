@@ -251,36 +251,33 @@ def test_custom_system_prompt_wins_but_blank_falls_back() -> None:
 
 
 def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -> None:
+    """一轮问答把出处带上、把资料拼进 system，并把问题交给模型（假模型，不打网络）。
+
+    检索那一半**整段交给 knowledge**（本机是知识库的客户端，见
+    `ChatService.retrieve_sources`）——所以这里给一个假的知识库实现，
+    返回一条 `SourceRef`，与真实现同形。
+    """
     fake = FakeChat("眼轴长度是主要监测指标。[1]")
-    captured: dict = {}
+    asked: list[dict] = []
 
-    class RecordingRetrieval:
-        def search(self, query):  # type: ignore[no-untyped-def]
-            captured["query"] = query
-            return type(
-                "Response",
-                (),
-                {
-                    "hits": [
-                        type(
-                            "Hit",
-                            (),
-                            {
-                                "chunk_id": "c1",
-                                "document_id": "d1",
-                                "knowledge_base_id": "kb_1",
-                                "document_name": "眼轴共识.pdf",
-                                "heading_path": "3 监测",
-                                "page": 4,
-                                "score": 0.9,
-                                "text": "眼轴长度是主要参数之一。",
-                            },
-                        )()
-                    ]
-                },
-            )()
+    class _FakeKnowledge:
+        def retrieve_sources(self, **kwargs):  # type: ignore[no-untyped-def]
+            asked.append(kwargs)
+            return [
+                SourceRef(
+                    index=1,
+                    chunk_id="c1",
+                    document_id="d1",
+                    document_name="眼轴共识.pdf",
+                    heading_path="3 监测",
+                    page=4,
+                    score=0.9,
+                    preview="眼轴长度是主要参数之一。",
+                    knowledge_base_id="kb_1",
+                )
+            ]
 
-    service = ChatService(RecordingRetrieval(), runtime, chat_factory=lambda config: fake)  # type: ignore[arg-type]
+    service = ChatService(runtime, knowledge=_FakeKnowledge(), chat_factory=lambda config: fake)
     bind_slot("chat", model_id="Qwen/Qwen3.5-4B", capabilities=["chat"])
 
     turn = service.answer(
@@ -293,14 +290,23 @@ def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -
     assert turn.sources[0].document_name == "眼轴共识.pdf"
     # 出处要带上知识库 id：界面靠它把引用直连到库页抽屉，而不是走 /documents 转发一跳
     assert turn.sources[0].knowledge_base_id == "kb_1"
-    assert captured["query"].query == "近视怎么监测"
+    # 参数原样交给知识库那一侧（本机不解释它们）
+    assert asked == [
+        {
+            "query": "近视怎么监测",
+            "kb_ids": ["kb_1"],
+            "top_k": None,
+            "candidate_k": 40,
+            "reader": None,
+        }
+    ]
     # 资料确实进了第一条 system
     assert "眼轴长度是主要参数之一" in fake.received[0][0].content
 
 
 def test_stream_yields_pieces_in_order(runtime, bind_slot) -> None:
     fake = FakeChat("一二三")
-    service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda config: fake)
+    service = ChatService(runtime, chat_factory=lambda config: fake)
     bind_slot("chat", model_id="m", capabilities=["chat"])
 
     pieces = list(service.answer_stream(query="q", sources=[]))
@@ -310,7 +316,7 @@ def test_stream_yields_pieces_in_order(runtime, bind_slot) -> None:
 
 def test_unconfigured_llm_raises_actionable_error(runtime) -> None:
     """没配模型时必须报"去哪配"，而不是返回空答案让用户以为知识库里没有。"""
-    service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda config: FakeChat())
+    service = ChatService(runtime, chat_factory=lambda config: FakeChat())
 
     with pytest.raises(ChatError) as excinfo:
         service.answer(query="q", sources=[])
@@ -325,33 +331,11 @@ def test_probe_reports_empty_content_as_error(runtime, bind_slot) -> None:
         def complete(self, messages):  # type: ignore[no-untyped-def]
             raise ChatError("模型只返回了思考过程、没有正文")
 
-    service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda c: EmptyMessage())
+    service = ChatService(runtime, chat_factory=lambda c: EmptyMessage())
     bind_slot("chat", model_id="m", capabilities=["chat"])
 
     with pytest.raises(ChatError):
         service.probe()
-
-
-class _EmptyRetrieval:
-    def search(self, query):  # type: ignore[no-untyped-def]
-        return type("Response", (), {"hits": []})()
-
-
-class _SectionStores:
-    """只提供 `meta.list_chunks_by_heading` 的假存储。
-
-    按小节名过滤是**镜像真仓储的行为**（`PostgresMetaStore` 在 SQL 里做同一件事）：
-    假存储如果不过滤，"补小节"那几条用例就测不到"不会串到别的小节去"。
-    """
-
-    def __init__(self, chunks):  # type: ignore[no-untyped-def]
-        self.calls = 0
-        self._chunks = chunks
-        self.meta = self
-
-    def list_chunks_by_heading(self, document_id: str, heading_path: str):  # type: ignore[no-untyped-def]
-        self.calls += 1
-        return [chunk for chunk in self._chunks if chunk.heading_path == heading_path]
 
 
 # ------------------------------------------------- 资料装配：文档摘要（v25）
@@ -469,9 +453,7 @@ class _KbStores:
 def _kb_service(records: dict[str, object]) -> ChatService:  # type: ignore[no-untyped-def]
     from app.services.runtime_config import RuntimeConfigService
 
-    return ChatService(  # type: ignore[arg-type]
-        _EmptyRetrieval(), RuntimeConfigService(lambda: {}), stores=_KbStores(records)
-    )
+    return ChatService(RuntimeConfigService(lambda: {}), stores=_KbStores(records))  # type: ignore[arg-type]
 
 
 def test_kb_prompt_uses_the_single_prompt_verbatim() -> None:
@@ -525,7 +507,6 @@ def test_kb_prompt_survives_a_broken_store() -> None:
     from app.services.runtime_config import RuntimeConfigService
 
     service = ChatService(  # type: ignore[arg-type]
-        _EmptyRetrieval(),
         RuntimeConfigService(lambda: {}),
         stores=type("S", (), {"meta": _Boom()})(),
     )
@@ -590,7 +571,7 @@ def test_pinned_skills_get_expanded_without_spending_the_skill_budget(runtime, b
             record = type("Record", (), {"name": name})()
             return record, f"{name} 的正文：先拉数据再写成三段。"
 
-    service = ChatService(_EmptyRetrieval(), runtime, skills=_Skills())
+    service = ChatService(runtime, skills=_Skills())
     bind_slot("chat", model_id="m", capabilities=["chat"])
 
     # 勾三个，超过 MAX_SKILL_LOADS（2）——这正是要钉的那条：不该被上限砍掉
@@ -625,7 +606,6 @@ def test_the_skill_catalog_is_injected_but_not_its_bodies(
         encoding="utf-8",
     )
     service = ChatService(
-        _EmptyRetrieval(),
         runtime,
         skills=SkillService(
             tmp_path / "data", builtin_dir=builtin, agents_dir=tmp_path / "no-agents"
@@ -687,7 +667,7 @@ def test_the_whole_tool_loop_keeps_the_users_thinking_setting(
             used.append(self._config.enable_thinking)
             yield LLMDelta(text="答")  # 一步作答（不调工具）
 
-    service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda config: _Chat(config))  # type: ignore[arg-type]
+    service = ChatService(runtime, chat_factory=lambda config: _Chat(config))  # type: ignore[arg-type]
     bind_slot("chat", model_id="m", capabilities=["chat"])
 
     loop = service.tool_loop(
@@ -709,7 +689,7 @@ def test_no_kb_round_says_so_in_the_prompt(runtime, bind_slot) -> None:  # type:
     查 search / recall"，而表里没有 `search`——不说清楚，模型会去试一个
     不存在的工具，或者反过来以为"这一轮什么都查不了"、连记忆也不敢用。
     """
-    service = ChatService(_EmptyRetrieval(), runtime)
+    service = ChatService(runtime)
     bind_slot("chat", model_id="m", capabilities=["chat"])
 
     without = service.agent_messages(query="问", kb_ids=[])

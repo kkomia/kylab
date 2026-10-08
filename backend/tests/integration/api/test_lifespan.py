@@ -1,12 +1,10 @@
 """应用生命周期与启动装配（集成）。
 
-守的是"服务起来的时候存储是否真的准备好了"——这一条不测，M1 的装配就只是纸面功夫。
+守的是"服务起来的时候存储是否真的准备好了"——这一条不测，装配就只是纸面功夫。
+"就绪"看的是 ``<data_dir>/kylab.db`` 与那几个对象存储目录都在。
 
-v0.12 起存储是 PostgreSQL，所以"就绪"看的是 **schema 版本**（SQLite 时代看的是
-``kylab.db`` 文件在不在）。守的东西没变：启动即就绪。
-
-v0.1.1 起还守着"记忆/人设文件在启动时就铺好"（§12.224 第 12 条）：容器里的验收
-是"新实例起来后「记忆」页就可写"，而那时还没有任何对话。
+还守着"记忆/人设文件在启动时就铺好"（§12.224 第 12 条）：验收是"新实例起来后
+「记忆」页就可写"，而那时还没有任何对话。
 """
 
 from pathlib import Path
@@ -19,10 +17,10 @@ from app.core.storage import STORAGE_SUBDIRS, reset_stores
 from app.services.memory import AGENTS_FILE, PROFILE_FILE, SOUL_FILE
 
 
-def _assert_storage_ready(pg_database) -> None:
-    from app.storage.postgres_impl.schema import SCHEMA_VERSION, current_version
+def _assert_storage_ready(data_dir: Path) -> None:
+    from app.core.storage import LOCAL_DB_NAME
 
-    assert current_version(pg_database) == SCHEMA_VERSION, "启动后 schema 应已就位"
+    assert (data_dir / LOCAL_DB_NAME).is_file(), "启动后本机库应已就位"
 
 
 @pytest.fixture
@@ -40,27 +38,27 @@ def wired_app(monkeypatch, tmp_path):
         get_settings.cache_clear()
 
 
-def test_lifespan_initializes_storage_on_startup(wired_app, pg_database) -> None:
+def test_lifespan_initializes_storage_on_startup(wired_app) -> None:
     app, data_dir = wired_app
 
     with TestClient(app) as client:
         assert client.get("/api/v1/health").status_code == 200
 
-    _assert_storage_ready(pg_database)
+    _assert_storage_ready(data_dir)
     for subdir in STORAGE_SUBDIRS:
         # 测试里对象存储走本地实现（S3 环境变量被 conftest 清掉），目录应已建好
         assert (data_dir / subdir).is_dir()
 
 
-def test_startup_is_repeatable(wired_app, pg_database) -> None:
+def test_startup_is_repeatable(wired_app) -> None:
     """重启（再来一次 lifespan）不应因迁移重复执行而失败。"""
-    app, _ = wired_app
+    app, data_dir = wired_app
 
     for _ in range(2):
         with TestClient(app) as client:
             assert client.get("/api/v1/health").status_code == 200
 
-    _assert_storage_ready(pg_database)
+    _assert_storage_ready(data_dir)
 
 
 def test_docs_and_openapi_are_versioned(wired_app) -> None:
@@ -71,7 +69,7 @@ def test_docs_and_openapi_are_versioned(wired_app) -> None:
     assert all(path.startswith("/api/v1") for path in paths)
 
 
-def test_lifespan_lays_down_the_memory_templates(wired_app, pg_database) -> None:
+def test_lifespan_lays_down_the_memory_templates(wired_app) -> None:
     """启动时把记忆/人设文件**幂等**铺好（v0.1.1，§12.224 第 12 条）。
 
     容器里的验收是"新实例起来后「记忆」页就可写"——而新实例还没有任何对话，
@@ -106,7 +104,7 @@ def test_lifespan_lays_down_the_memory_templates(wired_app, pg_database) -> None
         assert {item.name for item in workspace.iterdir()} == expected
 
 
-def test_data_directory_is_respected(monkeypatch, tmp_path, pg_database) -> None:
+def test_data_directory_is_respected(monkeypatch, tmp_path) -> None:
     """``KYLAB_DATA_DIR`` 必须真的生效（否则会把数据写到仓库里）。"""
     target = tmp_path / "custom-data"
     monkeypatch.setenv("KYLAB_DATA_DIR", str(target))

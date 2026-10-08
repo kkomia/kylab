@@ -125,7 +125,7 @@ def test_chat_answer_uses_the_selected_model(runtime, bundle) -> None:  # type: 
         seen["base_url"] = config.base_url
         return _FakeChat()
 
-    service = ChatService(object(), runtime, chat_factory=factory)  # type: ignore[arg-type]
+    service = ChatService(runtime, chat_factory=factory)  # type: ignore[arg-type]
     service.answer(query="问一句", sources=[], model_pk=model.id)
 
     assert seen == {"model_id": "m-chosen", "base_url": "https://chosen/v1"}
@@ -145,7 +145,7 @@ def test_chat_answer_without_model_pk_uses_the_global_default(runtime, bundle) -
         seen["model_id"] = config.model_id
         return _FakeChat()
 
-    service = ChatService(object(), runtime, chat_factory=factory)  # type: ignore[arg-type]
+    service = ChatService(runtime, chat_factory=factory)  # type: ignore[arg-type]
     service.answer(query="问一句", sources=[])
 
     assert seen["model_id"] == "m-default"

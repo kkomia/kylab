@@ -316,8 +316,11 @@ def test_move_note_into_folder_and_back_to_unfiled(notes: NotesService) -> None:
 
     moved = notes.move_note(record.id, user_id="u1", folder_id=folder.id)
     assert moved.folder_id == folder.id
-    # 移动不是编辑：不动 updated_at，否则列表会把它顶到最前面
-    assert moved.updated_at == record.updated_at
+    # 移动不是编辑：不动 updated_at，否则列表会把它顶到最前面。
+    # **按毫秒比**：本机库（SQLite）把时间戳存成毫秒整数，微秒部分在往返中会归零，
+    # 直接比 datetime 会因为这点存储精度而红——而语义（没重新写时间）是成立的。
+    assert moved.updated_at is not None and record.updated_at is not None
+    assert abs((moved.updated_at - record.updated_at).total_seconds()) < 0.001
 
     back = notes.move_note(record.id, user_id="u1", folder_id=None)
     assert back.folder_id is None
@@ -377,48 +380,43 @@ def test_list_does_not_validate_the_folder(bundle) -> None:  # type: ignore[no-u
     assert items == [] and total == 0
 
 
-def test_note_folder_foreign_keys_declare_the_documented_semantics(pg_stores) -> None:  # type: ignore[no-untyped-def]
+def test_note_folder_foreign_keys_declare_the_documented_semantics(sqlite_db) -> None:  # type: ignore[no-untyped-def]
     """外键的 ``ON DELETE`` 是**表定义上的语义**，所以直接问数据库（而不是问服务层）。
 
-    ``SET NULL``：删文件夹 → 笔记回到未归档（``confdeltype='n'``）；
-    ``CASCADE``：删文件夹 → 子文件夹跟着走（``'c'``）。
+    ``SET NULL``：删文件夹 → 笔记回到未归档（``on_delete='SET NULL'``）；
+    ``CASCADE``：删文件夹 → 子文件夹跟着走（``'CASCADE'``）。
     这条用例钉的是"语义真的落在表上"——服务层哪天被改成手写两段删除，
     这两条仍然必须成立（它们是数据层的保证，不是某条代码路径的行为）。
     """
-    with pg_stores.read() as conn:
-        rows = conn.execute(
-            "select conrelid::regclass::text as rel, "
-            "       a.attname as col, c.confdeltype as del "
-            "  from pg_constraint c "
-            "  join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any(c.conkey) "
-            " where c.contype = 'f' "
-            "   and c.conrelid in ('notes'::regclass, 'note_folders'::regclass)"
-        ).fetchall()
+    with sqlite_db.read() as conn:
+        rows = conn.execute("PRAGMA foreign_key_list(notes)").fetchall()
+        folder_fk = [row for row in rows if row["table"] == "note_folders"]
+        assert [row["on_delete"] for row in folder_fk] == ["SET NULL"]
 
-    rules = {(row["rel"], row["col"]): row["del"] for row in rows}
-    assert rules[("notes", "folder_id")] == "n", "删文件夹要留下笔记（SET NULL）"
-    assert rules[("note_folders", "parent_id")] == "c", "子文件夹随父级一起删（CASCADE）"
+        rows = conn.execute("PRAGMA foreign_key_list(note_folders)").fetchall()
+        parent_fk = [row for row in rows if row["table"] == "note_folders"]
+        assert [row["on_delete"] for row in parent_fk] == ["CASCADE"]
 
 
 def test_deleting_a_parent_folder_row_cascades_and_unfiles_at_the_database_level(
     bundle,  # type: ignore[no-untyped-def]
-    pg_stores,  # type: ignore[no-untyped-def]
+    sqlite_db,  # type: ignore[no-untyped-def]
 ) -> None:
     """不走服务层，直接删父文件夹那一行：子文件夹消失、笔记还在且回到未归档。
 
     与上面那条互补：上面查的是**声明**，这条查的是**行为**（声明写对了但没生效，
-    在生产里是同一种故障）。``pg_stores`` 与 ``bundle`` 指向同一个临时库。
+    在生产里是同一种故障）。
     """
     service = NotesService(bundle)
     parent = service.create_folder(user_id="u1", name="工作")
     child = service.create_folder(user_id="u1", name="会议", parent_id=parent.id)
     note = service.create(user_id="u1", title="周会", folder_id=child.id)
 
-    with pg_stores.session() as conn:
-        conn.execute("DELETE FROM note_folders WHERE id = %s", (parent.id,))
+    with sqlite_db.session() as conn:
+        conn.execute("DELETE FROM note_folders WHERE id = ?", (parent.id,))
         folders = conn.execute("SELECT id FROM note_folders").fetchall()
         row = conn.execute(
-            "SELECT folder_id, title FROM notes WHERE id = %s", (note.id,)
+            "SELECT folder_id, title FROM notes WHERE id = ?", (note.id,)
         ).fetchone()
 
     assert folders == [], "子文件夹应当随父级级联删掉"

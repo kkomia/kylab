@@ -89,9 +89,6 @@ def test_machine_tools_are_always_there() -> None:
     assert {"schedule_task", "list_scheduled_tasks"} <= names
 
 
-def test_tabular_tools_follow_the_knowledge_base_switch() -> None:
-    assert {"list_tables", "query_table"} <= _names(["kb_x"])
-    assert not ({"list_tables", "query_table"} & _names(None))
 
 
 def test_local_tools_come_before_external_ones() -> None:
@@ -141,23 +138,8 @@ def test_search_without_hits_says_so(roots: Roots) -> None:
     assert "（没有命中）" in outcome.content
 
 
-# ------------------------------------------------------------------ 表格渲染
 
 
-class _FakeTabular:
-    def __init__(
-        self, items: list[dict[str, Any]] | None = None, payload: dict | None = None
-    ) -> None:  # type: ignore[type-arg]
-        self._items = items or []
-        self._payload = payload or {}
-        self.seen: dict[str, Any] = {}
-
-    def tables(self, *, kb_ids: list[str] | None = None) -> list[dict[str, Any]]:
-        return self._items
-
-    def query_sql(self, *, sql: str, kb_ids: list[str] | None = None, limit: int = 100) -> dict:  # type: ignore[type-arg]
-        self.seen = {"sql": sql, "kb_ids": kb_ids, "limit": limit}
-        return self._payload
 
 
 class _FakeServices:
@@ -165,58 +147,12 @@ class _FakeServices:
         self.__dict__.update(parts)
 
 
-def test_list_tables_shows_columns_so_sql_can_be_written() -> None:
-    """列名要给全：模型下一步要写 SQL，**它得知道列叫什么**。"""
-    services = _FakeServices(
-        tabular=_FakeTabular(
-            items=[
-                {
-                    "document_id": "doc_a",
-                    "name": "记账.csv",
-                    "columns": ["月份", "金额"],
-                    "rows": 12,
-                }
-            ]
-        )
-    )
-    outcome = agent_tools._list_tables(services, ["kb_x"])
-    assert "doc_a" in outcome.content
-    assert "月份、金额" in outcome.content
-    assert "12 行" in outcome.content
 
 
-def test_list_tables_without_scope_explains_the_switch() -> None:
-    outcome = agent_tools._list_tables(_FakeServices(), [])
-    assert "没有可查的知识库" in outcome.content
 
 
-def test_query_table_renders_markdown_and_passes_the_scope() -> None:
-    payload = {
-        "sql": "SELECT 1",
-        "columns": ["科目", "合计"],
-        "rows": [["餐饮", "320"]],
-        "total": 1,
-        "truncated": False,
-        "tables": [],
-        "note": "最多回 100 行",
-    }
-    fake = _FakeTabular(payload=payload)
-    outcome = agent_tools._query_table(_FakeServices(tabular=fake), ["kb_x"], {"sql": "SELECT 1"})
-    assert "| 科目 | 合计 |" in outcome.content
-    assert "| 餐饮 | 320 |" in outcome.content
-    assert fake.seen["kb_ids"] == ["kb_x"]
 
 
-def test_query_table_reports_a_refusal_verbatim() -> None:
-    """拒绝的理由要**原样回给模型**：那里的措辞是照着"下一步怎么做"写的。"""
-
-    class _Refusing(_FakeTabular):
-        def query_sql(self, **kwargs: object) -> dict:  # type: ignore[type-arg]
-            raise InvalidRequestError("这些表不在这一轮能查的范围内：doc_secret")
-
-    outcome = agent_tools._query_table(_FakeServices(tabular=_Refusing()), ["kb_x"], {"sql": "x"})
-    assert "doc_secret" in outcome.content
-    assert outcome.summary == "查询没跑成"
 
 
 # ------------------------------------------------------------------ 定时任务工具
@@ -405,13 +341,20 @@ class _FakeApiKeys:
         self.checks.append((need, list(kb_ids or [])))
 
 
+class _FakeKb:
+    """够用的假组合根（`services.kb` 那一格）：入库两条接缝 + 凭据判定。
+
+    真身见 `core/services.py::KbServices`——本机这一档它就只有这三样。
+    """
+
+    def __init__(self, *, duplicate: bool = False) -> None:
+        self.ingest = _FakeIngest(duplicate=duplicate)
+        self.documents = _FakeDocuments()
+        self.api_keys = _FakeApiKeys()
+
+
 def _file_services(artifacts: Any = None, *, duplicate: bool = False) -> _FakeServices:
-    return _FakeServices(
-        artifacts=artifacts,
-        ingest=_FakeIngest(duplicate=duplicate),
-        documents=_FakeDocuments(),
-        api_keys=_FakeApiKeys(),
-    )
+    return _FakeServices(artifacts=artifacts, kb=_FakeKb(duplicate=duplicate))
 
 
 def test_conversation_file_tools_are_always_there() -> None:
@@ -421,7 +364,7 @@ def test_conversation_file_tools_are_always_there() -> None:
 
 
 def test_ingest_file_follows_the_knowledge_base_switch() -> None:
-    """入库是**写知识库**：关掉开关时它一起消失（与表格那两个同一条纪律）。"""
+    """入库是**写知识库**：关掉开关时它一起消失（与检索那条同一条纪律）。"""
     assert "ingest_file" in _names(["kb_x"])
     assert "ingest_file" not in _names(None)
 
@@ -484,9 +427,9 @@ def test_ingest_file_reads_from_the_conversation_file_area() -> None:
         {"knowledge_base_id": "kb_1", "path": "报告.pdf"},
     )
 
-    assert services.ingest.calls[0]["filename"] == "报告.pdf"
-    assert services.ingest.calls[0]["content"] == b"pdf-bytes"
-    assert services.documents.enqueued == ["doc_new"]
+    assert services.kb.ingest.calls[0]["filename"] == "报告.pdf"
+    assert services.kb.ingest.calls[0]["content"] == b"pdf-bytes"
+    assert services.kb.documents.enqueued == ["doc_new"]
     assert "doc_new" in outcome.content
 
 
@@ -503,7 +446,7 @@ def test_ingest_file_falls_back_to_the_file_face(tmp_path: Path) -> None:
         {"knowledge_base_id": "kb_1", "path": "out.csv"},
     )
 
-    assert services.ingest.calls[0]["content"] == b"a,b\n1,2\n"
+    assert services.kb.ingest.calls[0]["content"] == b"a,b\n1,2\n"
     assert "doc_new" in outcome.content
 
 
@@ -519,7 +462,7 @@ def test_ingest_file_reports_a_duplicate_without_enqueueing() -> None:
         {"knowledge_base_id": "kb_1", "path": "a.txt"},
     )
 
-    assert services.documents.enqueued == []
+    assert services.kb.documents.enqueued == []
     assert "相同" in outcome.content
 
 

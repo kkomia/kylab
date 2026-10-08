@@ -69,11 +69,6 @@ def test_mirrored_unit_test_is_always_in_scope(affected: ModuleType) -> None:
     assert not info["force_all"], "单个服务模块的改动不该判全量"
 
 
-def test_mirrored_integration_test_is_always_in_scope(affected: ModuleType) -> None:
-    """集成侧镜像：``storage/postgres_impl/meta_store.py`` 找到集成那份镜像。"""
-    info = _backend(affected, ["backend/app/storage/postgres_impl/meta_store.py"])
-
-    assert "tests/integration/storage/test_meta_store.py" in info["targets"]
 
 
 def test_changing_a_test_file_runs_that_file(affected: ModuleType) -> None:

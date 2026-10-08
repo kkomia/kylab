@@ -324,117 +324,27 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **146** 条端点。
-
-### `api-keys`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/api-keys` | API Key 列表 |
-| `POST` | `/api/v1/api-keys` | 创建 API Key（明文只在此响应出现） |
-| `DELETE` | `/api/v1/api-keys/{key_id}` | 撤销 API Key |
-
-### `auth`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `DELETE` | `/api/v1/auth/avatar` | 去掉头像 |
-| `POST` | `/api/v1/auth/avatar` | 换一张头像（上传图片） |
-| `POST` | `/api/v1/auth/login` | 登录（用户名 + 密码） |
-| `POST` | `/api/v1/auth/logout` | 退出登录（吊销当前会话） |
-| `GET` | `/api/v1/auth/me` | 当前登录账号 |
-| `POST` | `/api/v1/auth/password` | 修改自己的密码 |
-| `POST` | `/api/v1/auth/setup` | 首次初始化：创建管理员账号 |
-| `GET` | `/api/v1/auth/status` | 认证状态（是否需初始化） |
-
-### `avatars`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/avatars/{user_id}` | 取一张头像（签名链接） |
-
-### `backup`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/backup/handshake` | 备份提供者握手（连通性 + 能力集 + 设备与额度） |
-| `GET` | `/api/v1/backup/snapshots` | 列恢复点（最近在前，可按设备过滤） |
-| `DELETE` | `/api/v1/backup/snapshots/{device_id}/{snapshot_id}` | 删掉一个恢复点（整份：快照体 + 清单） |
-| `GET` | `/api/v1/backup/snapshots/{device_id}/{snapshot_id}` | 取一份恢复点的清单（manifest.json 原样） |
-| `GET` | `/api/v1/backup/snapshots/{device_id}/{snapshot_id}/blob` | 流式下载一份快照体 |
-| `PUT` | `/api/v1/backup/snapshots/{device_id}/{snapshot_id}/blob` | 上传一份快照体（append-only：路径即幂等键） |
-| `PUT` | `/api/v1/backup/snapshots/{device_id}/{snapshot_id}/manifest` | 上传清单（完成标记：这一份传完了） |
-
-### `chat`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/chat/suggested-questions` | 推荐问题（取自入库时为各分段生成的问题） |
-
-### `chunks`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `DELETE` | `/api/v1/chunks/{chunk_id}` | 删除切块（连同索引与向量） |
-| `GET` | `/api/v1/chunks/{chunk_id}` | 切块详情 |
-| `PATCH` | `/api/v1/chunks/{chunk_id}` | 修改切块正文（会重新向量化） |
-| `PUT` | `/api/v1/chunks/{chunk_id}/disabled` | 禁用 / 恢复切块 |
-| `DELETE` | `/api/v1/documents/{document_id}/chunks/by-ordinal/{ordinal}` | 按文档与序号删除切块 |
-| `GET` | `/api/v1/documents/{document_id}/chunks/by-ordinal/{ordinal}` | 按文档与序号取切块（推荐：URL 安全） |
-| `PATCH` | `/api/v1/documents/{document_id}/chunks/by-ordinal/{ordinal}` | 按文档与序号改正文 |
-| `PUT` | `/api/v1/documents/{document_id}/chunks/by-ordinal/{ordinal}/disabled` | 按文档与序号禁用 / 恢复 |
+共 **130** 条端点。
 
 ### `conversations`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| `GET` | `/api/v1/conversations` | 会话列表（置顶优先，其次最近更新） |
+| `POST` | `/api/v1/conversations` | 新建会话 |
 | `GET` | `/api/v1/conversations/export` | 导出会话（NDJSON 流；给本机导入器用） |
-
-### `data-sources`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `DELETE` | `/api/v1/data-sources/{source_id}` | 删除数据源（已抓取的文档保留） |
-| `PATCH` | `/api/v1/data-sources/{source_id}/enabled` | 启用 / 停用数据源 |
-| `POST` | `/api/v1/data-sources/{source_id}/sync` | 拉取一次（默认入队；wait=true 立刻做完） |
-| `GET` | `/api/v1/knowledge-bases/{kb_id}/data-sources` | 某知识库的数据源 |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/data-sources` | 登记数据源（HTML / RSS） |
-
-### `documents`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/documents/{document_id}` | 文档详情 |
-| `PATCH` | `/api/v1/documents/{document_id}` | 重命名文档 |
-| `POST` | `/api/v1/documents/{document_id}/cancel` | 取消解析（叫停还在跑的摄入） |
-| `GET` | `/api/v1/documents/{document_id}/chunks` | 切块列表（文档详情页的正文预览） |
-| `GET` | `/api/v1/documents/{document_id}/content` | 按签名取内容（下载 / 页面内渲染） |
-| `PATCH` | `/api/v1/documents/{document_id}/disabled` | 停用 / 恢复检索 |
-| `GET` | `/api/v1/documents/{document_id}/download-url` | 签发下载链接（带过期时间） |
-| `GET` | `/api/v1/documents/{document_id}/parts` | 子文件树（大文件切分） |
-| `GET` | `/api/v1/documents/{document_id}/preview` | 阅读视角（解析文本内联 / 原件版式给签名链接） |
-| `POST` | `/api/v1/documents/{document_id}/reprocess` | 重新摄入（失败重跑） |
-| `GET` | `/api/v1/documents/{document_id}/timeline` | 处理进度时间线（共几步 / 现在第几步 / 每步耗时） |
-| `GET` | `/api/v1/knowledge-bases/{kb_id}/documents` | 知识库下的文档列表 |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents` | 上传文档（异步摄入） |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/batch` | 批量删除 / 重新摄入 / 移动 / 停用启用 / 生成问题 |
-
-### `folders`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `PATCH` | `/api/v1/documents/{document_id}/folder` | 把文档移进目录 / 移回根 |
-| `DELETE` | `/api/v1/folders/{folder_id}` | 删除目录（非空则拒绝） |
-| `PATCH` | `/api/v1/folders/{folder_id}` | 重命名目录 |
-| `GET` | `/api/v1/knowledge-bases/{kb_id}/folders` | 知识库的目录列表（含每个目录的文档数） |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/folders` | 新建目录 |
-
-### `frontend`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/app/frontend/manifest` | 前端资源包的版本清单 |
-| `GET` | `/api/v1/app/frontend/package` | 前端资源包（整份 dist 的 zip） |
+| `DELETE` | `/api/v1/conversations/{conversation_id}` | 删除会话（连同全部消息） |
+| `GET` | `/api/v1/conversations/{conversation_id}` | 会话详情 |
+| `PATCH` | `/api/v1/conversations/{conversation_id}` | 修改会话（标题 / 置顶） |
+| `GET` | `/api/v1/conversations/{conversation_id}/artifacts` | 这条会话产出的文件 |
+| `POST` | `/api/v1/conversations/{conversation_id}/artifacts/{artifact_id}/ingest` | 把一份产物存进知识库（显式动作） |
+| `POST` | `/api/v1/conversations/{conversation_id}/branch` | 从第 N 轮分叉出一条新会话（「从这里重开」） |
+| `GET` | `/api/v1/conversations/{conversation_id}/files` | 这条会话的文件区（会话文件 / 项目目录） |
+| `POST` | `/api/v1/conversations/{conversation_id}/files` | 往文件区里放一份文件 |
+| `GET` | `/api/v1/conversations/{conversation_id}/files/content` | 按签名取文件内容（预览 / 下载共用） |
+| `GET` | `/api/v1/conversations/{conversation_id}/files/download-url` | 签发文件链接（预览 / 下载共用） |
+| `POST` | `/api/v1/conversations/{conversation_id}/files/import` | 把项目目录里的一份文件取进本会话 |
+| `POST` | `/api/v1/conversations/{conversation_id}/rewind` | 回退最近 N 轮问答（「重新生成」用） |
 
 ### `health`
 
@@ -442,34 +352,49 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `GET` | `/api/v1/health` | 服务存活探针 |
 
-### `knowledge-bases`
+### `local`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/v1/knowledge-bases` | 知识库列表 |
-| `POST` | `/api/v1/knowledge-bases` | 创建知识库 |
-| `GET` | `/api/v1/knowledge-bases/{kb_id}` | 知识库详情 |
-| `PATCH` | `/api/v1/knowledge-bases/{kb_id}` | 修改知识库（名称 / 简介） |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/prompt/generate` | 按文档摘要生成库提示词（草稿） |
+| `GET` | `/api/v1/chat/commands` | 可用命令（内置 + 自定义 + 技能，被遮蔽的也在里面） |
+| `GET` | `/api/v1/chat/context-usage` | 上下文用量（按来源分解，估算） |
+| `GET` | `/api/v1/conversations/{conversation_id}/events` | 会话事件日志（只追加，按 seq 正序） |
+| `GET` | `/api/v1/local/backup` | 备份：提供者状态 + 待传队列 + 最近几份（连不上也要给本机那一半） |
+| `PATCH` | `/api/v1/local/backup` | 改备份提供者的地址 / 开关 / 含工作区 / 自动间隔（白名单四键，写完立刻重探） |
+| `GET` | `/api/v1/local/backup/points` | 恢复点清单（透传 NAS；连不上就如实回三态，不是 500） |
+| `DELETE` | `/api/v1/local/backup/points/{device_id}/{snapshot_id}` | 删一个恢复点（整份；服务端本来就没有 → 404 如实回） |
+| `POST` | `/api/v1/local/backup/restore` | 按点恢复：从一份快照重建本机（dry_run=true 只预演，同步回报告） |
+| `POST` | `/api/v1/local/backup/snapshots` | 立刻打一份快照并入队（断网也能打：202 + 队列一行 + 原因） |
+| `POST` | `/api/v1/local/import` | 导入 NAS 上的旧会话（后台跑，返回批次 id 供轮询） |
+| `GET` | `/api/v1/local/import/{batch_id}` | 导入进度（轮询） |
+| `POST` | `/api/v1/local/import/{batch_id}/rollback` | 回滚一个导入批次（删新建的 / 用快照恢复被替换的 / 本机改过的保留） |
+| `DELETE` | `/api/v1/local/kb-cache` | 清掉本机留的快照（全清 / 按地址 / 按库） |
+| `GET` | `/api/v1/local/kb-cache/documents/{document_id}` | 快照：文档条目 |
+| `GET` | `/api/v1/local/kb-cache/knowledge-bases` | 快照：库列表（页面先画一帧用） |
+| `GET` | `/api/v1/local/kb-cache/knowledge-bases/{kb_id}` | 快照：库详情 |
+| `GET` | `/api/v1/local/kb-cache/knowledge-bases/{kb_id}/documents` | 快照：文档列表（只认规范视图） |
+| `GET` | `/api/v1/local/kb-cache/knowledge-bases/{kb_id}/folders` | 快照：库内目录 |
+| `POST` | `/api/v1/local/kb-cache/revalidate` | 再确认一份快照（焦点回来 / 「立即刷新」） |
+| `GET` | `/api/v1/local/kb-cache/stats` | 本机留的那一份有多大 / 最近更新（设置面板读它） |
+| `GET` | `/api/v1/local/provider` | 知识库提供者状态（三态 + 原因 + 能力集 + 库清单） |
+| `PATCH` | `/api/v1/local/provider` | 改知识库提供者的地址 / 开关（白名单两键，写完立刻重探） |
+| `GET` | `/api/v1/local/secrets` | 钥匙串：可用性与还有几处明文（只报数，不回显任何秘密） |
+| `POST` | `/api/v1/local/secrets/migrate` | 把库里的旧明文凭据收进系统钥匙串（逐项、幂等、可重跑） |
+| `GET` | `/api/v1/local/status` | 本机档状态（库在哪、接的是谁） |
+| `GET` | `/api/v1/stats/usage` | 用量（本机 usage_events：token 与调用量，不含钱） |
 
-### `lifecycle`
+### `mcp`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `DELETE` | `/api/v1/documents/{document_id}` | 删除文档（原文进回收站，索引立即清除） |
-| `GET` | `/api/v1/documents/{document_id}/impact` | 删除这份文档会波及什么 |
-| `DELETE` | `/api/v1/knowledge-bases/{kb_id}` | 删除知识库（不可恢复） |
-| `GET` | `/api/v1/knowledge-bases/{kb_id}/impact` | 删除这个知识库会波及什么 |
-| `GET` | `/api/v1/trash` | 回收站 |
-| `DELETE` | `/api/v1/trash/{trash_id}` | 彻底删除 |
-| `POST` | `/api/v1/trash/{trash_id}/restore` | 从回收站恢复（需要重新摄入） |
-
-### `maintenance`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/v1/maintenance/compact` | 整理存储 |
-| `GET` | `/api/v1/maintenance/storage` | 存储空间概览 |
+| `GET` | `/api/v1/mcp-servers` | MCP 服务列表 |
+| `POST` | `/api/v1/mcp-servers` | 登记一个 MCP 服务 |
+| `GET` | `/api/v1/mcp-servers/tools` | 所有已登记服务的工具 |
+| `DELETE` | `/api/v1/mcp-servers/{server_id}` | 删除 MCP 服务 |
+| `GET` | `/api/v1/mcp-servers/{server_id}` | 单个 MCP 服务 |
+| `PATCH` | `/api/v1/mcp-servers/{server_id}` | 改 MCP 服务 |
+| `POST` | `/api/v1/mcp-servers/{server_id}/call` | 调用一个外部工具 |
+| `POST` | `/api/v1/mcp-servers/{server_id}/probe` | 测试连接并发现工具 |
 
 ### `memory`
 
@@ -486,14 +411,6 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/memory/recall` | 在档案的变更流里查证 |
 | `POST` | `/api/v1/memory/remember` | 记一条（新增或顶替） |
 | `POST` | `/api/v1/memory/restore` | 还原一条旧值 |
-
-### `model-proxy`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/v1/model-proxy/complete` | 模型代理：一次性补全 |
-| `POST` | `/api/v1/model-proxy/events` | 模型代理：流式 + 工具调用（SSE 透传） |
-| `POST` | `/api/v1/model-proxy/stream` | 模型代理：流式（只要正文） |
 
 ### `model-registry`
 
@@ -514,6 +431,27 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `PUT` | `/api/v1/model-registry/slots/{slot}` | 绑定 / 解绑用途 |
 | `POST` | `/api/v1/model-registry/slots/{slot}/test` | 测试该用途的模型是否可用 |
 
+### `notes`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/notes` | 笔记列表（置顶优先，其次最近更新） |
+| `POST` | `/api/v1/notes` | 新建笔记 |
+| `GET` | `/api/v1/notes/folders` | 文件夹列表（含每个文件夹的笔记数） |
+| `POST` | `/api/v1/notes/folders` | 新建文件夹 |
+| `DELETE` | `/api/v1/notes/folders/{folder_id}` | 删除文件夹（子文件夹一起删，里面的笔记回到未归档） |
+| `PATCH` | `/api/v1/notes/folders/{folder_id}` | 重命名文件夹 |
+| `PATCH` | `/api/v1/notes/folders/{folder_id}/parent` | 移动文件夹（换父级） |
+| `GET` | `/api/v1/notes/tags` | 用过的标签与条数 |
+| `DELETE` | `/api/v1/notes/{note_id}` | 删除笔记 |
+| `GET` | `/api/v1/notes/{note_id}` | 笔记详情 |
+| `PATCH` | `/api/v1/notes/{note_id}` | 更新笔记 |
+| `POST` | `/api/v1/notes/{note_id}/ai` | 用对话模型排版 / 润色笔记 |
+| `POST` | `/api/v1/notes/{note_id}/attach` | 把笔记加入知识库 |
+| `PATCH` | `/api/v1/notes/{note_id}/folder` | 把笔记移进文件夹 / 移回未归档 |
+| `POST` | `/api/v1/notes/{note_id}/images` | 上传笔记配图 |
+| `GET` | `/api/v1/notes/{note_id}/images/{name}` | 读取笔记配图 |
+
 ### `plugins`
 
 | 方法 | 路径 | 说明 |
@@ -522,33 +460,30 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/plugins/{plugin_id}/disable` | 停用一个插件 |
 | `POST` | `/api/v1/plugins/{plugin_id}/enable` | 启用一个插件 |
 
-### `provider`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/provider/handshake` | 知识库提供者握手（连通性 + 能力集 + 库清单） |
-
 ### `sandbox`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/sandbox` | 这台机器上的隔离能力 |
-| `POST` | `/api/v1/sandbox/exec` | 在隔离里执行一条命令 |
 | `POST` | `/api/v1/sandbox/plan` | 看这条命令会被怎么隔离 |
 
-### `search`
+### `scheduled-tasks`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/v1/search` | 混合检索 |
+| `GET` | `/api/v1/scheduled-tasks` | 定时任务列表 |
+| `POST` | `/api/v1/scheduled-tasks` | 新建定时任务 |
+| `DELETE` | `/api/v1/scheduled-tasks/{scheduled_id}` | 删定时任务 |
+| `PATCH` | `/api/v1/scheduled-tasks/{scheduled_id}` | 改定时任务 |
+| `POST` | `/api/v1/scheduled-tasks/{scheduled_id}/run` | 立即跑一次 |
 
-### `shares`
+### `settings`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/v1/knowledge-bases/{kb_id}/shares` | 库的分享列表 |
-| `PUT` | `/api/v1/knowledge-bases/{kb_id}/shares` | 分享/调整档位（按登录名） |
-| `DELETE` | `/api/v1/knowledge-bases/{kb_id}/shares/{user_id}` | 收回分享 |
+| `GET` | `/api/v1/settings` | 运行期配置（密钥打码） |
+| `PATCH` | `/api/v1/settings` | 更新运行期配置 |
+| `POST` | `/api/v1/settings/test/{target}` | 连通性测试（embedding / mineru / paddleocr） |
 
 ### `site-icons`
 
@@ -576,56 +511,25 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/skills/{name}` | 技能详情（含正文） |
 | `PUT` | `/api/v1/skills/{name}/enabled` | 开/关一条技能 |
 
-### `stats`
+### `web`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/v1/stats/dashboard` | 驾驶舱统计 |
-| `GET` | `/api/v1/stats/usage` | 用量（token 与调用量，含检索） |
+| `GET` | `/api/v1/web/embed-check` | 这一页能不能嵌进 iframe（探一次响应头；连不上按不能嵌回，不报错） |
+| `GET` | `/api/v1/web/page` | 取一个网页的正文（本机代取；内网 / 本机地址一律拒） |
 
-### `tabular`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/documents/{document_id}/table` | 读表格文档的结构化副本（分页） |
-
-### `tasks`
+### `workspaces`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/v1/tasks` | 任务列表（每项带健康判据） |
-| `POST` | `/api/v1/tasks/cancel` | 取消还没结束的任务 |
-| `GET` | `/api/v1/tasks/health` | 运行态总览 |
-| `GET` | `/api/v1/tasks/load` | 负载面板（CPU / 内存 / 队列 / 额度） |
-
-### `users`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/users` | 使用者名册 |
-| `POST` | `/api/v1/users` | 添加使用者 / 开通账号（带 username 即账号） |
-| `DELETE` | `/api/v1/users/{user_id}` | 删除使用者（其文档保留，归属置空） |
-| `PUT` | `/api/v1/users/{user_id}/disabled` | 禁用 / 启用账号（禁用即吊销全部会话） |
-| `PUT` | `/api/v1/users/{user_id}/password` | 重置密码（吊销其全部会话） |
-
-### `webhooks`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/webhooks` | 订阅列表（密钥掩码） |
-| `POST` | `/api/v1/webhooks` | 新建订阅（密钥明文只在这里返回一次） |
-| `GET` | `/api/v1/webhooks/events` | 支持的事件清单 |
-| `DELETE` | `/api/v1/webhooks/{webhook_id}` | 删除订阅 |
-| `PATCH` | `/api/v1/webhooks/{webhook_id}` | 启用 / 停用订阅 |
-
-### `wiki`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `DELETE` | `/api/v1/knowledge-bases/{kb_id}/wiki` | 清空这个知识库的 Wiki 页面 |
-| `GET` | `/api/v1/knowledge-bases/{kb_id}/wiki` | Wiki 目录与生成状态 |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/wiki/generate` | 重建这个知识库的 Wiki（异步） |
-| `GET` | `/api/v1/wiki/pages/{page_id}` | 读一页 Wiki（正文 + 出处） |
+| `GET` | `/api/v1/workspaces` | 工作区列表 |
+| `POST` | `/api/v1/workspaces` | 新建工作区（指定根目录） |
+| `GET` | `/api/v1/workspaces/browse` | 浏览服务器上的目录（选工作区根目录用） |
+| `PATCH` | `/api/v1/workspaces/dirs` | 给服务器上的目录改名（选工作区时用） |
+| `POST` | `/api/v1/workspaces/dirs` | 在服务器上新建一个目录（选工作区时用） |
+| `DELETE` | `/api/v1/workspaces/{workspace_id}` | 删除工作区（里面的会话退回未归档） |
+| `GET` | `/api/v1/workspaces/{workspace_id}` | 工作区详情 |
+| `PATCH` | `/api/v1/workspaces/{workspace_id}` | 改工作区 |
 
 ---
 

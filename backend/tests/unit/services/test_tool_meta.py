@@ -166,8 +166,10 @@ def test_two_tools_of_the_same_kind_are_the_same_kind() -> None:
     """
     from app.services.tool_meta import kind_of
 
-    # 读文件 / 看笔记 / 查表格：都是"看一眼"，画同一张卡
-    assert {kind_of(name) for name in ("read_file", "list_notes", "query_table")} == {"read"}
+    # 读文件 / 看笔记 / 列会话文件：都是"看一眼"，画同一张卡
+    assert {kind_of(name) for name in ("read_file", "list_notes", "list_conversation_files")} == {
+        "read"
+    }
     # 写笔记 / 上传文档：都是"往里写"
     assert {kind_of(name) for name in ("create_note", "upload_document")} == {"write"}
     # 检索知识库 / 联网搜索 / 抓网页：都是"找东西"
@@ -181,8 +183,8 @@ def test_the_kind_is_derived_from_the_policy_fields() -> None:
     # 动整台机器的 = 执行；删除类最显眼；写读按影响面与 destructive 分
     assert kind_of("run_command") == "exec"
     assert meta_of("run_command").side_effect_scope == "system"
-    assert kind_of("delete_document") == "delete"
-    assert meta_of("delete_document").destructive is True
+    assert kind_of("forget") == "delete"
+    assert meta_of("forget").destructive is True
     assert kind_of("upload_document") == "write"
     assert meta_of("upload_document").read_only is False
     assert kind_of("read_file") == "read"

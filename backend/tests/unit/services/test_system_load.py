@@ -15,24 +15,17 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
 import pytest
 
-from app.models.enums import DataSourceKind, DocumentStage, TaskKind, TaskState
 from app.services.system_load import (
     MIN_CPU_SAMPLE_GAP,
     PsutilProbe,
     SystemLoadService,
 )
 from app.storage.base import (
-    DocumentPartRecord,
-    DocumentRecord,
-    KnowledgeBaseRecord,
-    ParseResultRecord,
     StoreBundle,
-    TaskRecord,
 )
 
 
@@ -191,69 +184,13 @@ def test_real_psutil_probe_reads_something_sane() -> None:
 # --------------------------------------------------------------------- 队列
 
 
-def _enqueue(store, task_id: str, kind: TaskKind, **kwargs: Any) -> TaskRecord:  # type: ignore[no-untyped-def]
-    return store.enqueue_task(TaskRecord(id=task_id, kind=kind, state=TaskState.PENDING, **kwargs))
-
-
-def test_queue_depth_counts_pending_by_kind(bundle: StoreBundle) -> None:
-    """按类型分布是这一格最可操作的信息："积压全是出题"该关出题，不是加机器。"""
-    _enqueue(bundle.meta, "t1", TaskKind.QUESTIONS)
-    _enqueue(bundle.meta, "t2", TaskKind.QUESTIONS)
-    _enqueue(bundle.meta, "t3", TaskKind.PARSE)
-
-    queue = _service(bundle, FakeHost([FakeCpuTimes(0, 0, 1)])).snapshot().queue
-
-    assert queue.pending == 3
-    assert queue.pending_by_kind == {"questions": 2, "parse": 1}
-    assert queue.running == 0
-    assert queue.slots == 2
-
-
-def test_stalled_task_counts_as_running_not_as_a_fourth_state(bundle: StoreBundle) -> None:
-    """停滞的任务仍在"在跑"那一格里。
-
-    它是"在跑但没人续约"，不是新的一类任务——单独数出来的话，
-    "在跑 0 / 上限 2"与"停滞 1"会同时成立，读者没法判断槽位到底占没占。
-    """
-    _enqueue(bundle.meta, "t1", TaskKind.PARSE)
-    claimed = bundle.meta.claim_task(owner="w1", lease_seconds=1)
-    assert claimed is not None
-    later = datetime.now(UTC) + timedelta(minutes=5)
-
-    queue = _service(bundle, FakeHost([FakeCpuTimes(0, 0, 1)]), now=lambda: later).snapshot().queue
-
-    assert queue.running == 1
-    assert queue.stalled == 1
-    assert queue.pending == 0
-
-
-def test_completed_tasks_are_not_in_the_depth(bundle: StoreBundle) -> None:
-    _enqueue(bundle.meta, "t1", TaskKind.PARSE)
-    # 必须先领再收：``finish_task`` 是条件更新（``lease_owner = owner``），
-    # 没领过的任务收不掉——这正是"租约易主后原消费者写不进来"的那道保险
-    assert bundle.meta.claim_task(owner="w1", lease_seconds=60) is not None
-    assert bundle.meta.finish_task("t1", TaskState.SUCCEEDED, owner="w1") is True
-
-    queue = _service(bundle, FakeHost([FakeCpuTimes(0, 0, 1)])).snapshot().queue
-
-    assert queue.pending == 0
-    assert queue.running == 0
-    assert queue.oldest_pending_seconds is None
-
-
-def test_oldest_pending_seconds_uses_the_earliest_arrival(bundle: StoreBundle) -> None:
-    """最老的排队任务等了多久——"队列里有没有东西卡了很久"只能靠这个数看出来。"""
-    now = datetime.now(UTC)
-    _enqueue(bundle.meta, "t1", TaskKind.PARSE, created_at=now - timedelta(minutes=30))
-    _enqueue(bundle.meta, "t2", TaskKind.PARSE, created_at=now - timedelta(minutes=2))
-
-    queue = _service(bundle, FakeHost([FakeCpuTimes(0, 0, 1)]), now=lambda: now).snapshot().queue
-
-    assert queue.oldest_pending_seconds == pytest.approx(1800, abs=5)
-
-
 def test_reading_a_broken_queue_does_not_raise(bundle: StoreBundle) -> None:
-    """存储抖动时返回空队列而不是 500：面板要能显示"读不到"，而不是整页打不开。"""
+    """读不到队列时返回空队列而不是 500：面板要能显示"读不到"，而不是整页打不开。
+
+    **本机就是这么一档**：任务队列是知识库那边的家当，本机连那张表都没有
+    （`SqliteMetaStore` 没有 `task_counts`）。所以这一格在本机恒为空，
+    而"恒为空"必须是**看得出来**的空，不是一次 500。
+    """
 
     class BrokenMeta:
         def list_tasks(self) -> Any:
@@ -273,7 +210,7 @@ def test_reading_a_broken_queue_does_not_raise(bundle: StoreBundle) -> None:
     assert queue.slots == 2
 
 
-# --------------------------------------------------------------------- 云端额度
+# --------------------------------------------------------------- 云端额度
 
 
 def test_unconfigured_parser_reports_zero_without_querying(bundle: StoreBundle) -> None:
@@ -289,135 +226,3 @@ def test_unconfigured_parser_reports_zero_without_querying(bundle: StoreBundle) 
     assert quota.exhausted is False
 
 
-def test_configured_parser_reports_pages_and_remaining(bundle: StoreBundle) -> None:
-    """额度用尽要能标出来：它不是错误，是"解析忽然变慢"的原因。"""
-    kb = _kb(bundle)
-    _parse_result(bundle, kb, "doc_1", pages=1200, parser="MinerUCloudParser")
-
-    quota = (
-        _service(
-            bundle,
-            FakeHost([FakeCpuTimes(0, 0, 1)]),
-            mineru_configured=lambda: True,
-            mineru_quota_pages=1000,
-        )
-        .snapshot()
-        .quota
-    )
-
-    assert quota.pages_used == 1200
-    assert quota.calls == 1
-    assert quota.remaining == 0
-    assert quota.exhausted is True
-
-
-def test_split_document_pages_are_summed_per_part_not_per_document(bundle: StoreBundle) -> None:
-    """切分后每段单独送云端，额度只能按**各段页数**累加。
-
-    按文档总页数算的话，一篇 1500 页切 8 段的文档会被记成 8 × 1500 = 12000 页，
-    额度显示立刻失真到没法用（这正是把页数下推到 SQL 时要小心的那个陷阱）。
-    """
-    kb = _kb(bundle)
-    document_id = _document(bundle, kb, "doc_split", page_count=400)
-    for index, (start, end) in enumerate([(1, 200), (201, 400)], start=1):
-        part_id = f"{document_id}_p{index}"
-        bundle.meta.create_document_parts(
-            [
-                DocumentPartRecord(
-                    id=part_id,
-                    document_id=document_id,
-                    part_index=index,
-                    page_start=start,
-                    page_end=end,
-                    stage=DocumentStage.PARSING,
-                )
-            ]
-        )
-        _parse_result(
-            bundle, kb, "doc_split", pages=400, parser="MinerUCloudParser", part_id=part_id
-        )
-
-    usage = bundle.meta.parser_page_usage(
-        "MinerUCloudParser", since=datetime.now(UTC) - timedelta(hours=1)
-    )
-
-    assert usage == (400, 2)
-
-
-def test_other_parsers_do_not_consume_the_mineru_quota(bundle: StoreBundle) -> None:
-    """本地解析器不花云端额度——把它们的页数算进来会让额度永远显示"用尽"。"""
-    kb = _kb(bundle)
-    _parse_result(bundle, kb, "doc_local", pages=500, parser="LocalPdfTextParser")
-
-    usage = bundle.meta.parser_page_usage(
-        "MinerUCloudParser", since=datetime.now(UTC) - timedelta(hours=1)
-    )
-
-    assert usage == (0, 0)
-
-
-def test_usage_before_the_window_is_ignored(bundle: StoreBundle) -> None:
-    """只算今天：昨天用的页数不该算进今天的额度。"""
-    kb = _kb(bundle)
-    _parse_result(
-        bundle,
-        kb,
-        "doc_old",
-        pages=900,
-        parser="MinerUCloudParser",
-        created_at=datetime.now(UTC) - timedelta(days=1),
-    )
-
-    usage = bundle.meta.parser_page_usage(
-        "MinerUCloudParser", since=datetime.now(UTC) - timedelta(hours=1)
-    )
-
-    assert usage == (0, 0)
-
-
-# --------------------------------------------------------------------- 夹具助手
-
-
-def _kb(bundle: StoreBundle) -> str:
-    bundle.meta.create_knowledge_base(
-        KnowledgeBaseRecord(id="kb_1", name="库里", embedding_model_id="m", embedding_dim=8)
-    )
-    return "kb_1"
-
-
-def _document(bundle: StoreBundle, kb_id: str, document_id: str, *, page_count: int) -> str:
-    bundle.meta.create_document(
-        DocumentRecord(
-            id=document_id,
-            knowledge_base_id=kb_id,
-            name=f"{document_id}.pdf",
-            source_kind=DataSourceKind.UPLOAD,
-            content_hash=f"hash-{document_id}",
-            stage=DocumentStage.PARSED,
-            page_count=page_count,
-        )
-    )
-    return document_id
-
-
-def _parse_result(
-    bundle: StoreBundle,
-    kb_id: str,
-    document_id: str,
-    *,
-    pages: int,
-    parser: str,
-    part_id: str | None = None,
-    created_at: datetime | None = None,
-) -> None:
-    if bundle.meta.get_document(document_id) is None:
-        _document(bundle, kb_id, document_id, page_count=pages)
-    bundle.meta.save_parse_result(
-        ParseResultRecord(
-            document_id=document_id,
-            part_id=part_id,
-            parser_name=parser,
-            markdown_path=f"markdown/{document_id}.md",
-            created_at=created_at,
-        )
-    )

@@ -43,7 +43,7 @@ class _SummaryChat:
 
 def _service(runtime, conversations, factory):  # type: ignore[no-untyped-def]
     return ChatService(
-        _EmptyRetrieval(), runtime, chat_factory=lambda config: factory, conversations=conversations
+        runtime, chat_factory=lambda config: factory, conversations=conversations
     )
 
 
@@ -148,7 +148,7 @@ def test_prepare_context_without_conversations_is_empty(
     runtime
 ) -> None:  # type: ignore[no-untyped-def]
     """没接会话服务（单测/脚本构造）时不该报错，只是没有历史可带。"""
-    service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda c: _SummaryChat())
+    service = ChatService(runtime, chat_factory=lambda c: _SummaryChat())
 
     prepared = service.prepare_context(conversation_id="conv_x", query="q")
 
