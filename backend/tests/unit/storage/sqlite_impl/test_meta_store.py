@@ -293,6 +293,8 @@ def test_local_protocols_do_not_touch_the_kb_domain() -> None:
 #:   回读要用（§1.3），所以是"表列多于记录字段"。
 #: - ``usage_events.reported``：记录上的 ``reported`` 是从 ``source`` 算出来的属性，
 #:   列是照搬 PG 留下来的（写路径不填它）。
+#: - ``kb_meta_cache.identity``：那一列是 v2 迁移建的（"这行是谁取回来的"），随账号
+#:   体系作废了；而**迁移字面量冻结不许改**，所以列删不掉——记录侧已不认它。
 #: - ``notes.tags``：标签住 ``note_tags`` 那张表（一个字段对应一张子表），
 #:   所以是"记录字段多于列"。
 RECORD_TABLES: tuple[tuple[type, str, frozenset[str], frozenset[str]], ...] = (
@@ -313,9 +315,10 @@ RECORD_TABLES: tuple[tuple[type, str, frozenset[str], frozenset[str]], ...] = (
     (ModelProviderRecord, "model_providers", frozenset(), frozenset()),
     (RegisteredModelRecord, "model_registry", frozenset(), frozenset()),
     (UsageEventRecord, "usage_events", frozenset({"reported"}), frozenset()),
-    # M4：快照那一行**没有例外**——13 列与 13 个字段逐名对得上
-    # （时间那两列按 `DATETIME_FIELDS` 映射成 `_ms`）。
-    (KbMetaCacheRecord, "kb_meta_cache", frozenset(), frozenset()),
+    # M4：快照那一行有一列**冻结列**——``identity`` 随账号体系作废了，而列本身是
+    # v2 迁移的字面量（不许改），所以它是"表有、记录没有"那一类（时间那两列按
+    # `DATETIME_FIELDS` 映射成 `_ms`）。
+    (KbMetaCacheRecord, "kb_meta_cache", frozenset({"identity"}), frozenset()),
     # M5 阶段 3：待传队列那一行同样**没有例外**——14 列与 14 个字段逐名对得上。
     (BackupSnapshotRecord, "backup_snapshots", frozenset(), frozenset()),
 )

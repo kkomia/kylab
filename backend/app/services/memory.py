@@ -797,7 +797,7 @@ class MemoryService:
         目录形状（与设计文档 §3.1 的"四条轴"对应）：
 
         - 账号 ``u1`` → ``data/memory/u1/``
-        - 共享桶（``None``：管理员控制台与 API Key 通道）→ ``data/memory/``
+        - 共享桶（``None``：本机主人，管理员档）→ ``data/memory/``
 
         **共享桶刻意就是老路径本身**，不另开 ``_shared`` 子目录：单用户部署
         （绝大多数）升级前后路径一字不变，已有的 ``MEMORY.md`` / ``daily`` / ``digest``

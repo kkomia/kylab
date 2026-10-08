@@ -80,8 +80,8 @@ def test_get_for_owner_hides_other_peoples_notes(notes: NotesService) -> None:
         notes.get_for_owner(mine.id, "u2")
 
 
-def test_get_for_owner_none_means_admin_see_all(notes: NotesService) -> None:
-    """归属为 None（管理员/API Key 通道）不校验归属——否则"列表看得到、点进去 404"。"""
+def test_get_for_owner_none_means_the_owner_sees_all(notes: NotesService) -> None:
+    """归属为 None（本机主人，管理员档）不校验归属——否则"列表看得到、点进去 404"。"""
     mine = notes.create(user_id="u1", title="我的")
 
     assert notes.get_for_owner(mine.id, None).id == mine.id

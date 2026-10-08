@@ -4,8 +4,8 @@
 混进任何一边都会让那一边的状态机变复杂。前端的信息架构也照此收敛——
 侧栏一个入口、页面一个视图（列表 → 编辑），相关操作全收在页内。
 
-**归属**：与对话同口径。普通成员只能读写自己的笔记（越主 404，不暴露存在性）；
-管理员会话与 API Key 通道归属为空，可以看到全部并在列表里不带归属过滤。
+**归属**：与对话同口径。带账号的那一档只能读写自己的笔记（越主 404，不暴露存在性）；
+本机主人（管理员档）归属为空，可以看到全部并在列表里不带归属过滤。
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ UNFILED_FOLDER = "unfiled"
 
 
 def _owner(caller: Caller) -> str | None:
-    """归属过滤用：只有**普通成员**会话才有归属；管理员与 API Key 通道没有。"""
+    """归属过滤用：只有**带账号那一档**才有归属；本机主人（管理员档）没有。"""
     if caller.user is not None and not caller.is_admin:
         return caller.user.id
     return None

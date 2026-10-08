@@ -741,7 +741,7 @@ class ChatService:
 
         ``owner_id``（v0.15）：**这次问答属于哪个账号**。它决定注入哪一份记忆
         （``data/memory/<owner_id>/``）——"一个账号一个 Agent"在对话链路上的落点。
-        ``None`` = 共享桶（管理员控制台 / API Key 通道）。
+        ``None`` = 共享桶（本机主人，管理员档）。
         """
         config = self._resolve_llm(model_pk, thinking, thinking_effort)
         chat = self._chat_factory(config)

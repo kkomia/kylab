@@ -55,8 +55,6 @@ class Caller:
     #: 这次调用归属的账号。本机主人有一个真的 ``UserRecord``——协议层若干处默认
     #: 调用者是账号（``caller.user.id``），比到处判空更稳。
     user: UserRecord | None = None
-    #: 当前会话 id（明文 token 的哈希）。退出登录、改密吊销都要定位到它
-    session_id: str | None = None
 
     @property
     def owner_id(self) -> str | None:

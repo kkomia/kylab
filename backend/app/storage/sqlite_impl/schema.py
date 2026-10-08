@@ -77,7 +77,9 @@ MIGRATION_V2_KB_META_CACHE = Migration(
         #    毫秒值的唯一属主是应用侧那三个 helper，SQLite 没有"当前毫秒"的表达式默认值
         #    （`unixepoch()` 要 3.38，本机下限 3.37）；
         # ② `stale` / `identity` / `last_error` 的 DEFAULT 只是给**手写 SQL 排障**用的兜底，
-        #    应用一律显式给值（`put` 写全部列），所以它与①不矛盾——那三列不是时间。
+        #    应用对 `stale` / `last_error` 显式给值（`put` 写它们的列）；`identity` 那一列
+        #    随账号体系作废了（应用不读不写，恒为默认空串），列本身按"迁移字面量冻结"
+        #    留着——所以它与①不矛盾，那三列不是时间。
         #
         # `(provider, resource, scope_key)` 三列主键就是**键空间**：地址隔离靠 provider
         # （归一化后的 base_url），资源内隔离靠 scope_key（库/条目/视图指纹）。

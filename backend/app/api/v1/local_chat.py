@@ -49,8 +49,9 @@ def _require_visible_conversation(services: Services, conversation_id: str, call
 
     抽成一个函数的理由与 ``Caller.owner_id`` 一样：这条规则一旦有两份，
     就会出现"某个端点忘了判归属"——而那种漏法不报错，只是把别人的会话读走了。
-    本机档的调用主体只有"本机主人"一种（``caller.user is None``），所以走的是
-    不带归属收窄的那一支；留着这条判定是为了与既有的会话端点**同一套口径**。
+    本机档的调用主体只有"本机主人"一种（``is_admin=True``，见 ``api/auth.py``——
+    他**带** ``user``，所以"没有账号"不是这一档的判据），走的是不带归属收窄的那一支；
+    留着这条判定是为了与既有的会话端点**同一套口径**。
     """
     if caller.user is not None and not caller.is_admin:
         services.conversations.get_for_owner(conversation_id, caller.user.id)

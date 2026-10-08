@@ -86,7 +86,7 @@ def _seed(stores: StoreBundle) -> None:
                 id=provider_id, kind="llm", name=f"供应商 {provider_id}", api_key=sentinel
             )
         )
-    stores.mcp_servers.create_mcp_server(
+    stores.meta.create_mcp_server(
         MCPServerRecord(
             id="mcp_1",
             name="外部服务",

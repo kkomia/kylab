@@ -83,7 +83,7 @@ def test_a_member_shape_is_still_honest_about_being_a_member() -> None:
     """
     from app.storage.base import UserRecord
 
-    member = Caller(user=UserRecord(id="user_m", name="成员", username="m"), session_id="s_m")
+    member = Caller(user=UserRecord(id="user_m", name="成员", username="m"))
 
     assert member.is_admin is False
     assert member.owner_id == "user_m"

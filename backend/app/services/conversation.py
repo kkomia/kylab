@@ -81,7 +81,7 @@ class ConversationService:
         thinking_effort: str | None = None,
         workspace_id: str | None = None,
     ) -> ConversationRecord:
-        """``owner_id``（v10）：登录成员的会话归自己；控制台/API Key 通道无主。
+        """``owner_id``（v10）：带账号那一档的会话归自己；本机主人（管理员档）无主。
 
         ``model_pk``（v12）：这条会话选用的对话模型；``None`` = 跟随全局默认。
         ``thinking`` / ``thinking_effort``（v16）：思考开关与强度；``None`` = 跟随全局默认。
@@ -352,16 +352,6 @@ class ConversationService:
         if summary and upto is not None and upto in id_map:
             self.set_summary(created.id, summary, id_map[upto])
         return self.get(created.id)
-
-    def drop_answer(self, conversation_id: str, *, answer_id: str) -> None:
-        """删掉一条回答。**续跑时用**：新的回答会顶替它。
-
-        为什么不让两条回答并存：同一个问题底下挂着两条回答，第二条还在开头写
-        "接着上次继续"，回看的人第一件要猜的事就是"上次是哪次"。
-        这与「重新生成」删一轮是同一条纪律（见 ``rewind`` 的说明）。
-        """
-        self.get(conversation_id)
-        self._stores.meta.delete_chat_messages([answer_id])
 
     def messages(self, conversation_id: str) -> list[ChatMessageRecord]:
         self.get(conversation_id)

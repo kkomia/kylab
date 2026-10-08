@@ -1049,7 +1049,7 @@ def build_runner(
     """
     scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
     # 有些调用点（子 Agent 的测试、脚本）没有凭据主体，那就是**共享桶**
-    # （``None``），与"管理员/API Key 通道"同一档——不是错误，不给它编一个身份。
+    # （``None``），与本机主人（管理员档）同一档——不是错误，不给它编一个身份。
     owner_id = caller.owner_id if caller is not None else None
     book: list[SourceRef] = []
     book_lock = threading.Lock()

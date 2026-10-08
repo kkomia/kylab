@@ -1,15 +1,17 @@
-"""按域切开的仓储**窄协议**（strangler 的第二步：199 个方法全部切开）。
+"""按域切开的仓储**窄协议**（strangler 的第二步：184 个方法全部切开）。
 
-`MetaStore` 有 199 个方法、实现三千多行。问题不在行数，而在**接口本身**：
+`MetaStore` 有 184 个方法、实现三千多行。问题不在行数，而在**接口本身**：
 ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那个接口"——
 "这个模块到底需要什么"在签名里读不出来，拆分也被接口锁死。
 
 `StoreBundle` 把**同一个实例**按域再暴露一次：
 
-    stores.documents.list_document_stats(...)   # 只依赖文档域
-    stores.meta.get_setting(...)                # 老路径照旧，零改动
+    stores.schedules.list_scheduled_tasks()   # 只依赖定时任务域
+    stores.meta.get_setting(...)              # 老路径照旧，零改动
 
 于是新代码可以依赖窄接口，老代码不动；等各域的调用点都迁过去，再谈拆实现。
+（**视图形状照旧，但只留真被读的那两个**——2026-10-08 清死面时把二十个零读者的
+视图删了，见 ``base.py::StoreBundle`` 那段说明。）
 
 **协议是结构化的**（``typing.Protocol``）：``SqliteMetaStore`` 天然满足本机域那几个，
 不需要显式继承——这正是"渐进替换"能成立的前提。
@@ -21,7 +23,7 @@ ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那
 （拆到 `ConversationRepo`）、存储维护混在知识库节里（拆出 `MaintenanceRepo`）、
 阶段事件的读与清理分归两个域（读在文档、清理在维护）。
 
-**22 个协议、199 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
+**21 个协议、184 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
 某处切漏了）。签名逐字取自 ABC。**注意**：这三个数字是**手工维护**的——原先有一份
 ``tests/unit/storage/test_repositories.py`` 机械核对它们，那份文件已不在仓库里，
 动接口时记得自己再过一遍。
@@ -56,13 +58,11 @@ from app.storage.base import (
     RegisteredModelRecord,
     ScheduledTaskRecord,
     SessionEventRecord,
-    SessionRecord,
     TaskCounts,
     TaskRecord,
     TaskStatRow,
     TrashRecord,
     UsageEventRecord,
-    UserRecord,
     WebhookRecord,
     WikiPageRecord,
     WikiSourceRecord,
@@ -76,7 +76,6 @@ __all__ = [
     "DocumentRepo",
     "FolderRepo",
     "IdempotencyRepo",
-    "IdentityRepo",
     "ImageRepo",
     "KnowledgeBaseRepo",
     "MCPServerRepo",
@@ -646,49 +645,6 @@ class ScheduleRepo(Protocol):
         last_run_at: datetime,
         conversation_id: str | None = None,
     ) -> None: ...
-
-
-@runtime_checkable
-class IdentityRepo(Protocol):
-    r"""身份域：使用者名册与登录会话。
-
-    名册与会话放在一个域里：会话是"某人此刻登录着"，两者的写入方是同一套鉴权流程
-    （建账号、改密、停用都要连带处理会话），拆开就会出现\「停用了账号但会话还活着\」。
-    """
-
-    def create_user(self, record: UserRecord) -> UserRecord: ...
-
-    def get_user(self, user_id: str) -> UserRecord | None: ...
-
-    def find_user_by_name(self, name: str) -> UserRecord | None: ...
-
-    def find_user_by_username(self, username: str) -> UserRecord | None: ...
-
-    def list_users(self) -> list[UserRecord]: ...
-
-    def delete_user(self, user_id: str) -> None: ...
-
-    def update_user_password(self, user_id: str, password_hash: str) -> None: ...
-
-    def set_user_disabled(self, user_id: str, disabled: bool) -> None: ...
-
-    def set_user_avatar(self, user_id: str, avatar_key: str) -> None: ...
-
-    def claim_legacy_ownership(self, owner_id: str) -> dict[str, int]: ...
-
-    def create_session(self, record: SessionRecord) -> SessionRecord: ...
-
-    def get_session(self, session_id: str) -> SessionRecord | None: ...
-
-    def touch_session(
-        self, session_id: str, *, last_seen_at: datetime, expires_at: datetime
-    ) -> None: ...
-
-    def delete_session(self, session_id: str) -> None: ...
-
-    def delete_sessions_for_user(
-        self, user_id: str, *, except_session_id: str | None = None
-    ) -> int: ...
 
 
 @runtime_checkable

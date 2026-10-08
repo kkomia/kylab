@@ -24,29 +24,10 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     # **只在类型检查时导入**：窄协议模块反过来要在运行时导入本模块的记录类型，
     # 真导入就成环。注解有 `from __future__ import annotations` 兜底，运行时不需要它。
+    # 只有下面这两个还被窄视图引用（其余协议照样住在 repositories.py，只是这里不点名）。
     from app.storage.repositories import (
-        ChunkRepo,
-        ConversationRepo,
-        DataSourceRepo,
-        DocumentRepo,
-        FolderRepo,
-        IdempotencyRepo,
-        IdentityRepo,
-        ImageRepo,
-        KnowledgeBaseRepo,
-        MaintenanceRepo,
-        MCPServerRepo,
-        ModelRegistryRepo,
-        NoteRepo,
-        ParseResultRepo,
         ScheduleRepo,
         SettingsRepo,
-        TaskQueueRepo,
-        TrashRepo,
-        UsageRepo,
-        WebhookRepo,
-        WikiRepo,
-        WorkspaceRepo,
     )
 
 from app.models.enums import (
@@ -93,7 +74,6 @@ __all__ = [
     "ScheduledTaskRecord",
     "SearchHit",
     "SessionEventRecord",
-    "SessionRecord",
     "SnapshotArtifactRef",
     "SnapshotConversationRef",
     "SnapshotDbView",
@@ -133,7 +113,7 @@ class StoreBundle:
     **为什么它不是 ``MetaStore`` 的窄视图**（本文件里两个这样的字段之一，另一个是
     下面的 ``kb_cache``）：``imports`` / ``import_items`` 是**本机独有的两张表**，
     服务器档没有它们，也没有"从别的部署导会话进来"这条动作——所以它既不进
-    ``repositories.py`` 的 24 个域（那里的每个方法都必须在 ``MetaStore`` 上存在，
+    ``repositories.py`` 的 21 个域（那里的每个方法都必须在 ``MetaStore`` 上存在，
     有两条用例逐名核对），也不进 ``LOCAL_METHODS``（那是"本机域 / KB 域"的划分，
     它两边都不属于）。它在 ``sqlite_impl.LOCAL_LEDGER_METHODS`` 单独登记，装配点见
     ``core/storage.py::_build_local_stores``（与 ``meta`` 用的是**同一个**实例）。
@@ -149,7 +129,7 @@ class StoreBundle:
     **与 ``ledger`` 同一条纪律、同一套理由**（照那段改写一遍，因为形状一模一样）：
     ``kb_meta_cache`` 是**本机独有的一张表**——服务器档的 KB 元数据本来就在自己的
     PG 里，它没有"从 NAS 抄一份快照"这条动作，也不该有（缓存一个自己就是真相源的
-    东西只会多一层会过期的副本）。所以它既不进 ``repositories.py`` 的 24 个域
+    东西只会多一层会过期的副本）。所以它既不进 ``repositories.py`` 的 21 个域
     （那里的每个方法都必须在 ``MetaStore`` 上存在），也不进 ``LOCAL_METHODS``
     （那是"本机域 / KB 域"的划分：它服务的是 **KB 域的读路径**，人却不属于 KB 域）。
     它在 ``sqlite_impl.LOCAL_CACHE_METHODS`` 单独登记，装配点见
@@ -166,7 +146,7 @@ class StoreBundle:
     **与 ``ledger`` / ``kb_cache`` 同一条纪律、同一套理由**（照那两段改写一遍，因为形状
     一模一样）：快照这件事是**本机独有**的——服务器档的库就是它自己，没有"把自己打成
     一份便携的包"这条动作，也不该有（NAS 侧那一半是**收包**：``api/v1/backup.py`` 的
-    七条端点，与这里的两份面是两回事）。所以它既不进 ``repositories.py`` 的 24 个域
+    七条端点，与这里的两份面是两回事）。所以它既不进 ``repositories.py`` 的 21 个域
     （那里的每个方法都必须在 ``MetaStore`` 上存在），也不进 ``LOCAL_METHODS``（那是
     "本机域 / KB 域"的划分：快照既不是本机域的读写，也不是 KB 域的东西）。它在
     ``sqlite_impl.LOCAL_SNAPSHOT_METHODS`` 单独登记，装配点见
@@ -186,7 +166,7 @@ class StoreBundle:
     **与前两块（``ledger`` / ``kb_cache``）和上一块（``snapshot``）同一条纪律、同一套
     理由**：``backup_snapshots`` 是**本机独有的一张表**——服务器档自己就是备份的目的地，
     它没有"把一份快照排队传出去"这条动作（NAS 侧那一半是**收包**：``api/v1/backup.py``
-    的七条端点，与这张表是两回事）。所以它既不进 ``repositories.py`` 的 24 个域
+    的七条端点，与这张表是两回事）。所以它既不进 ``repositories.py`` 的 21 个域
     （那里的每个方法都必须在 ``MetaStore`` 上存在），也不进 ``LOCAL_METHODS``（那是
     "本机域 / KB 域"的划分：队列既不是本机域的读写，也不是 KB 域的东西）。它在
     ``sqlite_impl.LOCAL_BACKUP_METHODS`` 单独登记，装配点见
@@ -206,7 +186,7 @@ class StoreBundle:
     同一套理由**（照那几段改写一遍，因为形状一模一样）：它擦的是**本机那个库文件**
     （主库 + ``-wal`` + ``-shm``）——服务器档的数据在 PG 里，也没有系统钥匙串那一整套
     动作（R14：那一档库里那份凭据不动，处置是 NAS 自己的访问控制）。所以它既不进
-    ``repositories.py`` 的 24 个域（那里的每个方法都必须在 ``MetaStore`` 上存在），也不进
+    ``repositories.py`` 的 21 个域（那里的每个方法都必须在 ``MetaStore`` 上存在），也不进
     ``LOCAL_METHODS``（那是"本机域 / KB 域"的划分：擦除连表都不看）。它在
     ``sqlite_impl.LOCAL_ERASER_METHODS`` 单独登记，装配点见
     ``core/storage.py::_build_local_stores``（与 ``meta`` / ``ledger`` / ``kb_cache`` /
@@ -223,75 +203,16 @@ class StoreBundle:
 
     # ---- 按域切开的窄视图（v0.2，见 storage/repositories.py）----
     #
-    # 它们**返回的是同一个 ``meta`` 实例**，只是按域收窄了类型：新代码依赖窄接口，
-    # "这个模块需要什么"在签名里读得出来；老代码走 `meta.*` 零改动。
-    # 这是拆 MetaStore 的第一步，不是行为变更——22 个域与 199 个方法的归属
-    # 见 repositories.py。
-
-    @property
-    def knowledge_bases(self) -> KnowledgeBaseRepo:
-        """知识库域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def documents(self) -> DocumentRepo:
-        """文档域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def folders(self) -> FolderRepo:
-        """目录域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def notes(self) -> NoteRepo:
-        """笔记域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def chunks(self) -> ChunkRepo:
-        """切块域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def images(self) -> ImageRepo:
-        """图片域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def parse_results(self) -> ParseResultRepo:
-        """解析产物域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def tasks(self) -> TaskQueueRepo:
-        """任务队列域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def data_sources(self) -> DataSourceRepo:
-        """数据源域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def webhooks(self) -> WebhookRepo:
-        """Webhook 域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def idempotency(self) -> IdempotencyRepo:
-        """幂等键域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def conversations(self) -> ConversationRepo:
-        """对话留存域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def workspaces(self) -> WorkspaceRepo:
-        """工作区域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
+    # 它们**返回的是同一个 ``meta`` 实例**，只是按域收窄了类型：调用点依赖窄接口，
+    # "这个模块需要什么"在签名里读得出来。
+    #
+    # **只留真被读的那两个**（2026-10-08 清死面）：原先 22 个视图一次配齐，而生产代码
+    # 真正读过的只有下面这两个（``schedules`` 16 处、``app_settings`` 3 处）——其余二十个
+    # （knowledge_bases / documents / folders / notes / chunks / images / parse_results /
+    # tasks / data_sources / webhooks / idempotency / conversations / workspaces / identity /
+    # usage / models / mcp_servers / trash / wiki / maintenance）一个生产调用点都没有，
+    # 配了就是"看着像接口，其实没人用"。要用哪个再按同一形状加回来即可：
+    # 一个 ``@property`` + ``return self.meta``，零行为、零测试改动。
 
     @property
     def schedules(self) -> ScheduleRepo:
@@ -299,43 +220,8 @@ class StoreBundle:
         return self.meta  # type: ignore[return-value]
 
     @property
-    def identity(self) -> IdentityRepo:
-        """身份域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def usage(self) -> UsageRepo:
-        """用量域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def models(self) -> ModelRegistryRepo:
-        """模型注册域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def mcp_servers(self) -> MCPServerRepo:
-        """外部 MCP 服务域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def trash(self) -> TrashRepo:
-        """回收站视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
     def app_settings(self) -> SettingsRepo:
         """设置（键值）域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def wiki(self) -> WikiRepo:
-        """Wiki 域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def maintenance(self) -> MaintenanceRepo:
-        """存储维护视图（`meta` 的窄类型）。"""
         return self.meta  # type: ignore[return-value]
 
 
@@ -1139,17 +1025,6 @@ class UserRecord:
     **只存 key**：头像是一张图，塞进这张表会让每次读账号都拖着一份二进制，
     而账号是每个页面都要读一次的东西（见 ``services/avatars.py``）。
     """
-
-
-@dataclass(slots=True)
-class SessionRecord:
-    """一条登录会话。``id`` 是明文 token 的 SHA-256——**明文不落库**（与 API Key 同纪律）。"""
-
-    id: str
-    user_id: str
-    expires_at: datetime
-    created_at: datetime | None = None
-    last_seen_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -2347,89 +2222,13 @@ class MetaStore(ABC):
         """记下这份产物进了哪个库、成了哪份文档。"""
         ...
 
-    # ---- 使用者名册（调研报告 G6）----
-    @abstractmethod
-    def create_user(self, record: UserRecord) -> UserRecord: ...
-
-    @abstractmethod
-    def get_user(self, user_id: str) -> UserRecord | None: ...
-
-    @abstractmethod
-    def find_user_by_name(self, name: str) -> UserRecord | None:
-        """按名字找——请求头里带的是名字（人记不住 id，也不该去记）。"""
-        ...
-
-    @abstractmethod
-    def list_users(self) -> list[UserRecord]: ...
-
-    @abstractmethod
-    def delete_user(self, user_id: str) -> None: ...
-
+    # ---- 文档计数（``count_documents_by_user`` 的域是文档）----
+    # 名册与会话那一族（``create_user`` / ``find_user_by_username`` / ``create_session`` …）
+    # 随账号体系一起删掉了；这一条当初按"谁的文件"被放进了名册那一节，它的 Protocol 家在
+    # ``repositories.py::DocumentRepo``。
     @abstractmethod
     def count_documents_by_user(self, user_id: str) -> int:
-        """某人传过多少文档。删使用者前要能告诉他"会影响什么"。"""
-        ...
-
-    # ---- 账号与会话（v10：名册升级为账号）----
-    @abstractmethod
-    def find_user_by_username(self, username: str) -> UserRecord | None:
-        """登录按 username 找。与 ``find_user_by_name`` 并存：name 给人看，username 给登录。
-
-        **大小写归一化是调用方的责任**（服务层统一转小写后存储与查询）。
-        存储层保持字节精确：在这里悄悄做 NOCASE 会让"库里到底存了什么"变得难追。
-        """
-        ...
-
-    @abstractmethod
-    def update_user_password(self, user_id: str, password_hash: str) -> None: ...
-
-    @abstractmethod
-    def set_user_disabled(self, user_id: str, disabled: bool) -> None: ...
-
-    @abstractmethod
-    def set_user_avatar(self, user_id: str, avatar_key: str) -> None:
-        """换 / 清空头像（v0.29）。传空串 = 清空。
-
-        只动这一列：头像的换与清不该走"整条账号更新"——那条路要重算用户名唯一性、
-        要处理口令字段，而这里只是换一张图。
-        """
-        ...
-
-    @abstractmethod
-    def claim_legacy_ownership(self, owner_id: str) -> dict[str, int]:
-        """把 owner 为 NULL 的知识库与会话认领给指定账号（setup 向导用）。
-
-        返回 ``{"knowledge_bases": n, "conversations": n}``——认领了几条要让用户知道，
-        静默改掉一堆数据的归属而不吭声是不行的。
-        """
-        ...
-
-    @abstractmethod
-    def create_session(self, record: SessionRecord) -> SessionRecord: ...
-
-    @abstractmethod
-    def get_session(self, session_id: str) -> SessionRecord | None:
-        """按 id（明文 token 的 SHA-256）查。"""
-        ...
-
-    @abstractmethod
-    def touch_session(
-        self, session_id: str, *, last_seen_at: datetime, expires_at: datetime
-    ) -> None:
-        """滑动续期：每次用到都把 last_seen 与过期时间推后。"""
-        ...
-
-    @abstractmethod
-    def delete_session(self, session_id: str) -> None: ...
-
-    @abstractmethod
-    def delete_sessions_for_user(
-        self, user_id: str, *, except_session_id: str | None = None
-    ) -> int:
-        """吊销某人的会话（改密/禁用账号时）。``except_session_id`` 保住当前这条。
-
-        返回吊销了几条——改密后界面要告诉用户"其他 N 处登录已退出"。
-        """
+        """某人传过多少文档（按 ``owner_id`` 数）。"""
         ...
 
     # ---- 用量（调研报告 G7）----
@@ -2577,7 +2376,7 @@ class MetaStore(ABC):
 # 而导入器要读写的这两张表**只有本机档有**，所以契约只能落在这里。
 #
 # 它**不在 ``MetaStore`` 上**（服务器档没有这两张表，也没有"从别的部署导会话进来"
-# 这条动作），也不在 ``repositories.py`` 的 24 个域里（那边的每个方法都必须在
+# 这条动作），也不在 ``repositories.py`` 的 21 个域里（那边的每个方法都必须在
 # ``MetaStore`` 上存在，有两条用例逐名核对）。登记点见
 # ``sqlite_impl.LOCAL_LEDGER_METHODS`` 与 ``StoreBundle.ledger``。
 #
@@ -2768,7 +2567,7 @@ class ImportLedger(Protocol):
 # 而这张 ``kb_meta_cache`` 表**只有本机档有**，所以契约只能落在这里。
 #
 # 它**不在 ``MetaStore`` 上**（服务器档的 KB 元数据就在自己的 PG 里，没有"抄一份 NAS
-# 的快照"这条动作），也不在 ``repositories.py`` 的 24 个域里（那边的每个方法都必须在
+# 的快照"这条动作），也不在 ``repositories.py`` 的 21 个域里（那边的每个方法都必须在
 # ``MetaStore`` 上存在）。登记点见 ``sqlite_impl.LOCAL_CACHE_METHODS`` 与
 # ``StoreBundle.kb_cache``。
 #
@@ -2851,10 +2650,12 @@ class KbMetaCacheRecord:
     - ``etag`` / ``last_modified``：服务端给的时候才有——今天**恒 NULL**（NAS 的 KB 读
       端点还没有条件请求，§4.1 实测），列先建好，将来 NAS 侧加上就自动生效；
     - ``source``：这行是怎么来的（``handshake`` / ``reader`` / ``revalidate``）；
-    - ``identity``：这条记录当时是**谁**取回来的（``api_key`` / ``session``）。
-      **只作排障，不许当判据**——快照的"可信度"不该取决于它是哪把钥匙看到的；
     - ``stale``：上一次再验证失败了（内容照旧可读，但要如实标出来）；
     - ``last_error``：那次失败的原因（成功一次就清空）。
+
+    **表里多一列 ``identity``，这个记录不认它**：那一列是 v2 迁移当初建的（存"这行是
+    谁取回来的"），随账号体系一起作废了。迁移字面量按纪律冻着不动，所以列留着、恒空；
+    应用侧读也不读、写也不写——要查排障信息看 ``source``。
     """
 
     provider: str
@@ -2867,7 +2668,6 @@ class KbMetaCacheRecord:
     checked_at: datetime
     etag: str | None = None
     last_modified: str | None = None
-    identity: str = ""
     stale: bool = False
     last_error: str = ""
 
@@ -3403,7 +3203,7 @@ class LocalEraser(Protocol):
     **与 ``ledger`` / ``kb_cache`` / ``snapshot`` / ``backup_queue`` 同一条纪律、同一套
     理由**（照那四段改写一遍，因为形状一模一样）：它擦的是**本机那个库文件**——服务器档
     的数据在 PG 里，那份凭据的处置是 NAS 自己的访问控制（方案 §5 的 R14 明写"不进本机
-    钥匙串"、也明写那一档"库里那份凭据不动"）。所以它既不进 ``repositories.py`` 的 24 个域
+    钥匙串"、也明写那一档"库里那份凭据不动"）。所以它既不进 ``repositories.py`` 的 21 个域
     （那里的每个方法都必须在 ``MetaStore`` 上存在），也不进 ``LOCAL_METHODS``（那是
     "本机域 / KB 域"的划分：擦除连表都不看，纯粹是文件级的收尾）。它在
     ``sqlite_impl.LOCAL_ERASER_METHODS`` 单独登记，装配点见

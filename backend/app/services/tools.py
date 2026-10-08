@@ -908,10 +908,8 @@ def _upload_document(services: Services, args: dict[str, Any], *, caller: Caller
 def _owner_of(caller: Caller) -> str | None:
     """笔记的归属 id。
 
-    会话令牌（``kylab_st_``）能给出账号，于是笔记归那个人；
-    API Key 通道没有账号，只能是 ``None``——而 ``None`` 在本仓库里
-    表示"不校验归属"（与 ``NotesService.list`` 同一口径）。
-    所以**想让 agent 存的东西出现在你自己的笔记列表里，就用会话令牌接 MCP**。
+    ``caller.user`` 给出账号，于是笔记归那个人；没有账号的那一档只能是 ``None``——
+    而 ``None`` 在本仓库里表示"不校验归属"（与 ``NotesService.list`` 同一口径）。
     """
     return caller.user.id if caller.user is not None else None
 

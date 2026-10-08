@@ -33,7 +33,6 @@ from app.services.api_key import LOCAL_CALLER, READ, WRITE, Caller
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "AdminDep",
     "CallerDep",
     "ReadDep",
     "WriteDep",
@@ -84,21 +83,23 @@ def require_write(
 def require_admin(caller: CallerDep) -> Caller:
     """管理员专属端点（设置页、模型注册、插件与技能、沙箱执行、工作区浏览/建目录）。
 
-    **必须是管理员会话**，不能只要求"读写权限"：
-    这些端点里是 embedding / rerank / LLM 的密钥与外部服务地址，而地址可改——
-    拿到写权限就等于拿到一条转发凭据的路。
+    **必须是管理员会话**，不能只要求"读写权限"：这些端点里是 embedding / rerank /
+    LLM 的密钥与外部服务地址，而地址可改——拿到写权限就等于拿到一条转发凭据的路。
+
+    本机档这一条**今天不可达**：`current_caller` 恒返回 `LOCAL_CALLER`（管理员档），
+    全进程没有第二种主体。留着它是把"这些端点的权档"写在签名上——哪天真的接进
+    第二个主体，判定不用重写。
     """
     if not caller.is_admin:
         raise ForbiddenError(
-            "该操作需要管理员权限：外部 API Key 不能读写服务端凭据配置"
-            "（否则改掉 base_url 就能截获你的 API Key）"
+            "该操作需要管理员权限：这些端点里是 embedding / rerank / LLM 的密钥与"
+            "外部服务地址，而地址可改——拿到写权限就等于拿到一条转发凭据的路"
         )
     return caller
 
 
 ReadDep = Annotated[Caller, Depends(require_read)]
 WriteDep = Annotated[Caller, Depends(require_write)]
-AdminDep = Annotated[Caller, Depends(require_admin)]
 
 
 def check_kb_scope(

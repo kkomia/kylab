@@ -1407,8 +1407,8 @@ class SqliteMetaStore:
     ) -> tuple[str, list[Any]]:
         """拼 WHERE 子句。
 
-        ``user_id=None`` 表示**不过滤归属**（管理员/API Key 通道要看全部，
-        与 ``list_conversations`` 同口径）；成员传自己的 id，只看自己的。
+        ``user_id=None`` 表示**不过滤归属**（本机主人（管理员档）要看全部，
+        与 ``list_conversations`` 同口径）；带账号那一档传自己的 id，只看自己的。
         SQLite 的 ``IS ?`` 可以参数化，所以这里就是"无筛选 / 等值"两支。
 
         ``folder_id`` / ``unfiled`` 是同一个轴上的两种取法，**由调用方保证不同时给**
@@ -2003,7 +2003,6 @@ class SqliteMetaStore:
             checked_at=_load(row["checked_at_ms"]),
             etag=row["etag"],
             last_modified=row["last_modified"],
-            identity=row["identity"],
             stale=bool(row["stale"]),
             last_error=row["last_error"],
         )
@@ -2057,12 +2056,12 @@ class SqliteMetaStore:
                 conn.execute(
                     "INSERT INTO kb_meta_cache"
                     " (provider, resource, scope_key, payload, version, etag, last_modified,"
-                    "  source, identity, fetched_at_ms, checked_at_ms, stale, last_error)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "  source, fetched_at_ms, checked_at_ms, stale, last_error)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     " ON CONFLICT (provider, resource, scope_key) DO UPDATE SET"
                     " payload = excluded.payload, version = excluded.version,"
                     " etag = excluded.etag, last_modified = excluded.last_modified,"
-                    " source = excluded.source, identity = excluded.identity,"
+                    " source = excluded.source,"
                     " fetched_at_ms = excluded.fetched_at_ms,"
                     " checked_at_ms = excluded.checked_at_ms, stale = excluded.stale,"
                     " last_error = excluded.last_error",
@@ -2075,7 +2074,6 @@ class SqliteMetaStore:
                         record.etag,
                         record.last_modified,
                         record.source,
-                        record.identity,
                         _dump(record.fetched_at),
                         _dump(record.checked_at),
                         int(record.stale),

@@ -100,7 +100,7 @@ class ScheduleService:
     # ------------------------------------------------------------------ 读
 
     def list(self, *, owner_id: str | None) -> list[ScheduledTaskRecord]:
-        """可见的那些。``owner_id=None`` = 管理员/API Key 通道，看全部。"""
+        """可见的那些。``owner_id=None`` = 本机主人（管理员档），看全部。"""
         records = self._stores.schedules.list_scheduled_tasks()
         if owner_id is None:
             return records

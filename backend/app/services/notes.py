@@ -424,7 +424,7 @@ class NotesService:
         与对话同一口径（``ConversationService.get_for_owner``）：笔记是私有数据，
         用 403 会把别人的笔记 id 变成可探测的存在性 oracle。
 
-        ``user_id=None`` 表示**不校验归属**（管理员/API Key 通道）——与 ``list`` 的
+        ``user_id=None`` 表示**不校验归属**（本机主人，管理员档）——与 ``list`` 的
         过滤口径一致：列表能看到就必须点得开，否则会出现"列表里有、点进去 404"
         这种自相矛盾的状态（实测踩到）。
         """

@@ -96,7 +96,7 @@ def _device_id(device: Device | None) -> str | None:
 
 
 def _owner(caller: Caller) -> str | None:
-    """归属过滤用：只有**普通成员**会话才有归属；管理员与 API Key 通道没有。
+    """归属过滤用：只有**带账号那一档**才有归属；本机主人（管理员档）没有。
 
     与 ``api/v1/notes.py::_owner``、``api/v1/conversations.py::_caller_owner``
     同一口径。三处各写一份是因为它们分属三个模块，但判定必须一致——

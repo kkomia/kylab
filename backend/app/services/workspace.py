@@ -425,7 +425,7 @@ class WorkspaceService:
         device_id: str | None = None,
         any_device: bool = False,
     ) -> list[WorkspaceView]:
-        """列出可见的工作区。``user_id=None`` = 管理员/API Key 通道，看全部。
+        """列出可见的工作区。``user_id=None`` = 本机主人（管理员档），看全部。
 
         ``archived`` 与会话列表同口径（``services/conversation.py::list``）：默认
         （``False``）只列**未归档**的，``True`` 时列**已归档**的——归档视图是一个

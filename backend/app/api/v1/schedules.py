@@ -44,7 +44,7 @@ def list_scheduled_tasks(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
 ) -> ScheduledTaskListOut:
-    """成员只看自己的；管理员会话与 API Key 通道看全部（与工作区/能力同一口径）。"""
+    """带账号那一档只看自己的；本机主人（管理员档）看全部（与工作区/能力同一口径）。"""
     records = services.schedules.list(owner_id=caller.owner_id)
     return ScheduledTaskListOut(
         items=[_out(services, item) for item in records],

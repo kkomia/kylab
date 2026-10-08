@@ -87,8 +87,8 @@ def _get_visible(services: Services, caller: Caller, conversation_id: str):  # t
 
 
 def _caller_owner(caller: Caller) -> str | None:
-    """只有**普通成员**会话才有归属过滤；管理员会话（is_admin）与
-    API Key 通道都没有——否则管理员用网页会话看不到 API Key 建的无主会话（回归踩过）。
+    """只有**带账号的那一档**（``user`` 有、且不是管理员）才有归属过滤；
+    本机主人（管理员档）没有——否则他自己建的无主会话会在列表里看不见（回归踩过）。
     """
     if caller.user is not None and not caller.is_admin:
         return caller.user.id

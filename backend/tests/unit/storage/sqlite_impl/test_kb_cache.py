@@ -241,19 +241,14 @@ def test_two_libraries_document_lists_do_not_mix(store: SqliteMetaStore) -> None
 
 def test_the_same_key_is_an_upsert_not_a_second_row(store: SqliteMetaStore) -> None:
     """同一个键再写一次是**覆盖**（三列主键），不是又落一行。"""
-    store.put_kb_meta_cache(
-        _record(payload='{"name": "旧"}', version="sha256:old", identity="api_key")
-    )
-    store.put_kb_meta_cache(
-        _record(payload='{"name": "新"}', version="sha256:new", identity="session")
-    )
+    store.put_kb_meta_cache(_record(payload='{"name": "旧"}', version="sha256:old"))
+    store.put_kb_meta_cache(_record(payload='{"name": "新"}', version="sha256:new"))
 
     rows = store.kb_meta_cache_stats()
     assert rows.rows == 1
     row = store.get_kb_meta_cache(HOME, "kb_detail", "kb_1")
     assert row is not None
     assert row.payload == '{"name": "新"}' and row.version == "sha256:new"
-    assert row.identity == "session"
 
 
 # ------------------------------------------------------------------ 只推确认 / 删行 / 报数

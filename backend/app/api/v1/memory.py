@@ -73,11 +73,11 @@ RECALL_NOTE = tools_service.RECALL_NOTE
 def _scope(caller: Caller) -> str | None:
     """**这个调用者的记忆属于谁**——"一个账号一个 Agent"在记忆层的落点。
 
-    普通成员 → 自己的账号（各自一份 ``data/memory/<user_id>/``）；
-    管理员会话与 API Key 通道 → ``None``（共享桶，即 ``data/memory/`` 本身）。
+    带账号的那一档 → 自己的账号（各自一份 ``data/memory/<user_id>/``）；
+    本机主人（管理员档）→ ``None``（共享桶，即 ``data/memory/`` 本身）。
 
     与知识库 / 会话 / 笔记的归属口径一致（见 ``api/auth.py``）：
-    管理员用网页会话要能看到全部，所以不能折成"管理员=自己的账号"。
+    本机主人要能看到全部，所以不能折成"管理员=自己的账号"。
     """
     if caller.user is not None and not caller.is_admin:
         return caller.user.id
