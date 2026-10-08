@@ -122,18 +122,10 @@ PERIPHERAL_TOOLS: frozenset[str] = frozenset(
         # 文件列举/搜索（读单个文件是核心：``read_file``）
         "list_files",
         "search_files",
-        # 知识库管理面
-        "list_knowledge_bases",
-        "create_knowledge_base",
+        # 知识库那几个（本机只做"检索"与"把东西放进去"，管理面在别处）
         "upload_document",
-        "add_data_source",
-        "get_document_status",
-        "delete_document",
-        "list_documents",
         "attach_note_to_kb",
         "ingest_artifact",
-        "list_tables",
-        "query_table",
         "ingest_file",
     }
 )
@@ -254,16 +246,11 @@ _READ = ToolMeta(
 #: "它能不能和同批的别的调用同时跑"——这正是这张表存在的理由。
 TOOL_META: dict[str, ToolMeta] = {
     # ---- 知识库（内置那批，见 services/tools.py）----
-    "list_knowledge_bases": _READ,
-    "create_knowledge_base": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
+    # **管理面那几个已经不在了**（建库 / 列库 / 列文档 / 查进度 / 删文档 / 挂数据源 /
+    # 表格 SQL）：它们实现依赖的是进程内的知识库服务，那些服务随知识库产品剥离搬走了。
+    # 本机只做"检索"与"把东西放进去"，所以这一节只剩这四个。
     "upload_document": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
-    "add_data_source": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     "search": _READ,
-    "list_documents": _READ,
-    "get_document_status": _READ,
-    "delete_document": ToolMeta(
-        destructive=True, side_effect_scope="workspace", risk_level="high"
-    ),
     "create_note": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     "attach_note_to_kb": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     "list_notes": _READ,
@@ -333,8 +320,6 @@ TOOL_META: dict[str, ToolMeta] = {
     "run_command": ToolMeta(
         destructive=True, side_effect_scope="system", risk_level="high", needs_approval=True
     ),
-    "list_tables": _READ,
-    "query_table": _READ,
     # 挂定时任务：它自己不动文件，但会**在未来动手**——不并发，改天再说
     "schedule_task": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     "list_scheduled_tasks": _READ,

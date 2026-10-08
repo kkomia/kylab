@@ -154,7 +154,13 @@ class ImportBatchBriefOut(BaseModel):
 class LocalStatusOut(BaseModel):
     """本机档的运行态（只读）。"""
 
-    deployment: str = Field(description="部署档：local = 会话落本机；server = NAS 上的服务器档")
+    deployment: str = Field(
+        default="local",
+        description=(
+            "部署档。**恒为 local**：这个后端只有本机一种形态，留着这一位是为了不改"
+            "客户端的契约——前端拿它判「本机后端在不在」（`api/local.ts` 的探活）"
+        ),
+    )
     data_dir: str = Field(description="本机数据目录（沙箱、记忆、对象存储都在它下面）")
     database: str = Field(description="本机库文件（SQLite；-wal / -shm 与它同目录）")
     database_exists: bool = Field(description="库文件是否已经建出来（还没落过东西时为假）")
@@ -289,7 +295,7 @@ def local_status(
     unfinished = sum(1 for item in briefs if item.state in UNFINISHED_STATES)
     references = int(briefs[0].counts.get("file_references") or 0) if briefs else 0
     return LocalStatusOut(
-        deployment=settings.deployment,
+        deployment="local",
         data_dir=str(data_dir),
         database=str(database),
         database_exists=database.exists(),

@@ -886,17 +886,14 @@ class BackupRestorer:
 def _local_stores(data_dir: Path) -> StoreBundle:
     """CLI 这条路的装配：**按本机档**建库（与 ``legacy_import._local_stores`` 同一手法）。
 
-    环境变量四个与 ``sidecar.pin_local_deployment`` 一模一样（``KYLAB_DATABASE_URL``
-    **设空串**而不是删掉——本机 `.env` 里真的配了它，删掉会让它"复活"）。**不 import
-    边车模块**：这条命令没必要把整个边车进程拖进导入图里。
+    只设 ``KYLAB_DATA_DIR``（与 ``sidecar.pin_local_deployment`` 同一手法）。
+    **不 import 边车模块**：这条命令没必要把整个边车进程拖进导入图里。
     """
     import os
 
     from app.core.config import get_settings
     from app.core.storage import build_stores
 
-    os.environ["KYLAB_DEPLOYMENT"] = "local"
-    os.environ["KYLAB_DATABASE_URL"] = ""
     os.environ["KYLAB_DATA_DIR"] = str(data_dir)
     get_settings.cache_clear()
     return build_stores(get_settings())

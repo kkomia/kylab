@@ -54,7 +54,6 @@ from app.services.credentials import CredentialsService
 from app.services.embedding import build_embedder
 from app.services.embedding.base import EmbeddingProvider
 from app.services.embedding.deterministic import DeterministicEmbedder
-from app.services.idempotency import IdempotencyService
 from app.services.kb_cache import CachedKnowledgeMetaReader, KbMetaCacheService
 from app.services.knowledge_provider import (
     EnqueueGateway,
@@ -188,8 +187,6 @@ class Services:
     usage: UsageService
     """用量统计：按次记 token 与调用量（调研报告 G7）。"""
 
-    idempotency: IdempotencyService
-    """幂等键：上传类接口防重试造成重复入库（架构 §3.2）。"""
 
     load: SystemLoadService
     """负载面板数据源：CPU / 内存 / 队列深度 / 并发槽位 / 云端解析额度（§12.115）。"""
@@ -736,8 +733,6 @@ def _build_graph(
         token=resolved.token or "",
     )
 
-    idempotency = IdempotencyService(bundle)
-
     # 定时任务的执行体需要一个**装配好的 Services**（工具表、执行器、会话……都从它上面取），
     # 而 Services 要到这一行之下才存在。用一格可变的"槽"接住它：回调在应用起来之后
     # 才会被调用，那时槽里一定有值（不是懒加载的托词——这条链路上没有第二个时机）。
@@ -762,7 +757,6 @@ def _build_graph(
     services = Services(
         chat=chat_service,
         runtime=runtime,
-        idempotency=idempotency,
         models=registry,
         usage=usage,
         embedder=embedder,

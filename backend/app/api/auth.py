@@ -1,28 +1,19 @@
-"""请求级鉴权依赖（《架构设计 v0.2》§3.2）。
+"""请求级鉴权依赖：**一句话是"打得到本机端口的就是这台机器的主人"**。
 
-两种凭据，一个入口：
+这个进程只监听 127.0.0.1、跑在用户自己的机器上，所以没有账号体系也不该有：
+能打到那个端口的就是主人。于是 ``current_caller`` 恒返回 `api_key.LOCAL_CALLER`，
+**不看 ``Authorization``**——带着别处的令牌打本机也不该被当成另一种身份。
 
-- **登录会话**（``kylab_st_`` 前缀）：Web 控制台用，用户名 + 密码换来；
-- **API Key**：给外部程序用，绑定知识库范围 + 只读/读写。
+**门禁那套东西（登录会话 / API Key / 成员与分享）随知识库产品剥离搬走了**，
+留下来的只有两件：
 
-为什么"进控制台"必须是一种比 API Key 更高的身份，而不是同一把钥匙的另一个权限档：
-设置页就是 embedding / LLM 密钥的落点，而 ``base_url`` 可改——给了外部 API Key
-就等于给了它一条"把你的 Bearer Token 转发到我的服务器"的路。所以管理员身份只能
-来自登录会话里的角色。
-
-三处刻意的决定：
-
-1. **鉴权永远生效**（v0.11 取消控制台令牌与"没配凭据就放行"）。
-   第一次打开时唯一能调的是 ``GET /auth/status`` 与 ``POST /auth/setup``——
-   先建管理员账号，再谈别的；在此之前任何业务请求都 401。
-   上一版在"还没配任何凭据"时把请求放行成本机控制台，而"还没配"与"忘了配"
-   从代码上无法区分，等于"无账号即裸奔"。
-2. **只在 ``/api/v1`` 下生效**。健康探针（``/health``）与前端静态资源不鉴权：
-   前者是容器编排用来判断存活的，带上鉴权会让 readiness 探针误判。
-3. **失败快、文案钝**。缺凭据与凭据无效都回 401，且不区分原因（见 api_key.py）。
-4. **本机档短路**（M2 §4.1，2026-10-01）：`deployment=local` 时 `current_caller` 直接
-   返回"本机主人"，不看请求头。理由见函数自身的说明——**第一条只对服务器档成立**，
-   本机档本来就没有账号体系可验（`users` / `sessions` 不在本机库里）。
+1. ``require_read`` / ``require_write`` 这两道依赖**仍然在**（端点签名上写着它们），
+   它们做的事是调 `ApiKeyService.check_access`——而本机这个主体是管理员，
+   那一步直接放行。留着它而不是把依赖删掉：**"谁有权碰这个库"这件事只有一处定义**
+   才不会漂，哪天真的接进第二个主体，判定不用重写。
+2. **签名密钥**（``signing_secret`` / ``signing_secret_or_raise``）：下载链接要它，
+   而"有没有配"与用户凭据毫无关系——所以缺了回 **503**（我们这边没配好），
+   不是 401（那样前端会把人踢到登录页，而问题根本不在登录）。
 """
 
 from __future__ import annotations
@@ -30,14 +21,14 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends
 
-from app.core.config import Settings, get_settings
-from app.core.exceptions import ForbiddenError, ServiceUnavailableError, UnauthorizedError
+from app.core.config import Settings
+from app.core.exceptions import ForbiddenError, ServiceUnavailableError
 from app.core.services import KbServices, Services, get_kb_services
 from app.core.signing import URL_SIGNING_SECRET_SETTING
 from app.models.enums import ApiKeyPermission
-from app.services.api_key import LOCAL_CALLER, READ, WRITE, Caller, resolve_caller
+from app.services.api_key import LOCAL_CALLER, READ, WRITE, Caller
 
 logger = logging.getLogger(__name__)
 
@@ -51,43 +42,14 @@ __all__ = [
 ]
 
 
-def _bearer(authorization: str | None) -> str | None:
-    """从 ``Authorization: Bearer <token>`` 里取令牌。"""
-    if not authorization:
-        return None
-    parts = authorization.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    return parts[1].strip() or None
+def current_caller() -> Caller:
+    """本机主人。**没有第二种主体**，也不看请求头。
 
-
-def current_caller(
-    services: Annotated[KbServices, Depends(get_kb_services)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    authorization: Annotated[str | None, Header()] = None,
-) -> Caller:
-    """解析调用主体。**没有凭据就是 401**，不存在"未启用鉴权"这条支路。
-
-    **唯一一条例外是本机档**（M2 §4.1、v0.3 §8-1「本机运行时不设门禁」）：
-    桌面壳起的边车只监听 127.0.0.1、跑在用户自己的机器上，能打到那个端口的就是这台
-    机器的主人，所以直接短路成"本机主人"（见 `api_key.LOCAL_CALLER`）。
-    它**不看 `Authorization`** ✗：本机档没有账号体系（`users` / `sessions` 两张表都不在
-    本机库里），带着服务器那把令牌打本机也不该被当成成员——那不是本机的身份。
-
-    服务器档一个字没改：缺凭据仍然 401，照样走 `resolve_caller`。
+    为什么不做成"没有凭据就 401"：这一档没有账号体系可验（那两张表不在这份库里），
+    而 401 会让前端跳登录页——那一页早就删了。真要限权，手段是"别让进程监听
+    0.0.0.0"（`Settings.host` 默认就是 127.0.0.1，壳起边车时也不给别的值）。
     """
-    if settings.deployment == "local":
-        return LOCAL_CALLER
-    token = _bearer(authorization)
-    if token is None:
-        raise UnauthorizedError(
-            "缺少凭据：请在请求头带上 Authorization: Bearer <会话令牌或 API Key>"
-        )
-
-    # 分流与校验都在服务层 `resolve_caller` 里：**MCP 走同一份判定**。
-    # 两处各写一份的话，"同一串令牌在一个入口是管理员、在另一个是匿名"
-    # 这类不一致不会有任何测试能同时看到。
-    return resolve_caller(services, token)
+    return LOCAL_CALLER
 
 
 CallerDep = Annotated[Caller, Depends(current_caller)]

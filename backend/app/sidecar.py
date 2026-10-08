@@ -66,9 +66,9 @@ key 在本机档由 Windows 凭据管理器持有，见 `services/secrets.py`）
 
 三件与"落到本机"配套的事，都在本模块里钉死：
 
-1. **入口自己钉档位**（`_pin_local_deployment`）：`KYLAB_DEPLOYMENT=local` +
-   `KYLAB_DATABASE_URL` 压成空串 + `KYLAB_DATA_DIR` 指向本次的数据目录。
-   **不给环境继承的机会** ✗ ——"边车误连服务器库"是最糟的失败形态（不报错、写错库）；
+1. **入口自己钉落点**（`pin_local_deployment`）：`KYLAB_DATA_DIR` 指向本次的数据目录
+   （外加壳传下来的远端地址与设备身份）。**不给环境继承的机会** ✗ ——
+   "库建在 cwd 下的 ./data"是最糟的失败形态（不报错，只是写到了别处）；
 2. **服务图就是本机档的组合根**（`build_local_services`）：会话 / 产物 / 笔记 / 记忆 /
    设置 / **技能 / 插件 / MCP** 全部走 `get_services()` 那一份（**与本机后端端点是同一个
    对象**——同一张审批登记表、同一个运行期配置、同一批会话、**同一份技能与 MCP 清单**）；
@@ -203,34 +203,29 @@ def pin_local_deployment(
     kb_token: str = "",
     device_id: str = "",
 ) -> None:
-    """**入口自己钉死档位**（M2 §4.1）——三个环境变量，一个都不能省。
+    """**入口自己钉死"数据落在哪儿"**——四个环境变量，一个都不能省。
 
-    - ``KYLAB_DEPLOYMENT=local``：不给环境继承的机会 ✗。"边车误连服务器库"是最糟的失败
-      形态（不报错，只是把数据写进**另一个库**），所以档位由入口说了算；
-    - ``KYLAB_DATABASE_URL=""``（**设空串、不是 delenv** ✗）：本机 `.env` 里真的配了这条
-      （开发机就是这么干的），而本机档**不接受**它——`Settings` 的校验器见到它会在启动的
-      第一秒直接抛（"两个真相源"那条）。`Settings` 里环境变量优先于 `.env`，所以只有
-      设成空串才压得住它；`delenv` 会让它从 `.env` 里"复活"（`tests/conftest.py` 的
-      S3 那三个变量是同一手法）；
-    - ``KYLAB_DATA_DIR`` / ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN``：本次这一档的落点与
-      远端两头。**从入口的参数来**（壳传的 `--data-dir` / `--server` / `--token`），
-      不给它们的话库会建在 cwd 下的 `./data`（与用户看到的"我的数据"不是一处）；
-    - ``KYLAB_KB_URL`` / ``KYLAB_KB_TOKEN``（M3 §4.1）：**知识库提供者**那两头的覆盖
-      （排障与多 NAS 入口）。**有值才设**——它们是"覆盖"，而空串会**顶掉**环境或
-      `.env` 里已有的值（"没传"与"显式置空"在引导级不是一回事：后者要清掉得改 `.env`）。
+    - ``KYLAB_DATA_DIR``：本次这一档的落点与远端两头。**从入口的参数来**（壳传的
+      `--data-dir` / `--server` / `--token`），不给它的话库会建在 cwd 下的 ``./data``
+      （与用户看到的"我的数据"不是一处）；
+    - ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN``：知识库/导入的来源与凭据；
+    - ``KYLAB_KB_URL`` / ``KYLAB_KB_TOKEN``：**知识库提供者**那两头的覆盖（排障与
+      多入口）。**有值才设**——它们是"覆盖"，而空串会**顶掉**环境或 ``.env`` 里已有的值
+      （"没传"与"显式置空"在引导级不是一回事：后者要清掉得改 ``.env``）。
       默认档一个字都不用填：提供者客户端按"权威 + 覆盖"解析，
-      ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN`` 就是它的继承源。
-    - ``KYLAB_DEVICE_ID``（M5 阶段 4）：**这台机器的设备身份**，壳生成、壳传
-      （``--device-id``）。与 ``kb_url`` 同一条"**有值才设**"：它是引导级的事实，
-      没传就是没有（本机档随后如实拒绝打快照，R12——**绝不自动编一个**）。
+      ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN`` 就是它的继承源；
+    - ``KYLAB_DEVICE_ID``：**这台机器的设备身份**，壳生成、壳传（``--device-id``）。
+      与 ``kb_url`` 同一条"**有值才设**"：它是引导级的事实，没传就是没有
+      （随后如实拒绝打快照，**绝不自动编一个**）。
 
-    顺带清掉两个单例缓存：档位是**进程启动时定一次**的东西（`get_settings` /
-    `get_stores` / `get_services` 都是 `lru_cache`），而"先有人问过档位、再钉档"
-    在测试里是常态 —— 不清缓存就会拿到按**旧**环境变量建出来的单例
-    （那正是"边车误连服务器库"的同一条错误路径，只是发生在内存里）。
+    顺带清掉两个单例缓存：落点是**进程启动时定一次**的东西（`get_settings` /
+    `get_stores` / `get_services` 都是 `lru_cache`），而"先有人问过配置、再钉它"
+    在测试里是常态 —— 不清缓存就会拿到按**旧**环境变量建出来的单例。
+
+    **这里不再设 ``KYLAB_DEPLOYMENT`` / ``KYLAB_DATABASE_URL``**：那两个字段随服务器档
+    一起删了（这个后端只有本机一种形态）。``Settings`` 是 ``extra="ignore"``，
+    所以环境里若还留着它们**会被静默忽略**，不影响启动。
     """
-    os.environ["KYLAB_DEPLOYMENT"] = "local"
-    os.environ["KYLAB_DATABASE_URL"] = ""
     os.environ["KYLAB_DATA_DIR"] = str(data_dir)
     if server_url:
         os.environ["KYLAB_SERVER_URL"] = server_url
@@ -827,7 +822,7 @@ class Clients:
         # 会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置 / 技能 / 插件 / MCP 全是
         # 本机那份真服务 ✓，而且与挂在同一个 app 上的 `/api/v1/*` 端点是**同一个对象** ✓
         # —— 于是"边车跑完写下的账"与"界面读到的账"必然是同一份。
-        # 装配要求：调用方**先**钉死档位（`pin_local_deployment`，见那里的说明），
+        # 装配要求：调用方**先**钉死落点（`pin_local_deployment`，见那里的说明），
         # 否则 `get_services()` 会按服务器档去连 PG（那是"误连服务器库"那条路）。
         base_services = services if services is not None else get_services()
 
@@ -1293,7 +1288,7 @@ def create_app(
     之后每次起边车都传下来。它同样是"有值才设"，**留空就是没有** —— 本机档随后
     如实拒绝打快照（R12：绝不自动编一个 id），而不是悄悄用一台匿名机器备份。
 
-    **先把档位钉死**（`pin_local_deployment`）再建任何东西：`Clients` 会走本机档的
+    **先把落点钉死**（`pin_local_deployment`）再建任何东西：`Clients` 会走本机的
     组合根（`get_services()`），而那是按环境变量建单例的——钉晚了就会按服务器档
     去连 PG（"边车误连服务器库"那条路，不报错、只是写错库）。用例直接调本函数时
     也只有这一次机会 ✓。

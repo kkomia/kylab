@@ -57,8 +57,8 @@ M3 起本机不再"没有知识库"——知识库在 NAS 上，本机是它的*
   的能力（每次调用现取目标）；那份能力**只有服务层有**（``runtime.get`` 那一份运行期
   设置）。把目标塞进构造参数，等于把"设置页改完即刻生效"钉死在启动那一刻。
 
-所以 ``RemoteMetaStore()`` 无参构造，reader 由组合根**后挂一次**（``core/services.py``，
-只在 ``deployment == "local"`` 那一支）。这一处注入只在**装配期**发生，也不动 ``router.py``
+所以 ``RemoteMetaStore()`` 无参构造，reader 由组合根**后挂一次**（``core/services.py``）。
+这一处注入只在**装配期**发生，也不动 ``router.py``
 "路由表构造时定下"那条纪律——注入的是 KB 侧那个对象**内部**的引用，路由一个字没变。
 
 **没 bind 就调用**：抛 ``KnowledgeBaseUnavailable(UNBOUND_MESSAGE)``，**不是

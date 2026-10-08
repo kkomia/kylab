@@ -6,13 +6,13 @@
    （`ScheduleRepo` 属本机域），"到点"判定也在本机（`due_scheduled_tasks`）——
    没有这一环，界面上建好的任务永远是"下次运行时间"往后跳、什么也不发生；
 2. **本机库只增不减**：`usage_events` 有保留期（`usage.USAGE_RETENTION_DAYS`），
-   幂等键同理——没有这一环它们一次都不会被清。
+   没有这一环它一次都不会被清。
 
 所以这一模块只做这两件事，**一行摄取都不做**：摄取（解析 / 切块 / 嵌入 / 向量索引）
 是知识库那边的家当，本机连那几张表都没有（知识库在别处，本机是它的客户端）。
 
-**安全边界**：本机的空闲维护**只调用本机域那几个方法**（过期的用量行与幂等键，
-保留期分别是 180 天与存储层自己那条）。不往知识库那份维护清单上凑：里面那些
+**安全边界**：本机的空闲维护**只调用本机域那几个方法**（现在只有过期的用量行，
+保留期 `USAGE_RETENTION_DAYS = 180` 天）。不往知识库那份维护清单上凑：里面那些
 （清回收站 / 任务与阶段事件 / 文档摘要）动的是知识库的数据，而那些数据不在这台机器上，
 判定必须跟着数据走。
 
@@ -145,13 +145,11 @@ class LocalScheduler:
     def _maintain(self) -> None:
         """本机库自己的收尾：**只碰本机域的表**（见模块头"安全边界"）。
 
-        两件，都是"本来就没有调用者"的承诺——写在存储层很久了，但从没人调，
-        于是"保留 180 天"和"键不会无限增长"实际上都没发生：
+        一件：过期的用量行（`usage_events` 是本机域唯一"有保留期"的表）。
+        它挂在消费者上是因为**本来就没有调用者**——`usage.purge_expired` 写在存储层
+        很久了，但从没人调，于是"保留 180 天"实际上没发生。
 
-        - 过期的用量行（`usage_events` 是本机域唯一的"有保留期的表"）；
-        - 过期的幂等键（`purge_expired`）。
-
-        逐件吞异常：一件失败不该让另一件也不跑，更不该影响消费。
+        吞异常：清理失败不该影响消费，也不该让循环停摆。
         """
         try:
             removed = self._services.usage.purge_expired()
@@ -160,13 +158,6 @@ class LocalScheduler:
         else:
             if removed:
                 logger.info("本机档：清理过期用量记录 %d 条", removed)
-        try:
-            keys = self._services.idempotency.purge_expired()
-        except Exception:
-            logger.warning("本机档：清理过期幂等键失败", exc_info=True)
-        else:
-            if keys:
-                logger.info("本机档：清理过期幂等键 %d 条", keys)
 
     # ---------------------------------------------------------------- 跑一条
 
@@ -190,8 +181,8 @@ def bind_local_scheduler(services: Services, **kwargs: float) -> LocalScheduler:
     """装好本机消费者并**挂上接缝**（两个入口各调一次，实现只有这一份）。
 
     为什么两个入口都要调：桌面壳起的是**边车**（`python -m app.sidecar`，端口 8765），
-    而"本机档后端"那个入口（`app.main`，`KYLAB_DEPLOYMENT=local`）是另一条路径——
-    两边的本机库里是同一张 `scheduled_tasks` 表，所以"到点跑"这件事两边都该有人做。
+    而开发时也会直接起 `app.main`（uvicorn，端口 8000 那一档）——两边落的是同一个数据目录、
+    同一张 `scheduled_tasks` 表，所以"到点跑"这件事两边都该有人做。
     同时起两个也不会跑两遍：认领是一次 CAS（``arm_scheduled_task``），
     第二个进程要么认领失败、要么在下一轮看到 ``next_run_at`` 已经推到下一个周期。
     """
