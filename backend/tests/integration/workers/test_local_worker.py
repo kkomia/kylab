@@ -36,11 +36,9 @@ from app.storage.base import KnowledgeBaseUnavailable, ScheduledTaskRecord, Task
 def _local(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """钉死本机档（与 `test_local_signing_secret._local_app` 同一手法）。
 
-    ``KYLAB_DATABASE_URL`` 必须**显式置空**：跑 PG 测试时 conftest 把它指向测试库，
+    这一档只能落本机库：
     而本机档见到连接串会当场拒绝启动（"两个真相源"那条）。
     """
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     get_settings.cache_clear()
     reset_services()
     reset_stores()

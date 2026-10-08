@@ -196,7 +196,7 @@ UnavailableVectorStore = _build_unavailable(
     "UnavailableVectorStore",
     VectorStore.__abstractmethods__,
     (VectorStore,),
-    doc=_unavailable_namespace_doc("向量仓储（pgvector）"),
+    doc=_unavailable_namespace_doc("向量仓储"),
 )
 
 UnavailableFullTextStore = _build_unavailable(

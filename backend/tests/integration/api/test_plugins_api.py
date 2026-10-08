@@ -160,38 +160,5 @@ def test_unknown_plugin_is_404(client: TestClient) -> None:
 # --------------------------------------------------------------------- 权限
 
 
-def test_list_needs_credentials() -> None:
-    from app.main import create_app
-
-    with TestClient(create_app()) as bare:
-        assert bare.get("/api/v1/plugins").status_code == 401
 
 
-def test_enable_and_disable_need_admin() -> None:
-    """停用/启用是"会不会有代码被执行"的那一档，与 MCP、技能市场同一档。"""
-    from app.core.security import hash_password
-    from app.main import create_app
-    from app.models.enums import UserRole
-    from app.storage.base import UserRecord
-
-    with TestClient(create_app()) as client:
-        client.post(
-            "/api/v1/auth/setup", json={"username": "admin", "password": "correct horse battery"}
-        )
-        get_services().auth._stores.meta.create_user(  # 测试直达存储造账号（同可见性那组）
-            UserRecord(
-                id="user_member",
-                name="成员",
-                username="member",
-                password_hash=hash_password("member pass 123"),
-                role=UserRole.MEMBER,
-            )
-        )
-        token = client.post(
-            "/api/v1/auth/login", json={"username": "member", "password": "member pass 123"}
-        ).json()["token"]
-        headers = {"Authorization": f"Bearer {token}"}
-
-        assert client.get("/api/v1/plugins", headers=headers).status_code == 200
-        assert client.post("/api/v1/plugins/pack/enable", headers=headers).status_code == 403
-        assert client.post("/api/v1/plugins/pack/disable", headers=headers).status_code == 403

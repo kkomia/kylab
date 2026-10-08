@@ -296,8 +296,6 @@ def test_the_local_face_is_a_whitelist_not_the_whole_api(tmp_path, monkeypatch) 
     （SQLite / data_dir / 本机进程）"，逐域的理由写在 `api/v1/router.py` 的
     `local_router` 那一段。原来那版断言把 `/sandbox` 也列在"该不挂"里——它改了。
     """
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
     from app.core.config import get_settings
 

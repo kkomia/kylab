@@ -188,9 +188,7 @@ def _local_app(
     ``KYLAB_KB_URL`` / ``KYLAB_KB_TOKEN`` 显式置空：它们是**覆盖**，而开发机的 ``.env``
     里可能真配了——用例不看 ``.env``（与 ``test_local_provider_api._local_app`` 同一手法）。
     """
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     monkeypatch.setenv("KYLAB_SERVER_URL", server_url)
     monkeypatch.setenv("KYLAB_TOKEN", token)
     monkeypatch.setenv("KYLAB_KB_URL", "")

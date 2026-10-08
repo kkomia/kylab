@@ -59,9 +59,7 @@ def _local_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Test
     环境变量显式置空/置值：``.env`` 里真有可能配着别的东西，而用例不该看它——
     尤其 ``KYLAB_URL_SIGNING_SECRET``：**它一旦有值，"没配"那一档就测不到了**。
     """
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     monkeypatch.setenv("KYLAB_URL_SIGNING_SECRET", "")
     monkeypatch.setenv("KYLAB_SERVER_URL", "")
     monkeypatch.setenv("KYLAB_TOKEN", "")

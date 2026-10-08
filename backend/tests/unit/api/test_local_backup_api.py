@@ -182,9 +182,7 @@ def _local_app(
     那几个环境变量显式置空/置值：``.env`` 里真有可能配着别的东西，而用例不该看它
     （与 ``test_local_kb_cache_api._local_app`` 同一手法）。
     """
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     monkeypatch.setenv("KYLAB_SERVER_URL", server_url)
     monkeypatch.setenv("KYLAB_TOKEN", token)
     monkeypatch.setenv("KYLAB_KB_URL", "")

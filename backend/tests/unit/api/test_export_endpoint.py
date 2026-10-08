@@ -9,7 +9,7 @@
 3. **流式**：一次只有一条会话在内存里（拿到首行时还没去读任何一条会话的正文）；
 4. **归属**：成员通道只导自己的（与列表同一个判据，复用 `conversations._caller_owner`）。
 
-跑在本机档上（``KYLAB_DEPLOYMENT=local``）：导出这条路走的是**同一个服务实现**，
+跑在本机后端上：导出这条路走的是**同一个服务实现**，
 两个档位共用它（服务器档导给本机导入器，本机档导自己那批），所以本机档能跑就等于
 这条契约成立——而它**不需要 PostgreSQL**。
 """
@@ -47,9 +47,7 @@ T0 = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """本机档的真应用（`main.create_app`）——导出端点两个档位都挂着，这里走本机档。"""
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     get_settings.cache_clear()
     reset_services()
     reset_stores()

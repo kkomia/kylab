@@ -1,8 +1,8 @@
 r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
 
-与 ``postgres_impl/`` 的分工：那份是**服务器档**的唯一主实现（知识库 + 向量 + 全文
-的家当都在那边），这份是**本机档**的元数据实现——会话、消息、事件、产物、笔记、
-设置、工作区、定时任务、MCP、模型注册、用量，全部落在 ``<data_dir>/kylab.db``。
+**这是今天唯一的那份元数据实现**：会话、消息、事件、产物、笔记、设置、工作区、
+定时任务、MCP、模型注册、用量，全部落在 ``<data_dir>/kylab.db``。
+（原先还有一份服务器档的 ``postgres_impl/``；它随知识库产品剥离一起删了。）
 方案见 ``docs/规范/会话落本机-实施方案-v0.1.md`` §1。
 
 - ``connection.py``   连接管理 + PRAGMA 口径 + ``read()/session()``
@@ -25,22 +25,21 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
   ``MetaStore`` 上，同样单独登记；它多出来的一句是"为什么它既不属于本机域也不属于
   KB 域"；
 - ``LOCAL_SNAPSHOT_METHODS`` —— 快照打包与读回那三个方法（M5 阶段 2 两个、阶段 5 加了
-  一个"逐条读全量会话"）。第三块
-  "本机独有"（服务器档的库就是它自己，没有"把自己打成一份包"这条动作），
+  一个"逐条读全量会话"）。它是第三块"本机独有"（没有第二份实现需要它），
   理由同样写在常量上；
 - ``LOCAL_BACKUP_METHODS`` —— 备份待传队列那五个方法（M5 阶段 3）。第四块"本机独有"
-  （服务器档自己就是备份的目的地，没有"把一份快照排队传出去"这条动作）；
+  （"把一份快照排队传出去"这条动作只有本机有）；
 - ``LOCAL_ERASER_METHODS`` —— 安全擦除那一个方法（M5 阶段 6 收尾）。第五块"本机独有"
-  （它擦的是**本机那个库文件**，服务器档的数据在 PG 里，那份处置是 NAS 自己的访问控制）。
+  （它擦的是**本机那个库文件**）。
 
 **只实现本机域，不实现 ``MetaStore`` 全量 ABC**：本机档里知识库那半没有数据源
 （NAS 才是），所以 ``SqliteMetaStore`` 不继承 ``MetaStore``，也不该被当成一个完整的
 ``MetaStore`` 用。分档路由（``RouterMetaStore``：本机域走它、KB 域转给 KB 侧实现）
 是阶段 2 的事，本模块只负责"本机这些表怎么读写"。
 
-**五种存储只住这一个目录**：``scripts/check_layering.py`` 的 L2 规则禁止
-``services/`` import ``sqlite3``（与 ``psycopg`` 同级），SQLite 代码只许住在
-``app/storage/sqlite_impl/``，业务层只许见 ``app.storage.base`` 的接口。
+**数据库代码只许住存储层**：``scripts/check_layering.py`` 的 L2 规则禁止 ``services/``
+import ``sqlite3``，SQLite 代码只许住在 ``app/storage/sqlite_impl/``，
+业务层只许见 ``app.storage.base`` 的接口。
 """
 
 from __future__ import annotations

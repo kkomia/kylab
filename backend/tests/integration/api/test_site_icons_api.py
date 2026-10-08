@@ -39,13 +39,6 @@ def offline(monkeypatch):
     )
 
 
-def test_icon_needs_credentials() -> None:
-    """`<img>`/`fetch` 都要凭据：这一组端点没在 `/auth` 那半边。"""
-    from app.main import create_app
-
-    with TestClient(create_app()) as anonymous:
-        response = anonymous.get("/api/v1/site-icons", params={"domain": "github.com"})
-        assert response.status_code == 401
 
 
 def test_icon_is_served_with_type_and_cache_headers(

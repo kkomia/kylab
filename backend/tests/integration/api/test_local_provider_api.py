@@ -173,9 +173,7 @@ def _local_app(
     ``KYLAB_KB_URL`` / ``KYLAB_KB_TOKEN`` 显式置空：它们是**覆盖**，而开发机的 ``.env``
     里可能真配了——用例不看 ``.env``（与 `test_knowledge_provider._settings` 同一手法）。
     """
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     # 壳那两件（权威）：连哪台 NAS、用哪把钥匙。提供者默认继承它们（§4.2）
     monkeypatch.setenv("KYLAB_SERVER_URL", server_url)
     monkeypatch.setenv("KYLAB_TOKEN", token)

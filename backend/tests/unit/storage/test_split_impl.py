@@ -17,7 +17,7 @@
    装配口 ``bind_reader``）；``IMPLEMENTED``（两个真映射）之外**逐个**照旧抛那句原句；
    没 ``bind`` 就调那两个已实现的方法时抛的是**那句中文**，不是 ``AttributeError``。
 
-外加一条**子进程**断言（§7 阶段 2 的完成判据）：``KYLAB_DEPLOYMENT=local`` 下跑一次
+外加一条**子进程**断言：在一个干净解释器里跑一次
 真 ``build_stores()``，``psycopg`` / ``boto3`` / ``duckdb`` 一个都不许进 ``sys.modules``。
 为什么必须换进程：本进程里 ``tests/conftest.py`` 早就 import 了 psycopg，
 在脏 ``sys.modules`` 上查"有没有 import"永远查不出东西。
@@ -309,11 +309,11 @@ def test_the_unavailable_error_is_a_storage_error() -> None:
 
 
 def test_local_deployment_builds_every_field_without_the_server_backends(tmp_path: Path) -> None:
-    """§7 阶段 2 完成判据：``KYLAB_DEPLOYMENT=local`` 下五个字段齐备，三份后端都没 import。
+    """五个字段齐备，且**服务器档那三份后端一个都没进 `sys.modules`**。
 
     跑在**干净解释器**里（本进程早就 import 过 psycopg，查不出东西），用**环境变量**钉档
     （与生产同一条路：``get_settings()`` + ``build_stores()``），并把 ``.env`` 会带来的
-    ``KYLAB_DATABASE_URL`` 压成空串——不压的话本机档会当场拒绝（那正是它该做的事）。
+    那几个已经不在 `Settings` 里的服务器档变量也一并压掉。
     """
     script = textwrap.dedent(
         f"""
@@ -329,9 +329,9 @@ def test_local_deployment_builds_every_field_without_the_server_backends(tmp_pat
     )
     env = {
         **os.environ,
-        "KYLAB_DEPLOYMENT": "local",
+
         "KYLAB_DATA_DIR": str(tmp_path / "data"),
-        "KYLAB_DATABASE_URL": "",
+
         "PYTHONIOENCODING": "utf-8",
     }
     # 命令是"本仓库自己的解释器 + 一段写死在文件里的脚本"，不是外部输入

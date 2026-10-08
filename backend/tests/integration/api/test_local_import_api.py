@@ -122,9 +122,7 @@ def client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: tuple[httpx.MockTransport, list]
 ) -> Iterator[TestClient]:
     """本机档的真 app + 假 NAS（把假传输塞进装配好的导入器里）。"""
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     # 本机档的远端两头：来源基址给假 NAS，令牌走同一个入口（不经过 HTTP 请求体）
     monkeypatch.setenv("KYLAB_SERVER_URL", NAS)
     monkeypatch.setenv("KYLAB_TOKEN", "t")
@@ -279,9 +277,7 @@ def test_startup_reports_an_unfinished_batch(
     的样子），再起应用。**不自动重试**：重跑是用户的决定（来源可能都不在了），
     这里只把"有几笔账没结、怎么续"说出来。
     """
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
     monkeypatch.setenv("KYLAB_SERVER_URL", NAS)
     get_settings.cache_clear()
     reset_services()

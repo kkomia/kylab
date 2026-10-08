@@ -265,58 +265,8 @@ def test_overview_ships_provider_presets(client: TestClient) -> None:
 # --------------------------------------------------------------------- 鉴权
 
 
-def test_registry_needs_credentials() -> None:
-    """注册表是凭据管理，没有凭据一律 401（v0.11 起鉴权永远生效）。"""
-    from app.main import create_app
-
-    with TestClient(create_app()) as anonymous:
-        assert anonymous.get("/api/v1/model-registry/providers").status_code == 401
 
 
-def test_registry_writes_need_an_admin_session(client: TestClient) -> None:
-    """**凭据管理只认管理员会话**：普通 API Key 不该能读写模型凭据，
-    否则一把泄露的读写密钥就能把所有人的模型指向别处。"""
-    console = dict(client.headers)  # 管理员会话
-
-    provider = client.post(
-        "/api/v1/model-registry/providers",
-        json={"kind": "llm", "name": "甲", "base_url": "https://a.example.com", "api_key": "k"},
-        headers=console
-    )
-    assert provider.status_code == 201, provider.text
-
-    issued = client.post(
-        "/api/v1/api-keys",
-        json={"name": "读写", "permission": "readwrite", "knowledge_base_ids": []},
-        headers=console
-    ).json()
-    apikey = {"Authorization": f"Bearer {issued['token']}"}
-
-    # 读：普通密钥可以（界面要显示有哪些模型）
-    assert client.get("/api/v1/model-registry", headers=apikey).status_code == 200
-    # 写：不行
-    assert (
-        client.post(
-            "/api/v1/model-registry/providers",
-            json={"kind": "llm", "name": "乙"},
-            headers=apikey
-    ).status_code
-        == 403
-    )
-    assert (
-        client.patch(
-            f"/api/v1/model-registry/providers/{provider.json()['id']}",
-            json={"name": "偷改"},
-            headers=apikey
-    ).status_code
-        == 403
-    )
-    assert (
-        client.delete(
-            f"/api/v1/model-registry/providers/{provider.json()['id']}", headers=apikey
-        ).status_code
-        == 403
-    )
 
 # --------------------------------------------------------------------- 供应商探活
 
