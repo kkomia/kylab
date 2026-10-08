@@ -380,6 +380,13 @@ KB_SURFACE_CALLS: tuple[str, ...] = ("retrieve_sources",)
 #: 不限定接收者的话，`payload.documents` 这种同名字段会成片误报。
 COMPOSITION_ROOT_RECEIVERS: tuple[str, ...] = ("._services", ".services")
 
+#: 拆组合根之后 `Services`（Agent 根）上那一格**过渡访问器**的名字：`services.kb.<KB 字段>`
+#: 是"经组合根取 KB 服务"的现形态（见 `core/services.py` 的 `Services.kb` 字段说明）。
+KB_ACCESSOR = "kb"
+
+#: 组合根那两个数据类的名字（`app/core/services.py`）：字段映射要**两张表合起来看**。
+ROOT_CLASS_NAMES = ("Services", "KbServices")
+
 #: 分类：越界三态 + 混合体牵涉的边 + 组合根属性访问（另一条泳道）的两种走向
 KB_TO_AGENT = "kb→agent"
 AGENT_TO_KB = "agent→kb"
@@ -388,6 +395,7 @@ MIXED_IMPORT = "mixed"
 KB_TO_AGENT_ROOT = "kb→agent·组合根"
 AGENT_TO_KB_ROOT = "agent→kb·组合根"
 MIXED_ROOT = "mixed·组合根"
+KB_ACCESSOR_KIND = "经 kb 访问器"
 
 #: 哪些类别转红灯（本阶段口径 = 方案 §8 验收第 5 条）。
 #: **共享底座与组合根越界只记录、不拦门**：前者 §5.3 还没拍板归属（`core/services.py`
@@ -579,7 +587,7 @@ def _receiver_text(node: ast.AST) -> str:
 
 
 def services_field_modules(root: Path) -> dict[str, str]:
-    """`Services` 数据类的字段 → 它装的那个服务所在模块（机械解出来，不手抄）。
+    """组合根数据类的字段 → 它装的那个服务所在模块（机械解出来，不手抄）。
 
     §4 第 1 条说这个数据类是"单一组合根"：KB 与 Agent 的服务混装在一张图里。
     **经它取服务是属性访问，不是 import**——所以光扫 import 会看不见
@@ -587,6 +595,10 @@ def services_field_modules(root: Path) -> dict[str, str]:
     这里靠注解把字段映射回模块：`ingest: IngestService | IngestGateway` +
     `from app.services.ingest import IngestService` → `app.services.ingest`，
     再交给 `domain_of` 分类。
+
+    **2026-10-08 起看两个类**：拆组合根之后 KB 字段住在 `KbServices`、Agent 字段住在
+    `Services`（`app/core/services.py`），两张表要合起来看——只看 `Services` 的话，
+    KB 那半边会整体从这张表里消失（跨根访问随之静默不报）。
 
     拿不到注解（`workers: list[TaskWorker]` 这类要用下标里那个名字）就跳过那个字段——
     漏一个字段只是少一条记录，不会误报。
@@ -603,11 +615,13 @@ def services_field_modules(root: Path) -> dict[str, str]:
 
     fields: dict[str, str] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or node.name != "Services":
+        if not isinstance(node, ast.ClassDef) or node.name not in ROOT_CLASS_NAMES:
             continue
         for item in node.body:
             if not isinstance(item, ast.AnnAssign) or not isinstance(item.target, ast.Name):
                 continue
+            if item.target.id == KB_ACCESSOR:
+                continue  # 过渡访问器本身不是"装了一个服务"的字段（见 KB_ACCESSOR 的说明）
             module = aliases.get(_annotation_head(item.annotation))
             if module and domain_of(module) in (KB, AGENT, SHARED):
                 fields[item.target.id] = module
@@ -629,6 +643,10 @@ def composition_root_accesses(tree: ast.AST, fields: dict[str, str]) -> list[tup
     接收者按名字收窄（见 `COMPOSITION_ROOT_RECEIVERS`）——这个仓库里组合根就注入成
     `services` / `self._services` / `self.services` 三种写法，收窄之后同名的请求体字段
     （`payload.documents`）不会被算进来。
+
+    **`services.kb.<字段>` 也收**（2026-10-08 拆组合根之后新增的那条路）：接收者文本记成
+    `services.kb`，调用方据此判它是"经过渡访问器取 KB 服务"。不收它的话，跨根访问会在
+    报告里静默消失——而这正是最该被看见的那一类（它标记着"还没画完的剥离线"）。
     """
     found: list[tuple[int, str, str]] = []
     for node in ast.walk(tree):
@@ -637,6 +655,11 @@ def composition_root_accesses(tree: ast.AST, fields: dict[str, str]) -> list[tup
         receiver = _receiver_text(node.value)
         if receiver == "services" or receiver.endswith(COMPOSITION_ROOT_RECEIVERS):
             found.append((node.lineno, node.attr, receiver))
+        # `services.kb.<字段>`：value 是 `Attribute(attr="kb")`，再往外是根接收者
+        elif isinstance(node.value, ast.Attribute) and node.value.attr == KB_ACCESSOR:
+            outer = _receiver_text(node.value.value)
+            if outer == "services" or outer.endswith(COMPOSITION_ROOT_RECEIVERS):
+                found.append((node.lineno, node.attr, f"{outer}.{KB_ACCESSOR}"))
     return found
 
 
@@ -653,6 +676,8 @@ class Scan:
         self.calls: list[tuple[str, int, str, str | None]] = []
         #: 经组合根取对侧服务的属性访问：(相对路径, 行号, 接收者, 字段, 服务所在模块)
         self.root_accesses: list[tuple[str, int, str, str, str]] = []
+        #: 经 `Services.kb` 过渡访问器取 KB 服务：(同上的形状)，`receiver` 里带 `.kb`
+        self.accessor_accesses: list[tuple[str, int, str, str, str]] = []
         #: 未认领模块 → 它经组合根取对侧服务的次数（盲区量化，第 7 节）
         self.root_blind_spots: dict[str, int] = {}
         #: 名单条目 → 在磁盘上匹配到的模块数（存在性核实）
@@ -732,12 +757,15 @@ def scan_tree(root: Path) -> Scan:
                 if target_domain in (KB, AGENT) and not _is_seam(target_module):
                     result.root_blind_spots[module] = result.root_blind_spots.get(module, 0) + 1
                 continue
-            kind = _root_violation_kind(source_domain, target_module)
+            kind = _root_violation_kind(
+                source_domain, target_module, via_accessor=receiver.endswith(f".{KB_ACCESSOR}")
+            )
             if kind is None:
                 continue
-            result.root_accesses.append(
-                (display.as_posix(), lineno, receiver, field, target_module)
+            target_list = (
+                result.accessor_accesses if kind == KB_ACCESSOR_KIND else result.root_accesses
             )
+            target_list.append((display.as_posix(), lineno, receiver, field, target_module))
             result.violations.append(
                 Violation(
                     kind,
@@ -751,6 +779,7 @@ def scan_tree(root: Path) -> Scan:
 
     result.calls.sort(key=lambda item: (item[0], item[1]))
     result.root_accesses.sort(key=lambda item: (item[0], item[1]))
+    result.accessor_accesses.sort(key=lambda item: (item[0], item[1]))
     return result
 
 
@@ -759,16 +788,24 @@ def _is_seam(module: str) -> bool:
     return any(matches(module, seam) for seam in SEAMS)
 
 
-def _root_violation_kind(source: str, target_module: str) -> str | None:
+def _root_violation_kind(
+    source: str, target_module: str, *, via_accessor: bool = False
+) -> str | None:
     """经组合根取对侧服务：是越界返回类别，否则 None。
 
     `target_module` 命中三处接缝时放行（`services.provider` 就是 `knowledge_provider`，
     它正是设计上要保留的那条通道）。混合体（`services.chat` / `services.tools`）按
     "只记录不拦门"处理——`MIXED_ROOT` 只记录。
+
+    `via_accessor=True` 指这次访问走的是 `services.kb.<KB 字段>`（2026-10-08 拆组合根
+    之后 Agent 侧取 KB 服务的那条过渡路）：单独一类，**只记录**——它是"剥离线还没画完"
+    的标记，等 Agent 侧改走 KB 客户端窄面时这一格与这些访问一起删。
     """
     if _is_seam(target_module):
         return None
     target_domain = domain_of(target_module)
+    if via_accessor and target_domain == KB:
+        return KB_ACCESSOR_KIND
     if MIXED in (source, target_domain):
         return MIXED_ROOT
     if source == KB and target_domain == AGENT:
@@ -850,6 +887,7 @@ def build_report(root: Path, result: Scan) -> str:
         for item in result.violations
         if item.kind in (KB_TO_AGENT_ROOT, AGENT_TO_KB_ROOT)
     ]
+    accessor_accesses = [item for item in result.violations if item.kind == KB_ACCESSOR_KIND]
     mixed = mixed_imports + mixed_roots
 
     missing = sorted(entry for entry, hits in result.entry_hits.items() if not hits)
@@ -889,6 +927,8 @@ def build_report(root: Path, result: Scan) -> str:
         f"| 共享底座 import 某一侧（shared→domain） | {len(shared)} | 否（两边都不该依赖） |",
         f"| 经组合根取对侧服务（属性访问，不是 import） | {len(root_accesses)} | "
         "否（另一条泳道） |",
+        f"| 经 `Services.kb` 过渡访问器取 KB 服务 | {len(accessor_accesses)} | "
+        "否（过渡标记，见第 6.2 节） |",
         f"| 未认出归属的模块（未认领） | {len(unclaimed)} | 否（需要决策） |",
         "",
         "名单本身的几张单子（条目数）：",
@@ -1017,6 +1057,7 @@ def build_report(root: Path, result: Scan) -> str:
         ("混合体牵涉的跨域引用", mixed),
         ("共享底座 → 某一侧", shared),
         ("经组合根取对侧服务", root_accesses),
+        ("经 kb 访问器取 KB 服务", accessor_accesses),
     ):
         lines += [f"### {title}", ""]
         lines += _table(_group_counts(items))
@@ -1025,20 +1066,43 @@ def build_report(root: Path, result: Scan) -> str:
     lines += [
         "## 6. 经组合根取对侧服务的属性访问（import 扫不到的那一半）",
         "",
-        "`core/services.py` 的 `Services` 数据类把两边的服务混装在一张图里（方案 §4 第 1 条），"
+        "### 6.1 直接跨根取（`services.<对侧字段>`）",
+        "",
+        "拆组合根之前，`Services` 数据类把两边的服务混装在一张图里（方案 §4 第 1 条），"
         "于是 `services.ingest.submit(...)` 这种跨域用法**完全不走 import**——它只是取一个字段。"
         "下表按「接收者名是组合根（`services` / `self._services` / `self.services`）+ 字段名是"
         "`Services` 的字段 + 该字段的注解类型属于对侧域」三条同时成立判，共 "
-        f"{len(root_accesses)} 处（源模块属 KB/Agent 域的那些）。**不拦门**：这是另一条泳道"
+        f"{len(root_accesses)} 处。**不拦门**：这是另一条泳道"
         "（阶段 1 第 4/5 步的调用面收口），且它按名字判定，确定性略低于 import 那几条。"
         "混合体与未认领模块的同类访问记在第 4.3 节与第 7 节。",
         "",
     ]
     if not root_accesses:
-        lines += ["（无。）"]
+        lines += [
+            "（无。2026-10-08 拆组合根之后，Agent 侧与混合体取 KB 服务的那批访问已经"
+            "改写成 `services.kb.<字段>`——见下面 6.2。）",
+        ]
     else:
         lines += ["| 位置 | 表达式 | 服务的模块 |", "| --- | --- | --- |"]
         for path, lineno, receiver, field, target_module in result.root_accesses:
+            lines.append(f"| `{path}:{lineno}` | `{receiver}.{field}` | `{target_module}` |")
+    lines += [""]
+
+    lines += [
+        "### 6.2 经过渡访问器取（`services.kb.<KB 字段>`）",
+        "",
+        "`KbServices` 拆出来之后，Agent 根上留了一格 `kb`（见 `core/services.py` 里那个字段的"
+        "说明）：Agent 侧与混合体**暂时**经它取 KB 服务，共 "
+        f"{len(accessor_accesses)} 处。**这是过渡标记，不是终态**——剥离线画完之后这些访问"
+        "要么改走 `provider` 的窄面、要么随调用点搬到 KB 侧，这一格随之删。"
+        "列在这里是为了让「还没画完的线」看得见；它不拦门。",
+        "",
+    ]
+    if not accessor_accesses:
+        lines += ["（无。）"]
+    else:
+        lines += ["| 位置 | 表达式 | 服务的模块 |", "| --- | --- | --- |"]
+        for path, lineno, receiver, field, target_module in result.accessor_accesses:
             lines.append(f"| `{path}:{lineno}` | `{receiver}.{field}` | `{target_module}` |")
     lines += [""]
 

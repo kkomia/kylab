@@ -672,7 +672,7 @@ def ingest_artifact(
     """
     record = _get_artifact(services, caller, conversation_id, artifact_id)
     # 入库要**写**权限，且落在这个库的范围内（与工具那条入口同一句判定）
-    services.api_keys.check_access(caller, need=WRITE, kb_ids=[payload.knowledge_base_id])
+    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[payload.knowledge_base_id])
     services.artifacts.ingest(
         record,
         knowledge_base_id=payload.knowledge_base_id,

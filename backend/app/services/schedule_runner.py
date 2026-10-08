@@ -272,7 +272,7 @@ def _caller_for(services: Services, owner_id: str | None) -> Caller:
     if owner_id is None:
         return Caller(is_admin=True)
     try:
-        return Caller(is_admin=False, user=services.users.get(owner_id))
+        return Caller(is_admin=False, user=services.kb.users.get(owner_id))
     except NotFoundError:
         logger.warning("定时任务的主账号已不存在（%s），按共享桶跑", owner_id)
         return Caller(is_admin=True)

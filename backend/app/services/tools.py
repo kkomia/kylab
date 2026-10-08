@@ -923,8 +923,8 @@ def _float_or_none(value: Any) -> float | None:
 def _visible_items(services: Services, caller: Caller) -> list[Any]:
     """当前调用者能看到的库。``visible_kb_ids`` 返回 ``None`` 表示**不受限**
     （管理员会话，或范围为空 = 不限范围的 API Key），此时不过滤。"""
-    visible = services.api_keys.visible_kb_ids(caller)
-    items = services.knowledge_bases.list_all()
+    visible = services.kb.api_keys.visible_kb_ids(caller)
+    items = services.kb.knowledge_bases.list_all()
     if visible is None:
         return items
     allowed = set(visible)
@@ -938,7 +938,7 @@ def _list_knowledge_bases(
         {
             "id": item.id,
             "name": item.name,
-            "documents": services.documents.count_documents(item.id),
+            "documents": services.kb.documents.count_documents(item.id),
             "embedding_model": item.embedding_model_id,
         }
         for item in _visible_items(services, caller)
@@ -951,10 +951,10 @@ def _create_knowledge_base(
     name = _require(args, "name")
     # 不涉及既有库，所以只判权限档位（只读 Key 会被拒）。
     # **kb_ids 传 None**：这是"要新建"，不是"要访问某个既有库"
-    services.api_keys.check_access(caller, need=WRITE)
+    services.kb.api_keys.check_access(caller, need=WRITE)
     # kb_id 由调用方生成：服务层要求显式传入（与 REST 层同一口径），
     # 这样将来要支持"由客户端指定 id"时不用改服务层签名
-    record = services.knowledge_bases.create(
+    record = services.kb.knowledge_bases.create(
         kb_id=f"kb_{uuid.uuid4().hex[:12]}",
         name=name,
         # 归属要跟着身份走：不写 owner 的话，成员建出来的库**自己都看不见**
@@ -971,7 +971,7 @@ def _upload_document(services: Services, args: dict[str, Any], *, caller: Caller
 
     # 写入必须先判作用域：越界时**指出是哪个库**，
     # 模型据此能告诉用户"这把 Key 没有那个库的写权限"，而不是笼统地失败
-    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
 
     try:
         content = base64.b64decode(raw, validate=True)
@@ -986,7 +986,7 @@ def _upload_document(services: Services, args: dict[str, Any], *, caller: Caller
             "MCP 走进程间消息，更大的文件请用 REST 上传"
         )
 
-    outcome = services.ingest.submit(
+    outcome = services.kb.ingest.submit(
         knowledge_base_id=kb_id,
         filename=filename,
         content=content,
@@ -994,7 +994,7 @@ def _upload_document(services: Services, args: dict[str, Any], *, caller: Caller
         uploaded_by=caller.user.id if caller.user is not None else None,
     )
     if not outcome.is_duplicate:
-        services.documents.enqueue_ingest(outcome.document.id)
+        services.kb.documents.enqueue_ingest(outcome.document.id)
 
     return {
         "document_id": outcome.document.id,
@@ -1016,9 +1016,9 @@ def _add_data_source(services: Services, args: dict[str, Any], *, caller: Caller
         raise InvalidRequestError(f"kind 只能是 rss 或 html，收到：{kind}")
 
     # 挂数据源会让内容源源不断进库，是**写**操作
-    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
 
-    record = services.sources.create(
+    record = services.kb.sources.create(
         knowledge_base_id=kb_id,
         kind=DataSourceKind(kind),
         name=str(args.get("name") or ""),
@@ -1042,7 +1042,7 @@ def _search(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
     else:
         # 显式指定了库就把越界挡在检索之前：检索是很重的操作，
         # 让它先跑完再拒，白烧一次算力
-        services.api_keys.check_access(caller, kb_ids=kb_ids)
+        services.kb.api_keys.check_access(caller, kb_ids=kb_ids)
     if not kb_ids:
         return {"query": query, "hits": [], "note": "没有任何知识库"}
 
@@ -1053,7 +1053,7 @@ def _search(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
     # 覆盖分布的建议。两个设置都读不到时**保持既有行为**（不传 stats_floor = 不统计）。
     floor = services.runtime.get_float("retrieval.floor_score")
     baseline = services.runtime.get_float("retrieval.baseline_score") or None
-    response = services.retrieval.search(
+    response = services.kb.retrieval.search(
         _query(
             query=query,
             kb_ids=kb_ids,
@@ -1115,8 +1115,8 @@ def _document_or_403(services: Services, document_id: str, *, caller: Caller) ->
     两者可分。局域网自用工具的这个量级上可接受，真要收紧就得把
     doc_id 也变成不可枚举的。
     """
-    record = services.documents.get(document_id)
-    services.api_keys.check_access(caller, kb_ids=[record.knowledge_base_id])
+    record = services.kb.documents.get(document_id)
+    services.kb.api_keys.check_access(caller, kb_ids=[record.knowledge_base_id])
     return record
 
 
@@ -1125,11 +1125,11 @@ def _get_document_status(
 ) -> dict[str, Any]:
     document_id = _require(args, "document_id")
     record = _document_or_403(services, document_id, caller=caller)
-    chunks = services.documents.chunk_count(record.id)
+    chunks = services.kb.documents.chunk_count(record.id)
     # `searchable` 按**产物**算而不是按 stage（见 DocumentsService.is_searchable 的说明）：
     # 卡在 embedding 但已经切好块/落了向量的文档**查得到**，原先这里回 false，
     # 模型据此就不搜了。
-    searchable = services.documents.is_searchable(record, chunks=chunks)
+    searchable = services.kb.documents.is_searchable(record, chunks=chunks)
     return {
         "document_id": record.id,
         "name": record.name,
@@ -1149,10 +1149,10 @@ def _get_document_status(
 
 def _delete_document(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     document_id = _require(args, "document_id")
-    record = services.documents.get(document_id)
+    record = services.kb.documents.get(document_id)
     # 删除是写操作：只读分享拿到的库不能删
-    services.api_keys.check_access(caller, need=WRITE, kb_ids=[record.knowledge_base_id])
-    entry = services.lifecycle.delete_document(document_id)
+    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[record.knowledge_base_id])
+    entry = services.kb.lifecycle.delete_document(document_id)
     return {
         "document_id": document_id,
         "trash_id": entry.id,
@@ -1206,7 +1206,7 @@ def _attach_note_to_kb(
     note_id = _require(args, "note_id")
     kb_id = _require(args, "knowledge_base_id")
     # 入库是写操作，而且是"往库里加内容"，所以判的是目标库的写权限
-    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
     # attach_to_kb 内部按归属取笔记：不是自己的会 404（不泄露存在性）
     note = services.notes.attach_to_kb(note_id, user_id=_owner_of(caller), kb_id=kb_id)
     return {
@@ -1245,22 +1245,22 @@ def _list_notes(services: Services, args: dict[str, Any], *, caller: Caller) -> 
 
 def _list_documents(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     kb_id = _require(args, "knowledge_base_id")
-    services.api_keys.check_access(caller, kb_ids=[kb_id])
+    services.kb.api_keys.check_access(caller, kb_ids=[kb_id])
     limit = max(1, min(int(args.get("limit") or DEFAULT_DOC_PAGE), MAX_DOC_PAGE))
-    records = services.documents.list_documents(
+    records = services.kb.documents.list_documents(
         kb_id, q=str(args.get("query") or "").strip() or None, limit=limit
     )
     # 批量取切块数（一次查询），`searchable` 由此按产物算——见 DocumentsService.is_searchable
-    counts = services.documents.chunk_counts([item.id for item in records])
+    counts = services.kb.documents.chunk_counts([item.id for item in records])
     return {
         "knowledge_base_id": kb_id,
-        "total": services.documents.count_documents(kb_id),
+        "total": services.kb.documents.count_documents(kb_id),
         "documents": [
             {
                 "document_id": item.id,
                 "name": item.name,
                 "stage": item.stage.value,
-                "searchable": services.documents.is_searchable(
+                "searchable": services.kb.documents.is_searchable(
                     item, chunks=counts.get(item.id, 0)
                 ),
                 "disabled": item.disabled,
@@ -1917,15 +1917,15 @@ def _save_export(
         return {**saved, ARTIFACT_KEY: services.artifacts.describe(record)}
 
     kb_id = _require(args, "knowledge_base_id")
-    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
-    outcome = services.ingest.submit(
+    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    outcome = services.kb.ingest.submit(
         knowledge_base_id=kb_id,
         filename=filename,
         content=content,
         uploaded_by=caller.user.id if caller.user is not None else None,
     )
     if not outcome.is_duplicate:
-        services.documents.enqueue_ingest(outcome.document.id)
+        services.kb.documents.enqueue_ingest(outcome.document.id)
     return {
         "document_id": outcome.document.id,
         "name": outcome.document.name,
@@ -1961,7 +1961,7 @@ def _ingest_artifact(services: Services, args: dict[str, Any], *, caller: Caller
     """
     artifact_id = _require(args, "artifact_id")
     kb_id = _require(args, "knowledge_base_id")
-    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
     record = services.artifacts.get(artifact_id)
     document_id, is_duplicate = services.artifacts.ingest(
         record,
@@ -2147,7 +2147,7 @@ def _query(  # type: ignore[no-untyped-def]
     ``stats_floor`` 非空 = **开启动态返回**（v0.54）：程序先按兜底低阈值收候选、
     统计分布，再按 ``keep`` / ``min_score`` / ``per_doc``（模型给的，或分布的建议）收敛。
     """
-    from app.services.retrieval import RetrievalQuery
+    from app.services.kb.retrieval import RetrievalQuery
 
     return RetrievalQuery(
         query=query,

@@ -9,7 +9,40 @@ API 层通过依赖注入拿到服务，自己不 new 任何东西。
 当前顺序：纯文本直通 → MinerU 云端 → PaddleOCR 云端。
 前两个都靠 ``supports()`` 自己排除纯文本类文件，所以顺序不会误伤本地直读。
 云端解析器在未配置 token 时 ``supports()`` 恒为 False，因此**没配凭据也能跑通整条链路**。
+
+## 两个根（2026-10-08 剥离阶段 1 第 3 步）
+
+`Services` 原来把 KB 与 Agent 的服务混装在一张图上（方案 §4 第 1 条，57 个字段）。
+现在按域拆成两个数据类：
+
+- `KbServices`：KB 域服务（含账号体系实现——已拍板随 KB）+ 它需要的共享底座件；
+- `Services`：Agent 域服务 + 它需要的共享底座件。
+
+**两个根共用同一批对象**：共享底座（`runtime` / `models` / `secrets` / `usage` …）
+在两个根上各是一个字段、指向**同一个实例**，所以不存在"两份运行期配置"这种分叉。
+
+### 过渡期的四件粘连（都在这里说清，免得下一个人以为是漏了）
+
+1. **装配还是一条链**：`_build_graph()` 仍是原来那一串线性装配——**顺序与副作用点
+   一字未动**（`platform_store()` / `build_stores()` / `backup_queue.start()` /
+   `ensure_url_signing_secret()` / 消费者线程都在原位置），只在末尾把结果分装进两个根。
+   所以 `build_kb_services()` 现在也会把 Agent 那半边一起建出来，**它还不是一个独立
+   的构建函数**——§6 阶段 1 第 4/5 步（`chat.py` / `tools.py` 对切）之后才会独立。
+2. **混合体 `chat`**：`services/chat.py` 一半是 KB 检索、一半是 Agent 工具循环
+   （§4 第 2 条），两个根都持有同一个实例——对切前它归不了任何一侧。
+3. **接缝 `provider`**：`KnowledgeProviderClient` 是 Agent 侧访问 KB 的唯一通道
+   （§2 事实 2），两个根都持有它。
+4. **Agent 根上的 `kb`**：过渡期的组合访问器，见那个字段的说明。
+
+### 依赖注入
+
+- KB 侧的模块（`api/v1/` 下那 19 个 + `api/auth.py` + `mcp_server/`）注入 **`KbServices`**，
+  依赖 `get_kb_services()`；
+- Agent 侧与共享侧的模块注入 **`Services`**，依赖 `get_services()`；
+- **进程里只有一份图**：`get_kb_services()` 返回的就是 `get_services().kb`
+  （不二次装配，否则会出现两个 `StoreBundle`、两个补传线程、两份运行期配置）。
 """
+
 
 from __future__ import annotations
 
@@ -92,134 +125,118 @@ from app.services.workspace import WorkspaceService
 from app.storage.base import StoreBundle
 from app.workers.queue_worker import TaskWorker
 
-__all__ = ["Services", "build_services", "get_services", "reset_services"]
+__all__ = [
+    "KbServices",
+    "Services",
+    "build_kb_services",
+    "build_services",
+    "get_kb_services",
+    "get_services",
+    "reset_services",
+]
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class Services:
-    """一组装配好的服务。字段类型都是服务类，不含存储实现。"""
+class KbServices:
+    """KB 域服务（含账号体系实现）+ 它需要的共享底座件。"""
 
     knowledge_bases: KnowledgeBaseService
+
     documents: DocumentService | EnqueueGateway
     """文档服务：服务器档是 `DocumentService`（列表 / 进度 / 取消……），**本机档只有
     入队那一面**——而且是个空操作（远端 ``start=true`` 已经排上了，本机没有队列）。"""
+
     folders: FolderService
     """知识库内目录：建/列/改名/删，以及把文档放进目录（v13）。"""
+
     ingest: IngestService | IngestGateway
     """摄入：服务器档是整个 ``IngestService``，**本机档只有"提交一份字节"那一面**
     （提供者网关，见 `services/knowledge_provider.py` 的两个 Protocol）。"""
+
     retrieval: RetrievalService
-    chat: ChatService
-    """快速检索对话：检索 + 提示词 + LLM，定位是让用户快速验证知识库。"""
+
     stats: StatsService
     """驾驶舱统计：把散在几张表里的数字聚合成仪表盘要的形状。"""
-    runtime: RuntimeConfigService
-    """运行期配置（凭据与模型）：设置页读写它，各 provider 每次调用现取快照。"""
+
     api_keys: ApiKeyService
     """API Key 的发放、校验与作用域判定（架构 §3.2）。"""
-    idempotency: IdempotencyService
-    """幂等键：上传类接口防重试造成重复入库（架构 §3.2）。"""
+
     chunks: ChunkService
     """切块人工干预：改正文并重新向量化、禁用、删除（调研报告 G3）。"""
-    models: ModelRegistryService
-    """模型注册器：供应商 → 模型目录 → 按用途绑定（调研报告 G1）。"""
-    usage: UsageService
-    """用量统计：按次记 token 与调用量（调研报告 G7）。"""
+
     users: UserService
     """使用者名册：记录"是谁传的"，不参与鉴权（调研报告 G6）。"""
+
     auth: AuthService
     """账号引导、登录与会话校验（v10：名册升级为账号体系）。"""
+
     avatars: AvatarService
     """用户头像（v0.29）：图片在对象存储、库里只留 key，链接走签名。"""
+
     shares: ShareService
     """知识库分享：owner 把库授给其他成员，读/写两档（v10）。"""
+
     lifecycle: LifecycleService
     """数据生命周期：影响清单、级联删除、回收站（M6 / T6.3、T6.4）。"""
+
     batch: DocumentBatchService
     """文档批量动作：多选后的删除 / 重新摄入，逐条返回成败。"""
+
     maintenance: MaintenanceService
     """存储维护：空间概览与"整理"（丢无主向量分区 + VACUUM，v17）。"""
+
     sources: SourceService
     """数据源：HTML / RSS 的登记与拉取（M6 / T6.1–T6.3）。"""
+
     observability: ObservabilityService
     """运行态判据：任务是否卡住、是否长时间没被领取（M7 / T7.4）。"""
+
     tabular: TabularService
     """表格结构化副本：读写 CSV/Excel 的行列（M2 / T2.11）。"""
-    conversations: ConversationService
-    """对话留存：会话与消息的读写（§11.2）。"""
-    artifacts: ArtifactService
-    """会话产物（v0.26）：Agent 做出来的文件落在哪、什么时候进知识库。
-    与"文档"分开：产物先是文件，进知识库是它的一个可选去向。"""
-    conversation_export: ConversationExportService
-    """会话导出（M2 阶段 5）：`GET /conversations/export` 背后那一段（六型 NDJSON 流）。
-    **两个档位都有**：服务器档导给本机导入器用，本机档导自己那批（同一份契约）。"""
-    legacy_import: LegacyImporter | None
-    """旧会话导入（M2 阶段 5）：拉 NAS 的导出流、写本机库、记账、回滚。
 
-    **只有本机档不是 None**（服务器档的会话就是权威，没有"从别的部署导进来"
-    这条动作——而台账那两张表也只在服务器不存在的本机库里）。"""
-    notes: NotesService
-    """笔记：Markdown 事实源 + 加入知识库（v20）。"""
-    note_ai: NoteAiService
-    """笔记的 AI 排版 / 润色（v20.2）。单独依赖 LLM，保住 NotesService 的"无模型也能用"。"""
     summaries: DocumentSummaryService
     """文档摘要（v25）：入库时生成，问答上下文与界面都用它。"""
+
     suggested_questions: SuggestedQuestionsService
     """示例问题：依据所选知识库的语料让对话模型生成开场问题（对话页空状态）。"""
+
     kb_prompt: KBPromptService
     """库级提示词生成（v0.19）：按库里的文档摘要让模型写一版提示词草稿。"""
+
     wiki: WikiService
     """知识库 Wiki：把已入库内容整理成带出处的百科式页面（v24）。"""
+
     webhooks: WebhookService
     """Webhook 订阅与事件推送（M4 / T4.6）。"""
-    load: SystemLoadService
-    """负载面板数据源：CPU / 内存 / 队列深度 / 并发槽位 / 云端解析额度（§12.115）。"""
-    memory: MemoryService
-    workspaces: WorkspaceService
-    skills: SkillService
-    skill_market: SkillMarketService
-    skill_sources: SkillSourceService
-    """技能源（v0.27）：内置的 GitHub 仓库清单 + 自定义源，浏览/取文件。"""
-    plugins: PluginService
-    """插件包（v0.43）：插件 = 一个目录 + 一份 plugin.json，**目录即本地市场**。
 
-    与 `mcp` 是两件事：MCP 是"连出去的外部服务"，插件是"磁盘上的能力包"
-    （技能/命令/钩子/工具四类能力面，见 `docs/设计/插件与技能-v0.1.md`）。"""
-    mcp: MCPClientService
-    schedules: ScheduleService
-    """定时任务（v0.33）：到点替用户跑一轮问答。
-
-    执行体见 ``services/schedule_runner.py``。"""
-    """长期记忆的门面（设计见 `docs/设计/记忆档案-设计-v0.1.md`）。
-
-    一份四区档案（`PROFILE.md`）+ 变更流；写入三条路，其中隐式捕获默认关。"""
     embedder: EmbeddingProvider
+
     reranker: RerankProvider
+
     worker: TaskWorker
     """消费者之一。**单消费者场景用它**（测试、只跑一条任务）。
     实际并发数看 ``workers``。"""
-    workers: list[TaskWorker] = field(default_factory=list)
-    """进程里全部消费者（``KYLAB_WORKER_CONCURRENCY`` 个），应用启动时各起一个协程。
 
-    默认空列表是为了让"手工构造 Services 的测试"不必挨个补参数——
-    但它**必须包含 ``worker``**（见 ``build_services``）。"""
-    commands: CommandService = field(default_factory=lambda: CommandService(Path("data")))
-    """斜杠命令（v0.44，P1-2）：内置表 + ``commands/*.md`` 自定义命令。
+    runtime: RuntimeConfigService
+    """运行期配置（凭据与模型）：设置页读写它，各 provider 每次调用现取快照。"""
 
-    **默认值给的是"只认内置命令"的那一份**（空数据目录 + 仓库自带目录）：手工构造
-    ``Services`` 的测试不必为它造一个目录，而内置那六条正是大多数用例要用到的。"""
-    approvals: ApprovalRegistry = field(default_factory=ApprovalRegistry)
-    """对话里的待确认登记表（v0.41，见 ``services/approvals.py``）。
+    models: ModelRegistryService
+    """模型注册器：供应商 → 模型目录 → 按用途绑定（调研报告 G1）。"""
 
-    ``ask`` 档的工具调用挂在这里等用户点头：**执行器登记、工具循环等、端点交决定**，
-    三方在不同线程上，所以它必须与那一轮对话共用同一份实例。
-    ``get_services()`` 是进程级单例，于是"同一个进程里的那两个请求"天然看到同一张表。
+    usage: UsageService
+    """用量统计：按次记 token 与调用量（调研报告 G7）。"""
 
-    用 ``default_factory`` 而不是在组合根里 new 一遍：手工构造 Services 的地方
-    （测试、脚本）不必为它加参数，而"每个 Services 自带一张空表"比"忘了传就崩"稳。
-    """
+    idempotency: IdempotencyService
+    """幂等键：上传类接口防重试造成重复入库（架构 §3.2）。"""
+
+    load: SystemLoadService
+    """负载面板数据源：CPU / 内存 / 队列深度 / 并发槽位 / 云端解析额度（§12.115）。"""
+
+    chat: ChatService
+    """快速检索对话：检索 + 提示词 + LLM，定位是让用户快速验证知识库。"""
+
     provider: KnowledgeProviderClient | None = None
     """**知识库提供者客户端**（M3 阶段 2 建、阶段 5 收成进程级那一个实例）。
 
@@ -234,6 +251,156 @@ class Services:
     为什么带默认值：服务器档与手工构造 ``Services`` 的地方（脚本、测试）都不该被迫
     传一个不适用的对象；"没有它"本身就是一个合法状态，而不是配置漏项。
     """
+
+    workers: list[TaskWorker] = field(default_factory=list)
+    """进程里全部消费者（``KYLAB_WORKER_CONCURRENCY`` 个），应用启动时各起一个协程。
+
+    默认空列表是为了让"手工构造 Services 的测试"不必挨个补参数——
+    但它**必须包含 ``worker``**（见 ``build_services``）。"""
+
+    secrets: SecretStore | None = None
+    """**系统钥匙串**（M5 阶段 6）：凭据的家（本机档就是 Windows 凭据管理器）。
+
+    两个服务从它取：``runtime``（收编过的那几个设置键）与 ``models``（供应商的 API Key）。
+    这一位是**进程级那一个**对象——两处各建一个就会出现"设置页存进去了、聊天那边读不到"
+    这类最难查的分叉（两边都"成功"了）。
+
+    服务器档：``NullSecretStore``（R14）。那一档**没有**系统钥匙串，它库里那份凭据照旧
+    是凭据的家；`secrets.use_keychain()` 为假，两个服务走原来的库路径。
+    手工构造的 ``Services``（用例、脚本）留 ``None``——同样是"没有钥匙串"那一档。
+
+    为什么带默认值：同 ``provider``——"没有它"是合法状态。
+    """
+
+    credentials: CredentialsService | None = None
+    """**旧明文收编**（M5 阶段 6）：把库里的明文凭据搬进钥匙串的那个服务。
+
+    它只有三个动作（``status`` / ``migrate`` / NAS 钥匙那三个方法），而且是**显式的**：
+    没有任何调用点会顺手调 ``migrate``（不静默迁移，方案 §4.2）。
+
+    两种档都建：钥匙串不可用时 ``status()`` 如实回 ``store: unavailable`` 且
+    ``pending_migration: 0``——那种机器上"等着迁"这件事不存在（库就是凭据的家）。
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class Services:
+    """Agent 域服务 + 它需要的共享底座件。"""
+
+    conversations: ConversationService
+    """对话留存：会话与消息的读写（§11.2）。"""
+
+    artifacts: ArtifactService
+    """会话产物（v0.26）：Agent 做出来的文件落在哪、什么时候进知识库。
+    与"文档"分开：产物先是文件，进知识库是它的一个可选去向。"""
+
+    conversation_export: ConversationExportService
+    """会话导出（M2 阶段 5）：`GET /conversations/export` 背后那一段（六型 NDJSON 流）。
+    **两个档位都有**：服务器档导给本机导入器用，本机档导自己那批（同一份契约）。"""
+
+    legacy_import: LegacyImporter | None
+    """旧会话导入（M2 阶段 5）：拉 NAS 的导出流、写本机库、记账、回滚。
+
+    **只有本机档不是 None**（服务器档的会话就是权威，没有"从别的部署导进来"
+    这条动作——而台账那两张表也只在服务器不存在的本机库里）。"""
+
+    notes: NotesService
+    """笔记：Markdown 事实源 + 加入知识库（v20）。"""
+
+    note_ai: NoteAiService
+    """笔记的 AI 排版 / 润色（v20.2）。单独依赖 LLM，保住 NotesService 的"无模型也能用"。"""
+
+    memory: MemoryService
+
+    workspaces: WorkspaceService
+
+    skills: SkillService
+
+    skill_market: SkillMarketService
+
+    skill_sources: SkillSourceService
+    """技能源（v0.27）：内置的 GitHub 仓库清单 + 自定义源，浏览/取文件。"""
+
+    plugins: PluginService
+    """插件包（v0.43）：插件 = 一个目录 + 一份 plugin.json，**目录即本地市场**。
+
+    与 `mcp` 是两件事：MCP 是"连出去的外部服务"，插件是"磁盘上的能力包"
+    （技能/命令/钩子/工具四类能力面，见 `docs/设计/插件与技能-v0.1.md`）。"""
+
+    mcp: MCPClientService
+
+    schedules: ScheduleService
+    """定时任务（v0.33）：到点替用户跑一轮问答。
+
+    执行体见 ``services/schedule_runner.py``。"""
+    """长期记忆的门面（设计见 `docs/设计/记忆档案-设计-v0.1.md`）。
+
+    一份四区档案（`PROFILE.md`）+ 变更流；写入三条路，其中隐式捕获默认关。"""
+
+    runtime: RuntimeConfigService
+    """运行期配置（凭据与模型）：设置页读写它，各 provider 每次调用现取快照。"""
+
+    models: ModelRegistryService
+    """模型注册器：供应商 → 模型目录 → 按用途绑定（调研报告 G1）。"""
+
+    usage: UsageService
+    """用量统计：按次记 token 与调用量（调研报告 G7）。"""
+
+    idempotency: IdempotencyService
+    """幂等键：上传类接口防重试造成重复入库（架构 §3.2）。"""
+
+    load: SystemLoadService
+    """负载面板数据源：CPU / 内存 / 队列深度 / 并发槽位 / 云端解析额度（§12.115）。"""
+
+    chat: ChatService
+    """快速检索对话：检索 + 提示词 + LLM，定位是让用户快速验证知识库。"""
+
+    kb: KbServices
+    """**过渡期的组合访问器**：Agent 侧今天还有若干处经组合根取 KB 服务
+    （`services.kb.documents` / `kb.api_keys` / `kb.folders` / `kb.embedder` …，
+    见 `docs/计划与记录/域间引用基线-v0.1.md` 的「组合根」一节）。
+
+    **它是过渡形态而不是终态**：剥离线画完之后，那些访问要么改走 `provider` 的窄面、
+    要么随调用点一起搬到 KB 侧，这一格随之删。为什么不给那批模块各加一个
+    `Depends(get_kb_services)`：其中几个住在被工具循环反复调的函数里
+    （`services/tools.py`、`services/agent_tools.py`），改签名要连带改它们的所有调用方，
+    风险远大于收益。
+
+    **方向是单向的**：`KbServices` 上**没有**这一格（KB 不依赖 Agent）。
+    """
+
+    commands: CommandService = field(default_factory=lambda: CommandService(Path("data")))
+    """斜杠命令（v0.44，P1-2）：内置表 + ``commands/*.md`` 自定义命令。
+
+    **默认值给的是"只认内置命令"的那一份**（空数据目录 + 仓库自带目录）：手工构造
+    ``Services`` 的测试不必为它造一个目录，而内置那六条正是大多数用例要用到的。"""
+
+    approvals: ApprovalRegistry = field(default_factory=ApprovalRegistry)
+    """对话里的待确认登记表（v0.41，见 ``services/approvals.py``）。
+
+    ``ask`` 档的工具调用挂在这里等用户点头：**执行器登记、工具循环等、端点交决定**，
+    三方在不同线程上，所以它必须与那一轮对话共用同一份实例。
+    ``get_services()`` 是进程级单例，于是"同一个进程里的那两个请求"天然看到同一张表。
+
+    用 ``default_factory`` 而不是在组合根里 new 一遍：手工构造 Services 的地方
+    （测试、脚本）不必为它加参数，而"每个 Services 自带一张空表"比"忘了传就崩"稳。
+    """
+
+    provider: KnowledgeProviderClient | None = None
+    """**知识库提供者客户端**（M3 阶段 2 建、阶段 5 收成进程级那一个实例）。
+
+    本机档：这一份就是**全进程唯一**的那一个（`ChatService` 的检索、笔记与产物的
+    入库网关、`Services.ingest`/`documents`、`stores.meta.kb` 的 reader、边车
+    `Clients` 的工具表门控、`/local/provider` 端点**全从它取**）——它身上那份 30s
+    握手缓存因此也只有一个，改完地址之后各处看到的必然是同一个结论。
+
+    服务器档：``None``。它的知识库就是它自己（进程内那套一位不变），没有"第二个
+    东西可以问"（R11）。
+
+    为什么带默认值：服务器档与手工构造 ``Services`` 的地方（脚本、测试）都不该被迫
+    传一个不适用的对象；"没有它"本身就是一个合法状态，而不是配置漏项。
+    """
+
     backup_snapshot: BackupSnapshotService | None = None
     """**本机快照打包服务**（M5 阶段 2 建，阶段 4 起接上端点与队列）。
 
@@ -460,7 +627,11 @@ class _RuntimeReranker(RerankProvider):
         return build_reranker(self._runtime).rerank(query, documents)
 
 
-def build_services(settings: Settings | None = None, stores: StoreBundle | None = None) -> Services:
+def _build_graph(
+    settings: Settings | None = None, stores: StoreBundle | None = None
+) -> tuple[KbServices, Services]:
+    """一条链装配出两个根（装配顺序与副作用点见模块头「过渡期的四件粘连」）。"""
+
     resolved = settings or get_settings()
     bundle = stores or build_stores(resolved)
 
@@ -863,7 +1034,9 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         run_scheduled=_run_scheduled,
     )
 
-    services = Services(
+    # 两个根在这里分装：共享件、混合体 `chat` 与接缝 `provider` 在两边各是一个字段，
+    # 指向的**是同一个实例**（见模块头「两个根」那一段）。
+    kb = KbServices(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
         documents=enqueue_documents,
         folders=folders_service,
@@ -893,12 +1066,6 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         tabular=TabularService(bundle),
         sources=sources_service,
         observability=observability,
-        conversations=conversations_service,
-        artifacts=artifacts_service,
-        conversation_export=export_service,
-        legacy_import=legacy_importer,
-        notes=NotesService(bundle, ingest=ingest_for_kb, documents=enqueue_documents),
-        note_ai=NoteAiService(chat_service),
         suggested_questions=questions_service,
         kb_prompt=kb_prompt_service,
         summaries=summary_service,
@@ -908,6 +1075,33 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         reranker=reranker,
         worker=workers[0],
         workers=workers,
+        load=SystemLoadService(
+            bundle,
+            concurrency=resolved.worker_concurrency,
+            mineru_quota_pages=resolved.mineru_daily_page_quota,
+            # "配没配 MinerU"问运行期配置（设置页可改），不能问启动期 Settings——
+            # 用户填完令牌不重启就该生效
+            mineru_configured=lambda: runtime.mineru().is_configured,
+            observability=observability,
+        ),
+        provider=provider,
+        # **进程级那一个快照服务**（M4 阶段 3，与它上面那一个同生共死）：`/local/kb-cache/*`
+        # 那族端点从 `Services` 上取它；服务器档与 provider 一起是 None。
+        secrets=secrets,
+        credentials=credentials,
+    )
+    services = Services(
+        chat=chat_service,
+        runtime=runtime,
+        idempotency=idempotency,
+        models=registry,
+        usage=usage,
+        conversations=conversations_service,
+        artifacts=artifacts_service,
+        conversation_export=export_service,
+        legacy_import=legacy_importer,
+        notes=NotesService(bundle, ingest=ingest_for_kb, documents=enqueue_documents),
+        note_ai=NoteAiService(chat_service),
         load=SystemLoadService(
             bundle,
             concurrency=resolved.worker_concurrency,
@@ -943,6 +1137,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # 从它们取数；两个服务（runtime / models）已经拿着同一个 `secrets` 对象了。
         secrets=secrets,
         credentials=credentials,
+        kb=kb,
     )
     # 槽里放进刚装好的这一份：定时任务的执行体从这一刻起可用
     # （`_run_scheduled` 只在 worker 领到 SCHEDULED 任务时被调用，那时这里早已填上）
@@ -951,7 +1146,47 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # 登记它那一个**守护线程**（见 `_BACKUP_QUEUES` 的说明）：`reset_services`
         # 要把"这份服务图被扔掉了"这件事对线程也说到，否则它会继续碰旧的数据目录。
         _BACKUP_QUEUES.append(backup_queue)
-    return services
+    return kb, services
+
+
+def build_kb_services(
+    settings: Settings | None = None, stores: StoreBundle | None = None
+) -> KbServices:
+    """装配 **KB 侧的根**。
+
+    **过渡期注意**：它现在也会把 Agent 那半边一起建出来（装配还是一条链，见模块头
+    「过渡期的四件粘连」第 1 条）——混合体 `chat` 与队列消费者今天都在这条链上，
+    砍掉它们就不是"行为不变"了。§6 阶段 1 第 4/5 步对切之后，这个函数才会真的只建
+    KB 那半边。
+    """
+    return _build_graph(settings, stores)[0]
+
+
+def build_services(
+    settings: Settings | None = None, stores: StoreBundle | None = None
+) -> Services:
+    """装配 **Agent 侧的根**（含它要用的共享底座件与 KB 组合访问器）。
+
+    与 `build_kb_services()` 共用同一条装配链，所以单独调它也会把 KB 那半边建出来
+    （与今天的行为一致）。
+    """
+    return _build_graph(settings, stores)[1]
+
+
+@lru_cache
+def get_services() -> Services:
+    """进程级单例，供 FastAPI 依赖注入使用（Agent 侧与共享侧的模块注入它）。"""
+    return build_services()
+
+
+def get_kb_services() -> KbServices:
+    """KB 侧的根（供 KB 侧的模块注入）。
+
+    **过渡期它就是 Agent 根上那一格**：进程里只有一份图，不二次装配——否则会出现
+    两个 `StoreBundle`、两个补传线程、两份运行期配置。与 `get_services()` 一样是
+    进程级单例（`reset_services()` 会一起清掉）。
+    """
+    return get_services().kb
 
 
 def _build_workers(
@@ -1000,12 +1235,6 @@ def _build_workers(
         )
         for index in range(count)
     ]
-
-
-@lru_cache
-def get_services() -> Services:
-    """进程级单例，供 FastAPI 依赖注入使用。"""
-    return build_services()
 
 
 _BACKUP_QUEUES: list[BackupQueueService] = []

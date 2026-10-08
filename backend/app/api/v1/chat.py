@@ -208,7 +208,7 @@ def chat_stream(
     caller: Caller = Depends(require_read),
 ) -> StreamingResponse:
     # 对话会读到库内原文，所以同样受密钥的库范围约束
-    check_kb_scope(services, caller, payload.kb_ids)
+    check_kb_scope(services.kb, caller, payload.kb_ids)
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
     # **命令先于模型**（P1-2，照 QwenPaw 的"进 LLM 之前短路"）：
@@ -327,7 +327,7 @@ def resume_turn(
         conversation = services.conversations.get_for_owner(conversation_id, caller.user.id)
     else:
         conversation = services.conversations.get(conversation_id)
-    check_kb_scope(services, caller, conversation.kb_ids)
+    check_kb_scope(services.kb, caller, conversation.kb_ids)
 
     turn = services.conversations.last_turn(conversation_id)
     if turn is None:
@@ -409,7 +409,7 @@ def retry_step(
     """
     _require_visible_conversation(services, conversation_id, caller)
     conversation = services.conversations.get(conversation_id)
-    check_kb_scope(services, caller, conversation.kb_ids)
+    check_kb_scope(services.kb, caller, conversation.kb_ids)
     turn, step = _retry_target(services, conversation_id, message_id, step_index)
 
     # 模型档位 / 思考档位 / 库范围**取会话已存的**：重试一步是接着同一轮做，
@@ -538,7 +538,7 @@ def chat_once(
     会话里的过程面板一个有内容一个空着。现在两条路共用 ``_TurnSink`` 那一份映射
     （事件、快照、思考都是它攒的），差别只剩"怎么把事件发出去"。
     """
-    check_kb_scope(services, caller, payload.kb_ids)
+    check_kb_scope(services.kb, caller, payload.kb_ids)
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
     # **命令同样先于模型**（P1-2）：脚本、MCP 通道也要能用 `/help` `/mode` `/stop`
@@ -776,8 +776,8 @@ def suggested_questions(
     """
     ids = [item.strip() for item in kb_ids.split(",") if item.strip()]
     if ids:
-        check_kb_scope(services, caller, ids)
-    questions = services.suggested_questions.list_questions(
+        check_kb_scope(services.kb, caller, ids)
+    questions = services.kb.suggested_questions.list_questions(
         kb_ids=ids, limit=limit or SUGGESTED_DEFAULT_LIMIT
     )
     return SuggestedQuestionsOut(questions=questions, generated=bool(questions))

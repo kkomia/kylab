@@ -871,8 +871,8 @@ class Clients:
         self.artifacts = self.services.artifacts
         self.notes = self.services.notes
         self.memory = self.services.memory
-        self.ingest = self.services.ingest
-        self.documents = self.services.documents
+        self.ingest = self.services.kb.ingest
+        self.documents = self.services.kb.documents
 
     def model_configured(self) -> bool:
         """**本机**有没有配好对话模型（`/health` 那一格读它，见那里的说明）。

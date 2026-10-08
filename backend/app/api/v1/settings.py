@@ -64,11 +64,11 @@ def read_settings(
     return SettingsViewOut.model_validate(
         {
             "groups": view["groups"],
-            "embedding_model_id": services.embedder.model_id,
-            "embedding_dim": services.embedder.dim,
+            "embedding_model_id": services.kb.embedder.model_id,
+            "embedding_dim": services.kb.embedder.dim,
             "embedding_configured": services.runtime.embedding().is_configured,
-            "embedding_is_development": services.embedder.is_development,
-            "rerank_enabled": services.reranker.enabled,
+            "embedding_is_development": services.kb.embedder.is_development,
+            "rerank_enabled": services.kb.reranker.enabled,
         }
     )
 
@@ -120,7 +120,7 @@ def _test_embedding(services: Services) -> TestConnectionOut:
         return TestConnectionOut(ok=False, detail=_NOT_CONFIGURED_HINT)
 
     try:
-        vectors = services.embedder.embed([_PROBE_TEXT])
+        vectors = services.kb.embedder.embed([_PROBE_TEXT])
     except Exception as exc:
         # 第三方错误文案要原样给用户看：401、额度不足、维度不符的处理方式完全不同
         return TestConnectionOut(ok=False, detail=str(exc))

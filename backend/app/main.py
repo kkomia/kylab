@@ -78,9 +78,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # 一个消费者 = 一个协程（``KYLAB_WORKER_CONCURRENCY`` 个）。
         # 它们各自领活、互不阻塞：任务表本身就是队列，``claim_task`` 原子单语句，
         # 所以"多消费者"不需要额外的调度器（见 services/_build_workers 的说明）。
-        # 兜底用 ``services.worker``：装配点已经保证 ``workers`` 非空，
+        # 兜底用 ``services.kb.worker``：装配点已经保证 ``workers`` 非空，
         # 但"消费者一个都没起"是最难查的一类故障（任务永远排队），宁可这里多一句
-        consumers = services.workers or [services.worker]
+        consumers = services.kb.workers or [services.kb.worker]
         worker_tasks = [asyncio.create_task(_run_worker(worker, stop)) for worker in consumers]
         logger.info(
             "内嵌任务消费者已启动 %d 个：%s",

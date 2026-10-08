@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from app.api.auth import current_caller
 from app.api.v1 import backup
 from app.core.config import get_settings
-from app.core.services import get_services, reset_services
+from app.core.services import get_kb_services, get_services, reset_services
 from app.core.storage import reset_stores
 from app.main import create_app
 from app.models.enums import ApiKeyPermission
@@ -219,6 +219,9 @@ def env(build_app: Any) -> Iterator[_Env]:
     store = FakeBackupStore()
     app.dependency_overrides[backup.backup_store_dep] = lambda: store
     app.dependency_overrides[get_services] = lambda: _FakeServices()
+    # 鉴权那几件注入的是 KB 根（`api/auth.py` 的 `KbServices`）——两个根都换掉，
+    # 否则鉴权那条依赖会去建真的服务图（本文件标 local 就是为了不连 PG）。
+    app.dependency_overrides[get_kb_services] = lambda: _FakeServices()
     app.dependency_overrides[current_caller] = lambda: _api_key_caller(ApiKeyPermission.READWRITE)
     yield _Env(app, store)
     app.dependency_overrides.clear()

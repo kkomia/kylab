@@ -86,7 +86,7 @@ def build_server():  # type: ignore[no-untyped-def]
 
     from app.core.config import get_settings
     from app.core.exceptions import KylabError
-    from app.core.services import get_services
+    from app.core.services import get_kb_services, get_services
     from app.mcp_server.auth import CallerMiddleware, current_caller
     from app.services.tools import tool_definitions
 
@@ -101,8 +101,9 @@ def build_server():  # type: ignore[no-untyped-def]
             "——库里没有的东西检索不出来。"
         ),
         # 身份解析：HTTP 读 Authorization 头，stdio 读 KYLAB_MCP_KEY（见 auth.py）。
-        # 挂在这里而不是每个工具里：判定只写一处，漏判才不会成为可能
-        middleware=[CallerMiddleware(get_services())],
+        # 挂在这里而不是每个工具里：判定只写一处，漏判才不会成为可能。
+        # **它要的是 KB 根**：中间件读 `services.knowledge_bases`（KB 域的库清单）。
+        middleware=[CallerMiddleware(get_kb_services())],
     )
 
     # 描述从 tool_definitions 读，不在这里另写一份：那份清单已经是唯一真相，
@@ -123,7 +124,13 @@ def build_server():  # type: ignore[no-untyped-def]
                 # 而 to_thread 会把它复制到另一个线程——先取出来再带进去，语义更清楚
                 caller = current_caller()
                 # 同步的服务层调用扔到线程池：MCP 的请求处理跑在事件循环里，
-                # 而检索与入库都是阻塞的，直接在循环里调会把整个服务卡住
+                # 而检索与入库都是阻塞的，直接在循环里调会把整个服务卡住。
+                #
+                # **喂它的是 Agent 根**（不是上面中间件那个 KB 根，2026-10-08）：
+                # `tools.py` 是混合体（§4 第 3 条，本轮不对切）——它的一半（`search` /
+                # `upload_document` …）走 `services.kb.*`、另一半（`export_*` / 记忆 / 笔记）
+                # 走 Agent 字段，所以只能给它带了 `kb` 那一格的 Agent 根。
+                # §6 阶段 1 第 5 步按 `_KB_TOOLS` 对切之后，这里只剩 KB 根。
                 result = await asyncio.to_thread(
                     call_tool, get_services(), tool_name, payload, caller=caller
                 )

@@ -45,7 +45,7 @@ from app.api.v1.knowledge_bases import _out
 from app.api.v1.router import api_router, local_router
 from app.api.v1.schemas import SearchRequest
 from app.core.config import API_VERSION, get_settings
-from app.core.services import get_services, reset_services
+from app.core.services import get_kb_services, get_services, reset_services
 from app.core.storage import reset_stores
 from app.main import create_app
 from app.models.enums import ApiKeyPermission, UserRole
@@ -542,11 +542,13 @@ def test_no_credentials_is_a_401_and_carries_no_handshake_body(build_app: Any) -
     连不上（超时 / 连接被拒 / 404）是"改地址"。所以凭据问题**不进握手体** ✗ ——
     它要是进了，客户端就得先解析一个可能根本不存在的响应体才能判类别。
 
-    用 ``dependency_overrides`` 换掉 ``get_services``：本用例验的是鉴权挡在前面，
+    用 ``dependency_overrides`` 换掉**两个根**：本用例验的是鉴权挡在前面，
     不该为了它去连一台 PG（也正是本文件标 ``local`` 的理由）。
+    鉴权那条链注入的是 KB 根（`api/auth.py` 的 `KbServices`），所以两个都要换。
     """
     app = build_app("server")
     app.dependency_overrides[get_services] = lambda: _FakeServices()
+    app.dependency_overrides[get_kb_services] = lambda: _FakeServices()
     try:
         response = TestClient(app).get("/api/v1/provider/handshake")
     finally:

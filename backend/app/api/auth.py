@@ -34,7 +34,7 @@ from fastapi import Depends, Header
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import ForbiddenError, ServiceUnavailableError, UnauthorizedError
-from app.core.services import Services, get_services
+from app.core.services import KbServices, Services, get_kb_services
 from app.models.enums import ApiKeyPermission
 from app.services.api_key import LOCAL_CALLER, READ, WRITE, Caller, resolve_caller
 from app.services.auth import URL_SIGNING_SECRET_SETTING
@@ -62,7 +62,7 @@ def _bearer(authorization: str | None) -> str | None:
 
 
 def current_caller(
-    services: Annotated[Services, Depends(get_services)],
+    services: Annotated[KbServices, Depends(get_kb_services)],
     settings: Annotated[Settings, Depends(get_settings)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> Caller:
@@ -94,7 +94,7 @@ CallerDep = Annotated[Caller, Depends(current_caller)]
 
 
 def _check(
-    services: Services,
+    services: KbServices,
     caller: Caller,
     *,
     need: ApiKeyPermission,
@@ -103,14 +103,16 @@ def _check(
     services.api_keys.check_access(caller, need=need, kb_ids=kb_ids)
 
 
-def require_read(services: Annotated[Services, Depends(get_services)], caller: CallerDep) -> Caller:
+def require_read(
+    services: Annotated[KbServices, Depends(get_kb_services)], caller: CallerDep
+) -> Caller:
     """只读端点。"""
     _check(services, caller, need=READ)
     return caller
 
 
 def require_write(
-    services: Annotated[Services, Depends(get_services)], caller: CallerDep
+    services: Annotated[KbServices, Depends(get_kb_services)], caller: CallerDep
 ) -> Caller:
     """写端点（上传、建库、删除、改设置）。"""
     _check(services, caller, need=WRITE)
@@ -138,7 +140,7 @@ AdminDep = Annotated[Caller, Depends(require_admin)]
 
 
 def check_kb_scope(
-    services: Services,
+    services: KbServices,
     caller: Caller,
     kb_ids: list[str] | None,
     *,
@@ -155,7 +157,7 @@ def check_kb_scope(
     services.api_keys.check_access(caller, need=need, kb_ids=kb_ids)
 
 
-def signing_secret(settings: Settings, services: Services) -> str | None:
+def signing_secret(settings: Settings, services: KbServices | Services) -> str | None:
     """下载签名用的密钥：专用密钥（库 / 环境变量），**没有别的来源**。
 
     都为 None 时返回 None，表示不允许签发——那条路径上没有任何凭据体系能提供
@@ -165,6 +167,11 @@ def signing_secret(settings: Settings, services: Services) -> str | None:
     首次 ``POST /auth/setup`` 会生成一条落库，**本机档则在组合根生成一次**
     （见 ``services/auth.ensure_url_signing_secret`` 与 ``core/services.py`` 那一段；
     本机档没有初始化流程，不在装配时补这一下这条键就永远是空的）。
+
+    **形参收两个根**（2026-10-08 拆组合根）：它只取共享底座的 `services.runtime`，
+    而调用它的既有 KB 侧（文档下载）也有 Agent 侧（会话/笔记的图片与产物下载），
+    两边给各自手上的根都对。写成 `KbServices | Services` 是为了让这条"只碰共享件"
+    的事实留在签名上，而不是逼调用方多写一次 `.kb`。
     """
     try:
         stored = services.runtime.get(URL_SIGNING_SECRET_SETTING)
@@ -174,12 +181,12 @@ def signing_secret(settings: Settings, services: Services) -> str | None:
     return stored or settings.url_signing_secret
 
 
-def signing_secret_or_raise(settings: Settings, services: Services) -> str:
+def signing_secret_or_raise(settings: Settings, services: KbServices | Services) -> str:
     """要签名密钥；**没有就抛 503**（不是 401）。
 
     与 :func:`signing_secret` 的分工：那个返回 ``None`` 让调用方自己决定（有一处**故意**
     不报错：预览时没有密钥就退化成"只能下载"，见 ``api/v1/documents.py`` 的 binary 那条）；
-    这个给"必须签发 / 必须校验"的那些端点用。
+    这个给"必须签发 / 必须校验"的那些端点用。形参同样收两个根，理由见上面那条。
 
     **为什么不是 401**（桌面壳里实测到的那次故障）：前端把 401 当"登录失效"并跳登录页
     ——那是设计。而"这台机器还没有下载签名密钥"根本与用户的凭据无关，是**我们这边没配好**：

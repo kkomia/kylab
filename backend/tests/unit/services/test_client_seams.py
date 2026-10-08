@@ -261,13 +261,14 @@ def test_no_seam_still_points_at_the_real_ingest_service(tmp_path, monkeypatch) 
     real = made[0]
 
     # ① 三个构造点拿到的是**同一对**网关，而且都不是真 IngestService
-    assert services.ingest is not real
-    assert services.documents is not real
-    assert services.notes._ingest is services.ingest
-    assert services.artifacts._ingest is services.ingest
-    assert services.notes._documents is services.documents
-    assert services.artifacts._documents is services.documents
-    assert not isinstance(services.ingest, IngestService)
+    #    （2026-10-08 拆组合根之后，入库这一对住在 **KB 根**上：`Services.kb.*`）
+    assert services.kb.ingest is not real
+    assert services.kb.documents is not real
+    assert services.notes._ingest is services.kb.ingest
+    assert services.artifacts._ingest is services.kb.ingest
+    assert services.notes._documents is services.kb.documents
+    assert services.artifacts._documents is services.kb.documents
+    assert not isinstance(services.kb.ingest, IngestService)
     # 检索那一半也接上了（阶段 3 起组合根给 ChatService 的就是这个客户端）
     assert isinstance(services.chat._knowledge, KnowledgeProviderClient)
 
@@ -276,9 +277,9 @@ def test_no_seam_still_points_at_the_real_ingest_service(tmp_path, monkeypatch) 
     #    这两处是本机档也照建的真服务（`data_sources` / `tasks` 那族端点没挂本机档，
     #    本机档也不起消费者，见 `main.py` 那段），**不是**用户可见的入库接缝。
     allowed = {
-        "services.sources._ingest",
-        "services.worker._ingest",
-        "services.workers[0]._ingest",
+        "services.kb.sources._ingest",
+        "services.kb.worker._ingest",
+        "services.kb.workers[0]._ingest",
     }
     holders = _holders_of(services, real)
     assert holders, "遍历没找到任何持有者：那说明这条路走错了（守卫会静默变绿）"

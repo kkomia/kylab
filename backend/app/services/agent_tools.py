@@ -1258,7 +1258,7 @@ def build_runner(
             # 外部门保持 chunk 级返回不变（那是已发布的 MCP 契约，外部客户端
             # 靠 chunk_id 做二次读取）。
             kb_ids = [str(item) for item in (scoped.get("knowledge_base_ids") or [])]
-            services.api_keys.check_access(caller, kb_ids=kb_ids)
+            services.kb.api_keys.check_access(caller, kb_ids=kb_ids)
             refs = _record(
                 services.chat.retrieve_sources(
                     query=str(scoped.get("query") or ""),
@@ -1686,7 +1686,7 @@ def _ingest_file(
     if not kb_id or not path:
         return ToolOutcome(content="缺少参数：knowledge_base_id 与 path")
     # 写操作先过作用域：越界时指出是哪个库（模型据此能告诉对方"这把 Key 没那个库的写权限"）
-    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
 
     content: bytes | None = None
     filename = path.rsplit("/", 1)[-1] or "文件"
@@ -1709,7 +1709,7 @@ def _ingest_file(
                 )
             )
 
-    outcome = services.ingest.submit(
+    outcome = services.kb.ingest.submit(
         knowledge_base_id=kb_id,
         filename=filename,
         content=content,
@@ -1717,7 +1717,7 @@ def _ingest_file(
         uploaded_by=caller.user.id if caller.user is not None else None,
     )
     if not outcome.is_duplicate:
-        services.documents.enqueue_ingest(outcome.document.id)
+        services.kb.documents.enqueue_ingest(outcome.document.id)
     return ToolOutcome(
         content=_join_blocks(
             f"{outcome.document.name} → {outcome.document.id}",
@@ -1782,7 +1782,7 @@ def _list_tables(services: Any, scope: list[str]) -> ToolOutcome:
     """列有结构化副本的表格。范围与 ``search`` 同一套：**会话选定的那些库**。"""
     if not scope:
         return ToolOutcome(content=_NO_KB_SCOPE, summary="没有可查的知识库")
-    items = services.tabular.tables(kb_ids=scope)
+    items = services.kb.tabular.tables(kb_ids=scope)
     if not items:
         return ToolOutcome(
             content=(
@@ -1810,7 +1810,7 @@ def _query_table(services: Any, scope: list[str], args: dict[str, Any]) -> ToolO
         return ToolOutcome(content=_NO_KB_SCOPE, summary="没有可查的知识库")
     sql = str(args.get("sql") or "")
     try:
-        payload = services.tabular.query_sql(
+        payload = services.kb.tabular.query_sql(
             sql=sql, kb_ids=scope, limit=_int_or_none(args.get("limit")) or 100
         )
     except Exception as exc:

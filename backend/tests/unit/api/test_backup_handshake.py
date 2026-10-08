@@ -32,7 +32,7 @@ from app.api.auth import current_caller
 from app.api.v1 import backup
 from app.api.v1.router import api_router, local_router
 from app.core.config import API_VERSION, get_settings
-from app.core.services import get_services, reset_services
+from app.core.services import get_kb_services, get_services, reset_services
 from app.core.storage import reset_stores
 from app.main import create_app
 from app.models.enums import ApiKeyPermission
@@ -207,9 +207,16 @@ class _FakeServices:
 
 
 def _override(app: Any, store: Any, caller: Caller | None) -> None:
-    """把"用哪个桶"与"谁在调用"换掉，其余保持生产那条路。"""
+    """把"用哪个桶"与"谁在调用"换掉，其余保持生产那条路。
+
+    **两个根都要换**（2026-10-08 拆组合根之后）：端点自己注入 `Services`，
+    而鉴权那几件（`require_*` / `current_caller`，见 `api/auth.py`）注入的是 `KbServices`
+    ——只换 `get_services` 的话，鉴权那条依赖会去建真的服务图（本文件标 local 就是为了
+    不连 PG）。假对象是鸭子类型，两边都能塞。
+    """
     app.dependency_overrides[backup.backup_store_dep] = lambda: store
     app.dependency_overrides[get_services] = lambda: _FakeServices()
+    app.dependency_overrides[get_kb_services] = lambda: _FakeServices()
     if caller is not None:
         app.dependency_overrides[current_caller] = lambda: caller
 

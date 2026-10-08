@@ -1808,9 +1808,10 @@ def test_kb_tools_are_gated_by_the_provider_state(tmp_path) -> None:
     ready = _clients_with(tmp_path, _ready_provider)
     assert ready.provider.status().state == STATE_READY
     assert kb_tools <= {spec.name for spec in ready.tool_specs(kb_ids=["kb_1"])}
-    # 服务图上那两槽就是本类手上这一对（组合根换线的结果，不是另一份）
-    assert ready.services.ingest is ready.ingest
-    assert ready.services.documents is ready.documents
+    # 服务图上那两槽就是本类手上这一对（组合根换线的结果，不是另一份）；
+    # 2026-10-08 拆组合根之后那两槽在 **KB 根**上（`Services.kb`，见 core/services.py）
+    assert ready.services.kb.ingest is ready.ingest
+    assert ready.services.kb.documents is ready.documents
     # ⚠️ 这条用例**注入了假 provider**（门控要能按三态摆工具表，只能从这一格进去）：
     # 注入时本类用的就是注入的那一份，服务图里那一个不动（那是用例的形态）。
     # "运行形态下全进程只有一个实例"由下面那条 `test_the_provider_is_one_instance_

@@ -74,7 +74,7 @@ from app.api.v1.schemas import (
     SearchRequest,
 )
 from app.core.config import API_VERSION, get_settings
-from app.core.services import Services, get_services
+from app.core.services import KbServices, get_kb_services
 from app.models.enums import ApiKeyPermission
 from app.services.api_key import Caller
 from app.services.retrieval import RetrievalMode
@@ -164,7 +164,7 @@ RETRIEVAL_CANDIDATE_K_MAX = _upper_bound(SearchRequest, "candidate_k")
 # ------------------------------------------------------------------ 响应拼装
 
 
-def provider_capabilities(services: Services) -> ProviderCapabilitiesOut:
+def provider_capabilities(services: KbServices) -> ProviderCapabilitiesOut:
     """能力集：**如实报这台机器现在能做什么**，不是"代码里支持什么"。
 
     两个例外值得记住：``embedding.configured`` 为假时仍然能上传（登记照旧），
@@ -226,7 +226,7 @@ def caller_brief(caller: Caller) -> ProviderCallerOut:
 def _kb_brief(
     record: Any,
     caller: Caller,
-    services: Services,
+    services: KbServices,
     *,
     document_count: int = 0,
     last_activity: Any = None,
@@ -247,7 +247,7 @@ def _kb_brief(
     )
 
 
-def kb_briefs(services: Services, caller: Caller) -> list[ProviderKbBriefOut]:
+def kb_briefs(services: KbServices, caller: Caller) -> list[ProviderKbBriefOut]:
     """这次调用**看得见**的库摘要（受限 key 只看到范围内的：方案 R9）。
 
     计数一次聚合查出来，与列表端点同一个数——握手本来就要少发请求，
@@ -266,7 +266,7 @@ def kb_briefs(services: Services, caller: Caller) -> list[ProviderKbBriefOut]:
     ]
 
 
-def build_handshake(services: Services, caller: Caller) -> ProviderHandshakeOut:
+def build_handshake(services: KbServices, caller: Caller) -> ProviderHandshakeOut:
     """握手的响应（**纯拼装**：不落库、不调模型、不发网络请求）。
 
     所以它可以直接被用例喂一份假 ``services`` 调——契约的形状与取值在这条路上就能钉死，
@@ -291,7 +291,7 @@ def build_handshake(services: Services, caller: Caller) -> ProviderHandshakeOut:
     summary="知识库提供者握手（连通性 + 能力集 + 库清单）",
 )
 def handshake(
-    services: Services = Depends(get_services),
+    services: KbServices = Depends(get_kb_services),
     caller: Caller = Depends(require_read),
 ) -> ProviderHandshakeOut:
     """一次调用回答：**凭据有效吗、这台提供者能做什么、我能用哪些库**。

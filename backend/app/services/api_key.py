@@ -38,7 +38,7 @@ from app.models.enums import ApiKeyPermission, SharePermission, UserRole
 from app.storage.base import ApiKeyRecord, StoreBundle
 
 if TYPE_CHECKING:  # 只为标注：core.services 会 import 本模块，顶层 import 就成了环
-    from app.core.services import Services
+    from app.core.services import KbServices
 
 __all__ = [
     "LOCAL_CALLER",
@@ -62,7 +62,7 @@ class IssuedApiKey:
     token: str
 
 
-def resolve_caller(services: Services, token: str) -> Caller:
+def resolve_caller(services: KbServices, token: str) -> Caller:
     """把一串凭据换成调用主体（v0.12）。
 
     **REST 与 MCP 共用这一处**：两条协议层各写一份分流，迟早会漂

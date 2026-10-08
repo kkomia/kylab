@@ -349,7 +349,7 @@ def attach_note(
 
     入库会写到知识库，所以要按 **WRITE** 校验库范围——只读分享不能借这条路径往库里塞东西。
     """
-    check_kb_scope(services, caller, [payload.kb_id], need=WRITE)
+    check_kb_scope(services.kb, caller, [payload.kb_id], need=WRITE)
     record = services.notes.attach_to_kb(note_id, user_id=_owner(caller), kb_id=payload.kb_id)
     return NoteOut.model_validate(record)
 
