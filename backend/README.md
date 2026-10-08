@@ -4,21 +4,21 @@ KYLAB 的后端（Python / FastAPI），**一份业务层、两个入口**：
 
 | 入口 | 是什么 | 什么时候用 |
 | --- | --- | --- |
-| `app/sidecar.py` | **本机档**：对话与工具循环跑在本机，数据落本机 SQLite；知识库经提供者协议可选接入 | 产品的正规形态，改后端默认改这一条 |
-| `app/main.py` | **服务器档**：只对外提供知识库管理台 + 备份 + 健康探针 | 过渡期给 NAS 侧那份旧单体用，会随 kybase 切换退役 |
+| `app/sidecar.py` | **本机档**：对话与工具循环跑在本机，数据落本机 SQLite | 产品的正规形态，改后端默认改这一条 |
+| `app/main.py` | **服务器档**：过渡期形态，只对外保留备份与健康探针 | 只服务既有的旧部署，逐步退役 |
 
 两个入口共用同一份 `services/`（循环、工具、工作区、沙箱、笔记、记忆、技能都是同一批代码），
 差别只在组合根怎么装配（`core/services.py`）；工程约束见《[项目工程规范 v0.6](../docs/规范/项目工程规范-v0.6.md)》。
 
 装依赖用 `uv sync --all-extras`——**`--all-extras` 不是可选的**：`app/core/storage.py` 会无条件
 构造 DuckDB 表格副本，少了 `tabular` 这个 extra，`import app.main` 直接 `ModuleNotFoundError`。
-`parsers`（pypdf / pymupdf / python-docx / openpyxl / pandas）是上传 → 解析 → 入库主链路要用的，
+`parsers`（pypdf / pymupdf / python-docx / openpyxl / pandas）是文档解析主链路要用的，
 惰性导入、缺了只是该功能不可用，但运行产品就该装上；`mcp` 只在跑 MCP Server 那个入口时需要。
 
 **本机档**（推荐）：`sh ../scripts/dev-sidecar.sh`——与桌面壳同一个数据目录
 （`%APPDATA%\com.kylab.desktop\kylab.db`）；直接 `uv run --all-extras python -m app.sidecar`
 则落 `~/.kylab/data/kylab.db`。只监听本机（默认 `127.0.0.1:8765`），`--workspace` / `--data-dir`
-可改落点，系统目录一律拒绝。给 `--server` + `--token` 就接上知识库提供者，不给就是纯本机能力。
+可改落点，系统目录一律拒绝。
 
 **服务器档**（改 NAS 侧那份旧单体时才用）：要一个带 pgvector 的 PostgreSQL，
 `KYLAB_DATABASE_URL` 必填，表结构由启动时的迁移自动补齐；`uvicorn app.main:app --reload`

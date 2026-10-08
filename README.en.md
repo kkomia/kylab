@@ -3,8 +3,7 @@
 **A local agent that runs on your own computer**: the chat and tool loop, the sandbox, notes and
 memory, skills and plugins, workspaces, scheduled tasks and Office deliverables all run locally;
 data lives in a local SQLite file and no server is required. Models are called straight from this
-machine with your own key (DeepSeek and others). The knowledge base is not part of it — it is an
-**optional external provider** (see [Knowledge base (kybase)](#knowledge-base-kybase)).
+machine with your own key (DeepSeek and others).
 
 The current form is the **web app**: local backend plus a Vite frontend. For versions and the
 change-by-change log, see the [changelog](CHANGELOG.md).
@@ -13,11 +12,10 @@ change-by-change log, see the [changelog](CHANGELOG.md).
 
 - **Chat is the main entry point and the main flow is a tool loop**: SSE streaming answers; the
   agent reads files in the workspace, runs commands in the sandbox, searches the web and fetches
-  pages, runs read-only SQL over tabular copies, schedules tasks, spawns sub-agents — plus
-  knowledge base retrieval once a provider is connected. Which directories and which knowledge
-  bases a tool may touch is scoped per session and per workspace; context is compressed
-  automatically when it outgrows the window, and a turn that hits its step or
-  time limit can continue from where it stopped instead of starting over.
+  pages, runs read-only SQL over tabular copies, schedules tasks, spawns sub-agents. Which
+  directories a tool may touch is scoped per session and per workspace; context is compressed
+  automatically when it outgrows the window, and a turn that hits its step or time limit can
+  continue from where it stopped instead of starting over.
 - **A permanent column on the right of the chat**: "Files" is this conversation's file area as a
   tree you can expand in place and preview by clicking; "Web" offers two modes — embed the original
   page, or read the article body we fetched — with a probe picking the default and you free to
@@ -37,8 +35,8 @@ change-by-change log, see the [changelog](CHANGELOG.md).
   they arrive together with the answer at the end of the turn.
 - **Where the data is**: conversations, messages, events, artifacts, notes, memory and settings all
   live on this machine in `%APPDATA%\com.kylab.desktop\kylab.db` (SQLite with WAL); workspaces and
-  memory are files in the same directory. Long-lived credentials (model keys, provider tokens) go
-  into the system keychain — empty in the database, never in logs.
+  memory are files in the same directory. Long-lived credentials (model keys) go into the system
+  keychain — empty in the database, never in logs.
 
 **Not doing**: visual orchestration, workflow engines, collaborative document editing; no real-time
 cross-machine sync — moving between machines goes through backup and restore.
@@ -60,11 +58,8 @@ pnpm --dir frontend dev
 
 http://127.0.0.1:5173 is then the complete product. On Windows every `.sh` here has a `.ps1` twin.
 
-- **The sidecar is one entry point with two ways to run**: given a knowledge base address and a key
-  it connects on its own (`KYLAB_SERVER` / `KYLAB_TOKEN` first, then the `config.json` the desktop
-  shell left behind); with neither it runs bare — pure local capability, and anything
-  knowledge-base related says "not configured" rather than running half-way. Keys live only in
-  variables and argv: never echoed, never logged.
+- **The sidecar is the local backend**: `sh scripts/dev-sidecar.sh` starts it on `127.0.0.1:8765`,
+  listening on this machine only — the chat and all local data live there.
 - **Models** are called from this machine with your own key: set the model and key in settings, and
   the key goes into the system keychain.
 - Data defaults to the shell's real data directory (same database, same conversations as the
@@ -72,37 +67,10 @@ http://127.0.0.1:5173 is then the complete product. On Windows every `.sh` here 
 - **If the port is taken the sidecar refuses to start** instead of quietly picking another one —
   two instances running at once look like "I changed the backend but the UI still behaves the old
   way".
-- The knowledge base management pages (all knowledge bases / overview / task center) go through the
-  "server side" `/api`, proxied to `:8000` in development; to point them straight at a knowledge
-  base service, pass `KYLAB_API_TARGET=http://<kb-service-address>` to `pnpm --dir frontend dev` as
-  well. Without it, those pages show their own degraded state.
 - `scripts/dev-backend.sh` (`:8000`) runs the **server-profile** backend; you only need it when
   changing the old monolith on the NAS.
 
 Gate scripts: `sh scripts/check-backend.sh`, `sh scripts/check-frontend.sh`, `sh scripts/ci.sh`.
-
-## Knowledge base (kybase)
-
-The knowledge base is not in this repository: its service, its deployment and its own web console
-are a separate product, **kybase**. kylab reaches it only through the **provider protocol** — one
-handshake (reachability, capability set, knowledge base list) plus a few narrow APIs (retrieval,
-ingest, metadata reads). Which means:
-
-- **Optional.** Without a knowledge base, kylab is pure local capability and the whole agent flow
-  (chat, tools, workspaces, notes, memory, scheduled tasks, Office deliverables) is unaffected.
-- **Three states**: `ready`, `unconfigured`, `unavailable`. The two "not there" states say
-  different things — one means "go configure it", the other means "go see what happened to it";
-  anything not yet probed renders as absent, so you never get an entry that fails when clicked.
-- **Honest degradation when it is unreachable**: the knowledge base pages first ask this machine
-  whether it still has what it last saw. If it does, they open **read-only** with a banner saying
-  how old that content is (write and management entries appear only later); if not, the request is
-  redirected back to the chat page with a reason. Retrieval inside a turn is never cached, and it
-  never pretends it found something.
-- **Backup is a second provider**, parallel to the knowledge base: equally optional, equally
-  omissible — you can configure backup with no knowledge base at all.
-
-Deploying the knowledge base service itself is documented in **the kybase repository**; the compose
-files under `deploy/` belong to it and to the server profile, and the local form does not need them.
 
 ## Repository layout
 
@@ -119,8 +87,7 @@ kylab/
 ├── scripts/               dev / gate / generator scripts (dev-*.sh, check-*.sh, ci.sh, …)
 ├── docs/                  specs / design / plans-and-records / archive (index: docs/README.md;
 │                          written in Chinese)
-├── deploy/                deployment artifacts for the server profile and the knowledge base
-│                          service (not needed by the local form)
+├── deploy/                legacy deployment artifacts (not needed by the local form)
 ├── tests/e2e/             where cross-stack E2E goes; a placeholder for now
 ├── .github/workflows/     GitHub Actions gates (kept for a future mirror)
 └── .workflow/             Gitee Go gates (the default carrier)
