@@ -35,9 +35,9 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from app.core.exceptions import InvalidRequestError, UpstreamError
+from app.core.html_format import extract_article
 from app.core.http import shared_client
 from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
-from app.parsers.html_format import extract_article
 
 __all__ = [
     "MAX_FETCH_BYTES",

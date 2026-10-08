@@ -83,6 +83,7 @@ from app.api.v1.schemas import (
     BackupSnapshotOut,
     BackupUploadOut,
 )
+from app.core.caller import Caller
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import (
     BadRequestError,
@@ -91,7 +92,6 @@ from app.core.exceptions import (
     PayloadTooLargeError,
     UpstreamError,
 )
-from app.services.api_key import Caller
 from app.services.backup_store import (
     BLOB_NAME,
     MANIFEST_NAME,

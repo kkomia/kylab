@@ -41,11 +41,11 @@ from app.api.v1.schemas import (
     NoteTagOut,
     NoteUpdateIn,
 )
+from app.core.caller import WRITE, Caller
 from app.core.config import Settings, get_settings
 from app.core.exceptions import UnauthorizedError
 from app.core.services import Services, get_services
 from app.core.signing import SigningError, sign_resource, verify_resource
-from app.services.api_key import WRITE, Caller
 from app.services.notes import image_resource
 
 router = APIRouter(prefix="/notes", tags=["notes"])

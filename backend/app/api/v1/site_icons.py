@@ -16,9 +16,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.auth import require_read
+from app.core.caller import Caller
 from app.core.exceptions import NotFoundError
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
 from app.services.site_icons import SiteIconService
 
 router = APIRouter(prefix="/site-icons", tags=["site-icons"])

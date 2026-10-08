@@ -36,9 +36,9 @@ from app.api.v1.schemas import (
     SlotBindIn,
     SlotOut,
 )
+from app.core.caller import Caller
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
 from app.services.llm import ChatMessage
 from app.services.model_registry import CAPABILITIES, PROVIDER_KINDS, SLOTS
 from app.services.provider_presets import PROVIDER_PRESETS

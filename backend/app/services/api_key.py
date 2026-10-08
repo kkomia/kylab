@@ -3,6 +3,11 @@
 架构给的约定只有两句：**绑定知识库范围**（可指定单个/多个库）**+ 只读 / 读写两种权限**。
 本模块把这两句落成可执行的判断，其余（怎么放进 HTTP 请求、怎么回显）交给协议层。
 
+**身份契约不在这里**（2026-10-08 剥离阶段 0 搬走）：`Caller` / `READ` / `WRITE` /
+`LOCAL_CALLER` / `LOCAL_USER_ID` 住在 `app.core.caller`——它们是两侧共用的契约
+（KB 侧判准入、Agent 侧拿它当类型并判 `WRITE`），与"发钥匙/校验"这套实现分开。
+本模块从那里 import 进来并在 `__all__` 里再导出，**KB 侧调用点一行没动**。
+
 三处刻意的设计：
 
 1. **校验走"哈希查库"而不是"取全部再逐把比对"**。前者是 O(1) 索引查询，
@@ -26,10 +31,11 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app.core.caller import LOCAL_CALLER, LOCAL_USER_ID, READ, WRITE, Caller
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.security import SESSION_TOKEN_PREFIX, display_prefix, generate_token, hash_token
 from app.models.enums import ApiKeyPermission, SharePermission, UserRole
-from app.storage.base import ApiKeyRecord, StoreBundle, UserRecord
+from app.storage.base import ApiKeyRecord, StoreBundle
 
 if TYPE_CHECKING:  # 只为标注：core.services 会 import 本模块，顶层 import 就成了环
     from app.core.services import Services
@@ -47,11 +53,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-READ = ApiKeyPermission.READONLY
-"""语义别名：``check_access`` 的入参用它，读起来比枚举原名清楚。"""
-
-WRITE = ApiKeyPermission.READWRITE
-
 
 @dataclass(frozen=True, slots=True)
 class IssuedApiKey:
@@ -59,45 +60,6 @@ class IssuedApiKey:
 
     record: ApiKeyRecord
     token: str
-
-
-@dataclass(frozen=True, slots=True)
-class Caller:
-    """一次调用的主体。管理员会话与 API Key 在这里统一成一种形状，
-    免得下游每个地方都要判"这是哪种凭据"。"""
-
-    #: 管理员会话没有 API Key 记录；用它区分"管理员"与"受限调用方"
-    is_admin: bool = False
-    api_key: ApiKeyRecord | None = None
-    #: 登录会话对应的账号（v10）。``None`` = API Key 通道
-    user: UserRecord | None = None
-    #: 当前会话 id（明文 token 的哈希）。退出登录、改密吊销都要定位到它
-    session_id: str | None = None
-
-    @property
-    def permission(self) -> ApiKeyPermission | None:
-        """``None`` 表示不受范围限制（管理员会话如此）。"""
-        return None if self.is_admin else (self.api_key.permission if self.api_key else None)
-
-    @property
-    def knowledge_base_ids(self) -> tuple[str, ...]:
-        if self.is_admin or self.api_key is None:
-            return ()
-        return tuple(self.api_key.knowledge_base_ids)
-
-    @property
-    def owner_id(self) -> str | None:
-        """这一轮该按**谁**的归属去读写（知识库、会话、笔记、工作区、记忆、能力）。
-
-        普通成员 → 自己的账号；管理员会话与 API Key 通道 → ``None``（共享桶）。
-
-        口径写在这里、不写在各调用点：它已经有过三份副本（对话的记忆归属、
-        MCP 端点、工具执行器），而这三处必须**完全一致**——只要有一处判成了别人，
-        表现就是"同一份数据在两个页面里看到的不是同一份"，那种不一致极难查。
-        """
-        if self.user is not None and not self.is_admin:
-            return self.user.id
-        return None
 
 
 def resolve_caller(services: Services, token: str) -> Caller:
@@ -124,29 +86,6 @@ def resolve_caller(services: Services, token: str) -> Caller:
             session_id=session.id,
         )
     return services.api_keys.authenticate(token)
-
-
-LOCAL_USER_ID = "local-owner"
-"""本机档"本机主人"在库里的 id（M2 §4.1：本机运行时不设门禁）。"""
-
-LOCAL_CALLER = Caller(
-    is_admin=True,
-    user=UserRecord(id=LOCAL_USER_ID, name="本机主人", role=UserRole.ADMIN),
-)
-"""**本机档**（桌面壳的边车进程）唯一的调用主体，见 `app/api/auth.py::current_caller`。
-
-三处口径：
-
-- ``is_admin=True``：这里是"**不受库范围限制**"那个意思（见 `check_access` 的第一行）。
-  本机没有账号体系（``users`` / ``sessions`` 两张表都不在本机库里，见 v0.3 §8-1），
-  而能打到边车那个端口的只有这台机器的主人；
-- ``owner_id`` 因此是 ``None``（共享桶）——本机只有一个人，不存在"别人的数据"，
-  于是会话 / 笔记 / 记忆的归属天然一致；
-- ``user`` 不是 ``None``：协议层若干处默认调用者是一个账号（`caller.user.id`），
-  给它一个真的 `UserRecord` 比到处判空更稳（那句"本机主人"也是界面上能显示的名字）。
-
-**这是一个可以共享的不可变对象**（`Caller` 是 frozen dataclass），每个请求给同一个就行。
-"""
 
 
 class ApiKeyService:

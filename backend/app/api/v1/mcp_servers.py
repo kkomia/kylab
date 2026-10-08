@@ -29,9 +29,9 @@ from app.api.v1.schemas import (
     MCPServerUpdateIn,
     MCPToolOut,
 )
+from app.core.caller import Caller
 from app.core.exceptions import ForbiddenError
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
 from app.services.command_policy import (
     ACTION_ALLOW,
     ACTION_ASK,

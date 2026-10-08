@@ -20,6 +20,7 @@ import dataclasses
 import logging
 from typing import TYPE_CHECKING
 
+from app.core.caller import Caller
 from app.core.exceptions import NotFoundError
 from app.services.agent import (
     DeltaEvent,
@@ -29,7 +30,6 @@ from app.services.agent import (
     ThinkingEvent,
     step_snapshot,
 )
-from app.services.api_key import Caller
 from app.services.schedules import ScheduleService
 from app.storage.base import ScheduledTaskRecord
 

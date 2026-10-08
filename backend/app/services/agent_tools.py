@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.caller import WRITE, Caller
 from app.core.exceptions import InvalidRequestError, KylabError
 from app.core.logging import sanitize_log_value
 from app.services import isolation as isolation_service
@@ -48,7 +49,6 @@ from app.services.agent_files import (
     resolve_roots,
     search_files,
 )
-from app.services.api_key import WRITE, Caller
 from app.services.chat import SourceRef
 from app.services.command_policy import (
     ACTION_ALLOW,

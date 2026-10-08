@@ -21,16 +21,25 @@ from app.api.v1.schemas import (
     SettingsViewOut,
     TestConnectionOut,
 )
+from app.core.caller import Caller
 from app.core.lazy_httpx import httpx
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
-from app.services.embedding import NOT_CONFIGURED_HINT
 from app.services.runtime_config import SECRET_KEYS, SETTING_GROUPS
 
 router = APIRouter(tags=["settings"])
 
 _PROBE_TEXT = "kylab 连接测试"
 _TEST_TIMEOUT_SECONDS = 30.0
+
+#: 「还没配嵌入模型」时给的下一步动作。**双份并存期**：权威在 KB 侧的
+#: `services/embedding/__init__.py::NOT_CONFIGURED_HINT`（那里还用它抛
+#: `EmbeddingNotConfiguredError`），这里是**复制**而不是上移——这句话讲的是向量化配置，
+#: 而向量化随 KB 走；剥离阶段 0 的刀 3 只是让本模块不再 import KB 域模块。
+#: KB 面收口（设置页那段向量化连接测试随 KB 走去）时，这份拷贝与这段注释一起删。
+_NOT_CONFIGURED_HINT = (
+    "未配置嵌入模型：请在「设置 → 模型注册」添加供应商并登记向量化模型，"
+    "再到「设置 → 向量化」把它选为默认嵌入模型"
+)
 
 
 def _known_setting_keys() -> frozenset[str]:
@@ -108,7 +117,7 @@ def _test_embedding(services: Services) -> TestConnectionOut:
     """真发一次最小请求：维度声明错了必须在这里暴露，而不是等摄入时炸。"""
     config = services.runtime.embedding()
     if not config.is_configured:
-        return TestConnectionOut(ok=False, detail=NOT_CONFIGURED_HINT)
+        return TestConnectionOut(ok=False, detail=_NOT_CONFIGURED_HINT)
 
     try:
         vectors = services.embedder.embed([_PROBE_TEXT])

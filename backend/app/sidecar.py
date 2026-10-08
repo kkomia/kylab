@@ -101,6 +101,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.router import local_router
 from app.api.v1.schemas import ChatSourceOut
+from app.core.caller import Caller
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import NotFoundError, register_exception_handlers
 from app.core.logging import setup_logging
@@ -115,7 +116,6 @@ from app.services.agent import (
     StepEvent,
     ThinkingEvent,
 )
-from app.services.api_key import Caller
 from app.services.knowledge_provider import (
     STATE_READY,
     KnowledgeProviderClient,

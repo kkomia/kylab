@@ -37,12 +37,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.core.caller import Caller
 from app.core.exceptions import InvalidRequestError
 from app.services import approvals as approval_service
 from app.services import isolation as isolation_service
 from app.services import modes
 from app.services.agent_files import Roots, describe_roots, resolve_roots
-from app.services.api_key import Caller
 from app.services.approvals import ApprovalRequest
 from app.services.command_policy import (
     ACTION_ALLOW,

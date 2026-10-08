@@ -46,9 +46,9 @@ from app.api.v1.schemas import (
     SkillSourceOut,
     SkillSourcePatchIn,
 )
+from app.core.caller import Caller
 from app.core.exceptions import InvalidRequestError
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
 from app.services.skill_categories import CATEGORIES
 from app.services.skill_market import MAX_UNPACKED_BYTES
 from app.services.skills import DISABLED_REASON, featured_by_category

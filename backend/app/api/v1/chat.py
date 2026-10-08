@@ -110,6 +110,7 @@ from app.api.v1.schemas import (
     SessionEventOut,
     SuggestedQuestionsOut,
 )
+from app.core.caller import Caller
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
 from app.core.services import Services, get_services
 from app.services import commands, live_turns, modes, plan_gate
@@ -125,7 +126,6 @@ from app.services.agent import (
     step_snapshot,
 )
 from app.services.agent_tools import build_runner, build_tool_table
-from app.services.api_key import Caller
 from app.services.approvals import ALLOW_ALWAYS, ALLOW_ONCE
 from app.services.chat import ChatTurn, SourceRef
 from app.services.conversation import LastTurn

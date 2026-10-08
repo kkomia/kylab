@@ -49,10 +49,10 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.auth import require_read
+from app.core.caller import Caller
 from app.core.exceptions import BadRequestError, InvalidRequestError
 from app.core.http import shared_client
 from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
-from app.services.api_key import Caller
 from app.services.web import MAX_FETCH_CHARS, check_public_url, fetch_url
 
 router = APIRouter(prefix="/web", tags=["web"])

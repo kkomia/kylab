@@ -25,8 +25,8 @@ from app.api.v1.schemas import (
     ScheduledTaskRunOut,
     ScheduledTaskUpdateIn,
 )
+from app.core.caller import Caller
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
 from app.services.schedules import timezone_name
 
 router = APIRouter(prefix="/scheduled-tasks", tags=["scheduled-tasks"])

@@ -34,9 +34,9 @@ from app.api.v1.schemas import (
     WorkspaceOut,
     WorkspaceUpdateIn,
 )
+from app.core.caller import Caller
 from app.core.exceptions import InvalidRequestError
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 

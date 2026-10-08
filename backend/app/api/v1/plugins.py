@@ -24,8 +24,8 @@ from fastapi import APIRouter, Depends
 
 from app.api.auth import require_admin, require_read
 from app.api.v1.schemas import PluginComponentOut, PluginListOut, PluginOut
+from app.core.caller import Caller
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
 

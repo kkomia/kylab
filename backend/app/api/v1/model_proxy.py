@@ -30,8 +30,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.auth import require_read
+from app.core.caller import Caller
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
 from app.services.llm import ChatMessage, LLMDelta, OpenAICompatChat, ToolCall, ToolSpec
 
 router = APIRouter(tags=["model-proxy"])

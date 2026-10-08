@@ -39,12 +39,12 @@ from app.api.v1.schemas import (
     IngestArtifactIn,
 )
 from app.api.v1.workspaces import Device, device_from_headers
+from app.core.caller import WRITE, Caller
 from app.core.config import Settings, get_settings
 from app.core.downloads import content_disposition, media_type_of
 from app.core.exceptions import NotFoundError, PayloadTooLargeError, UnauthorizedError
 from app.core.services import Services, get_services
 from app.core.signing import SigningError, verify_resource
-from app.services.api_key import WRITE, Caller
 from app.services.artifacts import (
     ARTIFACT_SCOPE_CONVERSATION,
     file_signature_resource,

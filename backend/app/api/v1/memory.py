@@ -56,10 +56,10 @@ from app.api.v1.schemas import (
     MemorySectionOut,
     MemoryStatusOut,
 )
+from app.core.caller import Caller
 from app.core.services import Services, get_services
 from app.services import archive_files as af
 from app.services import tools as tools_service
-from app.services.api_key import Caller
 from app.services.archive import WriteResult
 from app.services.memory import INJECTED_FILES
 

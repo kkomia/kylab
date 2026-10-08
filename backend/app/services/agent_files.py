@@ -34,8 +34,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.core.caller import Caller
 from app.core.exceptions import InvalidRequestError
-from app.services.api_key import Caller
 from app.services.sandbox import resolve_in, sandbox_for
 
 if TYPE_CHECKING:

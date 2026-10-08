@@ -159,6 +159,9 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.api.v1.site_icons",
     "app.api.v1.local",
     "app.api.v1.backup",
+    # 2026-10-08 主代理拍板：设置面是 agent 产品设置页的 API 面（读共享底座的
+    # `runtime_config` 合法），归 Agent 域。
+    "app.api.v1.settings",
     # services
     "app.services.agent",
     "app.services.tool_loop",
@@ -276,12 +279,10 @@ SEAM_FILES: tuple[str, ...] = tuple(
 )
 
 
-#: 仍未认领的模块（这一轮补齐之后剩下的）：键是点分模块名，值是"为什么还没定"。
-#: 报告第 3 节会把这张表打出来；**空着是目标**。
+#: 仍未认领的模块：键是点分模块名，值是"为什么它不归任何一侧"。
+#: 报告第 3 节会把这张表打出来。**这一栏现在只剩三处接缝**——它们不是"还没决定"，
+#: 而是**刻意不归任何一侧**（归哪边都不对），空着不再是目标：接缝就是接缝。
 UNCLAIMED_NOTES: dict[str, str] = {
-    "app.api.v1.settings": "应用设置面（模型 / 向量化凭据的读写与连接测试）。2026-10-08 的口径"
-    "没点到它：§3.2 把 `/settings` 列在 Agent 面，而它读的 `runtime_config` 是共享底座——"
-    "**请一句话定性（Agent 域或共享底座）**，我在名单里加一行即可",
     "app.services.knowledge_client": "**接缝一**：`KnowledgeClient` 协议（方案 §2 事实 2）。"
     "刻意不归任何一侧——Agent 域经它访问 KB 是设计如此（`agent→kb` 对它放行）",
     "app.services.knowledge_provider": "**接缝二**：本机档的 KB 客户端实现（方案 §2 事实 2）。"
@@ -298,15 +299,30 @@ CLAIM_NOTES: dict[str, str] = {
     "全仓 42 个模块 import 它——两档都要用，且本机档的短路分支就在它里面。"
     "账号体系的**服务实现**（services 的 auth/api_key/users/avatars + api/v1 下四个面）"
     "按 2026-10-08 口径归 KB，而这一层按「两档都要用、阶段 1 才分家」进共享底座"
-    "（与 health/frontend/router 同一条）。"
-    "**另一种判法**（按字面归 KB）会立刻多出一批 agent→kb：Agent 侧各 api 模块都 import 它，"
-    "剥离线会变成 13 处「各留一个 shim」的工作项——那是阶段 1 的事，不是名单的事",
+    "（与 health/frontend/router 同一条）。**主代理 2026-10-08 已确认这一条**；"
+    "若改判 KB，会立刻多出一批 agent→kb：Agent 侧各 api 模块都 import 它，"
+    "剥离线会变成 13 处「各留一个 shim」的工作项——那是阶段 1 的事",
     "app.services.api_key": "账号体系在 services 侧的实现"
     "（`check_access` / `visible_kb_ids` 直接读 KB 表，见方案 §4 第 7 条）→ KB 域。"
-    "**注意它同时定义 `Caller` / `READ` / `WRITE` / `LOCAL_CALLER`——那份**身份契约**被两侧共用**"
-    "（Agent 侧 18 个模块 import 它）。契约与实现同住一个模块，"
-    "正是本报告里 agent→kb 的主要来源；下一刀应当是「契约上移共享底座、实现留 KB」"
-    "（见报告第 10.1 节）",
+    "**身份契约已搬走**（`Caller` / `READ` / `WRITE` / `LOCAL_CALLER` / `LOCAL_USER_ID` → "
+    "`app.core.caller`，见报告第 10.1 节）：本模块只留发放与校验，"
+    "那几个名字仍从这里的 `__all__` 再导出，KB 侧调用点一行没动",
+    "app.core.caller": "**身份契约**：`Caller`（frozen dataclass，含 `permission` / "
+    "`knowledge_base_ids` / `owner_id` 三个派生属性）、`READ` / `WRITE`（权限别名）、"
+    "`LOCAL_CALLER` + `LOCAL_USER_ID`（本机档唯一的调用主体）。"
+    "两侧都要它：KB 侧用它做准入判定，Agent 侧每个 api 模块拿它当类型、判 `WRITE`。"
+    "住共享底座是 2026-10-08 那一刀的结果（实现仍留 `services/api_key.py`）",
+    "app.core.html_format": "**网页正文提取**（`extract_article` / `html_to_markdown` / "
+    "`html_to_text`），从 `app/parsers/html_format.py` **例外上移**："
+    "KB 侧的连接器与上传路径要用它，Agent 侧的阅读模式（`services/web.py`）也要用。"
+    "`app.parsers.html_format` 仍是一个再导出的壳，KB 侧调用点一行没动",
+    "app.parsers.html_format": "**再导出的壳**（实现已上移 `app.core.html_format`）。"
+    "仍按 `app.parsers` 前缀算 KB 域——它只是给 KB 侧解析器与连接器留的入口，"
+    "KB → 共享底座这个方向本来就合法，所以它不产生任何越界",
+    "app.api.v1.settings": "**主代理 2026-10-08 拍板：Agent 域**——它是 agent 产品设置页的 API 面，"
+    "读共享底座的 `runtime_config` 合法。这一刀同时修掉它原来的两处 KB import："
+    "身份契约改从 `app.core.caller` 取，`NOT_CONFIGURED_HINT` 复制一份（双份并存期，"
+    "权威在 KB 侧的 `services/embedding/__init__.py`，KB 面收口时删）",
     "app.services.model_client": "**模型调用接缝的协议声明**"
     "（`ModelClient`，只有 Protocol、无实现）。"
     "按 2026-10-08 的另一条口径「llm 接入 → 共享底座（两边各拷一份）」归共享底座；"
@@ -922,10 +938,24 @@ def build_report(root: Path, result: Scan) -> str:
         "",
         "## 3. 未认领清单（问题②）",
         "",
-        "未被任何一张名单认领的模块。**没有名单 = 没有约束**（`check_layering.py` 的 L6 就是"
-        "被这件事教出来的），所以这一节是必须消灭的名单。",
-        "",
     ]
+    if unclaimed and all(module in UNCLAIMED_NOTES for module in unclaimed):
+        lines += [
+            "这一节现在**只剩三处接缝**——它们不是「还没决定」，而是**刻意不归任何一侧**："
+            "归哪边都不对（Agent 域经它访问 KB 是设计如此，`agent→kb` 对它放行）。"
+            "除此之外，`backend/app/` 下每个非 `__init__` 模块都有归属。",
+            "",
+            "（没有名单 = 没有约束，这条教训来自 `check_layering.py` 的 L6：`app/agent_tools.py` "
+            "当时住在 app 根，一条规则都不作用于它。所以这一栏只要有**非接缝**的模块，"
+            "就说明又有东西没被认领。）",
+            "",
+        ]
+    else:
+        lines += [
+            "未被任何一张名单认领的模块。**没有名单 = 没有约束**（`check_layering.py` 的 L6 就是"
+            "被这件事教出来的），所以这一节是必须消灭的名单。",
+            "",
+        ]
     if not unclaimed:
         lines += ["（无：`backend/app/` 下每个非 `__init__` 模块都有归属。）"]
     else:
@@ -1084,38 +1114,64 @@ def build_report(root: Path, result: Scan) -> str:
         "",
         "## 10. 下一步（按越界密度排）",
         "",
-        "把第 4.2 节按**切法**分成两簇——它们不是同一件事：",
+        "第 4.2 节按**切法**分两簇——它们不是同一件事：",
         "",
-        f"### 10.1 契约型（{len(contract_imports)} 处）：身份类型与权限常量被两侧共用",
-        "",
-        "`app.services.api_key` 里同时住着两样东西：**身份契约**（`Caller` 这个 frozen "
-        "dataclass、`READ` / `WRITE` / `LOCAL_CALLER` 三个常量）和**账号体系的实现**"
-        "（`check_access` / `visible_kb_ids`，方案 §4 第 7 条说它「既是 Agent 工具准入闸，"
-        "又直接读 KB 表」）。Agent 侧的每个 api/服务模块都要那个契约（拿 `Caller` 当类型、"
-        "判 `WRITE`），于是它们全被算成 agent→kb。",
-        "",
-        "**下一刀**：把契约上移共享底座（一个 dataclass + 三个常量，`api_key.py` 再导出一次，"
-        "行为不变），`api_key.py` 只留 KB 侧的实现——这一簇随之归零。"
-        "注意它与 `app.api.auth`（请求级鉴权依赖，已在共享底座）是同一件事的两半："
-        "契约上移之后，那 13 个 Agent api 模块 import 鉴权 shim 也就不再是跨域。",
-        "",
+    ]
+    if not contract_imports:
+        lines += [
+            "### 10.1 契约型（0 处）——**2026-10-08 已切完**",
+            "",
+            "身份契约（`Caller` / `READ` / `WRITE` / `LOCAL_CALLER` / `LOCAL_USER_ID`）已搬到 "
+            "`app.core.caller`，`services/api_key.py` 只留账号体系的实现"
+            "（`check_access` / `visible_kb_ids` / `authenticate` / `resolve_caller`）并从那里"
+            "再导出——**KB 侧调用点一行没动**（还有 17 个 KB 侧 api 模块 + `mcp_server/auth.py` "
+            "经再导出取它）。需要契约的模块（Agent 侧 19 个、共享侧 2 个）改从共享底座取，"
+            "这一簇随之归零。同类的一件：`parsers/html_format.py` 例外上移到 "
+            "`app.core.html_format`（Agent 的阅读模式要用它，旧位置留壳），"
+            "`services/web.py` 那处越界也一并消失。",
+            "",
+            "**顺带说明**：`app.api.auth`（请求级鉴权依赖）与 `core/services.py` 仍从 "
+            "`api_key` 取（前者混取 `resolve_caller`、后者取 `ApiKeyService` 实现），"
+            "那是共享底座 → KB 的方向，只记录、不拦门——真正的切法是阶段 1 的拆组合根。",
+            "",
+        ]
+    else:
+        lines += [
+            f"### 10.1 契约型（{len(contract_imports)} 处）：身份类型与权限常量被两侧共用",
+            "",
+            "`app.services.api_key` 里同时住着两样东西：**身份契约**（`Caller` 这个 frozen "
+            "dataclass、`READ` / `WRITE` / `LOCAL_CALLER` 三个常量）和**账号体系的实现**"
+            "（`check_access` / `visible_kb_ids`，方案 §4 第 7 条说它「既是 Agent 工具准入闸，"
+            "又直接读 KB 表」）。Agent 侧的每个 api/服务模块都要那个契约（拿 `Caller` 当类型、"
+            "判 `WRITE`），于是它们全被算成 agent→kb。**切法**：把契约上移共享底座"
+            "（`app/core/caller.py`），`api_key.py` 再导出一次，行为不变。",
+            "",
+        ]
+    lines += [
         f"### 10.2 功能型（{len(functional)} 处）：真的要调 KB 的功能",
         "",
-        "逐条性质不同，一条条说（文件清单："
-        + "、".join(f"`{name}`" for name in functional_files)
-        + "）：",
-        "",
-        "- `api/v1/local.py` → `api/v1/stats`：本机档要 KB 的 dashboard 读数——"
-        "**等「KB 客户端能拿这份读数」**（接缝收口那一批）。",
-        "- `workers/local_worker.py` → `workers/queue_worker`：只取两个间隔常量——"
-        "**等「`tasks` 队列归属落地」**（方案 §5.3：队列随 KB，Agent 定时任务另起机制）。",
-        "- `api/v1/backup.py` → `api/v1/provider`：复用 KB 提供者的 `caller_brief`——"
-        "它与 10.1 同族（都要 `Caller`），契约上移后**在备份侧复制一份**即可"
-        "（双份并存期，权威在 KB 侧）。",
-        "- `services/web.py` → `parsers/html_format`：取 `extract_article`（HTML 正文提取）。"
-        "`check_layering.py` 的 `PARSER_SHARED` 本来就把 `html_format` 当**共享的格式转换器**，"
-        "而 §3.1 又写着 parsers/ 整体随 KB 走——**这一处要一句名单决定**："
-        "是 Agent 侧复制一份，还是把 `html_format` 整件上移共享底座。",
+    ]
+    if functional:
+        lines += [
+            "逐条性质不同，一条条说（文件清单："
+            + "、".join(f"`{name}`" for name in functional_files)
+            + "）：",
+            "",
+            "- `api/v1/local.py` → `api/v1/stats`：本机档要 KB 的 dashboard 读数——"
+            "**等「KB 客户端能拿这份读数」**（接缝收口那一批）。",
+            "- `workers/local_worker.py` → `workers/queue_worker`：只取两个间隔常量——"
+            "**等「`tasks` 队列归属落地」**（方案 §5.3：队列随 KB，Agent 定时任务另起机制）。",
+            "- `api/v1/backup.py` → `api/v1/provider`：复用 KB 提供者的 `caller_brief`"
+            "（一个把 `Caller` 折成「提供者视角」的小函数，返回 KB 侧的响应模型）——"
+            "**在备份侧复制一份**即可（双份并存期，权威在 KB 侧）。",
+            "",
+        ]
+    else:
+        lines += ["（无。）", ""]
+    lines += [
+        "**另一处同类、但不走 import 的**：`api/v1/settings.py` 归 Agent 之后，"
+        "它「测试向量化连接」那一格经组合根取 KB 的 `services.embedder` / `services.reranker`"
+        "（第 6 节，只记录）——那是功能耦合，等 KB 提供「测连接」入口时一起收。",
         "",
         "### 10.3 其余",
         "",
