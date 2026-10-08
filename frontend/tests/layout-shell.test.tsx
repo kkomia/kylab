@@ -8,15 +8,18 @@
  * 2. 折叠：窄条形态、`kylab-sidebar-collapsed` 持久化、**读**这个键、以及
  *    `kylab:sidebar-toggle` 广播的联动（chat 域的快捷键就是靠它把状态传过来的）；
  * 3. 两条全局快捷键（`chat.new` / `layout.toggleSidebar`）真的能用，且**输入框里不抢**；
- * 4. 用户区：账号、管理员多一项「设置」、主题翻转、退出登录三件事（清令牌 + 清缓存 + 回概览）；
+ * 4. 用户区：账号那一行、管理员才有的「设置」、主题翻转；
  * 5. 历史会话面板：点「查看全部会话」能开、**Esc 关**、**换页关**（§12.194 那个 bug）。
  *
  * 2026-10-08 跟着两处一起删的用例：「登录页不长出侧栏」与「知识库组」——
  * 登录页与那一族知识库页面都删了（本机档免登录、知识库界面搬去 kybase，
- * 见 `app/App.tsx` 的文件头）。「概览」「任务中心」回到主导航，所以它们的高亮
- * 由第 1 条那几条覆盖。
+ * 见 `app/App.tsx` 的文件头）。
+ *
+ * 2026-10-09 又删掉两处：「概览」那一项（页面整块删了，`/` 改成重定向到 `/chat`）
+ * 与「头像 / 退出登录」（`api/auth.ts` 那一族端点随账号死面一起下线，
+ * 见 `AccountMenu.tsx` 的文件头）。
  */
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
@@ -45,33 +48,16 @@ vi.mock('@/api/users', () => ({
   listUsers: vi.fn(async () => ({ items: [], header: 'X-Kylab-Operator' })),
 }))
 
-vi.mock('@/api/auth', () => ({
-  logout: vi.fn(async () => undefined),
-  getAuthBootstrapStatus: vi.fn(async () => ({ needs_setup: false, auth_enabled: true })),
-  me: vi.fn(async () => null),
-  login: vi.fn(),
-  setup: vi.fn(),
-  changePassword: vi.fn(),
-  uploadAvatar: vi.fn(),
-  clearAvatar: vi.fn(),
-  MIN_PASSWORD_CHARS: 8,
-}))
-
 /**
- * 设置弹窗与头像弹窗**替身**：它们是邻域的件（按 import 用，不改），
+ * 设置弹窗**替身**：它是邻域的件（按 import 用，不改），
  * 而设置弹窗内部要 react-query 与半个设置域才起得来。这里只钉"壳把哪个 props 交给了它"
- * ——那正是壳的契约（`open` 的开合、`name` / `url` 的来源）。
+ * ——那正是壳的契约（`open` 的开合）。
  */
 vi.mock('@/features/misc/settings/SettingsModal', () => ({
   SettingsModal: ({ open }: { open: boolean }) =>
     open ? <div data-testid="settings-modal" /> : null,
 }))
-vi.mock('@/features/misc/settings/AvatarDialog', () => ({
-  AvatarDialog: ({ open, name, url }: { open: boolean; name: string; url: string }) =>
-    open ? <div data-testid="avatar-dialog" data-name={name} data-url={url} /> : null,
-}))
 
-import { logout } from '@/api/auth'
 import { listConversations } from '@/api/conversations'
 import { listWorkspaces } from '@/api/workspaces'
 import { AppShell } from '@/features/layout/AppShell'
@@ -79,11 +65,9 @@ import { useConversationStore } from '@/features/layout/conversations'
 import { useSidebarStore } from '@/features/layout/useSidebar'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
 import { resetAllShortcuts } from '@/features/misc/settings/useShortcuts'
-import type { Account } from '@/api/auth'
-import { requestRelogin, setSessionToken, useSessionStore } from '@/lib/session'
+import { requestRelogin, setSessionToken, type Account, useSessionStore } from '@/lib/session'
 import { useOperatorStore } from '@/lib/operator'
 
-const logoutMock = vi.mocked(logout)
 const listConversationsMock = vi.mocked(listConversations)
 const listWorkspacesMock = vi.mocked(listWorkspaces)
 
@@ -104,11 +88,9 @@ function renderShell(initialPath = '/notes') {
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route element={<AppShell />}>
-            <Route path="/" element={<div>概览页</div>} />
             <Route path="/notes" element={<div>笔记页</div>} />
             <Route path="/memory" element={<div>记忆页</div>} />
             <Route path="/capabilities" element={<div>能力页</div>} />
-            <Route path="/dashboard" element={<div>概览页</div>} />
             <Route path="/tasks" element={<div>任务中心页</div>} />
             <Route path="/workspaces" element={<LocationProbe />} />
             <Route path="/chat/:conversationId?" element={<LocationProbe />} />
@@ -142,35 +124,29 @@ describe('侧栏导航', () => {
     renderShell('/notes')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
-    for (const label of ['概览', '笔记', '记忆', '能力', '任务中心']) {
+    for (const label of ['笔记', '记忆', '能力', '任务中心']) {
       expect(within(nav).getByText(label)).toBeInTheDocument()
     }
     // 当前页那一项标了 aria-current（旧版只有一个 CSS class）
     expect(within(nav).getByRole('link', { name: '笔记' })).toHaveAttribute('aria-current', 'page')
     expect(within(nav).getByRole('link', { name: '记忆' })).not.toHaveAttribute('aria-current')
+    // 「概览」那一项随页面一起删了（2026-10-09，见文件头）
+    expect(within(nav).queryByRole('link', { name: '概览' })).not.toBeInTheDocument()
     // 知识库那一组与它的子项都不在了（2026-10-08，见文件头）
     expect(within(nav).queryByText('知识库')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '所有知识库' })).not.toBeInTheDocument()
   })
 
-  it('「概览」与「任务中心」回到主导航，各自指向 `/` 与 `/tasks`', async () => {
+  it('「任务中心」在主导航里指向 `/tasks`，站在那儿时点亮', async () => {
     useSessionStore.setState({ currentUser: account('member') })
     renderShell('/tasks')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
-    expect(within(nav).getByRole('link', { name: '概览' })).toHaveAttribute('href', '/')
     const tasks = within(nav).getByRole('link', { name: '任务中心' })
     expect(tasks).toHaveAttribute('href', '/tasks')
     expect(tasks).toHaveAttribute('aria-current', 'page')
-
-    // 站在落地页时「概览」点亮（`/` 是 exact 那一档）
-    cleanup()
-    renderShell('/')
-    const atHome = await screen.findByRole('navigation', { name: '主导航' })
-    expect(within(atHome).getByRole('link', { name: '概览' })).toHaveAttribute(
-      'aria-current',
-      'page',
-    )
+    // 其余几项都不点亮（当前项整栏只有一种样子）
+    expect(within(nav).getByRole('link', { name: '笔记' })).not.toHaveAttribute('aria-current')
   })
 
   it('能力页在主导航里有归属：当前项标 aria-current 并带选中底', async () => {
@@ -350,7 +326,7 @@ describe('全局快捷键', () => {
 })
 
 describe('用户区', () => {
-  it('管理员：菜单四项在（头像 / 设置 / 切换为深色 / 退出登录）', async () => {
+  it('账号菜单：只有「设置」与主题翻转两项（头像 / 退出登录 2026-10-09 随账号族删掉）', async () => {
     const user = userEvent.setup()
     useSessionStore.setState({ currentUser: account('admin') })
     renderShell('/notes')
@@ -360,9 +336,11 @@ describe('用户区', () => {
 
     await user.click(screen.getByRole('button', { name: '账号：小又' }))
     const menu = await screen.findByRole('menu')
-    for (const label of ['头像', '设置', '切换为深色', '退出登录']) {
-      expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument()
-    }
+    expect(within(menu).getByRole('menuitem', { name: '设置' })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: '切换为深色' })).toBeInTheDocument()
+    // 头像（`AvatarDialog`）与「退出登录」都不在了：它们打的 `/auth/*` 一族已经下线
+    expect(within(menu).queryByRole('menuitem', { name: '头像' })).toBeNull()
+    expect(within(menu).queryByRole('menuitem', { name: '退出登录' })).toBeNull()
   })
 
   it('成员：没有「设置」这一项（后端对成员一律 403）', async () => {
@@ -372,25 +350,11 @@ describe('用户区', () => {
 
     await user.click(await screen.findByRole('button', { name: '账号：小又' }))
     const menu = await screen.findByRole('menu')
-    expect(within(menu).getByRole('menuitem', { name: '头像' })).toBeInTheDocument()
     expect(within(menu).queryByRole('menuitem', { name: '设置' })).not.toBeInTheDocument()
     // 身份那一行写着"成员"（角色由 currentUser 推出来）
     expect(screen.getByText('成员')).toBeInTheDocument()
-  })
-
-  it('「头像」开 AvatarDialog，名字 / 链接由壳交过去', async () => {
-    const user = userEvent.setup()
-    useSessionStore.setState({
-      currentUser: { ...account('member'), avatar_url: 'https://example.test/a.png' },
-    })
-    renderShell('/notes')
-
-    await user.click(await screen.findByRole('button', { name: '账号：小又' }))
-    await user.click(await screen.findByRole('menuitem', { name: '头像' }))
-
-    const dialog = await screen.findByTestId('avatar-dialog')
-    expect(dialog).toHaveAttribute('data-name', '小又')
-    expect(dialog).toHaveAttribute('data-url', 'https://example.test/a.png')
+    // 主题那一项与身份无关，照旧在
+    expect(within(menu).getByRole('menuitem', { name: /切换为/ })).toBeInTheDocument()
   })
 
   it('「设置」开 SettingsModal', async () => {
@@ -418,27 +382,6 @@ describe('用户区', () => {
     // 再开一次：文案翻到另一边
     await user.click(screen.getByRole('button', { name: '账号：小又' }))
     expect(await screen.findByRole('menuitem', { name: '切换为浅色' })).toBeInTheDocument()
-  })
-
-  it('退出登录：吊销会话 + 清会话清单与名册 + 回概览', async () => {
-    const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('admin') })
-    setSessionToken('tok-1')
-    useOperatorStore.setState({ operatorId: 'u1', roster: [{ id: 'u1', name: '小又' }] as never })
-    useConversationStore.setState({ items: [], query: 'x' })
-    renderShell('/notes')
-
-    await user.click(await screen.findByRole('button', { name: '账号：小又' }))
-    await user.click(await screen.findByRole('menuitem', { name: '退出登录' }))
-
-    await waitFor(() => expect(logoutMock).toHaveBeenCalledTimes(1))
-    // 令牌清了、清单与名册也清了（不清的话换个人登录先看到前一个人的数据）
-    await waitFor(() => expect(useSessionStore.getState().token).toBe(''))
-    expect(useConversationStore.getState().query).toBe('')
-    expect(useOperatorStore.getState().roster).toEqual([])
-    expect(window.localStorage.getItem('kylab-session-token')).toBeNull()
-    // 落在概览（落地页）——登录页已删，退完之后没有"登录那一页"可去（见文件头）
-    expect(await screen.findByText('概览页')).toBeInTheDocument()
   })
 })
 
@@ -503,7 +446,7 @@ describe('历史会话面板的开合', () => {
 })
 
 describe('启动后空闲预热（旧 SideNav 的 idle 预热口径）', () => {
-  it('挂载后在空闲时预热任务列表与概览统计（各一次）', async () => {
+  it('挂载后在空闲时预热任务列表', async () => {
     useSessionStore.setState({ currentUser: account('member') })
     const prewarm = vi.spyOn(await import('@/features/misc/prewarm'), 'prewarmMisc')
     renderShell('/notes')

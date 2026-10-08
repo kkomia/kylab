@@ -202,7 +202,7 @@ beforeEach(() => {
     fetchedUrls.push(String(url))
     throw new TypeError('这一份用例不发真请求')
   }) as unknown as typeof fetch
-  useSessionStore.setState({ token: '', currentUser: null, authStatus: null, reloginCount: 0 })
+  useSessionStore.setState({ token: '', currentUser: null, reloginCount: 0 })
   listTasksMock.mockResolvedValue({ items: [task()] })
   getTaskLoadMock.mockRejectedValue(new Error('403'))
   listSchedulesMock.mockResolvedValue({ items: [schedule()], timezone: 'CST UTC+08:00' })
@@ -699,7 +699,8 @@ describe('定时任务分段的显隐（按"有没有本机后端"）', () => {
  *
  * `/tasks` 与 `/tasks/load` 数的都是知识库那边的家当（本机档**不挂**它们，
  * `backend/app/api/v1/router.py` 的"明确不挂"那一段），没接上时发过去只会是一行 `Not Found`。
- * 判据与概览页同一套（`kbReady` / `kbPending`，两边各写一处、口径相同）。**「定时任务」
+ * 判据是 `kbReady` / `kbPending` 两条（`TasksPage.tsx` 里那一套；原先概览页写着同一份口径，
+ * 那一页 2026-10-09 删了，这条判据现在只在这一处）。**「定时任务」
  * 那一段不受它管**：那一族的数据在本机，显隐仍旧只看"有没有本机后端"——第一条用例专门核这一点。
  */
 describe('流水线任务：知识库接没接上的分流', () => {

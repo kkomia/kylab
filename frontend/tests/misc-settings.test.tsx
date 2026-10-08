@@ -5,7 +5,8 @@
  * 1. **菜单按后端返回的组算**：没有专门一节的功能组会自动出现在「功能」下；
  * 2. **槽位绑定走 bindSlot**（不是改设置字段）——这正是 v0.8 归属整理那条；
  * 3. **测试连接失败要就地显示后端那句话**（不是一句"失败"）；
- * 4. **成员看不到「用户」分组**（写与管理端点是 `require_admin`）。
+ * 4. **账号那一节整块不在了**（2026-10-09）：原先这里还有「用户」分组与「系统与安全」
+ *    里的改密 / 退出登录 / 访问鉴权——那些打的 `/auth/*`、`/users/*` 随账号死面下线。
  *
  * 文件末另有**账号菜单那一行**（侧栏左下）的用例：设置是模型 key 与知识库连接
  * 唯一的入口，而它的在不在由那一行判——所以它跟着这一份弹窗一起验（见末尾那一节）。
@@ -20,7 +21,6 @@ vi.mock('@/api/settings', () => ({
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
   testConnection: vi.fn(),
-  getAuthStatus: vi.fn(async () => ({ needs_setup: false })),
 }))
 
 vi.mock('@/api/modelRegistry', () => ({
@@ -47,22 +47,6 @@ vi.mock('@/api/health', () => ({
   })),
 }))
 
-vi.mock('@/api/users', () => ({
-  listUsers: vi.fn(async () => ({ items: [], header: 'X-Kylab-Operator' })),
-  createUser: vi.fn(),
-  resetUserPassword: vi.fn(),
-  setUserDisabled: vi.fn(),
-  deleteUser: vi.fn(),
-}))
-
-vi.mock('@/api/auth', () => ({
-  changePassword: vi.fn(),
-  logout: vi.fn(async () => undefined),
-  uploadAvatar: vi.fn(),
-  clearAvatar: vi.fn(),
-  MIN_PASSWORD_CHARS: 8,
-}))
-
 vi.mock('@/api/maintenance', () => ({
   getStorageOverview: vi.fn(async () => ({ file_bytes: 1024, free_bytes: 0 })),
   compactStorage: vi.fn(),
@@ -72,15 +56,13 @@ vi.mock('@/api/knowledgeBases', () => ({
   listKnowledgeBases: vi.fn(async () => ({ items: [] })),
 }))
 
-import { clearAvatar } from '@/api/auth'
 import { fetchHealth } from '@/api/health'
 import { bindSlot, getRegistry } from '@/api/modelRegistry'
-import { getAuthStatus, getSettings, testConnection, type SettingsView } from '@/api/settings'
+import { getSettings, testConnection, type SettingsView } from '@/api/settings'
 import { resetBackupStore, setBackupStatusForTest, type LocalBackup } from '@/api/backup'
 import { resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
 import { resetProviderStore, setProviderStatusForTest } from '@/api/provider'
 import { AccountMenu } from '@/features/layout/AccountMenu'
-import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
 import { SettingsModal } from '@/features/misc/settings/SettingsModal'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
@@ -89,7 +71,6 @@ import { useSessionStore } from '@/lib/session'
 
 const getSettingsMock = vi.mocked(getSettings)
 const getRegistryMock = vi.mocked(getRegistry)
-const getAuthStatusMock = vi.mocked(getAuthStatus)
 const fetchHealthMock = vi.mocked(fetchHealth)
 const bindSlotMock = vi.mocked(bindSlot)
 const testConnectionMock = vi.mocked(testConnection)
@@ -284,7 +265,6 @@ function asAdmin(): void {
   useSessionStore.setState({
     token: 'st',
     currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
-    authStatus: null,
     reloginCount: 0,
   })
 }
@@ -368,20 +348,20 @@ describe('设置弹窗', () => {
     expect(await screen.findByText('鉴权失败：401（key 无效）')).toBeInTheDocument()
   })
 
-  it('成员看不到「用户」分组（写与管理端点是 require_admin）', async () => {
-    useSessionStore.setState({
-      token: 'st',
-      currentUser: { id: 'u2', username: 'bob', name: '小王', role: 'member', avatar_url: '' },
-      authStatus: null,
-      reloginCount: 0,
-    })
-
+  it('账号那一节整块不在了：没有「用户」分组，系统与安全里也没有改密 / 退出登录 / 访问鉴权', async () => {
     renderMisc(<SettingsModal open onClose={() => undefined} />)
 
     await screen.findByText('深度求索')
-    expect(screen.queryByRole('button', { name: /^用户$/ })).not.toBeInTheDocument()
-    // 「外观」「快捷键」是本地偏好，成员照旧能改
+    // 「用户」那一节（名册 / 开通账号 / 重置密码）随账号死面一起删了
+    expect(screen.queryByRole('button', { name: /^用户$/ })).toBeNull()
+    // 「外观」「快捷键」是本地偏好，照旧在
     expect(screen.getByRole('button', { name: /外观/ })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /系统与安全/ }))
+    expect(await screen.findByText('后端状态')).toBeInTheDocument()
+    for (const gone of ['当前账号', '修改密码', '更新密码', '退出登录', '访问鉴权']) {
+      expect(screen.queryByText(gone)).toBeNull()
+    }
   })
 
   it('外观一节能切主题与字号（本地偏好，不进后端）', async () => {
@@ -396,7 +376,7 @@ describe('设置弹窗', () => {
     expect(window.localStorage.getItem('kylab-font-scale')).toBe('xlarge')
   })
 
-  it('系统与安全一节只说"在不在"与"要不要登录"：不写版本号、不写接口路径', async () => {
+  it('系统与安全一节只说"后端在不在"：不写版本号、不写接口路径', async () => {
     renderMisc(<SettingsModal open onClose={() => undefined} />)
     await userEvent.click(await screen.findByRole('button', { name: /系统与安全/ }))
 
@@ -404,9 +384,6 @@ describe('设置弹窗', () => {
     expect(await screen.findByText('后端状态')).toBeInTheDocument()
     expect(screen.getByText('在线')).toBeInTheDocument()
     expect(screen.queryByText(/v0\.43\.0/)).toBeNull()
-    // 鉴权那行同样不写 `/api/v1`：已启用就是已启用
-    expect(screen.getByText('访问鉴权')).toBeInTheDocument()
-    expect(screen.getByText('已启用')).toBeInTheDocument()
     expect(screen.queryByText(/\/api\/v1/)).toBeNull()
     // 那段解释 API Key 与登录会话是两条路的常显文字也删了（它带着 `app/api/auth.py`）
     expect(screen.queryByText(/API Key 不在这一页/)).toBeNull()
@@ -434,10 +411,10 @@ describe('设置弹窗', () => {
     )
   }
 
-  it('关着的时候四条读一条都不发：开一次才各读一趟（弹窗常挂，读了就是白读）', async () => {
+  it('关着的时候三条读一条都不发：开一次才各读一趟（弹窗常挂，读了就是白读）', async () => {
     renderMisc(<Toggle />)
 
-    // 关着：四条读（`/settings` / 模型注册 / `/health` / `/auth/status`）一条都不读
+    // 关着：三条读（`/settings` / 模型注册 / `/health`）一条都不读
     // （挂上就各发一条是原先的行为）
     await waitFor(() =>
       expect(screen.getByRole('button', { name: '打开设置' })).toBeInTheDocument(),
@@ -445,65 +422,24 @@ describe('设置弹窗', () => {
     expect(getSettingsMock).not.toHaveBeenCalled()
     expect(getRegistryMock).not.toHaveBeenCalled()
     expect(fetchHealthMock).not.toHaveBeenCalled()
-    expect(getAuthStatusMock).not.toHaveBeenCalled()
 
     await userEvent.click(screen.getByRole('button', { name: '打开设置' }))
 
     await waitFor(() => expect(getSettingsMock).toHaveBeenCalledTimes(1))
     // 打开之后照旧：这一屏的内容是从 `/settings` 来的
     expect(await screen.findByText('深度求索')).toBeInTheDocument()
-    // 另外三条也**这才**读（关着的时候一条都不读）
+    // 另外两条也**这才**读（关着的时候一条都不读）
     await waitFor(() => expect(getRegistryMock).toHaveBeenCalledTimes(1))
     expect(fetchHealthMock).toHaveBeenCalledTimes(1)
-    expect(getAuthStatusMock).toHaveBeenCalledTimes(1)
   })
 })
 
-describe('头像弹窗（账号菜单用它）', () => {
-  it('显示当前头像，并给出「去掉头像」入口', () => {
-    renderMisc(
-      <AvatarDialog
-        open
-        name="管理员"
-        url="https://example.com/avatar.png?sig=1"
-        onClose={() => undefined}
-      />,
-    )
-
-    expect(screen.getByLabelText('选择头像图片')).toBeInTheDocument()
-    // 头像本体走 @/ui/avatar：拿不到图时由它自己的加载探测换成兜底（首字母）
-    const avatar = document.querySelector('[data-slot="avatar"]')
-    expect(avatar).toBeInTheDocument()
-    expect(avatar?.querySelector('[data-slot="avatar-fallback"]')).toHaveTextContent('管')
-    expect(screen.getByRole('button', { name: '去掉头像' })).toBeInTheDocument()
-    // 没选图之前「保存」是灰的（不做无意义的上传）
-    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
-  })
-
-  it('去掉头像会写回会话状态（换完界面上要立刻变）', async () => {
-    vi.mocked(clearAvatar).mockResolvedValue({
-      id: 'u1',
-      username: 'admin',
-      name: '管理员',
-      role: 'admin',
-      avatar_url: '',
-    })
-
-    renderMisc(
-      <AvatarDialog
-        open
-        name="管理员"
-        url="https://example.com/avatar.png?sig=1"
-        onClose={() => undefined}
-      />,
-    )
-    await userEvent.click(screen.getByRole('button', { name: '去掉头像' }))
-
-    await waitFor(() => expect(vi.mocked(clearAvatar)).toHaveBeenCalled())
-    expect(await screen.findByText('已去掉头像')).toBeInTheDocument()
-    expect(useSessionStore.getState().currentUser?.avatar_url).toBe('')
-  })
-})
+/* ---------------- 头像弹窗（`AvatarDialog`）2026-10-09 整块删掉 ----------------
+ *
+ * 它挂在账号菜单的「头像」那一项上，而那一项打的是 `/auth/avatar`（服务器那一族）——
+ * 账号死面清掉时，这一项、那个组件与它的两条用例一起去掉了（见 `AccountMenu.tsx`
+ * 与 `api/auth.ts` 的文件头）。
+ */
 
 /* ------------------- 「知识库连接」一节（M3 阶段 6，本机档专属） ------------------- */
 
@@ -1195,7 +1131,6 @@ describe('账号菜单那一行（侧栏左下）', () => {
     useSessionStore.setState({
       token: '',
       currentUser: null,
-      authStatus: null,
       reloginCount: 0,
     })
   }
@@ -1214,7 +1149,7 @@ describe('账号菜单那一行（侧栏左下）', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '账号：本机主人' }))
     const menu = await screen.findByRole('menu')
-    // 头像 / 退出登录不给（本机档没有账号可退），「设置」必须给
+    // 「头像」「退出登录」都不在了（2026-10-09 随账号死面删掉，见文件头那一段）
     expect(within(menu).queryByRole('menuitem', { name: '头像' })).toBeNull()
     expect(within(menu).queryByRole('menuitem', { name: '退出登录' })).toBeNull()
     await userEvent.click(within(menu).getByRole('menuitem', { name: '设置' }))
@@ -1224,7 +1159,7 @@ describe('账号菜单那一行（侧栏左下）', () => {
     expect(getSettingsMock).toHaveBeenCalledTimes(1)
   })
 
-  it('服务器档（没有本机后端）：没有「设置」，也没有「头像」「退出登录」，主题那一项照旧', async () => {
+  it('服务器档（没有本机后端）：没有「设置」，主题那一项照旧', async () => {
     setLocalBackendForTest('absent')
     asNobody()
 
@@ -1240,7 +1175,7 @@ describe('账号菜单那一行（侧栏左下）', () => {
     expect(within(menu).queryByRole('menuitem', { name: '退出登录' })).toBeNull()
     // 主题翻转与本机后端无关，照旧在（菜单里不能只剩个空壳）
     expect(within(menu).getByRole('menuitem', { name: /切换为/ })).toBeInTheDocument()
-    // 入口不在，弹窗也没挂：那四条读一条都不发（两者同一条件）
+    // 入口不在，弹窗也没挂：那几条读一条都不发（两者同一条件）
     expect(getSettingsMock).not.toHaveBeenCalled()
     expect(getRegistryMock).not.toHaveBeenCalled()
   })
@@ -1252,9 +1187,9 @@ describe('账号菜单那一行（侧栏左下）', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '账号：管理员' }))
     const menu = await screen.findByRole('menu')
-    for (const label of ['头像', '设置', '退出登录']) {
-      expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument()
-    }
+    expect(within(menu).getByRole('menuitem', { name: '设置' })).toBeInTheDocument()
+    // 主题那一项的名字看当前生效的档（同文件里别的用例翻过主题，模块级状态是留着的）
+    expect(within(menu).getByRole('menuitem', { name: /切换为/ })).toBeInTheDocument()
   })
 
   it('服务器档 + 有账号的管理员：这一档仍旧不摆「设置」（改成共享判据前后行为一字不差）', async () => {
@@ -1270,9 +1205,6 @@ describe('账号菜单那一行（侧栏左下）', () => {
     await userEvent.click(screen.getByRole('button', { name: '账号：管理员' }))
     const menu = await screen.findByRole('menu')
     expect(within(menu).queryByRole('menuitem', { name: '设置' })).toBeNull()
-    // 「头像」「退出登录」照旧：有真账号就有它们（与「设置」不是同一条判据）
-    expect(within(menu).getByRole('menuitem', { name: '头像' })).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitem', { name: '退出登录' })).toBeInTheDocument()
     // 入口不在，弹窗也没挂
     expect(getSettingsMock).not.toHaveBeenCalled()
   })

@@ -150,8 +150,8 @@ export const MAX_HISTORY_MESSAGES = 20
  * 理由是同一条——本机档只**薄重声明**了 `/stats/usage` 这一条（`local.stats_reads`），
  * 而 `/stats/dashboard` 数的是知识库的文档与任务、**不挂本机档**（见
  * `api/v1/router.py` 里 `local_router` 那段说明）。表里写 `/stats` 会把
- * `/stats/dashboard` 一并卷成"本机权威面" —— 那样概览页在壳里会 404，
- * 而它本来就是服务器那份统计的正确入口。
+ * `/stats/dashboard` 一并卷成"本机权威面"——而它数的是 NAS 上那批家当，
+ * 卷进来就会把"这份数字的主人在哪"说反。
  */
 export const LOCAL_PATHS = [
   '/conversations',

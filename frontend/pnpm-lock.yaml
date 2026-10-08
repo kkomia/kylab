@@ -125,9 +125,6 @@ importers:
       docx-preview:
         specifier: 0.4.1
         version: 0.4.1
-      echarts:
-        specifier: 6.1.0
-        version: 6.1.0
       exceljs:
         specifier: 4.4.0
         version: 4.4.0
@@ -2345,9 +2342,6 @@ packages:
   echarts@5.5.1:
     resolution: {integrity: sha512-Fce8upazaAXUVUVsjgV6mBnGuqgO+JNDlcgF79Dksy4+wgGpQB2lmYoO4TSweFg/mZITdpGHomw/cNBJZj1icA==}
 
-  echarts@6.1.0:
-    resolution: {integrity: sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA==}
-
   electron-to-chromium@1.5.434:
     resolution: {integrity: sha512-7EeFW9OLf1NN9NKQP9xdOE/XKqjxv7JDPP6AEAkHli11+Fae1OaLoNuAf13hQv1PPNtuES0pLQSPk2+fS3s8ww==}
 
@@ -3941,9 +3935,6 @@ packages:
 
   zrender@5.6.0:
     resolution: {integrity: sha512-uzgraf4njmmHAbEUxMJ8Oxg+P3fT04O+9p7gY+wJRVxo8Ge+KmYv0WJev945EH4wFuc4OY2NLXz46FZrWS9xJg==}
-
-  zrender@6.1.0:
-    resolution: {integrity: sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ==}
 
   zustand@5.0.15:
     resolution: {integrity: sha512-MpSEjRiBkA9crSYeOUH32rJC7SVqAbm0Fqcqge/bUi2PPoLcBWKOsG+C8mevmpr8TwXHBVkChbbJiyvkE+i/3A==}
@@ -6018,11 +6009,6 @@ snapshots:
       tslib: 2.3.0
       zrender: 5.6.0
 
-  echarts@6.1.0:
-    dependencies:
-      tslib: 2.3.0
-      zrender: 6.1.0
-
   electron-to-chromium@1.5.434: {}
 
   end-of-stream@1.4.5:
@@ -7932,10 +7918,6 @@ snapshots:
   zod@4.6.5: {}
 
   zrender@5.6.0:
-    dependencies:
-      tslib: 2.3.0
-
-  zrender@6.1.0:
     dependencies:
       tslib: 2.3.0
 

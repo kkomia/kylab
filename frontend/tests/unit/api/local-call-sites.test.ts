@@ -13,7 +13,7 @@
  *
  * | 档 | 该打哪 | 为什么这是对的 |
  * | --- | --- | --- |
- * | 有本机后端（桌面壳 / 浏览器直连边车） | `http://127.0.0.1:<port>/api/v1/…` | 这几族的数据就在这台机器上（技能目录与市场安装记录、插件目录、站点图标缓存、本机用量、命令目录） |
+ * | 有本机后端（桌面壳 / 浏览器直连边车） | `http://127.0.0.1:<port>/api/v1/…` | 这几族的数据就在这台机器上（技能目录与市场安装记录、插件目录、站点图标缓存、网页代取、命令目录） |
  * | 没有（NAS 网页端那一份） | `/api/v1/…`（同源服务器） | 那一档里本机后端不存在，`resolveLocalBase` 落到 `API_BASE`（不是"回退"，是这一档不成立） |
  *
  * 底层的选址与三条回退纪律在 `tests/unit/api/sidecar.test.ts` 里逐条钉着，
@@ -40,7 +40,6 @@ import { listCommands } from '@/api/chat'
 import { API_BASE } from '@/api/client'
 import { disablePlugin, enablePlugin, listPlugins } from '@/api/plugins'
 import { DEFAULT_SIDECAR_BASE, resetSidecarProbe } from '@/api/sidecar'
-import { getUsage } from '@/api/stats'
 import { checkWebEmbed, fetchWebPage } from '@/api/web'
 import { loadSiteIcon, resetSiteIconCache } from '@/features/chat/ui/siteLogos'
 
@@ -77,8 +76,6 @@ const CALL_SITES: { path: string; call: () => Promise<unknown> }[] = [
   { path: '/plugins', call: () => listPlugins() },
   { path: '/plugins/p1/enable', call: () => enablePlugin('p1') },
   { path: '/plugins/p1/disable', call: () => disablePlugin('p1') },
-  // 用量
-  { path: '/stats/usage?days=30', call: () => getUsage() },
   // 网页（本机代取：抓正文与嵌入门检都在这台机器上跑，SSRF 闸也在本机）
   {
     path: '/web/page?url=https%3A%2F%2Fexample.com',
@@ -142,8 +139,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('① 有本机后端：五族都打本机那个端口', () => {
-  it('技能 / 插件包 / 用量 / 站点图标：基址是本机边车，一条都没落到服务器', async () => {
+describe('① 有本机后端：这几族都打本机那个端口', () => {
+  it('技能 / 插件包 / 命令目录 / 网页 / 站点图标：基址是本机边车，一条都没落到服务器', async () => {
     const fetchMock = liveSidecar()
     vi.stubGlobal('fetch', fetchMock)
 

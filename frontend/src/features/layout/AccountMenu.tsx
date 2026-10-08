@@ -6,14 +6,19 @@
  * **不提供在系统里切换使用者的入口**：切换身份必须先登出再登录——一个下拉就能换人，
  * 会让"我以为我是谁"和"后端认为我是谁"分叉。
  *
- * 菜单四项（哪一项在，见右列），**每一项都在说一件"这台机器上的事"**：
+ * 菜单两项（哪一项在，见右列），**每一项都在说一件"这台机器上的事"**：
  *
  * | 菜单项 | 做什么 | 为什么在这里 | 什么时候在 |
  * | --- | --- | --- | --- |
- * | 头像 | 换一张脸（`AvatarDialog`） | 低频、只跟账号有关 | 只在真有账号时 |
- * | 设置 | 打开 `SettingsModal` | 设置里是密钥与模型（用户管理只给管理员），后端对成员一律 403 | 本机档**都有**；服务器档不摆（见下） |
+ * | 设置 | 打开 `SettingsModal` | 设置里是密钥与模型 | 本机档**都有**；服务器档不摆（见下） |
  * | 切换为浅色 / 深色 | 翻到另一边 | 低频，且"这台机器怎么显示"属于设置；这里给一条近路 | 恒在 |
- * | 退出登录 | 退会话 → 清本地 → 回概览 | 不可逆，摊在页脚上误点代价高，所以收进二级菜单 | 只在真有账号时 |
+ *
+ * 2026-10-09：原先还有「头像」与「退出登录」两项，都删了——它们打的 `/auth/*` 一族
+ * （上传头像、吊销会话）随账号死面整族下线（本机档后端 `local_router` 上没有
+ * `auth.router`，登录页更早一步就删了）。**这一行现在只读不写**：
+ * 显示"我是谁"，加两个入口（设置 / 主题）。
+ *
+ * 留下的是那一格头像本身（`Avatar`）：它是"我是谁"的一部分，与"换头像"那个动作无关。
  *
  * ## 本机档（没有账号体系）这一行的口径
  *
@@ -32,7 +37,8 @@
  *   前面那一条 `local.present` 是**这一处自己的**：服务器档整个不摆（那一档
  *   `/settings` 一族不存在，点进去只会 404）。
  *
- * 「头像」「退出登录」照旧**只给真账号**：本机档没有账号可退，也没有头像那一族端点。
+ * 「头像」「退出登录」两项 2026-10-09 删掉了（它们打的 `/auth/*` 一族随账号死面
+ * 整族下线，见文件头），本机档与服务器档都只剩「设置」与主题翻转两件。
  *
  * 页脚**只有这一行**：使用者下拉、独立的「设置」按钮、字体大小入口都已收进设置弹窗；
  * 旧版还把「后端在线」那行探针删掉了（真出问题会有请求报错）。
@@ -46,45 +52,28 @@
  * 3. **折叠态下菜单向右飞出**：60px 的栏里放不下 168px 的菜单。Radix 的浮层是
  *    portal 到 body 的，所以这一条不需要额外处理（旧版还得写一条 `left: calc(100% + 4px)`）。
  *
- * 退出登录三件事必须一起做，少一件都会把上一个人的数据留给下一个人：
- * 1. 吊销会话并清本地令牌（`logout`）；
- * 2. **清空本域的会话/工作区清单与名册缓存**——数据留在内存里的话，
- *    换个人登录进来会先看到前一个人的会话；
- * 3. **回概览**（`/`）。原先这一步是"去登录页"，而登录页已删（本机档免登录、
- *    本产品不再有 web 登录这一环，见 `app/App.tsx` 文件头）——退完之后能给的那句
- *    实话就是"本机这份照常，回到落地页"。
+ * ⚠️ 这一行**不再有任何"写"的动作**：原先那个「退出登录」要把三件事一起做
+ * （吊销会话 / 清本域的会话清单、项目清单与名册缓存 / 回落地页），2026-10-09 三项
+ * 一起去掉了——没有登录会话可退（`api/auth.ts` 那一族删了），本机档也没有
+ * "换个人登录"这件事（身份恒为「本机主人」）。留着这一段只为说清"这一行为什么这么简单"。
  */
 import { useState } from 'react'
-import {
-  RiArrowDownSLine,
-  RiLogoutBoxRLine,
-  RiMoonLine,
-  RiSettings3Line,
-  RiSunLine,
-  RiUserLine,
-} from '@remixicon/react'
-import { useNavigate } from 'react-router'
+import { RiArrowDownSLine, RiMoonLine, RiSettings3Line, RiSunLine } from '@remixicon/react'
 
-import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
 import { SettingsModal } from '@/features/misc/settings/SettingsModal'
 import { setTheme, useThemeMode } from '@/features/misc/settings/useTheme'
 import { useLocalBackend } from '@/api/local'
 import { cn } from '@/lib/utils'
-import { logout } from '@/lib/sessionActions'
 import { useSessionStore } from '@/lib/session'
 import { useIsAdmin } from '@/lib/useIsAdmin'
-import { setOperator, useOperatorStore } from '@/lib/operator'
 import { Avatar, AvatarFallback, AvatarImage } from '@/ui/avatar'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu'
 
-import { useConversationStore } from './conversations'
-import { useWorkspaceStore } from './workspaces'
 import { useSidebar } from './useSidebar'
 
 const ICON = 14
@@ -119,7 +108,6 @@ function useResolvedDark(): boolean {
 }
 
 export function AccountMenu() {
-  const navigate = useNavigate()
   const currentUser = useSessionStore((state) => state.currentUser)
   const dark = useResolvedDark()
   /**
@@ -143,8 +131,6 @@ export function AccountMenu() {
   const isAdmin = useIsAdmin()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [avatarOpen, setAvatarOpen] = useState(false)
-  const [loggingOut, setLoggingOut] = useState(false)
 
   /**
    * 这一行写谁：真账号的名字，本机档则是「本机主人」（见 `LOCAL_CALLER_NAME`）。
@@ -174,30 +160,6 @@ export function AccountMenu() {
   function onToggleTheme(): void {
     // 切到**另一边**：所以文案要说清切过去是哪个
     setTheme(dark ? 'light' : 'dark')
-  }
-
-  /**
-   * 退出登录。
-   *
-   * 三件事的顺序与旧版一致：**先退会话，再清本地，最后回概览**。
-   * `logout()` 内部已经把"服务端失败也清令牌"兜住了；这里再兜一层是给"状态刷新失败"
-   * （`ensureAuthStatus` 那次请求）——本地那几件清理不能因为它被跳过：
-   * 少清一份缓存，下一个人登录进来就会先看到上一个人的会话。
-   */
-  async function onLogout(): Promise<void> {
-    setLoggingOut(true)
-    try {
-      await logout()
-    } catch {
-      // 忽略：本地清理在下面照做
-    } finally {
-      useConversationStore.getState().reset()
-      useWorkspaceStore.getState().reset()
-      useOperatorStore.setState({ roster: [] })
-      setOperator('')
-      setLoggingOut(false)
-    }
-    await navigate('/')
   }
 
   return (
@@ -244,12 +206,6 @@ export function AccountMenu() {
         </DropdownMenuTrigger>
         {/* 向上弹：它挂在页脚底部，向下会出到屏幕外 */}
         <DropdownMenuContent side="top" align="start" className="w-[168px]">
-          {/* 「头像」只给真账号 */}
-          {currentUser && (
-            <DropdownMenuItem onSelect={() => setAvatarOpen(true)}>
-              <RiUserLine size={ICON} aria-hidden="true" /> 头像
-            </DropdownMenuItem>
-          )}
           {/* 「设置」在不在由 `settingsAvailable` 定（见它在组件顶部那段：服务器档不摆，
               本机档没有账号体系也照摆）。**两处的条件必须是同一个值**——入口与弹窗
               一起在、一起不在。 */}
@@ -266,24 +222,10 @@ export function AccountMenu() {
             )}
             {dark ? '切换为浅色' : '切换为深色'}
           </DropdownMenuItem>
-          {/* 退出登录只在真有账号时给：没有会话就没有可退的东西 */}
-          {currentUser && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                disabled={loggingOut}
-                onSelect={() => void onLogout()}
-              >
-                <RiLogoutBoxRLine size={ICON} aria-hidden="true" />{' '}
-                {loggingOut ? '正在退出…' : '退出登录'}
-              </DropdownMenuItem>
-            </>
-          )}
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* 两个浮层由本组件持有开合：菜单一选项就收起（Radix 的默认行为），
+      {/* 设置弹窗由本组件持有开合：菜单一选项就收起（Radix 的默认行为），
           所以不会出现"两层浮层叠在一起"。
 
           **设置弹窗只在真有那条入口时才挂**（2026-10-05，NAS 网页端退役；2026-10-05
@@ -291,17 +233,11 @@ export function AccountMenu() {
           （`settings.router` 只挂在本机档那张白名单上，见 `backend/app/api/v1/router.py`），
           而弹窗挂上就等着用户点——挂着一个打不开、点开才发现是 404 的弹窗没有意义。
           （这条条件管"入口在不在"；"关着的时候读不读"是另一件事——`SettingsModal`
-          里那四个 `useQuery` 都带 `enabled: open`，关着一条都不读。）
+          里那四条 `useQuery` 都带 `enabled: open`，关着一条都不读。）
           入口与弹窗同一条件（`settingsAvailable`），两者一起在、一起不在。 */}
       {settingsAvailable && (
         <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       )}
-      <AvatarDialog
-        open={avatarOpen}
-        name={identityName}
-        url={currentUser?.avatar_url ?? ''}
-        onClose={() => setAvatarOpen(false)}
-      />
     </>
   )
 }

@@ -200,7 +200,8 @@ export async function rollbackImportBatch(batchId: string): Promise<ImportBatch>
  * ## 判据用已有的信号：本机后端答不答 `/local/status`
  *
  * **判据只有这一处**（2026-10-08 收拢）：原先登录守卫那边还有一份同名副本
- * （`lib/sessionActions.ts::localOnlyDeployment`，删因写在那个文件尾），两份问的是
+ * （`lib/sessionActions.ts::localOnlyDeployment`，那一份 2026-10-09 随账号死面整份删掉了），
+ * 两份问的是
  * 同一个端点，而门禁要的是**同步、可订阅**的结论——渲染时就要用，只有这里的模块级
  * 缓存给得了。`/local/status` 只在 `local_router` 上，服务器档里**根本不存在**这条路径，
  * 所以不新发明模式探测——端口、环境变量、`navigator.onLine` 都不该用来判这件事。

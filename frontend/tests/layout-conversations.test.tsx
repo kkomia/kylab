@@ -41,18 +41,7 @@ vi.mock('@/api/users', () => ({
   listUsers: vi.fn(async () => ({ items: [], header: 'X-Kylab-Operator' })),
 }))
 
-vi.mock('@/api/auth', () => ({
-  logout: vi.fn(async () => undefined),
-  getAuthBootstrapStatus: vi.fn(async () => ({ needs_setup: false, auth_enabled: true })),
-  me: vi.fn(async () => null),
-  changePassword: vi.fn(),
-  uploadAvatar: vi.fn(),
-  clearAvatar: vi.fn(),
-  MIN_PASSWORD_CHARS: 8,
-}))
-
 vi.mock('@/features/misc/settings/SettingsModal', () => ({ SettingsModal: () => null }))
-vi.mock('@/features/misc/settings/AvatarDialog', () => ({ AvatarDialog: () => null }))
 
 import {
   deleteConversation,
@@ -68,8 +57,7 @@ import { useConversationStore } from '@/features/layout/conversations'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
 import { useSidebarStore } from '@/features/layout/useSidebar'
 import { resetAllShortcuts } from '@/features/misc/settings/useShortcuts'
-import type { Account } from '@/api/auth'
-import { useSessionStore } from '@/lib/session'
+import { type Account, useSessionStore } from '@/lib/session'
 
 const listConversationsMock = vi.mocked(listConversations)
 const updateConversationMock = vi.mocked(updateConversation)

@@ -7,7 +7,7 @@
  * 1. `/chat/:conversationId?` 与 `/notes/:noteId?` 必须写成**一条可选参数路由**——
  *    拆成两条会在选中会话/笔记时卸载重建，把刚发出去的流或未保存的正文一起带走
  *    （旧前端踩过，注释里留着现场）；
- * 2. 页面懒加载：首屏只需要当前那一页；驾驶舱的 ECharts 再单独异步（见 misc 域）。
+ * 2. 页面懒加载：首屏只需要当前那一页。
  *
  * ## 本机后端门禁：本机档**不问登录**（2026-10-08）
  *
@@ -34,12 +34,22 @@
  * 侧栏「知识库」那一组与 `/knowledge-bases`、`/kb/:kbId`、`/kb/:kbId/wiki`、
  * `/documents/:documentId` 四条路由连同页面组件一并删掉：**知识库的界面搬去了 kybase**
  * （那边有自己的管理台），本仓库只剩"对话里怎么用它"。旧书签落到 `*` 那页 404
- * （`/search` 那条旧地址改指 `/`，见下面的路由表）。
+ * （`/search` 那条旧地址改指 `/chat`，见下面的路由表）。
  *
  * 对话内的知识库能力照旧、一件不少：输入框的选库（`api/chat.ts` 的 `kb_ids`）、
  * 回答里的引用来源、产物的「存进知识库」（`api/conversations.ts`）、启动时那次
  * 提供者握手探测（`ProviderBoot`）——它们走**边车 HTTP 客户端连知识库服务**，
  * 与这里删掉的那几个页面没有依赖关系。
+ *
+ * ## 「概览」那一页下线（2026-10-09）
+ *
+ * `DashboardPage` 及 `features/misc/dashboard/`（含那张 ECharts 图与它那一族统计客户端
+ * `api/stats.ts`）整块删掉：那一页数的全是知识库的家当（库数 / 文档 / 切块 / 入库节奏 /
+ * 模型用量），而知识库的界面已经搬去 kybase——**产品不要这一页了**。
+ *
+ * 于是落地页改成**重定向**：`/` 与它的旧入口 `/dashboard` 都指 `/chat`
+ * （敲根地址直接进对话），`/search`、`/settings`、`/workspaces` 这三条老书签
+ * 也一并指 `/chat`（它们原先指 `/`，即那一页的落地地址）。
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Suspense, lazy, useEffect, useRef } from 'react'
@@ -63,7 +73,6 @@ const BackupPage = lazy(PAGES.backup)
 const TasksPage = lazy(PAGES.tasks)
 const MemoryPage = lazy(PAGES.memory)
 const CapabilitiesPage = lazy(PAGES.capabilities)
-const DashboardPage = lazy(PAGES.dashboard)
 const NotFoundPage = lazy(PAGES.notFound)
 
 /**
@@ -102,8 +111,8 @@ export const queryClient = new QueryClient({
 
 /** 浏览器的标签标题（旧前端 `afterEach` 的口径）。 */
 const TITLES: Array<[RegExp, string]> = [
-  [/^\/($|\?)/, '概览'],
-  [/^\/dashboard/, '概览'],
+  // `/` 与 `/dashboard` 都不在这一份里：它们只剩"重定向到 `/chat`"这一件事（见路由表），
+  // 落地之后匹配到的就是下面这条「对话」。
   [/^\/chat/, '对话'],
   [/^\/notes/, '笔记'],
   [/^\/tasks/, '任务中心'],
@@ -183,7 +192,7 @@ function RosterBoot() {
  * 探一次就够（`ref` 挡 StrictMode 的双挂载；模块级单飞是第二道保险）。
  *
  * 为什么放在 `App` 而不是每一页各探一次：状态是**进程级**的（模块级单份 + 30s 缓存），
- * 谁先问都一样；放在这里，对话页（那颗「知识库」胶囊、上传上限）、概览与任务中心
+ * 谁先问都一样；放在这里，对话页（那颗「知识库」胶囊、上传上限）与任务中心
  * 都能受益（壳一露头结论就已经在了）。
  */
 function ProviderBoot() {
@@ -217,11 +226,28 @@ export function App() {
         <LocalBackendGate>
           <Suspense fallback={<BootSkeleton />}>
             <Routes>
-              {/* 全部路由都在壳里：侧栏 + 内容区 + 历史会话面板（`features/layout`） */}
+              {/*
+                **纯重定向不套壳**（2026-10-09）：这几条只是"把旧地址改对"，没有任何内容 ——
+                套在 `<Route element={<AppShell/>}>` 里的话，敲旧地址会先把整个壳（侧栏 +
+                那一串读：会话 / 项目 / 名册）挂起来再跳走；本机后端还没结论的那一帧
+                （`localBackendView` 第三条按"有"渲染）甚至会白打几条注定失败的请求。
+                放在壳外面，重定向一落地就是目标页那一页的壳，与"直接敲 `/chat`"完全同形。
+              */}
+              {/* 落地页 = 对话页（2026-10-09）：`/` 与它的旧入口 `/dashboard` 都重定向过去
+                  ——「概览」那一页整块删了（数知识库家当的页面，产品不要了）。 */}
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/dashboard" element={<Navigate to="/chat" replace />} />
+              {/* 其余旧地址也保留成重定向，免得旧书签变 404（与旧前端同一处置）：
+                  `/search` 原先指知识库首屏，那一页随知识库管理台一起下线了；
+                  `/settings` 与 `/workspaces` 那两页更早就删了——这三条现在都回对话页。
+                  （「工作区」那一页删掉之后"建项目"这件事仍然做得了：项目分组还在侧栏里，
+                  「新增项目」的入口在侧栏那一节的标题右边，见 `features/layout/SideNav.tsx`。） */}
+              <Route path="/search" element={<Navigate to="/chat" replace />} />
+              <Route path="/settings" element={<Navigate to="/chat" replace />} />
+              <Route path="/workspaces" element={<Navigate to="/chat" replace />} />
+
+              {/* 业务页都在壳里：侧栏 + 内容区 + 历史会话面板（`features/layout`） */}
               <Route element={<AppShell />}>
-                {/* 落地页与旧前端一致：`/` 是**概览**（驾驶舱），不是对话页 */}
-                <Route path="/" element={<DashboardPage />} />
-                <Route path="/dashboard" element={<Navigate to="/" replace />} />
                 <Route path="/chat/:conversationId?" element={<ChatPage />} />
                 <Route path="/notes/:noteId?" element={<NotesView />} />
                 <Route path="/tasks" element={<TasksPage />} />
@@ -239,16 +265,8 @@ export function App() {
                     </BackupRoute>
                   }
                 />
-                {/* 旧地址保留成重定向，免得旧书签变 404（与旧前端同一处置）。
-                    `/search` 原先指知识库首屏，那一页随知识库管理台一起下线了，
-                    所以它现在指概览。 */}
-                <Route path="/search" element={<Navigate to="/" replace />} />
-                <Route path="/settings" element={<Navigate to="/" replace />} />
-                {/* 「工作区」那一页已按用户要求删掉：旧书签回首页。项目分组本身还在侧栏里
-                    （那一节照旧列会话）；**「新增项目」的入口也在侧栏那一节的标题右边**
-                    （2026-09-28 按用户要求加回来的，见 `features/layout/SideNav.tsx`），
-                    所以删掉这一页之后"建项目"这件事仍然做得了。 */}
-                <Route path="/workspaces" element={<Navigate to="/" replace />} />
+                {/* 404 留在壳里：那一页给的两个出口（回对话 / 退回上一页）在侧栏旁边更好用，
+                    而且"地址拼错了"时侧栏能让用户直接改道别的页（与旧前端同一处置）。 */}
                 <Route path="*" element={<NotFoundPage />} />
               </Route>
             </Routes>

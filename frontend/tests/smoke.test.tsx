@@ -19,30 +19,13 @@ import { resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
  *
  * 只为「启动期的骨架」那一条：真实的懒加载只有 20–62ms，`render()` 返回时 chunk
  * 早就到位了，那一帧根本读不到。**挑的正是这一份里唯一没人渲染的那一页**，
- * 所以其余用例（壳、概览、对话页、备份页）一个字都不受影响。
+ * 所以其余用例（壳、对话页、备份页）一个字都不受影响。
  */
 vi.mock('@/app/routes', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/app/routes')>()
   return {
     ...actual,
     PAGES: { ...actual.PAGES, capabilities: () => new Promise(() => undefined) as never },
-  }
-})
-
-// 账号那一族**不再参与启动**（登录页已删、门禁不问账号）：这个替身留着只为
-// "哪个页面误触到它时也不发真请求"，不承载任何断言。
-vi.mock('@/api/auth', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/api/auth')>()
-  return {
-    ...actual,
-    getAuthBootstrapStatus: vi.fn(async () => ({ needs_setup: false })),
-    me: vi.fn(async () => ({
-      id: 'u1',
-      username: 'kkomia',
-      name: '管理员',
-      role: 'admin',
-      avatar_url: '',
-    })),
   }
 })
 
@@ -103,22 +86,6 @@ vi.mock('@/api/modelRegistry', async (importOriginal) => {
 })
 
 // 壳（侧栏）一挂载就要这三样：会话清单、项目清单、名册
-vi.mock('@/api/stats', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/api/stats')>()
-  return { ...actual, getDashboard: vi.fn(async () => ({ cards: [], activity: [], trends: [] })) }
-})
-
-// 落地页（`/`）是概览，它按需把整个 ECharts 拉进来（`DashboardPage` 里那个 `lazy`）；
-// 而 **jsdom 没有 canvas** —— 真进到那一步就在线程里抛（两种都实测过：
-// `EChart.tsx` 的 `Cannot set properties of null (setting 'dpr')`，以及它后面
-// zrender 的 `Cannot read properties of null (reading 'clearRect')`）。这类异常
-// **不算在任何一条断言上**，但 vitest 把"这一轮有未捕获异常"直接判成失败；
-// 表现就是某个恰好同时在跑的文件被归上十几条异常、整仓退出码非 0。
-// 这一份只关心路由与守卫，**不需要那张图**，所以换成空组件——做法与
-// `tests/misc-dashboard.test.tsx`、`tests/auth-local-gate.test.tsx` 逐字相同；
-// "图表按需异步加载"由 `DashboardPage` 自己的结构保证，不靠这些用例验。
-vi.mock('@/features/misc/dashboard/EChart', () => ({ EChart: () => null }))
-
 vi.mock('@/api/workspaces', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/workspaces')>()
   return { ...actual, listWorkspaces: vi.fn(async () => ({ items: [] })) }
@@ -137,14 +104,15 @@ describe('应用壳', () => {
 
   // **门禁只认"有没有本机后端"**（2026-10-08）：本机档（边车在跑）直接进壳，
   // 一个字都不问——不问登录、也不问远端账号体系。所以这一条里**一个凭据都没有**。
-  it('本机档：没有凭据也放行，不问登录', async () => {
+  it('本机档：没有凭据也放行，不问登录', { timeout: 15_000 }, async () => {
     setLocalBackendForTest('local')
     render(<App />)
 
-    // 落地页是概览（`/`）：标题跟着路由走，这一条不依赖那一页的 chunk
-    await waitFor(() => expect(document.title).toBe('概览 · KYLAB'))
-    // 地址没被改成登录页（登录页已经不存在了），也没有落到降级页上
-    expect(window.location.pathname).toBe('/')
+    // 根地址**重定向到对话页**（2026-10-09：「概览」那一页删了）：地址这一步立刻完成，
+    // 而标题要等**落地的那一页真正提交**——对话页是懒加载的（assistant-ui 那一大包，
+    // jsdom 里实测 ~1s），所以这里给足时间（与 `/chat` 那条用例同一处理由）。
+    await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+    await waitFor(() => expect(document.title).toBe('对话 · KYLAB'), { timeout: 12_000 })
     expect(screen.queryByText('本机后端未启动')).toBeNull()
   })
 

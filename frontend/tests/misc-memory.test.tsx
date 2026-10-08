@@ -191,7 +191,6 @@ function asAdmin(): void {
   useSessionStore.setState({
     token: 'st',
     currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
-    authStatus: null,
     reloginCount: 0,
   })
 }
@@ -207,7 +206,6 @@ function asMember(): void {
   useSessionStore.setState({
     token: 'st',
     currentUser: { id: 'u2', username: 'member', name: '成员', role: 'member', avatar_url: '' },
-    authStatus: null,
     reloginCount: 0,
   })
 }

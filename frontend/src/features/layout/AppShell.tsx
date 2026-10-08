@@ -29,8 +29,8 @@
  * 4. **会话失效（401）清掉本地凭据**：`api/client.ts` 在 401 时递增 `reloginCount`，
  *    壳负责把那个信号变成"这份本地凭据已经不认了"——**不再跳登录页**（没有登录页了，
  *    见 `app/App.tsx` 的文件头）：本机档照常能用，而留着一条死凭据只会让它继续
- *    贴在每个请求的头上（原先这一步由 `restoreSession` 的 `expired` 分支顺手做，
- *    那条链随登录页一起下线了）。
+ *    贴在每个请求的头上（原先这一步由 `sessionActions::restoreSession` 的 `expired`
+ *    分支顺手做：那条链随登录页一起下线了，`sessionActions` 整份 2026-10-09 删掉）。
  *
  * ## 主控怎么接
  *
@@ -58,7 +58,7 @@ import { resolveSidebarWidth, useSidebar } from './useSidebar'
 export function AppShell({ children }: { children?: React.ReactNode }) {
   const queryClient = useQueryClient()
 
-  // 启动后**空闲预热**：任务列表与概览统计（旧 `SideNav.vue` 的 idle 预热口径）。
+  // 启动后**空闲预热**：任务列表（旧 `SideNav.vue` 的 idle 预热口径）。
   // 每个 client 只做一次（`useRef` 挡 StrictMode 的二次挂载）。
   const prewarmed = useRef(false)
   useEffect(() => {

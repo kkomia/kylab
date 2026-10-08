@@ -7,9 +7,13 @@
  *
  * 内部用左侧分组菜单 + 右侧内容：
  * - 模型注册 / 向量化 / 对话模型 / 服务配置 / 存储配置 / **知识库连接**（本机档专属，M3）/
- *   用户 / 系统与安全 / 外观 / 快捷键；
+ *   系统与安全 / 外观 / 快捷键；
  * - **功能**（长期记忆 / 联网 / 沙箱执行…）：这一组**不是手写的菜单**，
  *   而是"后端返回了、但上面几节没有专门渲染"的那些组，自动出现。
+ *
+ * 2026-10-09：原先还有「用户」那一节（名册 / 开通账号 / 重置密码…）与「系统与安全」里的
+ * 账号那一块（当前账号 / 修改密码 / 退出登录）——账号死面整块删了，见下面 `SECTIONS`
+ * 之前那一段。
  *
  * 密钥永不回显明文：接口给掩码，输入框留空表示"不改动"。
  *
@@ -28,54 +32,31 @@ import {
   KeyRound,
   Keyboard,
   Languages,
-  LogOut,
   Moon,
   Server,
   Settings,
   Sparkles,
-  UserPlus,
-  Users,
 } from 'lucide-react'
 import { useNavigate } from 'react-router'
 
 import { useBackupStatus } from '@/api/backup'
 import { useKnowledgeProviderStatus } from '@/api/provider'
-import {
-  changePassword as apiChangePassword,
-  logout as apiLogout,
-  MIN_PASSWORD_CHARS,
-} from '@/api/auth'
 import { fetchHealth } from '@/api/health'
 import { bindSlot, getRegistry, type RegisteredModel, type Slot } from '@/api/modelRegistry'
 import {
-  getAuthStatus,
   getSettings,
   testConnection,
   updateSettings,
   type SettingGroup,
 } from '@/api/settings'
-import {
-  createUser,
-  deleteUser,
-  listUsers,
-  resetUserPassword,
-  setUserDisabled,
-  type RosterUser,
-  type UserRole,
-} from '@/api/users'
-import { formatCount } from '@/lib/format'
-import { clearSessionToken, useSessionStore } from '@/lib/session'
 
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
 import { Textarea } from '@/ui/textarea'
 import {
-  Avatar,
   CheckRow,
-  ConfirmDialog,
   ErrorLine,
-  Field,
   InfoTip,
   Modal,
   OptionSelect,
@@ -102,7 +83,6 @@ type SectionKey =
   | 'credentials'
   | 'appearance'
   | 'shortcuts'
-  | 'users'
   | 'system'
   | `feature:${string}`
 
@@ -119,7 +99,19 @@ const RENDERED_GROUP_KEYS = new Set(['embedding', 'llm', 'chat', 'mineru', 'padd
  */
 const MODULE_GROUP_KEYS = new Set(['memory', 'web', 'sandbox'])
 
-const SECTIONS: { key: SectionKey; label: string; icon: typeof Server; adminOnly?: boolean }[] = [
+/*
+ * ------------------------------------------------------- 账号那一节（2026-10-09 删）
+ *
+ * 设置弹窗原先的「账号」那一块（当前账号 / 修改密码 / 退出登录）与它的「用户」一节
+ * （名册 / 开通账号 / 重置密码 / 禁用 / 删除）**整块删掉了**：它们打的
+ * `/auth/*` 与 `/users/*` 是服务器那一族端点，本机档后端没有它们
+ * （`local_router` 上没有 `auth.router` / `users.router`）——登录页删掉之后，
+ * 这一族在界面上已经没有任何一条能成功的路。
+ *
+ * 后端 `/users` 那条**名册读**（`api/users.ts::listUsers`）照旧留着：侧栏的归属标注
+ * 与 `lib/operator.ts` 用它，不属于账号管理。
+ */
+const SECTIONS: { key: SectionKey; label: string; icon: typeof Server }[] = [
   // **「模型」放在最前**：它是配置模型的主路径（供应商 → 模型 → 用途）
   { key: 'registry', label: '模型注册', icon: Sparkles },
   // 这两组是回退用的精细字段：没在「模型」里绑定的用途，按这里的字段走
@@ -136,28 +128,14 @@ const SECTIONS: { key: SectionKey; label: string; icon: typeof Server; adminOnly
   // 入口由 `visibleSections` 按 `backup.gate` 摘掉。
   { key: 'backup', label: '备份', icon: Archive },
   { key: 'credentials', label: '凭据', icon: KeyRound },
-  { key: 'users', label: '用户', icon: Users, adminOnly: true },
   { key: 'system', label: '系统与安全', icon: CircleUser },
   { key: 'appearance', label: '外观', icon: Moon },
   { key: 'shortcuts', label: '快捷键', icon: Keyboard },
 ]
 
-const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
-  { value: 'member', label: '成员' },
-  { value: 'admin', label: '管理员' },
-]
-
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const currentUser = useSessionStore((store) => store.currentUser)
-  /**
-   * **这一处刻意不用共享那条判据**（`lib/useIsAdmin`）：这里管的是「用户」那一节
-   * （`adminOnly: true`，读 `/users`）与账号自己的角色徽章——**服务器档专属**的东西。
-   * 那一族端点不在本机的白名单上（`local_router` 里没有 `users.router`），本机档按本机档
-   * 判成管理员，只会摆一个点进去读不到的入口，所以照旧按"有没有账号体系"判。
-   */
-  const isAdmin = currentUser?.role === 'admin'
   /**
    * 知识库提供者（M3 阶段 6）：只用来决定**「知识库连接」这一节有没有入口**——
    * 本机档才有它（浏览器 / NAS 网页端那一档知识库就是它自己）。
@@ -180,25 +158,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [testResult, setTestResult] = useState<{ ok: boolean; detail: string } | null>(null)
   const [bindingSlot, setBindingSlot] = useState('')
 
-  const [oldPassword, setOldPassword] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [confirmNewPassword, setConfirmNewPassword] = useState('')
-  const [passwordError, setPasswordError] = useState('')
-
-  const [usersOpen, setUsersOpen] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newUsername, setNewUsername] = useState('')
-  const [newAccountPassword, setNewAccountPassword] = useState('')
-  const [newRole, setNewRole] = useState<UserRole>('member')
-  const [createError, setCreateError] = useState('')
-  const [resetTarget, setResetTarget] = useState<RosterUser | null>(null)
-  const [resetDraft, setResetDraft] = useState('')
-  const [resetError, setResetError] = useState('')
-  const [deleteTarget, setDeleteTarget] = useState<RosterUser | null>(null)
-
-  // 这四条读**都跟着 `open` 走**：这个弹窗**一直挂在树上**（`AccountMenu` 那头关一次只是
+  // 这三条读**都跟着 `open` 走**：这个弹窗**一直挂在树上**（`AccountMenu` 那头关一次只是
   // 把 `open` 置回 false），没有 `enabled` 就是每个页面加载都各白读一趟
-  // （`/settings` / 模型注册 / `/health` / `/auth/status`）——而那四趟**只在这一页用得上**。
+  // （`/settings` / 模型注册 / `/health`）——而那三趟**只在这一页用得上**。
+  // （2026-10-09：原先这里还有一条 `/auth/status`，随账号死面一起删了。）
   const settings = useQuery({ queryKey: SETTINGS_QUERY_KEY, queryFn: getSettings, enabled: open })
   const registry = useQuery({
     queryKey: REGISTRY_QUERY_KEY,
@@ -211,18 +174,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     queryFn: fetchHealth,
     retry: false,
     enabled: open,
-  })
-  const authStatus = useQuery({
-    queryKey: ['auth', 'status'],
-    queryFn: getAuthStatus,
-    retry: false,
-    enabled: open,
-  })
-
-  const users = useQuery({
-    queryKey: ['users', 'roster'],
-    queryFn: async () => (await listUsers()).items,
-    enabled: open && isAdmin && section === 'users',
   })
 
   const config = settings.data ?? null
@@ -307,7 +258,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
   const visibleSections = SECTIONS.filter(
     (item) =>
-      (!item.adminOnly || isAdmin) &&
       // 「知识库连接」只有本机档才有（M3 阶段 6）：服务器档里那一节的入口**不存在**
       // （点了只会看到一句"只有本机档才有"，不如不给入口）
       (item.key !== 'knowledge' || provider.gate) &&
@@ -323,7 +273,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       keys: ['services', 'storage', 'knowledge', 'backup', 'credentials'] as SectionKey[],
     },
     { label: '功能', keys: featureGroups.map((item) => `feature:${item.key}` as SectionKey) },
-    { label: '账户', keys: ['users', 'system'] as SectionKey[] },
+    { label: '系统', keys: ['system'] as SectionKey[] },
     { label: '偏好', keys: ['appearance', 'shortcuts'] as SectionKey[] },
   ]
     .map((item) => ({
@@ -384,122 +334,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     onSettled: () => setBindingSlot(''),
   })
 
-  const changePassword = useMutation({
-    mutationFn: () => apiChangePassword(oldPassword, newPassword),
-    onSuccess: (result) => {
-      setOldPassword('')
-      setNewPassword('')
-      setConfirmNewPassword('')
-      notifySuccess(
-        result.revoked_sessions > 0
-          ? `密码已更新，其他 ${result.revoked_sessions} 处登录已退出`
-          : '密码已更新',
-      )
-    },
-    onError: (error: unknown) => setPasswordError(messageOf(error, '修改失败，请重试')),
-  })
-
-  function submitPasswordChange(): void {
-    setPasswordError('')
-    if (!oldPassword || !newPassword) {
-      setPasswordError('请填写当前密码与新密码')
-      return
-    }
-    if (newPassword.length < MIN_PASSWORD_CHARS) {
-      setPasswordError(`新密码至少 ${MIN_PASSWORD_CHARS} 个字符`)
-      return
-    }
-    if (newPassword !== confirmNewPassword) {
-      setPasswordError('两次输入的新密码不一致')
-      return
-    }
-    changePassword.mutate()
-  }
-
-  const createAccount = useMutation({
-    mutationFn: () =>
-      createUser({
-        name: newName.trim(),
-        username: newUsername.trim(),
-        password: newAccountPassword,
-        role: newRole,
-      }),
-    onSuccess: async (created) => {
-      setNewName('')
-      setNewUsername('')
-      setNewAccountPassword('')
-      setNewRole('member')
-      // 开通成功就收起表单：接着多半去核对名单，留在原地只会挡住列表
-      setUsersOpen(false)
-      notifySuccess(`已开通账号「${created.username}」`)
-      await queryClient.invalidateQueries({ queryKey: ['users', 'roster'] })
-    },
-    onError: (error: unknown) => setCreateError(messageOf(error, '开通失败')),
-  })
-
-  function submitCreateUser(): void {
-    setCreateError('')
-    if (!newName.trim()) {
-      setCreateError('请填写显示名')
-      return
-    }
-    if (!newUsername.trim()) {
-      setCreateError('请填写登录名')
-      return
-    }
-    if (newAccountPassword.length < MIN_PASSWORD_CHARS) {
-      setCreateError(`初始密码至少 ${MIN_PASSWORD_CHARS} 个字符`)
-      return
-    }
-    createAccount.mutate()
-  }
-
-  const resetPassword = useMutation({
-    mutationFn: (person: RosterUser) => resetUserPassword(person.id, resetDraft),
-    onSuccess: async (_result, person) => {
-      setResetTarget(null)
-      notifySuccess(`已重置「${person.name}」的密码，其登录会话已全部失效`)
-      await queryClient.invalidateQueries({ queryKey: ['users', 'roster'] })
-    },
-    onError: (error: unknown) => setResetError(messageOf(error, '重置失败')),
-  })
-
-  const toggleDisabled = useMutation({
-    mutationFn: (person: RosterUser) => setUserDisabled(person.id, !person.disabled),
-    onSuccess: async (updated) => {
-      notifySuccess(updated.disabled ? `已禁用「${updated.name}」` : `已启用「${updated.name}」`)
-      await queryClient.invalidateQueries({ queryKey: ['users', 'roster'] })
-    },
-    onError: (error: unknown) => notifyError(messageOf(error, '操作失败')),
-  })
-
-  const removeAccount = useMutation({
-    mutationFn: (person: RosterUser) => deleteUser(person.id),
-    onSuccess: async (_result, person) => {
-      setDeleteTarget(null)
-      notifySuccess(`已删除「${person.name}」；其文档保留，归属置空`)
-      await queryClient.invalidateQueries({ queryKey: ['users', 'roster'] })
-    },
-    onError: (error: unknown) => notifyError(messageOf(error, '删除失败')),
-  })
-
-  /**
-   * 退出登录：吊销当前会话并清本地令牌。**服务端失败也清本地**——用户点的是退出。
-   *
-   * 退完回概览（原先跳登录页，登录页已删：本机档免登录、本产品不再有 web 登录那一环，
-   * 见 `app/App.tsx` 的文件头）。
-   */
-  async function doLogout(): Promise<void> {
-    try {
-      await apiLogout()
-    } catch {
-      // 会话可能已过期或被吊销：服务端报错不影响"本地退出"这件事
-    }
-    clearSessionToken()
-    onClose()
-    await navigate('/')
-  }
-
   function openEdit(target: SettingGroup): void {
     setEditing(target)
     setTestResult(null)
@@ -515,7 +349,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     setSection(next)
     setEditing(null)
     setTestResult(null)
-    setUsersOpen(false)
   }
 
   return (
@@ -958,224 +791,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               模块页那边照旧（用户说的是"设置里解释太多了"）。 */}
           {activeFeatureKey && <SettingGroupPanel keys={[activeFeatureKey]} showTips={false} />}
 
-          {section === 'users' && (
-            <>
-              <div className="m-section-head">
-                <h3 className="m-section-title">用户</h3>
-                <Button
-                  onClick={() => {
-                    setUsersOpen((value) => !value)
-                    setCreateError('')
-                  }}
-                >
-                  <UserPlus size={14} />
-                  {usersOpen ? '取消' : '添加用户'}
-                </Button>
-              </div>
-
-              {usersOpen && (
-                <div className="m-create-card">
-                  <div className="m-create-grid">
-                    <label className="field-label" htmlFor="kylab-new-name">
-                      显示名
-                    </label>
-                    <Input
-                      id="kylab-new-name"
-                      value={newName}
-                      onChange={(event) => setNewName(event.target.value)}
-                      placeholder="例如 小王"
-                    />
-                    <label className="field-label" htmlFor="kylab-new-username">
-                      登录名
-                    </label>
-                    <Input
-                      id="kylab-new-username"
-                      value={newUsername}
-                      onChange={(event) => setNewUsername(event.target.value)}
-                      placeholder="用于登录，不区分大小写"
-                    />
-                    <label className="field-label" htmlFor="kylab-account-password">
-                      初始密码
-                    </label>
-                    <Input
-                      id="kylab-account-password"
-                      type="password"
-                      value={newAccountPassword}
-                      onChange={(event) => setNewAccountPassword(event.target.value)}
-                      placeholder={`至少 ${MIN_PASSWORD_CHARS} 个字符`}
-                    />
-                    <label className="field-label" htmlFor="kylab-new-role">
-                      角色
-                    </label>
-                    <OptionSelect
-                      id="kylab-new-role"
-                      value={newRole}
-                      onValueChange={(value) => setNewRole(value as UserRole)}
-                      options={ROLE_OPTIONS}
-                      label="角色"
-                    />
-                  </div>
-                  {createError && (
-                    <p className="m-form-error" role="alert">
-                      {createError}
-                    </p>
-                  )}
-                  <div className="m-password-actions">
-                    <Button disabled={createAccount.isPending} onClick={submitCreateUser}>
-                      {createAccount.isPending ? '开通中…' : '开通账号'}
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              <h3 className="m-section-title m-section-gap">成员与名册</h3>
-              {users.isLoading && <p className="m-row-note">正在加载…</p>}
-              {users.isError && <ErrorLine>{messageOf(users.error, '用户列表加载失败')}</ErrorLine>}
-              {users.data && users.data.length === 0 && (
-                <p className="m-row-note">还没有任何人。</p>
-              )}
-              {users.data && users.data.length > 0 && (
-                <ul className="m-user-list">
-                  {users.data.map((person) => (
-                    <li key={person.id} className="m-user-row">
-                      {/* 名册里也带头像：人靠脸认，尤其名字都是中文短名时 */}
-                      <Avatar name={person.name} url={person.avatar_url} size={32} />
-                      <span className="m-user-main">
-                        <span className="m-user-name">{person.name}</span>
-                        <span className="m-user-meta">
-                          {person.username && (
-                            <>
-                              @{person.username}
-                              <span className="sep">·</span>
-                            </>
-                          )}
-                          {formatCount(person.document_count)} 篇文档
-                        </span>
-                      </span>
-                      {person.username ? (
-                        <StatusTag
-                          tone={person.role === 'admin' ? 'success' : 'neutral'}
-                          label={person.role === 'admin' ? '管理员' : '成员'}
-                        />
-                      ) : (
-                        <StatusTag tone="neutral" label="名册" />
-                      )}
-                      {person.disabled && <StatusTag tone="danger" label="已禁用" />}
-                      <span className="m-user-actions">
-                        {person.username && (
-                          <>
-                            <Button
-                              size="sm"
-                              onClick={() => {
-                                setResetTarget(person)
-                                setResetDraft('')
-                                setResetError('')
-                              }}
-                            >
-                              重置密码
-                            </Button>
-                            {person.id !== currentUser?.id && (
-                              <Button size="sm" onClick={() => toggleDisabled.mutate(person)}>
-                                {person.disabled ? '启用' : '禁用'}
-                              </Button>
-                            )}
-                          </>
-                        )}
-                        {person.id !== currentUser?.id && (
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => setDeleteTarget(person)}
-                          >
-                            删除
-                          </Button>
-                        )}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-
           {section === 'system' && (
             <>
               <h3 className="m-section-title">系统与安全</h3>
 
-              {/* 账号（v10 主路径）：登录状态下在这里改密、退出 */}
-              {currentUser && (
-                <>
-                  <div className="m-row">
-                    <div className="m-row-main">
-                      <span className="m-row-label">当前账号</span>
-                      <span className="m-row-value">
-                        {currentUser.name}
-                        <span className="m-row-sub">（{currentUser.username}）</span>
-                      </span>
-                    </div>
-                    <StatusTag
-                      tone={isAdmin ? 'success' : 'neutral'}
-                      label={isAdmin ? '管理员' : '成员'}
-                    />
-                  </div>
-
-                  {/*
-                    「改密会吊销其他设备上的登录，当前这条保留。」那句 InfoTip 删掉了
-                    （用户 2026-10 批注：去解释化）。
-                    ⚠️ 记一笔：**同一条信息现在只出现在"重置他人密码"那个确认弹窗里**
-                    （`resetTarget`：为「X」设置新密码。对方所有已登录的设备会立即退出。）——
-                    那一句说的是另一个动作（管理员重置别人），而**自己改密**这条路上
-                    没有任何确认弹窗（就是一个表单直接提交）。若日后要把这条代价说回来，
-                    该加在这里或一次确认里，而不是重新挂一个 InfoTip。
-                  */}
-                  <h3 className="m-section-title m-section-gap">修改密码</h3>
-                  <div className="m-password-form">
-                    <Field label="当前密码" htmlFor="kylab-old-password">
-                      <Input
-                        id="kylab-old-password"
-                        type="password"
-                        autoComplete="current-password"
-                        value={oldPassword}
-                        onChange={(event) => setOldPassword(event.target.value)}
-                      />
-                    </Field>
-                    <Field label="新密码" htmlFor="kylab-new-password">
-                      <Input
-                        id="kylab-new-password"
-                        type="password"
-                        autoComplete="new-password"
-                        placeholder={`至少 ${MIN_PASSWORD_CHARS} 个字符`}
-                        value={newPassword}
-                        onChange={(event) => setNewPassword(event.target.value)}
-                      />
-                    </Field>
-                    <Field label="确认新密码" htmlFor="kylab-confirm-password">
-                      <Input
-                        id="kylab-confirm-password"
-                        type="password"
-                        autoComplete="new-password"
-                        value={confirmNewPassword}
-                        onChange={(event) => setConfirmNewPassword(event.target.value)}
-                      />
-                    </Field>
-                    {passwordError && (
-                      <p className="m-form-error" role="alert">
-                        {passwordError}
-                      </p>
-                    )}
-                    <div className="m-password-actions">
-                      <Button disabled={changePassword.isPending} onClick={submitPasswordChange}>
-                        {changePassword.isPending ? '提交中…' : '更新密码'}
-                      </Button>
-                      <Button variant="destructive" onClick={() => void doLogout()}>
-                        <LogOut size={14} />
-                        退出登录
-                      </Button>
-                    </div>
-                  </div>
-                </>
-              )}
-
+              {/* 2026-10-09：这一节原先还有「当前账号 / 修改密码 / 退出登录」那一块与
+                  下面那行「访问鉴权」（读 `/auth/status`）——账号死面整块删了，
+                  见 `SECTIONS` 之前那一段。**留下的只有"后端在不在"这一行**：
+                  它是这一节现在唯一能说、也真说得准的一句话。 */}
               <div className="m-row">
                 <div className="m-row-main">
                   <span className="m-row-label">后端状态</span>
@@ -1187,73 +810,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   label={health.data ? '在线' : '不可达'}
                 />
               </div>
-
-              <div className="m-row">
-                <div className="m-row-main">
-                  <span className="m-row-label">访问鉴权</span>
-                  {/* 「已启用：/api/v1 一律需要登录会话或 API Key」已删（2026-09-24）：
-                      接口前缀与鉴权术语都是实现；只留**真需要用户动手**的那一步 */}
-                  {authStatus.data?.needs_setup ? (
-                    <span className="m-row-value">请先创建管理员账号</span>
-                  ) : null}
-                </div>
-                <StatusTag
-                  tone={authStatus.data?.needs_setup ? 'warning' : 'success'}
-                  label={authStatus.data?.needs_setup ? '未初始化' : '已启用'}
-                />
-              </div>
             </>
           )}
         </div>
       </div>
-
-      {/* 重置密码（嵌套弹窗）。一次只处理一个人，展开会把名单推下去 */}
-      <Modal
-        open={resetTarget !== null}
-        title="重置密码"
-        onClose={() => setResetTarget(null)}
-        footer={
-          <>
-            <Button onClick={() => setResetTarget(null)}>取消</Button>
-            <Button
-              disabled={resetPassword.isPending || resetDraft.length < MIN_PASSWORD_CHARS}
-              onClick={() => resetTarget && resetPassword.mutate(resetTarget)}
-            >
-              {resetPassword.isPending ? '提交中…' : '重置密码'}
-            </Button>
-          </>
-        }
-      >
-        <p className="m-muted">
-          为「{resetTarget?.name}」设置新密码。对方所有已登录的设备会立即退出。
-        </p>
-        <Input
-          type="password"
-          autoComplete="new-password"
-          placeholder={`至少 ${MIN_PASSWORD_CHARS} 个字符`}
-          value={resetDraft}
-          onChange={(event) => setResetDraft(event.target.value)}
-          aria-label="新密码"
-        />
-        {resetError && (
-          <p className="m-form-error" role="alert">
-            {resetError}
-          </p>
-        )}
-      </Modal>
-
-      {/* 删除账号：破坏性动作，二次确认，并说清"文档会怎样" */}
-      <ConfirmDialog
-        open={deleteTarget !== null}
-        title="删除用户"
-        lead={`确定删除「${deleteTarget?.name ?? ''}」？`}
-        note={`对方上传的 ${formatCount(deleteTarget?.document_count)} 篇文档会保留，但不再归属任何人；账号将无法再登录。不可撤销。`}
-        confirmLabel="删除"
-        busy={removeAccount.isPending}
-        busyLabel="删除中…"
-        onCancel={() => setDeleteTarget(null)}
-        onConfirm={() => deleteTarget && removeAccount.mutate(deleteTarget)}
-      />
     </Modal>
   )
 }

@@ -3,12 +3,12 @@
  *
  * 读取只拿得到掩码（`sk-xu…ten`）与"是否已配置"，明文永不回前端；
  * 写入时留空表示"不改动这把密钥"。
+ *
+ * 运行期配置表（`app_settings`）**在本机库**（M2 §4.2）→ 全部走 `requestLocal`。
+ * （2026-10-09：原先这一份里还挂着 `/auth/status` 那一族账号面，随账号死面整块删了。）
  */
 
-import type { AuthBootstrapStatus } from './auth'
-// 运行期配置表（`app_settings`）**在本机库**（M2 §4.2）→ 走 `requestLocal`；
-// 同一份里的 `/auth/status` 是**账号面**，仍然走服务器（`request`）。
-import { request, requestLocal } from './client'
+import { requestLocal } from './client'
 
 export interface SettingFieldOption {
   value: string
@@ -65,14 +65,4 @@ export function updateSettings(
 /** 连通性测试：embedding / mineru / paddleocr。刻意做得很轻，不消耗解析额度。 */
 export function testConnection(target: string): Promise<TestConnectionResult> {
   return requestLocal(`/settings/test/${target}`, { method: 'POST' })
-}
-
-/** `/auth/status` 的返回形状与登录引导状态同一个（定义在 `api/auth.ts`）。 */
-export type AuthStatus = AuthBootstrapStatus
-
-/**
- * 鉴权状态。**不需要凭据**：前端靠它判断该显示首次设置还是登录。
- */
-export function getAuthStatus(): Promise<AuthStatus> {
-  return request('/auth/status')
 }

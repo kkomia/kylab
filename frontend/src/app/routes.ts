@@ -11,14 +11,17 @@
  * 2026-10-08：知识库那四页（列表 / 库详情 / Wiki / 文档详情）与登录页一并删掉
  * （知识库管理台搬去 kybase、本机档免登录，见 `app/App.tsx` 文件头）——这里是**页面
  * 清单的唯一来源**，路由表与侧栏预热都从这里取，删一处就够了。
+ *
+ * 2026-10-09：**「概览」那一页也删了**（产品不要它了）：它唯一的作用是数知识库的家当
+ * （库数 / 文档 / 切块 / 入库节奏），而知识库的界面已经搬去 kybase。落地页改成
+ * 重定向到 `/chat`（见 `app/App.tsx` 的路由表），这里的 `dashboard` 入口随之去掉——
+ * 连带它的统计客户端（`api/stats.ts`）与那张 ECharts 图（`pnpm remove echarts`）。
  */
 export const PAGES = {
   // 对话页：**必须懒加载**——它带着 assistant-ui + katex + highlight.js，
   // 静态 import 会把整包打进主 chunk（实测：主 chunk 1423.9 kB、首屏合计 ~1.6 MB）。
   // 旧前端也是懒加载的（`ChatView` 走 `() => import(...)`）。
   chat: () => import('@/features/chat/ChatPage').then((m) => ({ default: m.ChatPage })),
-  dashboard: () =>
-    import('@/features/misc/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })),
   notes: () => import('@/features/notes/NotesView').then((m) => ({ default: m.NotesView })),
   // 备份（M5 阶段 7）：**本机档专属**的一页，路由外面还包一层 `BackupRoute`
   // （那一层只判"这一档有没有本机后端"，不判提供者连没连上）。
