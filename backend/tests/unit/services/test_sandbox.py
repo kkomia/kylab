@@ -34,7 +34,7 @@ def root(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     (workspace / "src" / "深" / "层").mkdir(parents=True)
     (workspace / "src" / "main.py").write_text("print('hi')\n", encoding="utf-8")
-    (workspace / ".env").write_text("KYLAB_DATABASE_URL=postgresql://u:p@h/db\n", encoding="utf-8")
+    (workspace / ".env").write_text("KYLAB_TOKEN=不该被读到的令牌\n", encoding="utf-8")
     (tmp_path / "outside.txt").write_text("外面的秘密\n", encoding="utf-8")
     return workspace
 

@@ -17,10 +17,12 @@
    装配口 ``bind_reader``）；``IMPLEMENTED``（两个真映射）之外**逐个**照旧抛那句原句；
    没 ``bind`` 就调那两个已实现的方法时抛的是**那句中文**，不是 ``AttributeError``。
 
-外加一条**子进程**断言：在一个干净解释器里跑一次
-真 ``build_stores()``，``psycopg`` / ``boto3`` / ``duckdb`` 一个都不许进 ``sys.modules``。
-为什么必须换进程：本进程里 ``tests/conftest.py`` 早就 import 了 psycopg，
-在脏 ``sys.modules`` 上查"有没有 import"永远查不出东西。
+外加一条**子进程**断言：在一个干净解释器里跑一次真 ``build_stores()``，
+那几份**已经删掉的服务器档后端**（psycopg / boto3 / duckdb）一个都不许出现在
+``sys.modules`` 里——这条曾经钉的是"本机档别把它们拖进来"，现在它们连模块都没有了，
+留着这条是为了**万一哪天有人把它们加回来**，门禁当场就红。
+为什么必须换进程：本进程的 ``sys.modules`` 是脏的（conftest 与别的用例都 import 过东西），
+在脏表上查"有没有 import"永远查不出东西。
 """
 
 from __future__ import annotations
@@ -54,7 +56,9 @@ from app.storage.sqlite_impl import LOCAL_METHODS as SQLITE_LOCAL_METHODS
 #: backend/（本文件在 backend/tests/unit/storage/ 下，上溯三级）
 BACKEND = Path(__file__).resolve().parents[3]
 
-#: 服务器档才用得上的三份后端（约 108 MB，见 ``core/storage.py`` 那段"为什么惰性"）。
+#: 服务器档才用得上的那些后端（约 108 MB）。**它们已经不在这个仓库里**，
+#: 这份清单留作反向守卫：谁把它们加回来，`test_local_deployment_builds_every_field_...`
+#: 会立刻红（本机那条装配路径不该需要它们中的任何一个）。
 SERVER_BACKENDS = ("psycopg", "psycopg_pool", "boto3", "botocore", "duckdb")
 
 
@@ -309,9 +313,9 @@ def test_the_unavailable_error_is_a_storage_error() -> None:
 
 
 def test_local_deployment_builds_every_field_without_the_server_backends(tmp_path: Path) -> None:
-    """五个字段齐备，且**服务器档那三份后端一个都没进 `sys.modules`**。
+    """五个字段齐备，且**服务器档那几份后端一个都没进 `sys.modules`**。
 
-    跑在**干净解释器**里（本进程早就 import 过 psycopg，查不出东西），用**环境变量**钉档
+    跑在**干净解释器**里（本进程的 `sys.modules` 是脏的，查不出东西），用**环境变量**钉档
     （与生产同一条路：``get_settings()`` + ``build_stores()``），并把 ``.env`` 会带来的
     那几个已经不在 `Settings` 里的服务器档变量也一并压掉。
     """
