@@ -31,6 +31,7 @@ import {
 } from '@/api/chat'
 import { clearLiveAnchors, clearLiveTurn } from '@/features/chat/model/liveTurn'
 import { ChatPage } from '@/features/chat/ChatPage'
+import { usePanelStore } from '@/features/chat/panel/panelStore'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
 import { useFollowStore } from '@/features/chat/ui/followStore'
 import { AssistantAvatar } from '@/features/chat/ui/AssistantAvatar'
@@ -283,6 +284,20 @@ beforeEach(() => {
   vi.clearAllMocks()
   clearLiveTurn()
   clearLiveAnchors()
+  /*
+    右侧面板是**模块级单例**（`panel/panelStore.ts`），`localStorage.clear()`
+    （`tests/setup.ts` 的 afterEach）清不掉它内存里那一位：上一条用例把面板点开之后，
+    这一条里的页面一挂载就带着一个开着的面板（`FilesTab` 当场去读文件区）——
+    "打开之前不取数"那几条会因此莫名其妙地红。所以每条用例开头把它摆回默认态。
+  */
+  usePanelStore.setState({
+    open: false,
+    tabs: [],
+    activeId: '',
+    currentConversationId: '',
+    seed: null,
+    filesView: { scope: 'conversation', path: '' },
+  })
   vi.mocked(listCommands).mockResolvedValue([])
   vi.mocked(getConversation).mockResolvedValue(detail([]))
   // 恢复这一份替身的**默认值**：`mockResolvedValueOnce` 摆的一次性返回值万一没被消费
@@ -2025,10 +2040,10 @@ describe('出处列表与交付物（§6 的两条）', () => {
     await waitFor(() => expect(downloadFile).toHaveBeenCalledWith('c1', 'art1'))
   })
 
-  it('产物卡片的「预览」开的是**文件区抽屉**，直落这一份（不再开新标签页）', async () => {
+  it('产物卡片的「预览」开的是**右侧面板的文件标签**，直落这一份（不再开新标签页）', async () => {
     const { getFileUrl, listFiles } = await import('@/api/conversations')
-    // 产物在临时区里的 key 就是 `artifact_id`——**没有后缀**，所以抽屉要直落它，
-    // 只能靠调用方一起给的名字与格式（`FileDrawer.initialEntry` 那一段的由来）
+    // 产物在临时区里的 key 就是 `artifact_id`——**没有后缀**，所以定位它要直落，
+    // 只能靠调用方一起给的名字与格式（`openFiles` 那个 seed 的由来）
     const artifact = {
       artifact_id: 'art1',
       name: '季度报告.pdf',
@@ -2086,17 +2101,23 @@ describe('出处列表与交付物（§6 的两条）', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '预览' }))
 
-    // 抽屉开着，标题行就是这份产物（预览态），PDF 那一档指向**换回来的签名链接**
-    const drawer = await screen.findByRole('dialog')
-    expect(within(drawer).getByText('季度报告.pdf')).toBeInTheDocument()
-    const frame = await within(drawer).findByTitle('季度报告.pdf')
+    // 面板开着（**常驻的一列**，不是抽屉：所以是 complementary 而不是 dialog），
+    // 抬头是这份产物，PDF 那一档指向**换回来的签名链接**
+    const panel = await screen.findByRole('complementary', { name: '右侧面板' })
+    expect(within(panel).getByRole('tab', { name: '文件' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    // 抬头那一行也带同名 title（给截断的名字看），所以这里直接要那个 iframe 节点
+    await waitFor(() => expect(panel.querySelector('iframe')).not.toBeNull())
+    const frame = panel.querySelector('iframe') as HTMLIFrameElement
     expect(frame.tagName).toBe('IFRAME')
     expect(frame).toHaveAttribute('src', '/api/v1/conversations/c1/files/download-url?sign=art')
     // 换链接用的就是产物那个 key（`artifact_id`），而且要 inline
     expect(getFileUrl).toHaveBeenCalledWith('c1', 'art1', 'inline')
-    // 回到目录：列的是这一层真实的东西（产物那一份只出现在预览里）
-    await user.click(within(drawer).getByRole('button', { name: '回到文件列表' }))
-    expect(await within(drawer).findByText('other.md')).toBeInTheDocument()
+    // 回到列表：列的是这一层真实的东西（产物那一份只出现在预览里）
+    await user.click(within(panel).getByRole('button', { name: '回到文件列表' }))
+    expect(await within(panel).findByText('other.md')).toBeInTheDocument()
   })
 
   it('「存为笔记」把这一轮问答存成一条笔记（标题是提问、正文是回答）', async () => {
@@ -2596,7 +2617,7 @@ describe('用户消息随发的附件（v0.55）', () => {
     kind: 'pdf',
   }
 
-  it('新发一轮带附件：提问气泡里就有文件片，点它直落文件抽屉', async () => {
+  it('新发一轮带附件：提问气泡里就有文件片，点它在右侧面板里直落这一份', async () => {
     const { uploadFile } = await import('@/api/conversations')
     vi.mocked(uploadFile).mockResolvedValue(GUIDE as never)
     const box = capture()
@@ -2624,10 +2645,11 @@ describe('用户消息随发的附件（v0.55）', () => {
     expect(chip).toHaveAttribute('title', expect.stringContaining('来源服务器（文件未随导入）'))
     expect(chip).toHaveTextContent('437.9 KB')
 
-    // 点它开「产物与文件」抽屉并直落这份（与产物卡片同一条路）
+    // 点它在右侧面板里直落这份（与产物卡片同一条路）
     await user.click(chip)
-    const drawer = await screen.findByRole('dialog', { name: /指南\.pdf/ })
-    expect(within(drawer).getByText('指南.pdf')).toBeInTheDocument()
+    const panel = await screen.findByRole('complementary', { name: '右侧面板' })
+    // 直落是**等这一层的清单到了才落**的（`FilesTab` 的定位那两拍），所以这里等它
+    expect(await within(panel).findByText('指南.pdf')).toBeInTheDocument()
   })
 
   it('回看已有会话：详情里带的附件同样画在提问气泡里（助手那条不画）', async () => {

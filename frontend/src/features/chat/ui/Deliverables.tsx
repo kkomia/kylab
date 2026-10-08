@@ -25,70 +25,21 @@
  * svg 连试都不试，照旧走行式卡片。
  */
 import { useEffect, useState } from 'react'
-import {
-  FileCode2,
-  FileImage,
-  FileJson,
-  FileSpreadsheet,
-  FileTerminal,
-  FileText,
-  Presentation,
-  type LucideIcon,
-} from 'lucide-react'
 
 import { formatBytes } from '@/lib/format'
 import { downloadFile, getFileUrl } from '@/api/conversations'
 import type { ChatArtifact } from '@/api/chat'
 
+import { FileTypeIcon } from '../model/fileIcons'
 import { notifyError } from '../runtime/notify'
 import { useChat, type ChatApi } from '../runtime/ChatProvider'
 import { titledWithOrigin } from './localFileOrigin'
 import './flow.css'
 
 /**
- * 产物卡片左边那一格图形：**按后缀分档**（Kimi 的文件卡片：代码 `</>`、表格 grid、
- * 幻灯、图片、文档）。
- *
- * 判据取**后缀**而不是 `file.format`：后端给的 `format` 是渲染器那一档
- * （`docx` / `pdf` / `pptx`），而后缀才是"这份文件长什么样"。认不出来的一律给
- * 文档那一枚——不猜、也不留空。改前这一格是格式文字（「DOCX」）压在高 28 的扁盒里，
- * 现在换成图形，格式名挪到副标题那一行（信息一个字没丢）。
+ * 产物卡片左边那一格图形：**按后缀分档**（表的判据与理由见 `model/fileIcons.tsx`
+ * ——它现在与右侧面板的文件树**共用同一张表**，同一份文件在两个地方不画出两种图形）。
  */
-const ARTIFACT_ICONS: Record<string, LucideIcon> = {
-  // 代码 / 数据：`</>` 与花括号
-  js: FileCode2,
-  jsx: FileCode2,
-  ts: FileCode2,
-  tsx: FileCode2,
-  py: FileCode2,
-  sh: FileTerminal,
-  json: FileJson,
-  yaml: FileCode2,
-  yml: FileCode2,
-  html: FileCode2,
-  css: FileCode2,
-  xml: FileCode2,
-  // 表格
-  csv: FileSpreadsheet,
-  tsv: FileSpreadsheet,
-  xlsx: FileSpreadsheet,
-  xls: FileSpreadsheet,
-  // 幻灯
-  pptx: Presentation,
-  ppt: Presentation,
-  // 图片
-  png: FileImage,
-  jpg: FileImage,
-  jpeg: FileImage,
-  webp: FileImage,
-  gif: FileImage,
-  svg: FileImage,
-}
-
-function ArtifactIcon({ format }: { format: string }) {
-  const Icon = ARTIFACT_ICONS[format.trim().toLowerCase().replace(/^\./, '')] ?? FileText
-  return <Icon size={18} aria-hidden />
-}
 
 /**
  * 打开产物（**预览**）：开文件区抽屉，并**直落这一份**。
@@ -126,7 +77,7 @@ async function downloadArtifact(chat: ChatApi, file: ChatArtifact): Promise<void
  * **svg 不在里面，这是刻意的**：内联 SVG 与本站**同源**，一份带 `<script>` 的 SVG
  * 内联进来就是一个执行面（存储型 XSS）——本仓的安全口径与 `getFileUrl` 那条注释一致
  * （`inline` 只是"请求"，批不批由服务端按后缀复核），所以这一档连试都不试它。
- * 判据取**后缀**，与上面 `ARTIFACT_ICONS` 同一个口径（不认 `file.format` 之外的东西）。
+ * 判据取**后缀**，与 `fileIcons.tsx` 那张表同一个口径（不认 `file.format` 之外的东西）。
  */
 const IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif'])
 
@@ -160,7 +111,7 @@ function ArtifactLine({
         /* 左侧的**文件类型图标盒**（Kimi 的卡片：方盒 + 按后缀区分的图形）：
            36px 方盒、8px 圆角、`Bg-Secondary` 底（与表格卡片头带同一档灰）。 */
         <span className="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-[8px] bg-[var(--Bg-Secondary)] text-[var(--text-secondary)]">
-          <ArtifactIcon format={file.format} />
+          <FileTypeIcon format={file.format} />
         </span>
       ) : null}
       <button

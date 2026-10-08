@@ -225,28 +225,26 @@ function FilesHost() {
 }
 
 /**
- * 带"直落哪一份"的文件抽屉宿主：产物卡片上的「预览」就是这个形状
- * （`Composer` 里 `initialKey={chat.filesSeed?.key ?? null}`）。
+ * 带"直落哪一份"的文件抽屉宿主：最初它就是产物卡片那条路（`openFiles(seed)` 点开抽屉），
+ * **2026-10-05 起不是了**——带种子的那一条改开右侧面板（见 `ChatProvider.openFiles`），
+ * 所以这里改成宿主自己那一位 `seed`（抽屉仍然认 `initialKey` / `initialEntry`，
+ * 这一组用例要钉的自始至终是 `useSlideOut` 的时序，不是谁把抽屉打开）。
  * 第二个按钮是"换一份"——收起还没走完时点它，就是同一个抽屉实例被要求换目标。
  */
 function FilesHostWithSeed() {
-  const chat = useChat()
-  const seed = (key: string, name: string) => () => chat.openFiles({ key, name, kind: 'txt' })
+  const [seed, setSeed] = useState<{ key: string; name: string; kind: string } | null>(null)
+  const pick = (key: string, name: string) => () => setSeed({ key, name, kind: 'txt' })
   return (
     <>
-      <output data-testid="files-open">{String(chat.filesOpen)}</output>
-      <button type="button" onClick={seed('out/a.txt', 'a.txt')}>
+      <output data-testid="files-open">{String(seed !== null)}</output>
+      <button type="button" onClick={pick('out/a.txt', 'a.txt')}>
         预览 a
       </button>
-      <button type="button" onClick={seed('out/b.txt', 'b.txt')}>
+      <button type="button" onClick={pick('out/b.txt', 'b.txt')}>
         预览 b
       </button>
-      {chat.filesOpen ? (
-        <FilesSheet
-          initialKey={chat.filesSeed?.key ?? null}
-          initialEntry={chat.filesSeed}
-          onClose={chat.closeFiles}
-        />
+      {seed ? (
+        <FilesSheet initialKey={seed.key} initialEntry={seed} onClose={() => setSeed(null)} />
       ) : null}
     </>
   )

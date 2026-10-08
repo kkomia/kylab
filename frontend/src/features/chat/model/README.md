@@ -298,3 +298,28 @@ https://github.com/anthropics/skills
 - 卡片：悬停（`mouseover`）/ 键盘聚焦都能开、`aria-expanded=true`、Esc 关、
   贴边翻转（`cardPlacement` 纯函数 + 用例）、**没有 👍/👎**；
 - 亮/暗各一张：`light-inline.png` / `light-card.png` / `dark-inline.png` / `dark-card.png`。
+
+---
+
+## 6. 右侧面板的文件树：`fileTree.ts` + `fileIcons.tsx`
+
+面板（`features/chat/panel/**`）里那几件纯计算与那张图标的表住在这里，理由只有一个：
+**它们没有请求、没有 React**，所以能单测（`tests/chat-panel-tree.test.ts`）。
+渲染在 `panel/FilesTab.tsx` 与 `panel/FileTree.tsx`，界面那一层的用例在
+`tests/chat-panel.test.tsx`。
+
+| 这里            | 提供什么                                                                                                                                                          |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fileTree.ts`   | 同层排序（名称 / 修改时间 / 类型，**目录恒在最前**）、模糊匹配（子序列 + 前缀加成）、把"已展开的那几层"摊平（搜索的地盘）、续层定位（要展开哪几层才看得见那一份） |
+| `fileIcons.tsx` | 后缀 → lucide 图形的**唯一一张表**（产物卡片与文件树共用）；`fileIconFor()` 给要自己拼 `size` 的地方，`<FileTypeIcon/>` 给 JSX                                    |
+
+三条口径（都留了用例）：
+
+1. **搜索只吃已展开的层**：`flattenLevels(root, byDir, expanded)` 只往 `expanded` 里的目录
+   下走——一个目录收起来之后，它那份清单还留在 react-query 的缓存里，但那不算"展开着"。
+   面板上那句话（「只搜已展开的目录」）说的就是这件事，不假装搜了整棵树；
+2. **排序说的是"同类里怎么排"**：目录与文件不混着重排，而且一次只吃一层
+   ——排序永远不会把子目录里的东西拎到父层来；
+3. **图标表只有一份**：`ui/Deliverables.tsx` 原先自己写了一张（`ARTIFACT_ICONS`），
+   文件树要画的又是同一件事，所以抽到这一层两处共用（抄两份的话，给 `.pptx` 换一枚图标
+   就要记得改两处，漏掉的那一处谁也不会发现）。

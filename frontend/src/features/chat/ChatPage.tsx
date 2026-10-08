@@ -17,6 +17,9 @@
  * 两个浮层挂在页面这一层：`ui/Sheets.tsx` 的两个抽屉（引用原文、产物与文件）与
  * `ui/Dialogs.tsx` 的「存进知识库」弹窗（后者故意还是弹窗，理由见那份文件）。
  *
+ * **右端那一列是常驻的面板**（`panel/SidePanel.tsx`：文件树，下一轮接网页）：
+ * 它不是浮层，而是与"左列三段"并排的第二列——详细分工见 `panel/panelStore.ts` 的头注。
+ *
  * 路由与页面壳由主控接（`src/app/**`）：这一页只管 `/chat/:conversationId?`
  * 那三个参数（会话 id、`?new=1`、`?workspace=<id>`），其余入口一律不改路径。
  */
@@ -25,6 +28,7 @@
 import './ui/chat.css'
 import { ChatProvider, useChat } from './runtime/ChatProvider'
 import { ChatRuntime } from './runtime/ChatRuntime'
+import { SidePanel } from './panel/SidePanel'
 import { ChatThread } from './ui/ChatThread'
 import { Composer } from './ui/Composer'
 import { IngestDialog } from './ui/Dialogs'
@@ -65,11 +69,21 @@ export function ChatPage() {
             **页头只有一条低权重的会话条**（`ChatHeader`：会话标题 + 项目名，44px）——
             它不重复侧栏的"对话"，只回答"我现在在哪条会话里"；这是 2026-09-24 界面评审
             对着 DeepSeek / Kimi 补上的（原先完全无页头，长会话里滚动后不知道在哪）。
-            会话条本身在 `ChatThread` 里、不随消息滚走。 */}
-        <div className="flex h-full flex-col text-[var(--text-primary)]">
-          <NewChatScope />
-          <ChatThread />
-          <Composer />
+            会话条本身在 `ChatThread` 里、不随消息滚走。
+
+            **右边那一列是常驻的面板**（`SidePanel`：文件树 / 下一轮的网页），
+            所以这一行是横向两列：左边是原来那三段（会话条、消息区、输入卡片），
+            右边是面板自己那一列（`shrink-0` + `--panel-width`，见 `panel/panel.css`）。
+            面板要挤的是**这一行**，不是整页——所以它是 `relative` 的：窄屏下面板改
+            覆盖式（`position: absolute`）时锚在这一行上，贴的是对话区的右缘，
+            不会盖到侧栏上。 */}
+        <div className="relative flex h-full min-h-0 flex-row text-[var(--text-primary)]">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <NewChatScope />
+            <ChatThread />
+            <Composer />
+          </div>
+          <SidePanel />
         </div>
         {/* 引用原文是抽屉（贴边滑出，对话还看得见）；「存进知识库」仍是弹窗（要拦一下）。
             挂在这儿而不是页内：抽屉是**页面级浮层**，不该跟着输入卡片一起重挂 */}

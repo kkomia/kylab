@@ -70,6 +70,9 @@ import {
   type Turn,
 } from '@/features/chat/model/turns'
 import { splitSuggestions } from '@/features/chat/model/suggestions'
+// 右侧面板那一份状态（模块级单例）。**只从这里进**：面板不进这个 provider 的 value，
+// 理由见 `panel/panelStore.ts` 头注（那个 value 每拍新建，流式期间会拖着整页重渲染）。
+import { openPanelFiles, usePanelStore } from '@/features/chat/panel/panelStore'
 
 // 侧栏那份会话清单（壳那一层）：新会话建出来之后要**当场**插进去。
 // 不做这一步的话，侧栏只在挂载时 `load()` 过一次，谁也告诉不了它清单变长了——
@@ -377,10 +380,15 @@ export interface ChatApi {
    * 「加号 → 浏览文件」，与产物卡片上的「预览」——后者在消息流里，够不着
    * `Composer` 的内部状态（旧 `ChatView` 的 `fileDrawer` 也是页面级的：
    * 它要同时表达"开着"与"直落哪一份"）。
+   *
+   * **2026-10-05 起"带直落"那一条不再走抽屉**（见下面 `openFiles` 的分流）：
+   * 产物 / 附件点开改为开右侧面板的「文件」标签，所以 `filesSeed` 现在只会是
+   * `null`——留着它是因为抽屉那一边（`Composer` 的 `initialKey` / `initialEntry`）与
+   * 「浏览文件」这条路都还在（上传与拖拽本轮没搬进面板）。
    */
   filesOpen: boolean
   /**
-   * 打开文件区时**要直落的那一份**（产物卡片点「预览」给的就是它）。
+   * 打开文件区时**要直落的那一份**（见 `filesOpen` 的说明：现在恒为 `null`）。
    *
    * `key` 是这份文件在文件区里的 key——产物在临时区的 key 就是 `artifact_id`，
    * **没有后缀**，光看它猜不出该用哪个渲染器，所以名字与格式由调用方一起给
@@ -388,6 +396,10 @@ export interface ChatApi {
    * 那个 bug：同一份文件从产物卡片点开说"不能预览"，从工作区点开却好好的）。
    */
   filesSeed: { key: string; name: string; kind: string } | null
+  /**
+   * 开一处"看文件"的地方：**带 `seed`** 的走右侧面板（并定位到那一份），
+   * **不带**的（「加号 → 浏览文件」）走文件抽屉。判据与理由见下面 `api` 里那段注释。
+   */
   openFiles: (seed?: { key: string; name: string; kind: string } | null) => void
   closeFiles: () => void
 
@@ -892,6 +904,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     createdConversationRef.current = ''
     void refreshConversationSummary(pending)
   }, [live?.streaming, refreshConversationSummary])
+
+  /**
+   * 会话 id 同步进**右侧面板那一份状态**（`panel/panelStore.ts`）。
+   *
+   * 为什么要有这一条：面板挂在页面那一行里，而"现在是哪条会话"只有这里说得清
+   * ——路由参数、新建会话那一刻换地址、回看旧会话，三个入口都经过这一个值。
+   * 面板自己不去 `useParams`：它不是一个页面，读路由参数只会把两处真相摆在一起。
+   *
+   * 换会话时 `setConversationId` 会顺手把面板看的东西收回去（目录、标签、定位种子），
+   * 见那个动作的注释——文件区本来就是按会话划的。
+   */
+  useEffect(() => {
+    usePanelStore.getState().setConversationId(conversationId)
+  }, [conversationId])
 
   /**
    * 项目清单：`?workspace=` 那条路上要用它的**名字**（新会话落在哪儿要摆给人看）。
@@ -2349,7 +2375,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [])
   const rowOpenFiles = useCallback(
     (seed: { key: string; name: string; kind: string } | null = null) => {
-      setFilesSeed(seed)
+      if (seed) {
+        openPanelFiles(seed)
+        return
+      }
+      setFilesSeed(null)
       setFilesOpen(true)
     },
     [],
@@ -2539,8 +2569,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     closeSource: () => setSourceOpen(false),
     filesOpen,
     filesSeed,
+    /*
+      「看一份文件」的两条路（本轮定的分工，见 `panel/panelStore.ts` 头注）：
+
+      - **带种子**（产物卡片 / 随发附件点开，调用点在 `Deliverables` 与 `MessageView`，
+        签名一个字没动）→ 开**右侧面板**的「文件」标签，并定位到这一份。用户点的是
+        "刚才那一步产出的东西长什么样"，那件事该在面板里看（对话照旧在左边能读）；
+      - **不带种子**（`Composer` 的「加号 → 浏览文件」）→ 还是那只**文件抽屉**：
+        它是"翻文件区、上传、拖一条引用进输入框"的入口，而那三件事本轮没搬进面板
+        （面板里连上传按钮都没有）。所以"浏览"仍然走抽屉，`filesOpen` / `filesSeed`
+        这两位因此都留着——抽屉那边一个字没动。
+    */
     openFiles: (seed = null) => {
-      setFilesSeed(seed)
+      if (seed) {
+        openPanelFiles(seed)
+        return
+      }
+      setFilesSeed(null)
       setFilesOpen(true)
     },
     closeFiles: () => setFilesOpen(false),

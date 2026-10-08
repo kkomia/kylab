@@ -15,10 +15,13 @@
  *    （`useConversationDetail` 与 `ChatProvider` 共用同一个 queryKey，命中缓存）；
  *    项目名从壳那份工作区清单里查（它由侧栏加载，这里只做"没加载过就补一次"，
  *    与 `ConversationRowMenu` 的「移至项目」同一条口径）；
- * 3. **没有标题就不占位**：新会话（`?new=1`）还没有标题，那时不画这条——
- *    一条空白的常驻栏只是把内容往下推。
+ * 3. **没有标题也占位**（2026-10-05 改）：这一条原先"没有标题就不画"（新会话
+ *    `/chat?new=1` 还没有标题，一条空白的常驻栏只是把内容往下推）。但右端那颗
+ *    「面板」开关长在这一行的末尾——它一旦跟着藏起来，新会话里就打不开右侧面板
+ *    （而"刚进来想翻一下文件"恰恰是新会话里最常发生的事）。所以这一行现在**常驻**，
+ *    只是没有标题时左边那一格空着：44px 的代价换"开关永远够得着"。
  */
-import { Folder } from 'lucide-react'
+import { Folder, PanelRight } from 'lucide-react'
 import { useEffect } from 'react'
 
 // 直接引**那个模块**（不走 `@/features/layout` 的出口）：这里只要一份清单，
@@ -27,6 +30,7 @@ import { ensureWorkspacesLoaded, useWorkspaceStore } from '@/features/layout/wor
 
 import { useChat } from '../runtime/ChatProvider'
 import { useConversationDetail } from '../runtime/useChatData'
+import { usePanelStore } from '../panel/panelStore'
 
 export function ChatHeader() {
   const chat = useChat()
@@ -35,6 +39,8 @@ export function ChatHeader() {
   const project = useWorkspaceStore((state) =>
     workspaceId ? state.items.find((item) => item.id === workspaceId)?.name : undefined,
   )
+  const panelOpen = usePanelStore((state) => state.open)
+  const togglePanel = usePanelStore((state) => state.toggle)
 
   useEffect(() => {
     // 只在**这一条会话真的挂在某个项目下**时去要清单：没有项目就没有名字可显示，
@@ -43,19 +49,20 @@ export function ChatHeader() {
   }, [workspaceId])
 
   const title = (detail.data?.title ?? '').trim()
-  if (!title) return null
 
   return (
     <div className="flex h-[var(--row-height)] shrink-0 items-center px-[var(--page-gutter)]">
       {/* 与消息列同一条 768px 的居中窄列（`--chat-measure`）：抬头与它下面那段正文
           对齐在同一条竖线上，扫视时不会左右跳 */}
       <div className="mx-auto flex w-full min-w-0 items-center gap-[var(--space-2)] max-w-[var(--chat-measure)]">
-        <span
-          className="min-w-0 truncate text-[length:var(--text-meta-size)] font-medium text-[var(--text-primary)]"
-          title={title}
-        >
-          {title}
-        </span>
+        {title ? (
+          <span
+            className="min-w-0 truncate text-[length:var(--text-meta-size)] font-medium text-[var(--text-primary)]"
+            title={title}
+          >
+            {title}
+          </span>
+        ) : null}
         {project ? (
           <span className="inline-flex shrink-0 items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
             <Folder size={13} aria-hidden />
@@ -64,6 +71,22 @@ export function ChatHeader() {
             </span>
           </span>
         ) : null}
+        {/*
+          右侧面板的开关。摆在**这一行的右端**（`ml-auto`）而不是页面右上角：
+          对齐的是它下面那条 768 的窄列，不在标题栏里再挖一处新的对齐线。
+          `aria-pressed` 说的是"这颗按钮管的那件事现在开着没有"（开关类按钮的口径），
+          名字随状态走，读屏念出来就是"收起右侧面板"。
+        */}
+        <button
+          type="button"
+          className="ml-auto inline-flex h-[var(--hit-target)] w-[var(--hit-target)] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-control)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+          aria-pressed={panelOpen}
+          aria-label={panelOpen ? '收起右侧面板' : '打开右侧面板'}
+          title={panelOpen ? '收起右侧面板' : '打开右侧面板'}
+          onClick={togglePanel}
+        >
+          <PanelRight size={16} />
+        </button>
       </div>
     </div>
   )

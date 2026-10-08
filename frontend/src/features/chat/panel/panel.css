@@ -1,0 +1,512 @@
+/**
+ * 对话页右侧面板（`features/chat/panel/**`）的全部样式。
+ *
+ * 三条纪律（与 `ui/chat.css` / `preview.css` 那两份同源）：
+ *
+ * 1. **取值全部来自 `src/styles/tokens.css`**：颜色、间距、圆角、字号一律引令牌，
+ *    这一份里不出现色值、不写死圆角与字号（结构常量如图标盒尺寸除外）；
+ * 2. **规则写在 `@layer components` 里**，并在文件顶部显式声明层序——层的先后由名字
+ *    **首次出现的位置**决定，不声明就由 CSS 的加载顺序决定（`misc.css` 那次实测：
+ *    preflight 的 `* { margin: 0 }` 把整份组件样式吃掉）。顶部那一句与 `tokens.css` /
+ *    `misc.css` / `chat.css` / `preview.css` 逐字相同，重复是幂等的；
+ * 3. **类名一律 `ch-panel-*` 前缀**（三条例外见下）：这一族只长在面板里，
+ *    与对话区那批 `ch-*`（`flow.css`）分得开。
+ *
+ *    **例外三条是被撞出来的**：`flow.css` 里已经住着 `.ch-panel`（步骤原文那块
+ *    Request / Response 面板）、`.ch-panel-head`、`.ch-panel-line` 三个类名（`StepPayload`
+ *    在用），而那份文件里的规则**没进层**（C1 已记在案的 104 处之一）。层外的声明压过
+ *    任何一层，所以这不只是命名撞车：那三条取值（`margin: 6px 0 4px`、底色 `--Bg-Secondary`、
+ *    `overflow: hidden`）会**盖在**面板外壳上——而 `overflow: hidden` 正好会把窄屏那种
+ *    `position: absolute` 的浮层裁掉。所以外壳 / 抬头那一行 / 正文滚动层改叫
+ *    `.ch-panel-shell` / `.ch-panel-bar` / `.ch-panel-scroll`（连 `-body` 也避开：
+ *    `StepPayload` 的 `<pre>` 上正挂着 `ch-panel-body`）。其余名字与 flow.css 不重名。
+ *
+ * ## 窄屏为什么是覆盖式而不是挤一挤
+ *
+ * 侧栏 240 + 面板 380 = **620px**。窗口 768（平板竖屏、桌面壳缩到一半）时留给聊天列
+ * 只剩 148px——输入卡片那一行会整格折行、发送键落到视口外。所以窗口 < 1100 时面板
+ * 改成**盖在聊天列上的浮层**（`data-overlay`）：它自己还是 380 宽，但不再从聊天列里
+ * 扣宽度，看完点一下收起来就回到原来的样子。判据（1100）与那条说明在
+ * `panel/usePanelLayout.ts`，两处必须一起看。
+ *
+ * ## 主区那个盒子：**宽度稳定 + 自己不滚**（这条是硬要求，不是审美）
+ *
+ * `.kylab-preview` 的父节点会被 `PptxPreview` 反复量宽（上游没有 resize 处理，
+ * 窗口变宽只能靠重建预览器）。那个组件在 2026-10-05 闪屏过的根因就是**被量的节点本身
+ * 是滚动容器**：清空 → 撑不到高度 → 滚动条消失 → `clientWidth` 变宽 → 触发重建 →
+ * 又清空……判定输入被自己触发的那次渲染改掉了，于是无限"清空 → 重建"。
+ * 所以这里的 `.ch-panel-preview` 照 `.kylab-preview` 的形状复刻（普通 flex 列、
+ * `width: 100%`、**不设 overflow**），滚动的职责交给更外层的 `.ch-panel-scroll`：
+ * 它是被量节点的**祖先**，它的滚动条怎么变都不会改到被量节点的宽度。
+ */
+@layer theme, base, components, utilities;
+
+@layer components {
+  /* ---------------------------------------------------------------- 面板那一列 */
+
+  .ch-panel-shell {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    width: var(--panel-width);
+    min-height: 0;
+    min-width: 0;
+    /* 面板与聊天列之间那条边界：与侧栏同一条 hairline（不是阴影，也不是更粗的分隔） */
+    border-left: 1px solid var(--border-hairline);
+    background: var(--bg-surface);
+  }
+
+  /*
+    窄屏（< 1100）：盖在聊天列右边那条上。`position: absolute` 的锚点是页面那一行
+    （`ChatPage` 上那个 `relative`），所以它贴的是**对话区**的右缘、不会盖到侧栏上。
+  */
+  .ch-panel-shell[data-overlay='true'] {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    box-shadow: var(--shadow-popover);
+  }
+
+  /* ---------------------------------------------------------------- 标签条（自绘） */
+
+  /*
+    自绘而不是用 `@/ui/tabs`：那个 trigger 是 `flex-1` 等宽的，标签条里三个标签会各占
+    三分之一（长得像"分段开关"，而标签该按名字宽度排）；而且它的下划线指示条（`::after`）
+    与这一条的 44px 高、带关闭键的标签不是一套东西。`role=tablist/tab` 与键盘那两条
+    自己接（见 `SidePanel.tsx`）。
+  */
+  .ch-panel-tabs {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-1);
+    height: var(--row-height);
+    padding: 0 var(--space-2);
+    border-bottom: 1px solid var(--border-hairline);
+    /* 标签多了横向滚：不许把它们压成一条缝，也不许换行（换行会把正文挤下去） */
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  /*
+    一个标签 = **壳 + 两个按钮**（"切过去"与"关掉"）。
+    为什么不把关闭键套在标签按钮里：`<button>` 里再放一个 `<button>` 是不合法的 HTML
+    （浏览器会把内层弹到外面去，观感与命中区一起乱）。所以壳负责外形与底色，
+    里面那两颗各管一件事——`role=tab` 挂在内层那颗上（键盘与读屏只认它）。
+  */
+  .ch-panel-tab {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-1);
+    max-width: 180px;
+    height: 26px;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-secondary);
+    transition: var(--transition-ui);
+  }
+
+  .ch-panel-tab:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* 当前标签：靠**底色差**表示选中（与菜单项、侧栏会话行同一手法，不给描边） */
+  .ch-panel-tab[data-active='true'] {
+    background: var(--bg-selected);
+    color: var(--text-primary);
+  }
+
+  .ch-panel-tab-main {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: var(--text-meta-size);
+    cursor: pointer;
+  }
+
+  .ch-panel-tab-main:focus-visible {
+    outline: none;
+  }
+
+  .ch-panel-tab-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--text-tertiary);
+  }
+
+  .ch-panel-tab-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 关闭键：常驻（不是 hover 才出现）——hover 才出现的那种，鼠标一挪就找不到 */
+  .ch-panel-tab-close {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+  }
+
+  .ch-panel-tab-close:hover {
+    background: var(--bg-active);
+    color: var(--text-primary);
+  }
+
+  /* 「+」：标签条右端那一颗 */
+  .ch-panel-add {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    margin-left: var(--space-1);
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+  }
+
+  .ch-panel-add:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* ---------------------------------------------------------------- 空态（一个标签都没有） */
+
+  .ch-panel-empty {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-3) var(--space-2);
+  }
+
+  /* 与菜单项、树里那一行同一外形：这一屏给的也是"点它开一个东西" */
+  .ch-panel-empty-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    padding: var(--space-1-5) var(--space-2);
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--text-meta-size);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .ch-panel-empty-item:hover {
+    background: var(--bg-hover);
+  }
+
+  .ch-panel-empty-text {
+    margin: 0;
+    padding: 0 var(--space-2);
+    color: var(--text-quaternary);
+    font-size: var(--text-micro-size);
+  }
+
+  /* ---------------------------------------------------------------- 文件视图：抬头两行 */
+
+  .ch-panel-bar {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .ch-panel-crumbs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    overflow-x: auto;
+    font-size: var(--text-meta-size);
+    white-space: nowrap;
+  }
+
+  .ch-panel-crumb {
+    padding: 1px var(--space-1);
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--text-meta-size);
+    cursor: pointer;
+  }
+
+  .ch-panel-crumb:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* 当前层那一段：不可点，也不给悬停底色（它就是"你现在在哪"） */
+  .ch-panel-crumb[aria-current='page'] {
+    color: var(--text-primary);
+    cursor: default;
+  }
+
+  .ch-panel-crumb[aria-current='page']:hover {
+    background: transparent;
+  }
+
+  .ch-panel-crumbs-sep {
+    flex: none;
+    color: var(--text-quaternary);
+  }
+
+  /* 面包屑的每一段一个盒子：`shrink-0` 让它们只横向滚，不被压扁 */
+  .ch-panel-crumb-seg {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .ch-panel-tools {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  /* 工具行上的图标按钮（排序）：与搜索框同高（`--control-height`），形状与别处一致 */
+  .ch-panel-tool {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-height);
+    height: var(--control-height);
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition-ui);
+  }
+
+  .ch-panel-tool:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* 菜单里那句"这个菜单按什么算"（排序只排同一层）：菜单自己的小字，不是页面上的小字 */
+  .ch-panel-menu-line {
+    margin: 0;
+    padding: var(--space-1) var(--space-3) var(--space-2);
+    color: var(--text-quaternary);
+    font-size: var(--text-micro-size);
+  }
+
+  /*
+    搜索框：`--control-height` 那一档（与别处的输入框、按钮同高）。
+    `flex: 1` + `min-width: 0`：窄面板里它要吃掉剩下的宽度，但不能把那一行撑破。
+  */
+  .ch-panel-search {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    align-items: center;
+    gap: var(--space-1);
+    height: var(--control-height);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+    background: var(--bg-subtle);
+    color: var(--text-tertiary);
+  }
+
+  .ch-panel-search input {
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--text-meta-size);
+    outline: none;
+  }
+
+  /* ---------------------------------------------------------------- 文件视图：正文 */
+
+  /* 唯一的那一层的滚动容器（理由见文件头注：滚动必须落在被量节点的**祖先**上） */
+  .ch-panel-scroll {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-2) var(--space-3);
+    overflow-y: auto;
+  }
+
+  /* 一句说明（空态 / 读不了 / 截断）：与 `FileDrawer` 的 `.drawer-note` 同一处位置 */
+  .ch-panel-text {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: var(--text-meta-size);
+  }
+
+  .ch-panel-text[data-tone='bad'] {
+    color: var(--status-danger);
+  }
+
+  /* ---------------------------------------------------------------- 文件树 */
+
+  .ch-panel-tree {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /*
+    树里的一行：左侧缩进由 `--ch-panel-depth` 算（调用点只给层数，不给像素）。
+
+    `--ch-panel-indent` 是这一层自己的结构常量（14px = 一枚 16px 图标再窄一点，
+    正好让子层的名字落在父层名字的右下方）——它不进令牌表，理由与
+    `preview.css` 的行号列宽一样：这是这一块的骨架尺寸，不是全站口径。
+  */
+  .ch-panel-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    min-width: 0;
+    height: var(--row-height-compact);
+    padding: 0 var(--space-2);
+    padding-left: calc(var(--space-2) + var(--ch-panel-indent) * var(--ch-panel-depth, 0));
+    border: 0;
+    border-radius: var(--radius-row);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--text-meta-size);
+    text-align: left;
+    cursor: pointer;
+    transition: var(--transition-ui);
+  }
+
+  .ch-panel-row:hover {
+    background: var(--bg-hover);
+  }
+
+  /* 正在预览的那一份：常驻底色（与当前标签同一档） */
+  .ch-panel-row[aria-current='true'] {
+    background: var(--bg-selected);
+  }
+
+  .ch-panel-row-icon {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    color: var(--text-tertiary);
+  }
+
+  .ch-panel-row-name {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 行尾的大小 / 时间：数字等宽，一列能沿竖轴对齐（`.tabular` 那一档） */
+  .ch-panel-row-meta {
+    flex: none;
+    color: var(--text-tertiary);
+    font-size: var(--text-micro-size);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 目录那一行的折叠三角：`90°` = 展开，`0°` = 折着 */
+  .ch-panel-chevron {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    color: var(--text-quaternary);
+    transform: rotate(0deg);
+    transition: transform var(--motion-fast) var(--motion-ease);
+  }
+
+  .ch-panel-chevron[data-open='true'] {
+    transform: rotate(90deg);
+  }
+
+  /* 文件那一行不给这一格，但**位置留着**（与目录行的名字左缘对齐），所以是空盒子 */
+  .ch-panel-chevron[data-empty='true'] {
+    visibility: hidden;
+  }
+
+  /* ---------------------------------------------------------------- 选中那一份的预览 */
+
+  .ch-panel-preview {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    width: 100%;
+    min-height: 160px;
+    /* 见文件头注：这里**不许**写 overflow —— 它是 PptxPreview 量宽的那个节点 */
+  }
+
+  .ch-panel-preview-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .ch-panel-preview-name {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-size: var(--text-meta-size);
+  }
+
+  /* 「回到列表」那一颗（图标按钮，与面板里其余图标按钮同一外形） */
+  .ch-panel-back {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .ch-panel-back:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+}
