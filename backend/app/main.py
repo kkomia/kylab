@@ -1,4 +1,9 @@
-"""FastAPI 入口（工程规范 §3.1）。"""
+"""FastAPI 入口（工程规范 §3.1）。
+
+这个进程只有一种形态：**本机档**（桌面壳的边车）。原先的"服务器档"随知识库产品
+剥离到独立仓库一起拆掉了——路由表只剩 ``local_router`` 一张，存储只剩本机 SQLite +
+本地目录，消费者只剩"定时任务到点跑 + 本机库空闲维护"那一个。
+"""
 
 import asyncio
 import logging
@@ -8,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1.router import api_router, local_router
+from app.api.v1.router import local_router
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.http import close_shared_client
@@ -17,7 +22,6 @@ from app.core.services import get_services
 from app.core.storage import close_stores
 from app.storage.base import IMPORT_UNFINISHED_STATES
 from app.workers.local_worker import bind_local_scheduler, run_local_scheduler
-from app.workers.queue_worker import TaskWorker
 
 logger = logging.getLogger(__name__)
 
@@ -55,40 +59,20 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     stop = asyncio.Event()
     worker_tasks: list[asyncio.Task[None]] = []
-    # **本机档的消费者与服务器档不是同一个**（M2 §4.1 + 本节）：
-    # 服务器那个跑的是摄取流水线（解析 / 切块 / 嵌入 / 向量索引），而本机根本没有那些表
-    # ——知识库在 NAS 上（本机是它的客户端）。起了它，
-    # 表现是"进程里有个协程每隔几秒去撞一次不可用的库"，日志天天刷错却什么也做不成。
-    #
-    # 但**本机档确实需要消费者**：定时任务的记录与"到点"判定都在本机库里
-    # （队列表在 NAS 上，所以那一档换成就地跑），而"入库/回收站"那几件收尾也都是
-    # NAS 自己的事。两件事的落点与边界写在 `workers/local_worker.py` 的模块头。
-    if settings.deployment == "local":
-        if settings.run_worker:
-            scheduler = bind_local_scheduler(services)
-            worker_tasks = [asyncio.create_task(run_local_scheduler(scheduler, stop))]
-            logger.info("本机档：已启动本机消费者（定时任务到点跑 + 本机库空闲维护）")
-        else:
-            logger.warning("KYLAB_RUN_WORKER=false：本机档未起消费者，定时任务到点不会跑")
-        # R1 的"启动时看一眼"：上次旧会话导入要是被杀在半路，账在库里（状态是
-        # planned/running）。**只报不重试**——重跑是用户的决定（来源可能都不在了），
-        # 而"重跑同一个来源就接着往下走"这条承诺由会话级幂等兜着（见 services/legacy_import.py）。
-        _report_unfinished_imports(services)
-    elif settings.run_worker:
-        # 一个消费者 = 一个协程（``KYLAB_WORKER_CONCURRENCY`` 个）。
-        # 它们各自领活、互不阻塞：任务表本身就是队列，``claim_task`` 原子单语句，
-        # 所以"多消费者"不需要额外的调度器（见 services/_build_workers 的说明）。
-        # 兜底用 ``services.kb.worker``：装配点已经保证 ``workers`` 非空，
-        # 但"消费者一个都没起"是最难查的一类故障（任务永远排队），宁可这里多一句
-        consumers = services.kb.workers or [services.kb.worker]
-        worker_tasks = [asyncio.create_task(_run_worker(worker, stop)) for worker in consumers]
-        logger.info(
-            "内嵌任务消费者已启动 %d 个：%s",
-            len(worker_tasks),
-            "、".join(worker.owner for worker in consumers),
-        )
+    # **消费者只有一个**：定时任务的记录与"到点"判定都在本机库里，而"入库/回收站"
+    # 那几件收尾是知识库（NAS）自己的事，本机没有那些表。起了摄取那个消费者，表现是
+    # "进程里有个协程每隔几秒去撞一次不可用的库"，日志天天刷错却什么也做不成。
+    # 落点与边界写在 `workers/local_worker.py` 的模块头。
+    if settings.run_worker:
+        scheduler = bind_local_scheduler(services)
+        worker_tasks = [asyncio.create_task(run_local_scheduler(scheduler, stop))]
+        logger.info("已启动本机消费者（定时任务到点跑 + 本机库空闲维护）")
     else:
-        logger.warning("KYLAB_RUN_WORKER=false：未启动任务消费者，上传的文档不会被处理")
+        logger.warning("KYLAB_RUN_WORKER=false：未起消费者，定时任务到点不会跑")
+    # R1 的"启动时看一眼"：上次旧会话导入要是被杀在半路，账在库里（状态是
+    # planned/running）。**只报不重试**——重跑是用户的决定（来源可能都不在了），
+    # 而"重跑同一个来源就接着往下走"这条承诺由会话级幂等兜着（见 services/legacy_import.py）。
+    _report_unfinished_imports(services)
 
     try:
         yield
@@ -96,7 +80,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         stop.set()
         if worker_tasks:
             await asyncio.gather(*worker_tasks, return_exceptions=True)
-        # 释放 PG 连接池：进程级资源，不还回去会拖住连接直到进程被回收
+        # 释放本机 SQLite 句柄与 WAL 尾巴：进程级资源，不还回去会拖住文件
         close_stores()
         # 出站 HTTP 客户端同理（见 core/http.py）：连接池也是进程级资源
         close_shared_client()
@@ -108,7 +92,7 @@ def _report_unfinished_imports(services) -> None:  # type: ignore[no-untyped-def
     读台账失败只警告：它不该拦住整个服务起来（与上面"记忆模板建不出来"同一口径）。
     """
     importer = services.legacy_import
-    if importer is None:  # pragma: no cover - 本机档一定有；服务器档根本走不到这里
+    if importer is None:  # pragma: no cover - 组合根一定给得出它
         return
     try:
         unfinished = [
@@ -127,28 +111,6 @@ def _report_unfinished_imports(services) -> None:  # type: ignore[no-untyped-def
         )
 
 
-async def _run_worker(worker: TaskWorker, stop: asyncio.Event) -> None:
-    """跑消费循环。
-
-    关停时 ``stop`` 置位只是"别再领新任务"；真正让卡在
-    ``await asyncio.to_thread(...)`` 上的循环动起来的是取消。收尾语义由
-    ``TaskWorker.run_forever`` 自己保证（取消后仍等手上那份文档写完），
-    所以这里对 ``CancelledError`` 只做原样上抛——吞掉它 asyncio 会误以为
-    任务正常结束，取消语义就丢了。
-
-    **只把 ``stop`` 交给 run_forever，不额外传租约事件**：租约被回收时 worker
-    自己就会停手（``run_once`` 拒绝再领任务、两个循环都检查 ``_lease_lost``），
-    这里再插一手只会让"谁负责退出"变成两处判断。
-    关停时 ``asyncio.gather`` 会等它收完手，语义不变。
-    """
-    try:
-        await worker.run_forever(stop=stop)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("任务消费者异常退出")
-
-
 def create_app() -> FastAPI:
     """组装应用：配置、中间件、异常映射、路由、生命周期。"""
     settings = get_settings()
@@ -163,7 +125,7 @@ def create_app() -> FastAPI:
         logger.warning("日志文件建不出来，本次只输出到控制台", exc_info=True)
 
     app = FastAPI(
-        title="KYLAB 知识库服务",
+        title="KYLAB 本机服务",
         version=settings.app_version,
         docs_url=f"/api/{API_VERSION}/docs",
         redoc_url=f"/api/{API_VERSION}/redoc",
@@ -171,8 +133,8 @@ def create_app() -> FastAPI:
         # FastAPI 默认会注册 /docs/oauth2-redirect，不带版本前缀，必须显式归位
         swagger_ui_oauth2_redirect_url=f"/api/{API_VERSION}/docs/oauth2-redirect",
         description=(
-            "轻量知识库产品（架构设计 v0.2）。"
-            "产品边界：对外只返回检索结果原文，不做任何 LLM 预处理。"
+            "桌面端的本机后端（边车）。会话、笔记、设置、模型凭据都落这一台机器，"
+            "知识库在别处（另一台机器上的提供者），本机是它的客户端。"
         ),
         lifespan=lifespan,
     )
@@ -184,14 +146,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     register_exception_handlers(app)
-    # **按档挂哪一张路由表**（M2 §4.1）：服务器档全量（一位行为不变），
-    # 本机档只挂白名单那几张（理由与清单见 `api/v1/router.py` 的 `local_router`）。
-    # 档位在 `Settings` 上，而 `get_settings()` 是进程级单例——所以它只在启动时定一次，
-    # 运行期换不了（那正是我们要的：中途换档会让"数据写哪儿"变成两处判断）。
-    app.include_router(
-        api_router if settings.deployment == "server" else local_router,
-        prefix=f"/api/{API_VERSION}",
-    )
+    # **只有一张路由表**（清单与理由见 `api/v1/router.py` 的模块头）。
+    # 这张表是白名单：本机没有知识库数据源，挂上去的每一条都必须答得出话。
+    app.include_router(local_router, prefix=f"/api/{API_VERSION}")
     return app
 
 

@@ -15,7 +15,7 @@
 
 - **本机档装配时自己生成一条**，而且是**幂等**的（第二次装配不许换值：换了的话
   已经发出去的链接会一起失效）；
-- **没配 → 503 + 那句话**（挑三条代表路由：产物签名链接 / 笔记配图 / 头像）；
+- **没配 → 503 + 那句话**（挑两条代表路由：产物签名链接 / 笔记配图）；
 - **配好之后同一路由 200**，并且那次签发的链接**真的能取到内容**（走一遍
   ``download_file_content`` 的校验，而不是只看状态码）。
 
@@ -32,11 +32,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from app.core.exceptions import register_exception_handlers
 from app.core.services import reset_services
 from app.core.storage import get_stores, reset_stores
 from app.services import runtime_config
@@ -197,26 +195,22 @@ def test_a_missing_secret_is_503_on_the_note_image_route(
         assert stores.meta.get_setting(URL_SIGNING_SECRET_SETTING) is None
 
 
-def test_a_missing_secret_is_503_on_the_avatar_route(
+def test_a_missing_secret_is_503_on_the_notes_image_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """头像那条（取图时校验）也是 503。
+    """笔记取图那条（校验签名）也是 503——与上面那条上传同一个信封。
 
-    **为什么单独起一个 app**：``avatars`` 那张 router 不在本机档的白名单里
-    （``api/v1/router.py`` 的"明确不挂"清单里有它），所以这里把它挂在一个裸 app 上——
-    依赖注入用的是**同一个** ``get_services``（进程级那一个），端点的行为一模一样。
+    头像那一条随服务器档一起删了（`api/v1/avatars.py` 不在本机档白名单里），
+    所以"取图时缺密钥"这个分支由笔记图片这条钉住。
     """
     with _local_app(tmp_path, monkeypatch) as client:
         assert client.get("/api/v1/local/status").status_code == 200
         get_stores().meta.delete_setting(URL_SIGNING_SECRET_SETTING)
-        probe = FastAPI()
-        register_exception_handlers(probe)
-        from app.api.v1 import avatars
+        note = client.post("/api/v1/notes", json={"title": "取图"}).json()
 
-        probe.include_router(avatars.router, prefix="/api/v1")
-
-        with TestClient(probe) as client:
-            response = client.get("/api/v1/avatars/user_1?expires=0&signature=x")
+        response = client.get(
+            f"/api/v1/notes/{note['id']}/images/whatever.png?expires=0&signature=x"
+        )
 
         assert response.status_code == 503, response.text
         assert response.json()["code"] == "service_unavailable"

@@ -368,15 +368,15 @@ def test_a_redirect_is_probed_but_not_followed(local_client: TestClient) -> None
 # ------------------------------------------------------------------ 挂在哪一档
 
 
-def test_the_web_family_lives_only_on_the_local_router() -> None:
-    """这一族**只挂本机档那张白名单上**（出口在本机）。
+def test_the_web_family_lives_on_the_local_router() -> None:
+    """这一族挂在本机档那张白名单上（出口在本机）。
 
-    不建 app 来判：服务器档要有 PG 才能起来，而这条判据问的是**路由归属**——把 router
-    装进一个空 ``FastAPI`` 再读 OpenAPI 就够了（同 ``test_local_backup_api.py`` 那条）。
+    不建 app 来判：问的是**路由归属**——把 router 装进一个空 ``FastAPI`` 再读 OpenAPI
+    就够了（同 ``test_local_backup_api.py`` 那条）。
     """
     from fastapi import FastAPI
 
-    from app.api.v1.router import api_router, local_router
+    from app.api.v1.router import local_router
 
     def paths_of(router: Any) -> set[str]:
         probe = FastAPI()
@@ -385,7 +385,3 @@ def test_the_web_family_lives_only_on_the_local_router() -> None:
 
     local_paths = paths_of(local_router)
     assert {PAGE_ENDPOINT, EMBED_ENDPOINT} <= local_paths
-    server_paths = paths_of(api_router)
-    assert {PAGE_ENDPOINT, EMBED_ENDPOINT}.isdisjoint(server_paths), (
-        "服务器档不该有这两条：那边没有「用户正在读一页」这个场景"
-    )

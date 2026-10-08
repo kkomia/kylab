@@ -535,16 +535,15 @@ def test_the_three_backup_services_are_one_process_wide_set(
         assert services.backup_queue.worker.name == "backup-upload"
 
 
-def test_the_backup_family_lives_only_on_the_local_router() -> None:
-    """这一族**只挂在本机档那张白名单上**（服务器档那一档自己就是备份的目的地）。
+def test_the_backup_family_lives_on_the_local_router() -> None:
+    """这一族挂在本机档那张白名单上（备份的目的地在别处，本机是客户端）。
 
-    不建 app 来判：服务器档要有 PG 才能起来，而这条判据问的是**路由归属**——把 router
-    装进一个空 ``FastAPI`` 再读 OpenAPI 就够了（`api/v1/router.py` 的"不挂清单"是同一
-    条纪律，那条清单一改这里就红）。
+    不建 app 来判：问的是**路由归属**——把 router 装进一个空 ``FastAPI`` 再读
+    OpenAPI 就够了（`api/v1/router.py` 的清单是同一份口径，清单一改这里就红）。
     """
     from fastapi import FastAPI
 
-    from app.api.v1.router import api_router, local_router
+    from app.api.v1.router import local_router
 
     def paths_of(router: Any) -> set[str]:
         probe = FastAPI()
@@ -554,8 +553,7 @@ def test_the_backup_family_lives_only_on_the_local_router() -> None:
     local_paths = paths_of(local_router)
     assert {f"{BASE}", f"{BASE}/points", f"{BASE}/snapshots"} <= local_paths
     assert f"{BASE}/points/{{device_id}}/{{snapshot_id}}" in local_paths
-    assert f"{BASE}/restore" in local_paths, "按点恢复（阶段 5）也只挂在本机档那张白名单上"
-    assert {path for path in paths_of(api_router) if path.startswith("/api/v1/local/")} == set()
+    assert f"{BASE}/restore" in local_paths, "按点恢复（阶段 5）也挂在本机档那张白名单上"
 
 
 # ------------------------------------------------------------------ ⑦ 按点恢复（阶段 5）

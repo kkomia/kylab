@@ -27,7 +27,6 @@ import pytest
 
 from app.core.exceptions import ForbiddenError, InvalidRequestError, NotFoundError
 from app.core.services import Services
-from app.mcp_server.auth import current_caller
 from app.services import tools
 from app.services.api_key import READ, WRITE, Caller
 from app.services.deck import Archetype, find_node, load_deck_spec, map_deck, verify_pptx
@@ -130,21 +129,6 @@ def test_caller_is_required(services: Services) -> None:
     """
     with pytest.raises(TypeError):
         call_tool(services, "list_knowledge_bases", {})  # type: ignore[call-arg]
-
-
-def test_current_caller_without_identity_raises() -> None:
-    """传输层拿不到凭据时，``current_caller`` 必须拒绝而不是返回 None。
-
-    返回 None 等于把"记得判空"变成每个工具的纪律，而漏判不会报错、
-    只会静默放行——最难发现的一种洞。
-    """
-    from app.core.exceptions import UnauthorizedError
-
-    with pytest.raises(UnauthorizedError) as excinfo:
-        current_caller()
-    # 报错要说清**两条传输各该怎么带凭据**，否则用户不知道该改哪里
-    assert "Authorization" in str(excinfo.value)
-    assert "KYLAB_MCP_KEY" in str(excinfo.value)
 
 
 def test_list_only_returns_knowledge_bases_in_scope(
@@ -732,17 +716,6 @@ def test_list_documents_respects_scope(services: Services, kb: str, key_for) -> 
 
     with pytest.raises(ForbiddenError):
         call_tool(services, "list_documents", {"knowledge_base_id": kb}, caller=scoped)
-
-
-def test_every_tool_has_a_parameter_whitelist() -> None:
-    """``server.py`` 的 ``_PARAMS`` 必须覆盖全部工具。
-
-    少一个的后果不是"参数被过滤掉"，而是 ``build_server`` 直接 KeyError——
-    服务起不来。放在这里断言是因为它跨了两个模块，只看一边发现不了。
-    """
-    from app.mcp_server.server import _PARAMS
-
-    assert set(_PARAMS) == set(TOOL_NAMES)
 
 
 # --------------------------------------------------------------------- 记忆
