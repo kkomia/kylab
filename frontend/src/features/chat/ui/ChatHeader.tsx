@@ -41,6 +41,13 @@ export function ChatHeader() {
   )
   const panelOpen = usePanelStore((state) => state.open)
   const togglePanel = usePanelStore((state) => state.toggle)
+  /**
+   * 面板里还有几个**没看过**的标签（agent 抓页建出来的那些，见 `panelStore.unread`）。
+   *
+   * 只在**面板关着**时露出来：开着的时候那个数在标签条的小圆点上（用户正看着标签条，
+   * 再说一遍是重复的）。
+   */
+  const unseen = usePanelStore((state) => state.unread.length)
 
   useEffect(() => {
     // 只在**这一条会话真的挂在某个项目下**时去要清单：没有项目就没有名字可显示，
@@ -76,16 +83,37 @@ export function ChatHeader() {
           对齐的是它下面那条 768 的窄列，不在标题栏里再挖一处新的对齐线。
           `aria-pressed` 说的是"这颗按钮管的那件事现在开着没有"（开关类按钮的口径），
           名字随状态走，读屏念出来就是"收起右侧面板"。
+
+          面板关着、而里面躺着没看过的网页标签时，右上角挂一个 `N` 角标：
+          agent 抓页建标签**不抢焦点**（见 `panelStore.unread`），不主动说一声，
+          用户不会知道面板里多了东西。角标本身对读屏不可见（`aria-hidden`），
+          那个数在 `title` 里说一遍——名字必须留在原来的那句上，否则
+          "打开右侧面板"这颗按钮就找不到了（用例与肌肉记忆都认它）。
         */}
         <button
           type="button"
-          className="ml-auto inline-flex h-[var(--hit-target)] w-[var(--hit-target)] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-control)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+          className="relative ml-auto inline-flex h-[var(--hit-target)] w-[var(--hit-target)] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-control)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
           aria-pressed={panelOpen}
           aria-label={panelOpen ? '收起右侧面板' : '打开右侧面板'}
-          title={panelOpen ? '收起右侧面板' : '打开右侧面板'}
+          title={
+            !panelOpen && unseen > 0
+              ? `打开右侧面板（${unseen} 个新页面）`
+              : panelOpen
+                ? '收起右侧面板'
+                : '打开右侧面板'
+          }
           onClick={togglePanel}
         >
           <PanelRight size={16} />
+          {!panelOpen && unseen > 0 ? (
+            <span
+              aria-hidden
+              data-unseen={unseen}
+              className="absolute -top-0.5 -right-0.5 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[var(--radius-pill)] bg-[var(--accent)] px-[3px] text-[length:var(--text-micro-size)] leading-none text-[var(--Always-White)]"
+            >
+              {unseen}
+            </span>
+          ) : null}
         </button>
       </div>
     </div>

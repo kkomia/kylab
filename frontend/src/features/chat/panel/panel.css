@@ -509,4 +509,220 @@
     background: var(--bg-hover);
     color: var(--text-primary);
   }
+
+  /* ---------------------------------------------------------------- 未读小圆点 */
+
+  /*
+    agent 抓页建出来的标签**不抢焦点**，所以"有新东西"只能自己说出来（见 `panelStore.unread`）。
+    它是**一枚实心圆**（不是 `N`）：标签条上的计数会在标签宽度上跳来跳去，而这里要说的
+    只有"它还没被看过"这一件事——"几页"那个数在开关的角标上（面板关着时才看得到）。
+  */
+  .ch-panel-tab-dot {
+    display: inline-flex;
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+  }
+
+  /* ---------------------------------------------------------------- 开网页那一格（+ 菜单 / 空态） */
+
+  /*
+    地址输入框那一行。它摆在**标签条与内容之间**（面板里唯一一处宿主，见 `SidePanel`），
+    所以两种状态下都在同一个位置：有标签时在标签条下面，空态时在最上面。
+  */
+  .ch-panel-webopenform {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  /* 与面板里其余输入框同一形状（搜索框那一档：`--control-height` + hairline + 浅底） */
+  .ch-panel-webopeninput {
+    height: var(--control-height);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+    background: var(--bg-subtle);
+    color: var(--text-primary);
+    font-size: var(--text-meta-size);
+    outline: none;
+  }
+
+  .ch-panel-webopeninput[aria-invalid='true'] {
+    border-color: var(--status-danger);
+  }
+
+  /* ---------------------------------------------------------------- 网页视图：工具条 */
+
+  .ch-panel-webbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  /*
+    ← / → / ⟳ / ⋯ 与「在系统浏览器打开」都走 `.ch-panel-tool`（面板里那一档图标按钮），
+    这里只补**禁用态**：⟳ 不禁用，而 ←/→ 在历史栈的两头必须看得出点不动
+    （只写 `disabled` 属性的话外形一点不变，用户点下去只会以为按钮坏了）。
+  */
+  .ch-panel-tool:disabled {
+    color: var(--text-quaternary);
+    cursor: default;
+  }
+
+  .ch-panel-tool:disabled:hover {
+    background: transparent;
+    color: var(--text-quaternary);
+  }
+
+  /*
+    地址栏：**只读时是一颗按钮、编辑时是输入框**（同一个类名两种外形，差异由 `--input` 那
+    一档给）。`flex: 1` + `min-width: 0`：地址常常比面板宽，它吃掉剩下的宽度然后**自己**
+    省略，不许把那一行撑破（其余几颗都是 `flex: none`）。
+  */
+  .ch-panel-address {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    align-items: center;
+    height: var(--control-height);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-size: var(--text-meta-size);
+    text-align: left;
+    cursor: text;
+  }
+
+  .ch-panel-address:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .ch-panel-address-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 编辑态：去掉那一层"按钮"的悬停反应，光标与文本色按输入框来 */
+  .ch-panel-address--input {
+    color: var(--text-primary);
+    outline: none;
+    cursor: text;
+  }
+
+  .ch-panel-address--input:hover {
+    background: var(--bg-subtle);
+  }
+
+  .ch-panel-address--input[aria-invalid='true'] {
+    border-color: var(--status-danger);
+  }
+
+  /* ---------------------------------------------------------------- 网页视图：嵌入档 */
+
+  /*
+    嵌入那一档的盒子：面板宽 380、高不定，iframe 要**填满剩下的那一块**。
+    `flex: 1` + `min-height: 0` 与面板正文那条同源（滚动归外层，这里只管撑开）。
+  */
+  .ch-panel-frame {
+    display: flex;
+    flex: 1;
+    min-height: 240px;
+    overflow: hidden;
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-panel);
+    background: var(--bg-subtle);
+  }
+
+  .ch-panel-frame-body {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: var(--bg-surface);
+  }
+
+  /* ---------------------------------------------------------------- 网页视图：阅读档 */
+
+  /* 标题 + 站点图标 + 抓取时间：这一档的抬头（说明那一句是它下面的灰字） */
+  .ch-panel-webhead {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  /*
+    站点图标：与抓页清单里那一枚（`.ch-hit-logo`）同尺寸（16px 圆），
+    取不到时退字牌 / 通用地球——那一整套兜底在 `SearchHits.tsx` 里写着，这里只画形状。
+  */
+  .ch-panel-weblogo {
+    display: inline-flex;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: var(--radius-pill);
+    object-fit: cover;
+  }
+
+  .ch-panel-weblogo--letter {
+    background: var(--bg-active);
+    color: var(--text-secondary);
+    font-size: var(--text-micro-size);
+  }
+
+  .ch-panel-webtitle {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-size: var(--text-body-size);
+    font-weight: 600;
+  }
+
+  /*
+    正文那一块。排版交给 `md-body`（与对话里的回答同一档字阶与行距——它渲染的是一份
+    文档，`.md-*` 那一套本来就是按"读正文"调的），这里只补一件面板才有的约束：
+    **长网址 / 长表格不许把面板撑破**——`overflow-wrap: anywhere` 让它就地折行
+    （面板只有 380 宽，一条 200 字符的链接足以把整栏顶出去）。
+  */
+  .ch-panel-webtext {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* 抓不到 / 探测失败时那条出路：与菜单项同一外形（它就在正文里，不是页脚） */
+  .ch-panel-webopen {
+    display: inline-flex;
+    align-self: flex-start;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1-5) var(--space-2);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--text-meta-size);
+    cursor: pointer;
+  }
+
+  .ch-panel-webopen:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
 }

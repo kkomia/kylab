@@ -114,6 +114,9 @@ describe('① 前缀表：判定只有一处', () => {
       // 用量那一条是**写实的**：本机档只薄重声明了 `/stats/usage`，
       // 而 `/stats/dashboard` 数的是知识库的文档与任务（不挂本机档）
       '/stats/usage',
+      // 网页那两条（`/web/page` 抓正文、`/web/embed-check` 探嵌入）：代抓与 SSRF 闸
+      // 都在这台机器上，绕道 NAS 等于把"本机代取"这件事说反了（见 sidecar.ts 那一段）
+      '/web',
       '/local',
     ])
   })

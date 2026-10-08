@@ -41,6 +41,7 @@ import { API_BASE } from '@/api/client'
 import { disablePlugin, enablePlugin, listPlugins } from '@/api/plugins'
 import { DEFAULT_SIDECAR_BASE, resetSidecarProbe } from '@/api/sidecar'
 import { getUsage } from '@/api/stats'
+import { checkWebEmbed, fetchWebPage } from '@/api/web'
 import { loadSiteIcon, resetSiteIconCache } from '@/features/chat/ui/siteLogos'
 
 /**
@@ -78,6 +79,15 @@ const CALL_SITES: { path: string; call: () => Promise<unknown> }[] = [
   { path: '/plugins/p1/disable', call: () => disablePlugin('p1') },
   // 用量
   { path: '/stats/usage?days=30', call: () => getUsage() },
+  // 网页（本机代取：抓正文与嵌入门检都在这台机器上跑，SSRF 闸也在本机）
+  {
+    path: '/web/page?url=https%3A%2F%2Fexample.com',
+    call: () => fetchWebPage('https://example.com'),
+  },
+  {
+    path: '/web/embed-check?url=https%3A%2F%2Fexample.com',
+    call: () => checkWebEmbed('https://example.com'),
+  },
   // 站点图标（裸 `fetch`，但也得先问出基址）
   { path: '/site-icons?domain=example.com', call: () => loadSiteIcon('example.com') },
 ]

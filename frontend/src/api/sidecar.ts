@@ -171,6 +171,10 @@ export const LOCAL_PATHS = [
   '/sandbox',
   '/site-icons',
   '/stats/usage',
+  // 网页那一族（`/web/page` 抓正文、`/web/embed-check` 探嵌入）：代抓的是**这台机器**，
+  // SSRF 闸（内网 / 本机地址一律拒）也在本机 —— 绕道 NAS 等于把"本机代取"这件事说反了
+  // （那台上既不认这些地址、也不会替这台机器守那道闸），所以它归本机权威面。
+  '/web',
   // `/local/status`（本机档状态）与阶段 5 的 `/local/import*`
   '/local',
 ] as const

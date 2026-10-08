@@ -1,11 +1,12 @@
 /**
- * 对话页右侧面板的那一份状态（`SidePanel` 的骨架 + 文件标签）。
+ * 对话页右侧面板的那一份状态（`SidePanel` 的骨架 + 两种标签：文件 / 网页）。
  *
  * ## 为什么是一个 zustand 模块级单例
  *
- * 三处要读同一份东西，而且它们**不在同一棵子树上**：`ChatHeader` 上的那颗开关
- * （在会话条里）、面板自己（在页面那一行里）、以及消息流里的「预览」（`Deliverables` /
- * `MessageView` 点附件 → `ChatProvider.openFiles`）。摆进 `ChatProvider` 的值里
+ * 四处要读同一份东西，而且它们**不在同一棵子树上**：`ChatHeader` 上的那颗开关
+ * （在会话条里）、面板自己（在页面那一行里）、消息流里的「预览」（`Deliverables` /
+ * `MessageView` 点附件 → `ChatProvider.openFiles`）、以及抓页那一步行尾的「在面板里打开」
+ * （`ui/SearchHits.tsx` 的 `FetchPages`）。摆进 `ChatProvider` 的值里
  * 是**不行的**：那个 value 每拍都新建（`ChatProvider.tsx` 的 `ChatRowApi` 注里
  * 记着实测数——流式期间每次写入都会让 172 个消息实例重渲染），面板状态挂上去等于
  * 让"开一个标签"也拖着整个对话区重渲染。与 `layout/useSidebar.ts` 同一个形状、
@@ -15,14 +16,15 @@
  *
  * **只有显隐**（`kylab-chat-panel-open`，走 `runtime/prefs` 的 `readStored` /
  * `writeStored`）：它是"这台机器怎么摆"，与主题、侧栏折叠同一类。标签、当前目录、
- * 浏览历史**一律不落盘**：下次打开这一页要从一个确定的样子开始（空态），
+ * 浏览历史、未读**一律不落盘**：下次打开这一页要从一个确定的样子开始（空态），
  * 而不是恢复上次翻了半天的三个标签——那种"我上次看过什么"的记忆在这里没有收益，
  * 只有"它为什么自己开着一堆东西"的困惑。
  *
  * ## 不含请求
  *
- * 文件清单走 `runtime/useChatData` 的 `useConversationFiles`（react-query 那份缓存），
- * 这一层只记"看的是哪一档、哪一层"。面板因此可以在没有网络的时候照样开合。
+ * 文件清单走 `runtime/useChatData` 的 `useConversationFiles`、网页那两份走同目录的
+ * `useWebData`（都是 react-query 那份缓存），这一层只记"看的是哪一档、哪一层、哪一页"。
+ * 面板因此可以在没有网络的时候照样开合。
  */
 import { create } from 'zustand'
 
@@ -43,10 +45,9 @@ export interface PanelSeed {
 /**
  * 面板上的一个标签。
  *
- * `web` 这一档**本轮只有类型与入口的占位**（视图下一轮做）：类型先定下来是因为
- * "打开网页"要么进 `tabs` 那一个数组、要么另开一份状态——后者等下一轮做的时候
- * 一定要把两处合成一处。空着的 `history` / `index` 是下轮要用的浏览历史
- * （它就是"不落盘"那条里说的那种东西）。
+ * `web` 那一档的 `history` / `index` **就是它的前进后退**（不是浏览器历史，也不落盘，
+ * 见文件头那一段）：`navigateWebTab` 只动这两个位，`WebTab` 的 ←/→ 读它们。
+ * `title` 是抓回来的页面标题（抓不到时留空，标签上按域名退一步，见 `SidePanel.labelOf`）。
  */
 export type PanelTab =
   | { id: string; kind: 'files' }
@@ -74,12 +75,41 @@ interface PanelState {
   /** 最近一次要求定位的那一份（含 `seq`：同一份连着点两次也要各算一次）。 */
   seed: (PanelSeed & { seq: number }) | null
   filesView: FilesView
+  /**
+   * **还没看过的那些标签**（放的是标签 id）。
+   *
+   * 它存在的理由只有一条：agent 抓页建出来的标签**不抢焦点**（用户可能正在读别的），
+   * 所以"有新东西"这件事必须自己说出来——标签条上一个小圆点、面板关着时开关按钮上
+   * 一个 `N 个新页面` 角标（`ChatHeader`）。点开那个标签（`activate`）就算看过了。
+   *
+   * 不进 `PanelTab`：那是"这个标签是什么"，这是"我还没看它"——两件事的生命期也不同
+   * （看过了就该灭），塞进标签里会让每个"改标签"的动作都要顺手想一下这一位。
+   */
+  unread: string[]
 
   setOpen: (next: boolean) => void
   toggle: () => void
   setConversationId: (id: string) => void
   /** 打开面板并落到「文件」标签（已经开着就激活它——**单例**）：`seed` 给了就定位到那一份。 */
   openFilesTab: (seed?: PanelSeed | null) => void
+  /**
+   * 开一个网页标签（同一个地址已经有标签就激活它，不另开一个）。
+   *
+   * `options.activate: false` = **建标签但不抢焦点**（agent 抓页那条路的用法）：
+   * 当前标签与面板开合都不动，只把这个标签记成"还没看过"（见 `unread`）。
+   */
+  openWebTab: (url: string, options?: { activate?: boolean }) => void
+  /**
+   * 这个网页标签去一个新地址。
+   *
+   * **一条规则同时管两件事**（前进后退与手输地址走的是它）：地址在这个标签的历史里
+   * 出现过就**只挪下标**（那是 ←/→），没出现过就从当前位置往后截断再压一条
+   * （浏览器那条规则）。所以新地址会把这一个标签的"前进"那半截历史丢掉，
+   * 而那正是用户预期。
+   */
+  navigateWebTab: (id: string, url: string) => void
+  /** 抓到页面标题之后回填标签名（抓不到就不调，标签会退回域名）。 */
+  setTabTitle: (id: string, title: string) => void
   activate: (id: string) => void
   closeTab: (id: string) => void
   setFilesView: (next: Partial<FilesView>) => void
@@ -117,6 +147,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   currentConversationId: '',
   seed: null,
   filesView: { scope: 'conversation', path: '' },
+  unread: [],
 
   setOpen: (next) => {
     writeOpen(next)
@@ -137,6 +168,8 @@ export const usePanelStore = create<PanelState>((set, get) => ({
       activeId: '',
       seed: null,
       filesView: { scope: 'conversation', path: '' },
+      // 未读也跟着标签走：标签都没了，那个小圆点就没有落点了（角标同理）
+      unread: [],
     })
   },
 
@@ -150,14 +183,73 @@ export const usePanelStore = create<PanelState>((set, get) => ({
         open: true,
         tabs: existing ? state.tabs : [...state.tabs, tab],
         activeId: tab.id,
+        unread: existing ? withoutId(state.unread, tab.id) : state.unread,
         seed: seed ? { ...seed, seq: (state.seed?.seq ?? 0) + 1 } : state.seed,
       }
     }),
 
+  openWebTab: (url, options = {}) =>
+    set((state) => {
+      const focus = options.activate !== false
+      /*
+        同一个地址已经有标签就**用它**（面板是"这些页面摆在这儿"，同一个地址摆两个
+        标签是重复）。判据是 `tab.url` —— 那是这个标签**现在显示的那一页**：一个标签
+        在它自己的历史里翻远了之后，新来的同一个地址该另开一个（两处上下文不同，
+        合并会把先前那次阅读的位置抹掉）。
+      */
+      const existing = state.tabs.find((tab) => tab.kind === 'web' && tab.url === url)
+      if (existing) {
+        // 后台那条（agent 抓页）：已经有这一页了，什么都不做 —— **不抢焦点**是它的全部
+        if (!focus) return state
+        writeOpen(true)
+        return {
+          open: true,
+          activeId: existing.id,
+          unread: withoutId(state.unread, existing.id),
+        }
+      }
+      const tab: PanelTab = {
+        id: newTabId('web'),
+        kind: 'web',
+        url,
+        history: [url],
+        index: 0,
+        title: '',
+      }
+      if (focus) {
+        writeOpen(true)
+        return { open: true, activeId: tab.id, tabs: [...state.tabs, tab] }
+      }
+      // 不抢焦点：当前标签、开合、落盘偏好**一个都不动**，只多一个待看的标签
+      return { tabs: [...state.tabs, tab], unread: [...state.unread, tab.id] }
+    }),
+
+  navigateWebTab: (id, url) =>
+    set((state) => ({
+      tabs: state.tabs.map((tab): PanelTab => {
+        if (tab.id !== id || tab.kind !== 'web') return tab
+        const seen = tab.history.lastIndexOf(url)
+        // 见过的地址：只挪下标（←/→ 走的就是这一支）
+        if (seen >= 0) return seen === tab.index ? tab : { ...tab, index: seen, url, title: '' }
+        // 新地址：从当前位置往后截断再压一条（浏览器那条规则，见接口上的说明）
+        const history = [...tab.history.slice(0, tab.index + 1), url]
+        return { ...tab, history, index: history.length - 1, url, title: '' }
+      }),
+      // 自己导航到这儿了就算看过（这一下是用户动作，不是后台送来的）
+      unread: withoutId(state.unread, id),
+    })),
+
+  setTabTitle: (id, title) =>
+    set((state) => ({
+      tabs: state.tabs.map((tab): PanelTab =>
+        tab.id === id && tab.kind === 'web' && tab.title !== title ? { ...tab, title } : tab,
+      ),
+    })),
+
   activate: (id) => {
     if (!get().tabs.some((tab) => tab.id === id)) return
     writeOpen(true)
-    set({ activeId: id, open: true })
+    set({ activeId: id, open: true, unread: withoutId(get().unread, id) })
   },
 
   /**
@@ -173,16 +265,22 @@ export const usePanelStore = create<PanelState>((set, get) => ({
     const index = state.tabs.findIndex((tab) => tab.id === id)
     if (index < 0) return
     const tabs = state.tabs.filter((tab) => tab.id !== id)
+    const unread = withoutId(state.unread, id)
     if (state.activeId !== id) {
-      set({ tabs })
+      set({ tabs, unread })
       return
     }
     const next = tabs[index] ?? tabs[index - 1]
-    set({ tabs, activeId: next?.id ?? '' })
+    set({ tabs, unread, activeId: next?.id ?? '' })
   },
 
   setFilesView: (next) => set({ filesView: { ...get().filesView, ...next } }),
 }))
+
+/** 去掉一个 id（未读那一位的每一处修改都长这样，抽出来免得五处各写一遍 `filter`）。 */
+function withoutId(ids: readonly string[], id: string): string[] {
+  return ids.filter((item) => item !== id)
+}
 
 /**
  * 从**别处**（非组件代码）打开面板的文件标签。
@@ -192,6 +290,16 @@ export const usePanelStore = create<PanelState>((set, get) => ({
  */
 export function openPanelFiles(seed?: PanelSeed | null): void {
   usePanelStore.getState().openFilesTab(seed ?? null)
+}
+
+/**
+ * 从**别处**建一个网页标签（agent 抓页那条路：`ChatProvider` 的流订阅）。
+ *
+ * 默认 `activate: false` —— **不抢焦点**是这条路的全部要求：用户正在读的东西不许被
+ * "它在后台抓了一页"顶掉（未读小圆点与开关上的角标替他记着，见 `unread`）。
+ */
+export function openPanelWeb(url: string, options: { activate?: boolean } = {}): void {
+  usePanelStore.getState().openWebTab(url, options)
 }
 
 export function togglePanel(): void {

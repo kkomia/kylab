@@ -72,7 +72,14 @@ import {
 import { splitSuggestions } from '@/features/chat/model/suggestions'
 // 右侧面板那一份状态（模块级单例）。**只从这里进**：面板不进这个 provider 的 value，
 // 理由见 `panel/panelStore.ts` 头注（那个 value 每拍新建，流式期间会拖着整页重渲染）。
-import { openPanelFiles, usePanelStore } from '@/features/chat/panel/panelStore'
+import { openPanelFiles, openPanelWeb, usePanelStore } from '@/features/chat/panel/panelStore'
+/*
+  抓页那一步的两条纯判据（`model/webSites.ts`）：哪一步算"抓了一页网页"（`isFetchStep`，
+  与图标 / 站点清单 / 出处解析共用同一份词表）与"这段文本里有哪几个网址"（`urlsIn`）。
+  引这一层而不是在 provider 里写一份词表，是为了**别处改了工具名之后这里会跟着改**
+  （那两份判据的注释里写着它们为什么必须只有一处）。
+*/
+import { isFetchStep, urlsIn } from '@/features/chat/model/webSites'
 
 // 侧栏那份会话清单（壳那一层）：新会话建出来之后要**当场**插进去。
 // 不做这一步的话，侧栏只在挂载时 `load()` 过一次，谁也告诉不了它清单变长了——
@@ -1028,6 +1035,46 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [])
 
   /**
+   * 这一轮里**已经为哪几个地址建过标签**（`openPanelWeb` 那条路的去重）。
+   *
+   * 为什么要自己记一份（`panelStore.openWebTab` 也会按当前地址去重）：那个去重说的是
+   * "同一个地址别摆两个标签"，而这里要挡的是**同一件事被通知很多次**——一步抓页在流式里
+   * 至少会出现两次（`running` 一次、`done` 一次，返回里还带着同一条网址），
+   * 后面几拍里 `steps` 整份重算也会再碰到它。用 `Set` 记"处理过的地址"是最省的说法。
+   */
+  const fetchedPages = useRef<Set<string>>(new Set())
+
+  /**
+   * agent 抓页 → 面板标签。
+   *
+   * 两件事都**只在这一层**判：哪一步算抓页（`model/webSites` 的 `isFetchStep`，与图标、
+   * 站点清单、出处解析同一份判据）、网址从哪来（`urlsIn(step.args)`——`web_fetch` 的
+   * 入参就是 `{"url": …}` / `{"urls": […]}`）。
+   *
+   * 三条分寸：
+   *
+   * 1. **只在流式期间做**（`state.streaming`）：打开一条历史会话走的是"读库 → 画消息"
+   *    那条链，`live` 是空的，一条标签都不会建；而**刷新页面接回来的那一轮**
+   *    （`mode: 'recover'`，仍然 `streaming`）会补上——那是"正在跑的活"，
+   *    与历史不是一回事；
+   * 2. **不抢焦点**（`openPanelWeb` 默认 `activate: false`）：用户可能正在读别的，
+   *    或者根本没开面板；抢一次焦点就等于替他翻页。代价是必须**自己说出来**
+   *    （标签上的小圆点 + 开关上的角标，见 `panelStore.unread` / `ChatHeader`）；
+   * 3. **按地址去重**（`fetchedPages`）：同一页在一轮里只建一次标签。
+   */
+  const noteFetchedPages = useCallback((state: LiveTurnState | null) => {
+    if (!state || !state.streaming) return
+    for (const step of state.steps) {
+      if (!isFetchStep({ tool: step.tool, label: step.label })) continue
+      for (const url of urlsIn(step.args ?? '')) {
+        if (fetchedPages.current.has(url)) continue
+        fetchedPages.current.add(url)
+        openPanelWeb(url, { activate: false })
+      }
+    }
+  }, [])
+
+  /**
    * 镜像**不再挂在被动 effect 上**（D32 §12.312 定位，第二节）。
    *
    * 原先这里是一条 `useEffect(…, [liveFingerprint, conversationId])`，里面调
@@ -1046,6 +1093,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     mirrorLiveState(liveRef.current)
     return unsubscribe
   }, [mirrorLiveState])
+
+  /**
+   * "它抓了哪几页"这条订阅（agent 抓页 → 面板标签）。
+   *
+   * 与镜像那条**各挂各的**（不改 `mirrorLiveState`、也不进它的指纹）：那一条管"画面上
+   * 该动什么"，写的是 `messages`；这一条管"面板里该多什么标签"，写的是 `panelStore`。
+   * 合成一处的话，每条消息的重渲染都要经过一次"要不要建标签"的判断。
+   *
+   * 挂载时**也补一次**（与镜像那条同一条理由：切页回来时那一轮还在跑，而它的抓页步骤
+   * 是在我们不在场的时候来的）；补的那一次仍然要过 `streaming` 那道闸（见
+   * `noteFetchedPages`），所以历史会话里那些抓页步骤不会被翻出来批量建标签。
+   */
+  useEffect(() => {
+    const unsubscribe = subscribeLiveTurn(noteFetchedPages)
+    noteFetchedPages(liveRef.current)
+    return unsubscribe
+  }, [noteFetchedPages])
 
   /**
    * **换会话**也要补一次：切走再切回来时 `attachLiveTurn` 发现"手上就是这条会话、

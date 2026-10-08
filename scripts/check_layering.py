@@ -648,6 +648,12 @@ U2_ALLOWED: tuple[tuple[str, str, str], ...] = (
         "正文自动识别裸域名时补的前缀，落在链接 href 上（用户可点），不是文案",
     ),
     (
+        "frontend/src/features/chat/panel/webText.ts",
+        "https://",
+        "地址栏里手打的地址缺协议时补的那个前缀（`normalizeWebUrl`）：补出来的是要抓的地址本身，"
+        "不渲染成文案——与上面 markdown.tsx 那条同一口径",
+    ),
+    (
         "frontend/src/features/notes/NoteEditor.tsx",
         "https://",
         "插入链接时补的协议前缀，写进正文 markdown，不是文案",

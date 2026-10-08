@@ -38,10 +38,11 @@
  *   response，只显示网页列表"）——这一段原先由 `StepResult` 接在清单下面，现在整档撤掉，
  *   清单就是这一步展开的全部（渲染侧的取舍写在 `ui/ToolchainFlow.tsx` 的 `StepRow`）。
  */
-import { Globe } from 'lucide-react'
+import { Globe, PanelRightOpen } from 'lucide-react'
 
 import type { WebSite } from '@/features/chat/model/webSites'
 
+import { openPanelWeb } from '../panel/panelStore'
 import { useSiteLogo } from './siteLogos'
 
 /**
@@ -135,24 +136,61 @@ export function SearchHits({ hits }: { hits: readonly HitRow[] }) {
  * 清单里每一行都认得出是哪个站点。
  *
  * 标题（`hit.title`）仍然有用：它是这一行的悬停提示（读屏与鼠标都还拿得到），只是不占行。
+ *
+ * ## 行尾那颗「在面板里打开」（这一轮加的）
+ *
+ * 上面那条"整行一个 `<a>`"仍然成立——**那一颗 `<a>` 一个字没动**（`href` / `target` /
+ * 里面的 favicon 与 URL 全是原样，`chat-flow.test.tsx` 钉着它们）。新加的是它**旁边**
+ * 的一颗次要按钮：点它不开新标签，而是在右侧面板里就地读一眼（`openPanelWeb`）。
+ *
+ * 为什么值得加：这一档列的是"它读了哪几页"，而用户看到一行网址时最常见的下一步是
+ * "这一页讲了什么"。原先唯一的路是点进系统浏览器（离开当前这一屏、还可能被登录墙拦住），
+ * 而面板本来就能把正文抓回来。两颗按钮**分工不同**：整行 = 去那个网站本人；
+ * 行尾那颗 = 在这儿读一眼。
  */
 export function FetchPages({ hits }: { hits: readonly HitRow[] }) {
   if (hits.length === 0) return null
   return (
     <div className="ch-hits ch-hits--fetch" data-result="fetch">
       {hits.map((hit) => (
-        <a
-          key={hit.url}
-          className="ch-fetch"
-          href={hit.url}
-          target="_blank"
-          rel="noreferrer noopener"
-          data-domain={hit.domain}
-          title={[hit.title, hit.url].filter(Boolean).join('\n')}
-        >
-          <HitLogo citation={hit} />
-          <span className="ch-fetch-url">{hit.url}</span>
-        </a>
+        /*
+          一行 = **原来的那个 `<a>`**（一个字没动：整行可点、新标签打开，`chat-flow.test.tsx`
+          钉着它）+ 行尾那颗「在面板里打开」。
+
+          为什么是**兄弟**而不是套在里面：`<a>` 里放 `<button>` 是不合法的 HTML
+          （浏览器会把内层弹到外面去，观感与命中区一起乱），所以外面加一层 `div`
+          负责"这一行"的排布。那一层用工具类而不是写进 `flow.css`（那份文件尚未收进
+          `@layer`，往里加规则就是新添一条层外声明，C1 那笔账不认）；网格的
+          `1fr` 那一列让 `.ch-fetch` 照旧占满余下的宽度，它自己的样式一个字没改。
+        */
+        <div key={hit.url} className="grid grid-cols-[1fr_auto] items-center gap-[var(--space-1)]">
+          <a
+            className="ch-fetch"
+            href={hit.url}
+            target="_blank"
+            rel="noreferrer noopener"
+            data-domain={hit.domain}
+            title={[hit.title, hit.url].filter(Boolean).join('\n')}
+          >
+            <HitLogo citation={hit} />
+            <span className="ch-fetch-url">{hit.url}</span>
+          </a>
+          {/*
+            「在面板里打开」：**次要**的一颗（灰、常驻、行尾）——它是"就地读一眼"那条路，
+            而这一行本来的动作（去那个网站）仍在原来那颗 `<a>` 上。
+            走的是用户动作，所以面板会开、标签会抢焦点（与 agent 抓页那条路相反，
+            见 `panelStore.openWebTab`）。
+          */}
+          <button
+            type="button"
+            className="inline-flex h-[var(--hit-target)] w-[var(--hit-target)] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-control)] text-[var(--text-tertiary)] [transition:var(--transition-ui)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            aria-label="在面板里打开"
+            title="在面板里打开"
+            onClick={() => openPanelWeb(hit.url)}
+          >
+            <PanelRightOpen size={14} />
+          </button>
+        </div>
       ))}
     </div>
   )
