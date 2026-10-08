@@ -10,13 +10,13 @@
  */
 
 import { request } from './client'
-import type { components } from './schema'
+import type { StorageOverviewOut } from './knowledge-face'
 
 /**
  * 存储概览：契约来自后端的 OpenAPI（SQLite 时代的 `freelist` 口径已随 v0.12
  * 换成 PG 的 `pg_database_size` / `pg_stat_user_tables`，这里不再复述字段含义）。
  */
-export type StorageOverview = Required<components['schemas']['StorageOverviewOut']>
+export type StorageOverview = Required<StorageOverviewOut>
 
 export function getStorageOverview(): Promise<StorageOverview> {
   return request('/maintenance/storage')

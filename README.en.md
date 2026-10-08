@@ -110,13 +110,12 @@ that matches what you changed:
 - For a single change, `python scripts/affected_tests.py --run` picks the tests to run from the
   reverse dependency graph; the true full suite is for wrapping up a large block, and the report
   gives the full suite's own numbers.
-- The backend gate needs a pgvector test database (`KYLAB_TEST_DATABASE_URL`) and fails outright
-  without it — a meaningless green is worse than a skip. To run only the local-profile half (no
-  PostgreSQL): `cd backend && uv run pytest tests -q -m local`.
+- Backend tests need no external service: storage is local-only (SQLite plus a data directory) and
+  every test gets its own temp directory (`cd backend && uv run pytest tests -q`).
 
 Three layering rules are checked mechanically by `scripts/check_layering.py`, not by reviewer memory:
 
-1. `api/` and `mcp_server/` adapt protocols only — no business logic;
+1. `api/` adapts protocols only — no business logic;
 2. `services/` never writes SQL — storage access goes through the `storage/` repository interfaces;
 3. parser implementations depend only on `ParseResult` from `base.py` and never import each other.
 

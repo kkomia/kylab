@@ -31,979 +31,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/status": {
+    "/api/v1/conversations": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * 认证状态（是否需初始化）
-         * @description **不鉴权**：前端要靠它判断该显示首次设置界面还是登录界面。
-         *
-         *     只回一个布尔值，不透露任何可用信息。
-         */
-        get: operations["status_api_v1_auth_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/setup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
+        /** 会话列表（置顶优先，其次最近更新） */
+        get: operations["list_conversations_api_v1_conversations_get"];
         put?: never;
         /**
-         * 首次初始化：创建管理员账号
-         * @description 仅当**还没有任何账号**时开放（服务层把关），首个账号即管理员，
-         *     无主老数据（v10 之前的库与会话）认领给它。
+         * 新建会话
+         * @description 新建会话。
+         *
+         *     标题允许留空：真正的标题由**第一轮提问**生成（见 ``ConversationService``）。
+         *     这里能传标题是为了"复制一次旧会话"这类将来可能有的用法。
          */
-        post: operations["setup_api_v1_auth_setup_post"];
+        post: operations["create_conversation_api_v1_conversations_post"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 登录（用户名 + 密码）
-         * @description 换一条会话令牌（7 天滑动续期）。连续失败会被限流（服务层）。
-         */
-        post: operations["login_api_v1_auth_login_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/logout": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 退出登录（吊销当前会话） */
-        post: operations["logout_api_v1_auth_logout_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/me": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 当前登录账号
-         * @description 前端启动时用它恢复身份。API Key 通道没有账号，回 401。
-         */
-        get: operations["me_api_v1_auth_me_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/avatar": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 换一张头像（上传图片）
-         * @description 只认图片（按**魔数**认，不看声明的 content-type）。返回更新后的账号。
-         */
-        post: operations["upload_avatar_api_v1_auth_avatar_post"];
-        /**
-         * 去掉头像
-         * @description 回到"用名字生成的默认头像"。没有头像时也成功——它要的是结果，不是过程。
-         */
-        delete: operations["clear_avatar_api_v1_auth_avatar_delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/password": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 修改自己的密码 */
-        post: operations["change_password_api_v1_auth_password_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/knowledge-bases": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 知识库列表 */
-        get: operations["list_knowledge_bases_api_v1_knowledge_bases_get"];
-        put?: never;
-        /** 创建知识库 */
-        post: operations["create_knowledge_base_api_v1_knowledge_bases_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/knowledge-bases/{kb_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 知识库详情 */
-        get: operations["get_knowledge_base_api_v1_knowledge_bases__kb_id__get"];
-        put?: never;
-        post?: never;
-        /**
-         * 删除知识库（不可恢复）
-         * @description 删除整个知识库。
-         *
-         *     **返回影响清单**：界面拿它拼"已删除 3 份文档、412 个切块"的回执。
-         *     比只回 204 有用——用户删完会想知道"到底删掉了多少"。
-         *
-         *     注意（v10）：write 档的被分享者也能删——"写"包含内容生命周期，
-         *     这与删库不可恢复（不进回收站）是同一个刻意选择的两端。
-         *     想要"能传不能删"的档位，得加第三档权限，暂不做。
-         */
-        delete: operations["delete_knowledge_base_api_v1_knowledge_bases__kb_id__delete"];
-        options?: never;
-        head?: never;
-        /**
-         * 修改知识库（名称 / 简介）
-         * @description 改名称、简介或切分参数。**与"删除知识库"同一档权限**（WRITE）——都是库级结构动作，
-         *     让改名比删库更严会得到一个说不通的权限阶梯（见 ``lifecycle.py`` 的同款说明）。
-         *
-         *     各项都可选，只处理传了的那些；都为空时不动任何东西（幂等）。
-         *
-         *     切分参数**只对之后摄入的文档生效**（切块是解析阶段写下的）。这里不假装
-         *     "改完就重切"——重跑由用户显式触发，取舍见 ``services/knowledge_base.py::set_chunking``。
-         */
-        patch: operations["update_knowledge_base_api_v1_knowledge_bases__kb_id__patch"];
-        trace?: never;
-    };
-    "/api/v1/knowledge-bases/{kb_id}/prompt/generate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 按文档摘要生成库提示词（草稿）
-         * @description 让对话模型**只依据库里已生成的文档摘要**写一版库提示词。
-         *
-         *     **不落库**：这里只产出草稿（连带它依据了哪几篇、有没有引用不存在的文件）。
-         *     写不写、改不改由用户在设置里确认——一次模型调用不该顺手改掉库的配置。
-         *
-         *     为什么这个入口是 WRITE 而不是 READ：它**不写数据**，但要花一次模型调用，
-         *     而"能改这个库的配置"和"能为这个库花钱"本来就该是同一批人
-         *     （只读分享的成员连设置面板都看不到）。
-         */
-        post: operations["generate_kb_prompt_api_v1_knowledge_bases__kb_id__prompt_generate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/knowledge-bases/{kb_id}/documents": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 知识库下的文档列表
-         * @description 知识库下的文档列表，支持目录 / 文件名 / 状态 / 来源四个维度的收窄。
-         *
-         *     ``stage`` 与 ``source_kind`` 用枚举而不是裸字符串：传一个拼错的值时
-         *     框架直接回 422，而不是被当成"合法但匹配不到"而静默返回空列表——
-         *     后者会让用户以为"这个库真的没有失败文档"。
-         *
-         *     **分页在 SQL 里做**（``limit``/``offset``），并另起一次 ``COUNT(*)`` 回 ``total``：
-         *     一个库上万篇时，"把全量读出来再在 Python 里切页"会把响应体和耗时
-         *     都随库大小放大。``total`` 与 ``items`` 用的是同一套过滤条件（同一个构造器）。
-         */
-        get: operations["list_documents_api_v1_knowledge_bases__kb_id__documents_get"];
-        put?: never;
-        /**
-         * 上传文档（异步摄入）
-         * @description 上传文档。
-         *
-         *     **幂等键是可选的，而不是强制的**——这里与架构 §3.2 的字面要求有一处偏差，
-         *     理由是我们已经有一条更强的兜底：内容 hash 去重。同一份文件重复上传，
-         *     ``ingest.submit`` 会认出来并回 ``is_duplicate=True``，本来就不会入库两次。
-         *
-         *     幂等键补的是 hash 覆盖不到的那一段：**同一个键配不同内容**时的判定，
-         *     以及"客户端连自己上次传没传成功都不知道"的场景（回放上次的响应，
-         *     而不是让它重新走一遍去重）。
-         *
-         *     做成强制会立刻打断既有前端与所有集成方（401 之后又来一次全员 400），
-         *     而收益只是把已有的保护换一种表达。所以：**提供则生效，不提供仍受 hash 去重保护**。
-         */
-        post: operations["upload_document_api_v1_knowledge_bases__kb_id__documents_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/knowledge-bases/{kb_id}/documents/batch": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 批量删除 / 重新摄入 / 移动 / 停用启用 / 生成问题
-         * @description 对选中的一批文档执行同一个动作。
-         *
-         *     **逐条返回成败**，接口本身不因个别失败而报错——批量操作里"10 篇删掉 9 篇"
-         *     是正常结果，界面要能指出剩下那一篇为什么没成。请求里的 id 若不属于这个库，
-         *     记为该条失败，不会被执行。
-         */
-        post: operations["batch_documents_api_v1_knowledge_bases__kb_id__documents_batch_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 文档详情 */
-        get: operations["get_document_api_v1_documents__document_id__get"];
-        put?: never;
-        post?: never;
-        /**
-         * 删除文档（原文进回收站，索引立即清除）
-         * @description 删除文档。
-         *
-         *     **返回** ``200`` 而不是 ``204``：正文里给出回收站条目 id 与到期时间，
-         *     界面据此提示"7 天内可从回收站恢复"——这正是用户最需要知道的一句话。
-         */
-        delete: operations["delete_document_api_v1_documents__document_id__delete"];
-        options?: never;
-        head?: never;
-        /**
-         * 重命名文档
-         * @description 改显示名。只读分享的成员改不了——那是 owner 的库。
-         */
-        patch: operations["rename_document_api_v1_documents__document_id__patch"];
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/timeline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 处理进度时间线（共几步 / 现在第几步 / 每步耗时）
-         * @description 给列表行的分段进度条与右侧抽屉的明细喂数据。
-         *
-         *     **跑着时最后一步的耗时是"到现在为止"**，所以前端轮询时它会一直在长——
-         *     这是"还在动"的证据，比一个转圈图标可信。
-         *
-         *     ``stalled`` 走与列表同一个入口（``progress_by_documents``）拿：抽屉里那个
-         *     "疑似卡住"与列表行上那个必须是同一个结论，两处各判一次迟早说不到一块儿去。
-         */
-        get: operations["document_timeline_api_v1_documents__document_id__timeline_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/disabled": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /**
-         * 停用 / 恢复检索
-         * @description 停用后文档**不参与检索**（全文与向量两条通道都过滤），其余一切保留：
-         *
-         *     原文、切块、向量、上传记录都在，恢复是零成本。与删除的区别是
-         *     删除会把原文移入回收站并立即清掉切块与向量。
-         */
-        patch: operations["set_document_disabled_api_v1_documents__document_id__disabled_patch"];
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 取消解析（叫停还在跑的摄入）
-         * @description 用户主动叫停。**不是删除**：已产出的东西留着，随时可以重新摄入。
-         *
-         *     语义是协作式的（见 ``IngestService.ingest``）：正在云端跑的那一次请求没法
-         *     中途掐断，但它返回后不会再往下推进。响应里回的已经是 ``canceled`` 态。
-         */
-        post: operations["cancel_document_api_v1_documents__document_id__cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/parts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 子文件树（大文件切分） */
-        get: operations["list_document_parts_api_v1_documents__document_id__parts_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/chunks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 切块列表（文档详情页的正文预览）
-         * @description 按 ``ordinal`` 升序返回切块。
-         *
-         *     同时给出 ``total``：前端要能说清"这是前 5 块，共 137 块"，
-         *     否则用户会把预览当成全文。
-         */
-        get: operations["list_document_chunks_api_v1_documents__document_id__chunks_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/reprocess": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 重新摄入（失败重跑） */
-        post: operations["reprocess_document_api_v1_documents__document_id__reprocess_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 阅读视角（解析文本内联 / 原件版式给签名链接）
-         * @description 文档的「阅读」视角，两种来源：
-         *
-         *     - ``auto``（默认）：有解析产物就给归一化后的 Markdown，否则给原件版式；
-         *     - ``original``：**不管有没有产物**都看原件（PDF / 图片 / Office 原版式）。
-         *
-         *     与「切块预览」是两个视角、刻意并存：切块回答"解析成了什么"（调试用，
-         *     等宽文本带块号），阅读回答"原文长什么样"（日常用，渲染件）。
-         */
-        get: operations["preview_document_api_v1_documents__document_id__preview_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/download-url": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 签发下载链接（带过期时间）
-         * @description 签发一条短期下载链接。
-         *
-         *     **需要鉴权**：拿链接要带凭据，链接本身则可以在浏览器里直接打开（无需头）。
-         *     这正是签名 URL 想解决的矛盾——``<img>`` 与下载按钮带不了 Authorization 头。
-         */
-        get: operations["document_download_url_api_v1_documents__document_id__download_url_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/content": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 按签名取内容（下载 / 页面内渲染）
-         * @description 签名内容端点（下载 / 页面内渲染共用）。
-         *
-         *     **刻意不挂 ``require_read`` 依赖**：这个 URL 要能直接在浏览器里打开
-         *     （图片标签、下载按钮都带不了自定义头）。它的授权凭据是 URL 里的签名，
-         *     而签名已经绑定了"哪个文档、哪种格式、什么时候过期"——比一个长期令牌更窄。
-         *
-         *     用 ``Response`` 而不是 ``FileResponse``：内容是从对象存储读进内存的字节，
-         *     没有磁盘路径可给。``FileResponse`` 只接受路径，传 BytesIO 会在
-         *     ``os.stat`` 上抛 TypeError（实测踩到）。
-         *
-         *     **``disposition=inline`` 必须由服务端按媒体类型复核**：它不在签名里，
-         *     调用方可以自己改这个参数，所以它绝不能成为"能不能在内联渲染"的开关——
-         *     真正的开关是 :data:`_INLINE_SAFE_MEDIA_TYPES`。这正是 iframe 里预览 PDF
-         *     必须的：带着 ``attachment`` 的响应在 iframe 里会被浏览器**变成下载**
-         *     （踩过：详情页一打开就下载 PDF）。
-         */
-        get: operations["download_document_content_api_v1_documents__document_id__content_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/knowledge-bases/{kb_id}/folders": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 知识库的目录列表（含每个目录的文档数） */
-        get: operations["list_folders_api_v1_knowledge_bases__kb_id__folders_get"];
-        put?: never;
-        /** 新建目录 */
-        post: operations["create_folder_api_v1_knowledge_bases__kb_id__folders_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/folders/{folder_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 删除目录（非空则拒绝） */
-        delete: operations["delete_folder_api_v1_folders__folder_id__delete"];
-        options?: never;
-        head?: never;
-        /** 重命名目录 */
-        patch: operations["rename_folder_api_v1_folders__folder_id__patch"];
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/folder": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /**
-         * 把文档移进目录 / 移回根
-         * @description 成员拿到只读分享时不该能移动文档——那会改掉 owner 的库结构。
-         */
-        patch: operations["move_document_api_v1_documents__document_id__folder_patch"];
-        trace?: never;
-    };
-    "/api/v1/search": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 混合检索 */
-        post: operations["search_api_v1_search_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/provider/handshake": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 知识库提供者握手（连通性 + 能力集 + 库清单）
-         * @description 一次调用回答：**凭据有效吗、这台提供者能做什么、我能用哪些库**。
-         *
-         *     鉴权在它前面（``require_read``）：没有凭据是 401、凭据无效是 401、
-         *     凭据有效但越权是 403——**都不是这个响应体的一部分**（模块头的裁量 2）。
-         */
-        get: operations["handshake_api_v1_provider_handshake_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/backup/handshake": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 备份提供者握手（连通性 + 能力集 + 设备与额度）
-         * @description 一次调用回答：**凭据有效吗、这台提供者能做什么、有哪些设备的恢复点、额度用了多少**。
-         *
-         *     鉴权在它前面（``require_read``）：没有凭据是 401、凭据无效是 401、凭据有效但越权是 403
-         *     ——**都不是这个响应体的一部分**（与知识库握手同一条口径：一次握手能回来，就说明
-         *     连通与凭据都已经过了）。
-         *
-         *     **桶不可用时它仍然是 200**（方案 R5）：``capabilities.snapshot.available=false``
-         *     + 一句可执行的下一步，而不是让客户端把"NAS 还没建桶"当成"服务器坏了"。
-         */
-        get: operations["handshake_api_v1_backup_handshake_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/backup/snapshots": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 列恢复点（最近在前，可按设备过滤）
-         * @description 恢复点清单（规范 §1.5 的分页：``limit`` + ``offset`` + ``total``）。
-         *
-         *     **只列"完整"的恢复点**：有清单、有快照体、清单读得出来（方案 §1.2 规矩 3）——
-         *     上传中断留下的孤儿 blob 不在里面（它留着不删，append-only，但谁也恢复不了它）。
-         */
-        get: operations["list_snapshots_api_v1_backup_snapshots_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/backup/snapshots/{device_id}/{snapshot_id}/blob": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 流式下载一份快照体
-         * @description 流式下载快照体（**不整份进内存**）。
-         *
-         *     响应头里给两样东西：``Content-Length``（进度条用）与 ``X-Kylab-Sha256``（**下载方据此
-         *     校验**——恢复流程要求"下载 → 校验 sha256（不符即中止，绝不落位）"，而不校验 sha256
-         *     就落位，等于把一次网络抖动变成一份坏快照）。
-         */
-        get: operations["get_snapshot_blob_api_v1_backup_snapshots__device_id___snapshot_id__blob_get"];
-        /**
-         * 上传一份快照体（append-only：路径即幂等键）
-         * @description 接收一整份快照体（``Content-Type: application/octet-stream``）。
-         *
-         *     顺序是这条端点的要害：**先收完、验完，再落桶**。所以
-         *     "sha256 / bytes 与实收不符 → 400"这条判据才成立（那一刻桶里还是干净的），
-         *     "超 2 GiB → 413"也是同一条道理。
-         *
-         *     只读 key 在 ``require_write`` 就被挡住了（403），根本走不到这里。
-         */
-        put: operations["put_snapshot_blob_api_v1_backup_snapshots__device_id___snapshot_id__blob_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/backup/snapshots/{device_id}/{snapshot_id}/manifest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /**
-         * 上传清单（完成标记：这一份传完了）
-         * @description 接收这一个恢复点的清单（``manifest.json``，≤1 MiB）。
-         *
-         *     **它是完成标记**，所以有两条额外的硬规矩：快照体必须已经在桶里（否则 409），
-         *     以及清单里的 ``device_id`` / ``snapshot_id`` 必须对得上这条路径（否则 400）——
-         *     一份"描述别的设备"的清单落在这条路径上，恢复时会把两边的账搅在一起。
-         */
-        put: operations["put_snapshot_manifest_api_v1_backup_snapshots__device_id___snapshot_id__manifest_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/backup/snapshots/{device_id}/{snapshot_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 取一份恢复点的清单（manifest.json 原样）
-         * @description 取清单。**原样回**（不做字段裁剪、不做类型收紧）。
-         *
-         *     服务端**不解释**清单的业务字段：它是客户端写、客户端读的那份自描述文件
-         *     （方案 §2.3）。用响应模型收一遍字段看着"更类型化"，代价是把不认识的新字段
-         *     悄悄删掉——那是"不猜着读"的反面，也是数据丢失。
-         */
-        get: operations["get_snapshot_manifest_api_v1_backup_snapshots__device_id___snapshot_id__get"];
-        put?: never;
-        post?: never;
-        /**
-         * 删掉一个恢复点（整份：快照体 + 清单）
-         * @description 删掉一个恢复点 —— **删除的粒度就是它**（方案 §1.2 规矩 2：没有"删某个对象"的入口）。
-         *
-         *     两个对象一起走，所以删除永远是一次显式动作、不会留下半个恢复点。返回 ``removed``
-         *     是**实际删掉的对象数**（正常是 2；若上一次上传只留下了孤儿 blob，这里会是 1——
-         *     那条路也是清掉半截上传的唯一入口）。什么都没删到就是 404：让它像"成了"对调用方
-         *     没有好处（想删的那一份不在这儿，值得知道）。
-         */
-        delete: operations["delete_snapshot_api_v1_backup_snapshots__device_id___snapshot_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/chat/suggested-questions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 推荐问题（取自入库时为各分段生成的问题）
-         * @description 给对话页空状态那排胶囊喂数据。
-         *
-         *     **不再调模型**（v23）：问题在**入库时**就为每个分段生成好了（见
-         *     `services/suggested_questions.py`），这里只是随机抽几段、把它们的问题取回来。
-         *     这样空状态看到的"你可以这样问"与库里真实内容一致，也不必为一个引导多花一次
-         *     模型调用。
-         *
-         *     **失败返回空列表而不是报错**（``generated=false``）：库里还没有问题
-         *     （功能没开、或文档还没重新摄入）时如此，界面据此回退到静态样例——
-         *     不该把"打开对话页"变成一次错误提示。
-         */
-        get: operations["suggested_questions_api_v1_chat_suggested_questions_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/stats/dashboard": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 驾驶舱统计 */
-        get: operations["dashboard_api_v1_stats_dashboard_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/stats/usage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 用量（token 与调用量，含检索）
-         * @description 最近 N 天的用量（对话 / 向量化 / 检索 / 重排）。
-         *
-         *     **只给 token 与调用量，不给钱**：单价随供应商、版本、缓存命中、时段折扣
-         *     不断变，内置一张价目表必然过期——而过期的价钱比不给更糟，
-         *     用户会照着它做决定。
-         *
-         *     ``unreported_calls`` 说清"有几次调用供应商没报用量"：不区分的话，
-         *     统计页会把"没报"画成"没用"，那是在撒谎。
-         */
-        get: operations["usage_summary_api_v1_stats_usage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/tasks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 任务列表（每项带健康判据） */
-        get: operations["list_tasks_api_v1_tasks_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/tasks/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 运行态总览
-         * @description 任务运行态总览。
-         *
-         *     把"有没有卡住"变成一个可以直接看的数，而不是让用户自己去列表里比对时间。
-         *     ``worker_enabled`` 尤其重要：**内嵌消费线程关掉时任务不会自己跑**——
-         *     这是"任务一直排队"最常见的原因，界面必须能解释它。
-         *
-         *     成员（v10）看不到这里：总览包含全局运维信息（有没有别的任务在跑、
-         *     worker 状态），那是管理员的视角。成员的任务在列表里已经够用。
-         */
-        get: operations["tasks_health_api_v1_tasks_health_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/tasks/load": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 负载面板（CPU / 内存 / 队列 / 额度）
-         * @description 这台机器现在有多忙。
-         *
-         *     **为什么要一个单独的端点**：任务列表回答的是"每个任务怎么了"，而"后台为什么慢"
-         *     常常与任何单个任务无关——是 CPU 满了、并发槽位只有 1 个、还是云端额度用尽。
-         *     这些数都属于**服务端**资源（浏览器那边的 CPU 是用户自己电脑的，与此无关），
-         *     所以只能由后端回。
-         *
-         *     与 ``/tasks/health`` 同一档：**管理员专属**。它暴露的是机器资源与运维参数，
-         *     对成员没有可操作的意义。
-         */
-        get: operations["tasks_load_api_v1_tasks_load_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/tasks/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 取消还没结束的任务
-         * @description 撤销排队中（或正在跑）的任务，**逐条返回成败**。
-         *
-         *     存在这一条的理由：队列里堆了几十条 pending 时，用户唯一能按的刹车是"逐篇取消文档"。
-         *     文档级的取消仍然保留（它同时把文档置为 canceled），这里给的是任务视角的入口。
-         *
-         *     权限沿用列表那一套：成员只能动**自己可见知识库**里的文档任务；
-         *     没有挂文档的全局任务（数据源拉取、Wiki 生成）只有管理员能动——
-         *     它们属于运维面，与列表里"对成员隐藏"是同一条口径。
-         *
-         *     ``state='all'`` 会连正在跑的一起撤：那条路径靠"把文档置 canceled"让 worker 在
-         *     下一个阶段边界停手，所以**不是立刻中断**，云端解析仍会跑完当前那次调用。
-         */
-        post: operations["cancel_tasks_api_v1_tasks_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/api-keys": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** API Key 列表 */
-        get: operations["list_api_keys_api_v1_api_keys_get"];
-        put?: never;
-        /** 创建 API Key（明文只在此响应出现） */
-        post: operations["create_api_key_api_v1_api_keys_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/api-keys/{key_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 撤销 API Key */
-        delete: operations["revoke_api_key_api_v1_api_keys__key_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1047,32 +93,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/chunks/{chunk_id}": {
+    "/api/v1/conversations/{conversation_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 切块详情 */
-        get: operations["get_chunk_api_v1_chunks__chunk_id__get"];
+        /**
+         * 会话详情
+         * @description 会话 + 全部消息。
+         *
+         *     一次给全而不是分页：一次对话通常几十轮，比"翻页找上文"的体验好得多；
+         *     真到了几百轮再谈分页。
+         */
+        get: operations["get_conversation_api_v1_conversations__conversation_id__get"];
         put?: never;
         post?: never;
-        /** 删除切块（连同索引与向量） */
-        delete: operations["delete_chunk_api_v1_chunks__chunk_id__delete"];
+        /** 删除会话（连同全部消息） */
+        delete: operations["delete_conversation_api_v1_conversations__conversation_id__delete"];
         options?: never;
         head?: never;
         /**
-         * 修改切块正文（会重新向量化）
-         * @description 改正文并重新 embedding。
+         * 修改会话（标题 / 置顶）
+         * @description 标题 / 置顶 / 归档 / 归属都可选，只处理传了的那些；都为空时幂等。
          *
-         *     三个动作里**唯一有副作用代价**的：要再调一次向量模型。
-         *     所以界面上它应当是显式保存，而不是边打字边存。
+         *     **归属用 ``model_fields_set`` 判断是否传了**，不能只看 ``is not None``：
+         *     "退回未归档"要传 ``workspace_id: null``，而那与"这个字段没传"在值上完全一样。
+         *     Pydantic v2 的 ``model_fields_set`` 正好区分这两者，比自定义哨兵干净。
+         *
+         *     ``workspace_id`` 带上设备（v0.59）：挂进的那条工作区必须在**这台设备**
+         *     （或不带设备头的服务器端）里看得见，否则与挂进别人的项目一样回 404。
+         *     退回未归档（``null``）不看设备——那是取消归属，与"属于哪台机器"无关。
          */
-        patch: operations["update_chunk_api_v1_chunks__chunk_id__patch"];
+        patch: operations["update_conversation_api_v1_conversations__conversation_id__patch"];
         trace?: never;
     };
-    "/api/v1/chunks/{chunk_id}/disabled": {
+    "/api/v1/conversations/{conversation_id}/rewind": {
         parameters: {
             query?: never;
             header?: never;
@@ -1080,14 +137,66 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        put?: never;
         /**
-         * 禁用 / 恢复切块
-         * @description 禁用或恢复。
+         * 回退最近 N 轮问答（「重新生成」用）
+         * @description 删掉最近 ``turns`` 轮（提问 + 回答），返回被删掉的那句提问。
          *
-         *     用 ``PUT`` 而不是 ``POST``：这是幂等的状态设置——重复禁用同一个块结果一样，
-         *     不会累积副作用。
+         *     **不在这里重新生成**：回答是流式产出的，重发必须走 `/chat/stream`——
+         *     在这里再调一次模型会让"怎么重试、怎么中断"出现第二条实现。
+         *     前端拿到 ``query`` 后原样重发一次即可。
          */
-        put: operations["toggle_chunk_api_v1_chunks__chunk_id__disabled_put"];
+        post: operations["rewind_conversation_api_v1_conversations__conversation_id__rewind_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/branch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 从第 N 轮分叉出一条新会话（「从这里重开」）
+         * @description 把到第 ``payload.turn`` 轮为止的历史复制进一条**新会话**；原会话一个字节不动。
+         *
+         *     与 ``rewind`` 的分工：那个是"删掉尾巴、把那句提问还给界面重发"（**改原会话**），
+         *     这个是"另起一条"（**原会话不动**）。用户不敢乱试的正是后者——一改就回不去了。
+         *
+         *     带走消息（含出处 / 步骤 / 思考快照）与它的事件日志，带走知识库范围 / 模型 /
+         *     思考偏好 / 工作区与**归属**；**不带走文件区**（产物记录与对象存储里的字节都不搬），
+         *     所以消息上的附件快照也不抄——那份 key 指向源会话的记账，抄过去点开必然 404。
+         *     这条边界写进《API 接口规范》§1.9。
+         */
+        post: operations["branch_conversation_api_v1_conversations__conversation_id__branch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 这条会话产出的文件
+         * @description 界面上那几张文件卡片的**当前状态**。
+         *
+         *     步骤里那份快照是流式当时的样子（"刚导出"），这里的是现在的样子（可能已经入库）。
+         *     回看历史会话时以这一份为准，否则刷新一下卡片就退回"未入库"了。
+         */
+        get: operations["list_artifacts_api_v1_conversations__conversation_id__artifacts_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1095,26 +204,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/documents/{document_id}/chunks/by-ordinal/{ordinal}": {
+    "/api/v1/conversations/{conversation_id}/files": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 按文档与序号取切块（推荐：URL 安全） */
-        get: operations["get_chunk_by_ordinal_api_v1_documents__document_id__chunks_by_ordinal__ordinal__get"];
+        /**
+         * 这条会话的文件区（会话文件 / 项目目录）
+         * @description 文件面板的内容。``scope`` 两档（v0.55）：
+         *
+         *     - ``conversation``：**这条会话的文件**——上传的与产出的都在这儿。上传一律落这一档
+         *       并按会话记账，所以同一项目下不同会话的文件**分得开**（改之前挂了工作区就把上传
+         *       写进项目目录，于是整个项目共用一个池子）。``path`` 从 D20 起也认：上传文件夹时
+         *       名字里带着相对路径（``图表/第二季度.png``），这一档因此与项目档一样能进子目录；
+         *     - ``project``：会话挂着的**项目目录**（能进子目录）——那是用户自己的项目文件，
+         *       只有挂了工作区才有这一档，没挂时服务层会明确说清。
+         *
+         *     哪一份落在哪儿由服务层算，界面不需要知道（``ArtifactService``）。
+         */
+        get: operations["list_files_api_v1_conversations__conversation_id__files_get"];
         put?: never;
-        post?: never;
-        /** 按文档与序号删除切块 */
-        delete: operations["delete_chunk_by_ordinal_api_v1_documents__document_id__chunks_by_ordinal__ordinal__delete"];
+        /**
+         * 往文件区里放一份文件
+         * @description 界面上的"上传"。
+         *
+         *     **一律落这条会话的文件区**（v0.55）：不再写进项目目录——那条路会让同一项目下
+         *     所有会话共用一堆文件，且"这份是谁传的"没有记录（用户报的"上传的文件分不开"）。
+         *     文件名**可以带相对路径**（``图表/a.png``）：上传文件夹时用它保留目录结构。
+         *
+         *     ``path`` 是旧接口留下的参数，收下但不用（见服务层说明）。
+         */
+        post: operations["upload_file_api_v1_conversations__conversation_id__files_post"];
+        delete?: never;
         options?: never;
         head?: never;
-        /** 按文档与序号改正文 */
-        patch: operations["update_chunk_by_ordinal_api_v1_documents__document_id__chunks_by_ordinal__ordinal__patch"];
+        patch?: never;
         trace?: never;
     };
-    "/api/v1/documents/{document_id}/chunks/by-ordinal/{ordinal}/disabled": {
+    "/api/v1/conversations/{conversation_id}/files/import": {
         parameters: {
             query?: never;
             header?: never;
@@ -1122,9 +251,347 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** 按文档与序号禁用 / 恢复 */
-        put: operations["toggle_chunk_by_ordinal_api_v1_documents__document_id__chunks_by_ordinal__ordinal__disabled_put"];
+        put?: never;
+        /**
+         * 把项目目录里的一份文件取进本会话
+         * @description 「取进本会话」（D20）：把**这条会话自己的工作区**里的一份文件复制进文件区。
+         *
+         *     与「加入知识库」是两个目的地，别混：这一步进的是**这条会话的文件区**
+         *     （别的会话看不到、删会话一起清），进知识库那条走 ``artifacts/…/ingest``。
+         *     源路径只走工作区那道闸（绝对路径 / ``..`` / 符号链接出界都拒）；
+         *     返回的是**会话文件区里的那一行**（key 是新的产物 id），界面据此说清"现在它在会话里"。
+         */
+        post: operations["import_project_file_api_v1_conversations__conversation_id__files_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/files/download-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 签发文件链接（预览 / 下载共用）
+         * @description 签发一条短期链接。**与文档下载同一套签名**，理由也一样：预览与下载按钮带不了头。
+         */
+        get: operations["file_download_url_api_v1_conversations__conversation_id__files_download_url_get"];
+        put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/files/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 按签名取文件内容（预览 / 下载共用）
+         * @description **刻意不挂鉴权依赖**：这个 URL 要能直接在浏览器里打开（``<iframe>`` / ``<img>``）。
+         *
+         *     它的授权凭据是 URL 里的签名，而签名绑定了"哪条会话、哪份文件、什么时候过期"——
+         *     比一个长期令牌更窄。缺了签名或签名对不上都取不到内容。
+         */
+        get: operations["download_file_content_api_v1_conversations__conversation_id__files_content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/artifacts/{artifact_id}/ingest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把一份产物存进知识库（显式动作）
+         * @description 用户点了卡片上那个「存进知识库」时走的路径。
+         *
+         *     与模型那把 ``ingest_artifact`` 工具同一个服务方法——**两条入口，一个动作**：
+         *     分开实现的话，"点按钮入的库"与"跟它说一句入的库"迟早会有两套行为。
+         */
+        post: operations["ingest_artifact_api_v1_conversations__conversation_id__artifacts__artifact_id__ingest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 笔记列表（置顶优先，其次最近更新） */
+        get: operations["list_notes_api_v1_notes_get"];
+        put?: never;
+        /** 新建笔记 */
+        post: operations["create_note_api_v1_notes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notes/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 用过的标签与条数 */
+        get: operations["list_tags_api_v1_notes_tags_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notes/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 文件夹列表（含每个文件夹的笔记数）
+         * @description 整棵树一次给出：层级（``parent_id``）由前端拼，数字（各自条数 / 未归档 / 总数）
+         *     一起带回——它们每次移动笔记都要同时变，分几次取就会有"对不上"的中间态。
+         *
+         *     **路由必须声明在 ``/{note_id}`` 之前**：两者都是 ``/notes/` + 一段``，
+         *     顺序反了 ``GET /notes/folders`` 会被当成"取一条 id 为 folders 的笔记"（404）。
+         */
+        get: operations["list_note_folders_api_v1_notes_folders_get"];
+        put?: never;
+        /** 新建文件夹 */
+        post: operations["create_note_folder_api_v1_notes_folders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notes/folders/{folder_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 删除文件夹（子文件夹一起删，里面的笔记回到未归档） */
+        delete: operations["delete_note_folder_api_v1_notes_folders__folder_id__delete"];
+        options?: never;
+        head?: never;
+        /** 重命名文件夹 */
+        patch: operations["rename_note_folder_api_v1_notes_folders__folder_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/notes/folders/{folder_id}/parent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 移动文件夹（换父级）
+         * @description 单独一个端点而不是并进上面那条 PATCH：改名与换位置都带一个可选字段时，
+         *     "没传"与"传了 null"会在同一个字段上表达两件事（不动父级 / 挪回根级），
+         *     只能靠 ``model_fields_set`` 这类字段存在性判断来区分——与其玩这个，
+         *     不如让"换父级"像文档那样自成一条路径（``PATCH /documents/{id}/folder``）。
+         */
+        patch: operations["move_note_folder_api_v1_notes_folders__folder_id__parent_patch"];
+        trace?: never;
+    };
+    "/api/v1/notes/{note_id}/folder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 把笔记移进文件夹 / 移回未归档
+         * @description 归属单独的端点（理由见 ``NoteUpdateIn`` 与 ``NotesService.move_note``）：
+         *     编辑器那条自动保存 PATCH 不带 folder_id，两者互不覆盖。
+         */
+        patch: operations["move_note_api_v1_notes__note_id__folder_patch"];
+        trace?: never;
+    };
+    "/api/v1/notes/{note_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 笔记详情 */
+        get: operations["get_note_api_v1_notes__note_id__get"];
+        put?: never;
+        post?: never;
+        /** 删除笔记 */
+        delete: operations["delete_note_api_v1_notes__note_id__delete"];
+        options?: never;
+        head?: never;
+        /** 更新笔记 */
+        patch: operations["update_note_api_v1_notes__note_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/notes/{note_id}/attach": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把笔记加入知识库
+         * @description 笔记作为一份 Markdown 文档走现有摄入流水线（切块/嵌入/检索全部复用）。
+         *
+         *     入库会写到知识库，所以要按 **WRITE** 校验库范围——只读分享不能借这条路径往库里塞东西。
+         */
+        post: operations["attach_note_api_v1_notes__note_id__attach_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notes/{note_id}/ai": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 用对话模型排版 / 润色笔记
+         * @description 对**已保存的正文**做一次 AI 处理，返回处理结果而不落库。
+         *
+         *     不自动写回是有意的：这是"整篇替换"级别的操作，用户应当先看到结果再决定存不存；
+         *     前端把结果放进编辑器后走正常的防抖自动保存，中途还能用撤销回退。
+         */
+        post: operations["ai_transform_api_v1_notes__note_id__ai_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notes/{note_id}/images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 上传笔记配图
+         * @description 上传一张图片，返回可直接放进 ``<img src>`` 的**签名相对地址**。
+         *
+         *     为什么是签名地址而不是走鉴权头：``<img>`` 发不出 ``Authorization``，
+         *     这正是文档下载那条路用签名参数的原因（见 ``api/v1/documents.py::content``）。
+         */
+        post: operations["upload_note_image_api_v1_notes__note_id__images_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notes/{note_id}/images/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 读取笔记配图
+         * @description 按签名取图。**刻意不挂 ``require_read``**：图片标签带不了自定义请求头。
+         */
+        get: operations["read_note_image_api_v1_notes__note_id__images__name__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 运行期配置（密钥打码） */
+        get: operations["read_settings_api_v1_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** 更新运行期配置 */
+        patch: operations["update_settings_api_v1_settings_patch"];
+        trace?: never;
+    };
+    "/api/v1/settings/test/{target}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 连通性测试（embedding / mineru / paddleocr） */
+        post: operations["test_connection_api_v1_settings_test__target__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1343,247 +810,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/users": {
+    "/api/v1/workspaces": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 使用者名册 */
-        get: operations["list_users_api_v1_users_get"];
-        put?: never;
-        /** 添加使用者 / 开通账号（带 username 即账号） */
-        post: operations["create_user_api_v1_users_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/users/{user_id}/password": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** 重置密码（吊销其全部会话） */
-        put: operations["reset_password_api_v1_users__user_id__password_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/users/{user_id}/disabled": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** 禁用 / 启用账号（禁用即吊销全部会话） */
-        put: operations["set_disabled_api_v1_users__user_id__disabled_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/users/{user_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 删除使用者（其文档保留，归属置空） */
-        delete: operations["delete_user_api_v1_users__user_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/avatars/{user_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 取一张头像（签名链接） */
-        get: operations["get_avatar_api_v1_avatars__user_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 删除这份文档会波及什么 */
-        get: operations["document_impact_api_v1_documents__document_id__impact_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/knowledge-bases/{kb_id}/impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 删除这个知识库会波及什么 */
-        get: operations["knowledge_base_impact_api_v1_knowledge_bases__kb_id__impact_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/trash": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 回收站 */
-        get: operations["list_trash_api_v1_trash_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/trash/{trash_id}/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
         /**
-         * 从回收站恢复（需要重新摄入）
-         * @description 恢复文档骨架与原文，并**重新入队摄入**。
+         * 工作区列表
+         * @description 默认只列**未归档**的项目；``archived=true`` 列出**已归档**的（归档视图）。
          *
-         *     为什么返回 ``202``：恢复不是"点完就好"——文档回到「已上传」，
-         *     要再跑一遍解析与向量化才有检索能力。返回 202 并带上任务 id，
-         *     界面可以引导用户去任务中心看进度。
-         */
-        post: operations["restore_from_trash_api_v1_trash__trash_id__restore_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/trash/{trash_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 彻底删除 */
-        delete: operations["drop_trash_api_v1_trash__trash_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/knowledge-bases/{kb_id}/data-sources": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 某知识库的数据源 */
-        get: operations["list_data_sources_api_v1_knowledge_bases__kb_id__data_sources_get"];
-        put?: never;
-        /**
-         * 登记数据源（HTML / RSS）
-         * @description 登记一个数据源。
+         *     与会话列表同一口径：归档的项目不进默认视图，要看它们得显式要——
+         *     这样"收起来"才真的把侧栏腾干净，而找回来也有一个明确的地方。
          *
-         *     **登记不等于拉取**：刚登记完不会立刻有文档，要么等定时任务，
-         *     要么显式点一次"拉取"。界面上要说清这一点，否则用户会以为登记完就有了。
+         *     **设备维度是三态**（v0.59）：``device=all``（管理员）跨设备全都要；否则按请求头
+         *     ``X-Kylab-Device`` 隔离——带了只看那台机器的，不带只看**服务器端**的。
+         *     非管理员传 ``device=all`` 回 422 并**如实说明只有管理员能跨设备看**：
+         *     这不是 404 那类"不告诉你有没有"，它是一条明确的权限口径。
          */
-        post: operations["create_data_source_api_v1_knowledge_bases__kb_id__data_sources_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/data-sources/{source_id}/enabled": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
+        get: operations["list_workspaces_api_v1_workspaces_get"];
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** 启用 / 停用数据源 */
-        patch: operations["toggle_data_source_api_v1_data_sources__source_id__enabled_patch"];
-        trace?: never;
-    };
-    "/api/v1/data-sources/{source_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
         /**
-         * 删除数据源（已抓取的文档保留）
-         * @description 删数据源，**已抓取的文档保留**——它们是知识库的正式内容，可能已被引用。
-         *     停掉订阅不等于要撤销已经收集的资料。
+         * 新建工作区（指定根目录）
+         * @description `root_path` 必须是**已存在的目录**，且不能指向数据目录或文件系统根
+         *     （见 ``validate_root_path`` 的三道校验）。
+         *
+         *     **设备在这一步打戳**（v0.59）：带了 ``X-Kylab-Device`` 就把 ``device_id`` /
+         *     ``device_name`` 一起记下（这台机器的项目），不带就落 ``NULL``（服务器端）。
+         *     之后这条记录只对同一台设备可见——改机器请在新机器上新建，
+         *     因为 `root_path` 是那台机器上的路径。
          */
-        delete: operations["delete_data_source_api_v1_data_sources__source_id__delete"];
+        post: operations["create_workspace_api_v1_workspaces_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/data-sources/{source_id}/sync": {
+    "/api/v1/workspaces/browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 浏览服务器上的目录（选工作区根目录用）
+         * @description **管理员专属**：它列的是**服务器上**的目录树。
+         *
+         *     这条与"设置页只认管理员"同一档：目录名本身就是信息（谁的项目叫什么、
+         *     备份放在哪、有哪些账号的家目录），而成员建工作区本来就只需要填一个路径。
+         *     换句话说是**不给它扩权**——能浏览不改变"能不能当工作区"的判定，
+         *     那条判定只有一份（``workspaces.root_path_problem``）。
+         *
+         *     只列**目录**；数据目录会出现在列表里但标着不可选与原因（不藏起来：
+         *     静默省略会让人以为"这里没有它"，而他找的可能正是它旁边那个）。
+         *
+         *     **每一行都带上"能不能在它里面新建目录 / 能不能改名"**（v0.41）：这两个判定与真去
+         *     动手时同一份，所以界面能把"不能建 / 不能改"说在点下去之前，而不是等点完再弹错。
+         *     v0.58 起**新建不限区域**（除了数据目录树哪儿都能建），改名仍只在「工作区」区域里。
+         */
+        get: operations["browse_directories_api_v1_workspaces_browse_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/dirs": {
         parameters: {
             query?: never;
             header?: never;
@@ -1593,38 +890,93 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 拉取一次（默认入队；wait=true 立刻做完）
-         * @description 拉一次。
+         * 在服务器上新建一个目录（选工作区时用）
+         * @description **这是"在服务器上写东西"**，比浏览严一档（与浏览同一道管理员闸）：
          *
-         *     ``wait=false``（默认）只入队并返回任务 id；``wait=true`` 直接跑完，
-         *     返回"取回几条、新入库几条、重复几条、失败几条"。
+         *     只建一层、重名当场拒（不覆盖也不合并）、名字按**可移植的那一套**校验——目录名常要在
+         *     Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b` 到了 Windows 上根本建不出来。
+         *
+         *     **除了数据目录树，哪儿都能建**（v0.58）：判定与浏览时标 ``creatable`` 的是同一份，
+         *     所以界面上灰着的那些位置，这里也一定拒——反过来，亮着的一定建得出来。而"这儿到底
+         *     写不写得进去"**不事先探测**：真去 ``mkdir``，写不进去时把那句 ``OSError`` 原样回给
+         *     调用方（`建不了这个目录：…`）。
          */
-        post: operations["sync_data_source_api_v1_data_sources__source_id__sync_post"];
+        post: operations["create_directory_api_v1_workspaces_dirs_post"];
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * 给服务器上的目录改名（选工作区时用）
+         * @description 只改名不搬位置。四类目录会被拒，各自都有具体理由（见服务层）：
+         *
+         *     文件系统根、**「工作区」区域本身**、**区域外的任何目录**（v0.58 放开的是新建，
+         *     **改名仍在区域里**——它动的是别人的既有目录）、以及**某个工作区的根目录**
+         *     （改了那条工作区就失联）。
+         */
+        patch: operations["rename_directory_api_v1_workspaces_dirs_patch"];
         trace?: never;
     };
-    "/api/v1/knowledge-bases/{kb_id}/shares": {
+    "/api/v1/workspaces/{workspace_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** 库的分享列表 */
-        get: operations["list_shares_api_v1_knowledge_bases__kb_id__shares_get"];
-        /** 分享/调整档位（按登录名） */
-        put: operations["grant_share_api_v1_knowledge_bases__kb_id__shares_put"];
+        /**
+         * 工作区详情
+         * @description **设备不匹配与越权、不存在一样回 404**：能区分就等于承认"这个 id 存在"。
+         */
+        get: operations["get_workspace_api_v1_workspaces__workspace_id__get"];
+        put?: never;
         post?: never;
+        /**
+         * 删除工作区（里面的会话退回未归档）
+         * @description **不删会话**：它们变成未归档，在侧栏的"未归档会话"那一栏继续存在。
+         *
+         *     这是刻意的：会话里有用户问过的内容，误删不可恢复；而"失去归属"是可恢复的
+         *     （重新挂一个工作区就行）。
+         */
+        delete: operations["delete_workspace_api_v1_workspaces__workspace_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * 改工作区
+         * @description 名字 / 根目录 / 描述 / 知识库 / 归档都可选，只改传了的那些。
+         *
+         *     **归属不可改**：把一个工作区转给别人，连带的是"里头会话的 Agent 行为"，
+         *     那是另一个功能，不该顺手做掉。**设备同样不可改**：它是这条记录的"在哪儿"，
+         *     换机器该新建（`root_path` 是那台机器上的路径）。
+         */
+        patch: operations["update_workspace_api_v1_workspaces__workspace_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/scheduled-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 定时任务列表
+         * @description 成员只看自己的；管理员会话与 API Key 通道看全部（与工作区/能力同一口径）。
+         */
+        get: operations["list_scheduled_tasks_api_v1_scheduled_tasks_get"];
+        put?: never;
+        /**
+         * 新建定时任务
+         * @description 建一条。时间字段的校验（cron 语法、过去的时刻、字段范围）由服务层做，
+         *     报错直接回给用户看——所以措辞是照着"怎么改对"写的。
+         */
+        post: operations["create_scheduled_task_api_v1_scheduled_tasks_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/knowledge-bases/{kb_id}/shares/{user_id}": {
+    "/api/v1/scheduled-tasks/{scheduled_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1634,126 +986,18 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** 收回分享 */
-        delete: operations["revoke_share_api_v1_knowledge_bases__kb_id__shares__user_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/documents/{document_id}/table": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
         /**
-         * 读表格文档的结构化副本（分页）
-         * @description 读一份表格文档的行列。
-         *
-         *     **只对 CSV/Excel 有效**：其它文档没有结构化副本，会得到一条
-         *     说明原因的错误，而不是空结果——后者会让人以为数据丢了。
+         * 删定时任务
+         * @description **已经跑出来的会话不删**（与"删工作区不删会话"同一条纪律）。
          */
-        get: operations["read_table_api_v1_documents__document_id__table_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
+        delete: operations["delete_scheduled_task_api_v1_scheduled_tasks__scheduled_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** 改定时任务 */
+        patch: operations["update_scheduled_task_api_v1_scheduled_tasks__scheduled_id__patch"];
         trace?: never;
     };
-    "/api/v1/webhooks/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 支持的事件清单
-         * @description 把事件名做成接口而不是写在文档里。
-         *
-         *     接收端要靠这份清单配置订阅，而拼错一个事件名的表现是
-         *     "订阅成功但永远收不到"——那种失败最难查，所以让它**可以被程序读到**。
-         */
-        get: operations["list_events_api_v1_webhooks_events_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/webhooks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 订阅列表（密钥掩码） */
-        get: operations["list_webhooks_api_v1_webhooks_get"];
-        put?: never;
-        /** 新建订阅（密钥明文只在这里返回一次） */
-        post: operations["create_webhook_api_v1_webhooks_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/webhooks/{webhook_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 删除订阅 */
-        delete: operations["delete_webhook_api_v1_webhooks__webhook_id__delete"];
-        options?: never;
-        head?: never;
-        /**
-         * 启用 / 停用订阅
-         * @description 只支持改 ``enabled``。
-         *
-         *     **不做"改地址"**：改地址等于把一个已经验证过的投递目标换掉，
-         *     而这中间没有任何确认步骤——想换地址就删了重建，那一步是有意识的。
-         */
-        patch: operations["update_webhook_api_v1_webhooks__webhook_id__patch"];
-        trace?: never;
-    };
-    "/api/v1/maintenance/storage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 存储空间概览
-         * @description 文件占用、可回收空间、向量分区数，以及无主分区。
-         *
-         *     "可回收"不是估算：它就是 SQLite 的 freelist（删数据后留下的空页）。
-         *     不显式暴露这个数字，用户看到的是"我删了东西，磁盘却没变"，
-         *     只能怀疑系统在偷偷存。
-         */
-        get: operations["storage_overview_api_v1_maintenance_storage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/maintenance/compact": {
+    "/api/v1/scheduled-tasks/{scheduled_id}/run": {
         parameters: {
             query?: never;
             header?: never;
@@ -1763,58 +1007,66 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 整理存储
-         * @description 丢掉无主向量分区并 VACUUM，返回整理**之后**的概览。
+         * 立即跑一次
+         * @description 入队一次运行，**不动下次时间**（手动跑不改变周期）。
          *
-         *     **只动无主数据**：有主的向量、切块、文档一律不碰。所以它安全到可以随便点，
-         *     代价只是时间（VACUUM 会重写整个库文件）。
+         *     返回的是队列任务 id：界面可以顺着它去任务列表里看这一轮跑到哪一步了。
          */
-        post: operations["compact_storage_api_v1_maintenance_compact_post"];
+        post: operations["run_scheduled_task_now_api_v1_scheduled_tasks__scheduled_id__run_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/knowledge-bases/{kb_id}/wiki": {
+    "/api/v1/mcp-servers": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Wiki 目录与生成状态 */
-        get: operations["get_wiki_api_v1_knowledge_bases__kb_id__wiki_get"];
+        /** MCP 服务列表 */
+        get: operations["list_servers_api_v1_mcp_servers_get"];
         put?: never;
-        post?: never;
         /**
-         * 清空这个知识库的 Wiki 页面
-         * @description 只删页面，**不动库形态开关**：用户可能只是想重来一次。
+         * 登记一个 MCP 服务
+         * @description ``stdio`` 服务会**起一个本地子进程**，所以这是"用户明确配置了才发生"的动作——
+         *     没有自动发现、没有扫描，只有这里登记的才会被连。
          */
-        delete: operations["clear_wiki_api_v1_knowledge_bases__kb_id__wiki_delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/wiki/pages/{page_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 读一页 Wiki（正文 + 出处） */
-        get: operations["get_wiki_page_api_v1_wiki_pages__page_id__get"];
-        put?: never;
-        post?: never;
+        post: operations["create_server_api_v1_mcp_servers_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/knowledge-bases/{kb_id}/wiki/generate": {
+    "/api/v1/mcp-servers/{server_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 单个 MCP 服务
+         * @description 取一个服务的登记信息（**不含凭据值**）。
+         */
+        get: operations["get_server_api_v1_mcp_servers__server_id__get"];
+        put?: never;
+        post?: never;
+        /** 删除 MCP 服务 */
+        delete: operations["delete_server_api_v1_mcp_servers__server_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * 改 MCP 服务
+         * @description 凭据字段是**整份替换**：合并语义下"删掉一个 header"与"没传"分不开。
+         */
+        patch: operations["update_server_api_v1_mcp_servers__server_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/mcp-servers/{server_id}/probe": {
         parameters: {
             query?: never;
             header?: never;
@@ -1824,12 +1076,61 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 重建这个知识库的 Wiki（异步）
-         * @description 入队一次重建。已在队列里时**返回同一个任务**（幂等，避免连点堆任务）。
+         * 测试连接并发现工具
+         * @description 真连一次、问它有哪些工具。
          *
-         *     Wiki 形态没开的话由服务层回 409（`ConflictError`）并说明怎么开。
+         *     **连不上不报 5xx**：它是「测试连接」，报错就是它的产出。这里把结果
+         *     （``reachable`` / ``detail`` / ``tools``）一并回给界面，而不是抛异常——
+         *     抛了的话前端只能拿到一句"请求失败"，看不到"是连不上还是没工具"。
          */
-        post: operations["generate_wiki_api_v1_knowledge_bases__kb_id__wiki_generate_post"];
+        post: operations["probe_server_api_v1_mcp_servers__server_id__probe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-servers/{server_id}/call": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 调用一个外部工具
+         * @description 按策略闸调用。``ask`` 且未确认时回 409，界面确认后带 ``approved=true`` 重调。
+         */
+        post: operations["call_tool_api_v1_mcp_servers__server_id__call_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-servers/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 所有已登记服务的工具
+         * @description 把每个**启用中**的服务的工具汇总起来（带限定名），给界面与提示词用。
+         *
+         *     某个服务连不上时**跳过它并继续**：一个外部服务挂了不该让整张能力清单消失——
+         *     那正是"接外部依赖"最不该有的耦合。
+         *
+         *     从缓存读（``available_tools``），**与对话那侧读的是同一份**：两处各自去连一遍
+         *     不但慢（stdio 会起子进程），还会出现"能力页显示有、对话里却调不动"这种
+         *     极其难查的不一致。
+         */
+        get: operations["list_all_tools_api_v1_mcp_servers_tools_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2543,29 +1844,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sandbox/exec": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 在隔离里执行一条命令
-         * @description 策略闸 + 内核隔离都过了才真跑。
-         *
-         *     ``ask`` 策略下第一次会拿到 **409**（"要先确认"）：界面据此弹确认框，
-         *     确认后带 ``approved=true`` 再调一次。409 不是错误，是流程的一步。
-         */
-        post: operations["exec_command_api_v1_sandbox_exec_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/site-icons": {
         parameters: {
             query?: never;
@@ -2593,67 +1871,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/model-proxy/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 模型代理：一次性补全
-         * @description 一次性补全（子 Agent、摘要这类小任务 ✓）。``caller`` 只用于鉴权 ✓。
-         */
-        post: operations["complete_api_v1_model_proxy_complete_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/model-proxy/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 模型代理：流式（只要正文）
-         * @description 只转正文增量 ✓（这条给普通对话用 ✓）。``caller`` 只用于鉴权 ✓。
-         */
-        post: operations["stream_api_v1_model_proxy_stream_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/model-proxy/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 模型代理：流式 + 工具调用（SSE 透传）
-         * @description 带工具位的那条（边车的工具循环用 ✓）。``caller`` 只用于鉴权 ✓。
-         */
-        post: operations["events_api_v1_model_proxy_events_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/app/frontend/manifest": {
+    "/api/v1/web/page": {
         parameters: {
             query?: never;
             header?: never;
@@ -2661,10 +1879,19 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 前端资源包的版本清单
-         * @description 壳在启动/连接时问一句"你那边是什么版本"，好和本地那份比。
+         * 取一个网页的正文（本机代取；内网 / 本机地址一律拒）
+         * @description 抓一页的正文（Markdown）。
+         *
+         *     **闸在发请求之前**（先 ``check_public_url`` 再 ``fetch_url``）：内网 / 本机 /
+         *     云元数据地址回 **400 + 那句原话**，一个请求都不发出去。
+         *
+         *     上游那点事**原样报**：对方 4xx/5xx、超时、不是网页正文（图片 / 压缩包）都是
+         *     ``fetch_url`` 抛的 ``UpstreamError`` → **502**（"外部依赖出错"，不是"我们出错了"，
+         *     也不是"你请求写错了"）——用户看到文案就知道该重试还是该换个地址。
+         *
+         *     **不落库、不进知识库**：这里只是"读一眼"，入库是另一个动作（上传 / 数据源）。
          */
-        get: operations["manifest_api_v1_app_frontend_manifest_get"];
+        get: operations["web_page_api_v1_web_page_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2673,7 +1900,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/app/frontend/package": {
+    "/api/v1/web/embed-check": {
         parameters: {
             query?: never;
             header?: never;
@@ -2681,10 +1908,738 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 前端资源包（整份 dist 的 zip）
-         * @description 整份 ``dist`` 的 zip。确定性打包 ⇒ 同一个版本的字节永远一样。
+         * 这一页能不能嵌进 iframe（探一次响应头；连不上按不能嵌回，不报错）
+         * @description 问一句"对方让不让嵌"：读一次响应头，回 ``embeddable`` + 那句话。
+         *
+         *     **判据与状态码**：SSRF 闸同样是 ``check_public_url``（内网 / 本机 → 400）；
+         *     探得到响应就按 ``X-Frame-Options`` 与 CSP 的 ``frame-ancestors`` 判（判定只有
+         *     ``_judge_embeddable`` 一处）；**探不到就 200 + false**（连不上 / 超时 / 对方跳走了），
+         *     reason 里写清是哪一档——探测失败不该把阅读模式挡住。
+         *
+         *     ``embeddable=true`` 只表示"那两条头没拦我们"：对方还可能用 JS 自检、
+         *     或者干脆是个登录页。这条端点的用途是**少走一次白等**，不是保证。
          */
-        get: operations["package_api_v1_app_frontend_package_get"];
+        get: operations["web_embed_check_api_v1_web_embed_check_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本机档状态（库在哪、接的是谁）
+         * @description **我的数据在哪**：库文件、数据目录、远端两头，外加导入那两笔账。
+         *
+         *     库路径与 ``core/storage.py`` 用的是**同一个字面量**（`LOCAL_DB_NAME`）与同一套优先级
+         *     （``KYLAB_LOCAL_DB`` > ``<data_dir>/kylab.db``）：两处各写一份文件名，迟早会出现
+         *     "状态页说 A、实际写 B"。
+         *
+         *     导入那两笔账都是**如实报**（阶段 5）：
+         *
+         *     - ``unfinished_imports``：库里还有 ``planned``/``running`` 的批次 = 上次导入没跑完
+         *       （被杀、断电、网络断）。它们**可重跑续上**（会话级幂等），所以这里只说"有几笔账
+         *       没结"，不去替用户重试；
+         *     - ``unimported_file_references``：最近一次导入的报告里那个数（产物 + 消息附件）。
+         *       它们指向 NAS 上的 key，**本体没有随导入过来**（R4 的取舍）——不说这个数，
+         *       用户会以为文件也搬过来了。
+         */
+        get: operations["local_status_api_v1_local_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/provider": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 知识库提供者状态（三态 + 原因 + 能力集 + 库清单）
+         * @description **唯一判定源**：知识库提供者现在是什么状态（方案 §3.1、§3.2）。
+         *
+         *     ``refresh=1`` 强制重探（窗口重新获得焦点、点「测试连接」时用）；不带就是读那份
+         *     30s 的进程内缓存（**不落库**——落库是 M4 的元数据缓存）。两件事都不在这里做：
+         *
+         *     - **不在启动时挡路**：首次被问到才探（与"模型连通性检查放后台"同一条口径）；
+         *     - **不替前端定轮询节奏**：``state != ready`` 时每 30s 探一次、``ready`` 时不探，
+         *       那是**前端**的节奏（方案 §3.2 的失效三条）；这一条只负责"被问到就给一个真结论"。
+         *
+         *     探针**绝不抛**：连不上 / 凭据错 / 版本不认识都是 `unavailable` + 一句原因，
+         *     而不是 500（一次探测的成败不该让状态页本身打不开）。
+         */
+        get: operations["local_provider_api_v1_local_provider_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 改知识库提供者的地址 / 开关（白名单两键，写完立刻重探）
+         * @description 改两个运行期键，**写完立刻重探并把最新状态整个回给前端**（方案 §3.4）。
+         *
+         *     - ``base_url``：空串 = **清掉覆盖、回继承**（那正是面板上的「恢复默认」）；
+         *     - ``enabled``：`false` = 显式关掉（解析成 ``unconfigured`` + 那句"被关掉了"，
+         *       而不是"没填地址"——两句的下一步不同）。
+         *     - 一个键都不给（空 body）= 不改动，**只重探一次**（等价于 ``refresh=1``）。
+         *
+         *     **凭据不在这里**（R3）：``token`` 只从引导级来（壳的 ``config.json`` / 环境变量），
+         *     这一条的白名单只有上面两键，凭据类键会被 422 挡在门外（`ProviderPatchIn` 的
+         *     ``extra="forbid"``）——本机库里因此永远不会出现 token。
+         *
+         *     **写完不用重启边车**（方案 §4.2）：提供者客户端**每次调用现取目标**
+         *     （``resolve_provider_target`` 是纯函数），这一条的强制重探只是把新结论立刻
+         *     算出来回给前端，好让"保存"这一下同时完成"重渲染"。
+         */
+        patch: operations["update_local_provider_api_v1_local_provider_patch"];
+        trace?: never;
+    };
+    "/api/v1/local/kb-cache/knowledge-bases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 快照：库列表（页面先画一帧用）
+         * @description 本机留的那份**库列表**快照（与 reader 面共用同一份内容：一个服务、一张表）。
+         *
+         *     ``items`` 里**没有** ``can_write`` / ``can_manage``（D-B）：那是按调用者身份算的，
+         *     而这份快照是**边车钥匙**看到的——落进快照就等于"把某一刻某个身份看到的东西当成这个库
+         *     的属性"（受限成员会看到全部库、管理员会丢掉管理入口）。页面画快照时那两个入口晚一步
+         *     出现，实时读一落地就亮，这正是"不许装成实时"的具体形态。
+         *
+         *     没有副本（还没看过 / 超龄被丢 / 换过地址）→ ``available:false`` + 一句原因，
+         *     **一个请求都不发**（§2.3：这一条是本机回环，不是一次 NAS 往返）。
+         */
+        get: operations["kb_cache_knowledge_bases_api_v1_local_kb_cache_knowledge_bases_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/kb-cache/knowledge-bases/{kb_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 快照：库详情
+         * @description 本机留的那份**库详情**快照（``response_model`` 那张表里"库详情"那一行）。
+         *
+         *     内容与 ``items`` 里的那一项同源：``kb_list`` 每确认一次就顺带把每库的 ``kb_detail``
+         *     行按**同一份 payload 拆开写**（§3.1）——两处内容因此不会各自过期，reader 面每轮每库
+         *     那一次读也才真能零网络。
+         */
+        get: operations["kb_cache_knowledge_base_api_v1_local_kb_cache_knowledge_bases__kb_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/kb-cache/knowledge-bases/{kb_id}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 快照：文档列表（只认规范视图）
+         * @description 本机留的那份**文档列表**快照（页面挂载那 3–4 次往返里最重的一次）。
+         *
+         *     **只认规范视图**：``q`` / ``stage`` / ``source_kind`` 任一给出来就如实回
+         *     ``available:false`` + 一句原因（决策 D-D），而且**不报错**——页面据此照旧骨架屏 +
+         *     自己那条实时读；报 4xx 会把"这一档就是没有"说成"这个请求有问题"。
+         *
+         *     快照面按 ``page`` / ``size`` 说，实时读那边按 ``offset`` / ``limit`` 说
+         *     （``offset = (page - 1) * size``）：同一个视图的两种说法，键只由
+         *     ``doc_list_scope_key`` 拼（阶段 5 的 ``docListViewKey()`` 必须给出同一个串）。
+         */
+        get: operations["kb_cache_documents_api_v1_local_kb_cache_knowledge_bases__kb_id__documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/kb-cache/knowledge-bases/{kb_id}/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 快照：库内目录
+         * @description 本机留的那份**目录树**快照——与文档列表**同屏**，所以不做就成了"半屏缓存"（§1.1）。
+         */
+        get: operations["kb_cache_folders_api_v1_local_kb_cache_knowledge_bases__kb_id__folders_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/kb-cache/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 快照：文档条目
+         * @description 本机留的那份**文档条目**快照（详情页 / 抽屉的入口帧）。
+         *
+         *     ``progress`` 在进快照前就被剥掉了（§1.1）：冻结的进度条是最糟的假象——进度与时间线
+         *     只从实时读来，绝不来自这一档。
+         */
+        get: operations["kb_cache_document_api_v1_local_kb_cache_documents__document_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/kb-cache/revalidate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 再确认一份快照（焦点回来 / 「立即刷新」）
+         * @description **主动再验证**：整取一次远端 → 比内容哈希 → 相同只推 ``checked_at``、不同换新（§4.1）。
+         *
+         *     **为什么是 ``ReadDep`` 而不是 ``WriteDep``**：它**不写远端**——一个字节都不发过去，
+         *     发的是一次 GET；它写的是**本机那张快照表**，而快照是严格可弃的（删了只丢速度，
+         *     不丢数据，v0.3 §5.3）。按 ``WriteDep`` 挡的话，"焦点回来顺手确认一下"就得先要一个
+         *     写权限，而它对 NAS 是纯读、对本机也是可弃的。真正会改数据的只有下面的 ``DELETE``，
+         *     它才是 ``WriteDep``。
+         *
+         *     **失败不回错**（§4.5）：远端连不上时回的是"那份快照还在，但它现在没被确认"
+         *     （``available:true`` + ``stale:true`` + ``last_error``）；连快照都没有时才是
+         *     ``available:false`` + 那句原因。两种情况都是 HTTP 200——页面顶上那句"现在连不上，
+         *     这是上次看到的内容（X）"就是这么来的。
+         *
+         *     与后台那次再验证共用同一套排程（单飞 / 15s 最短间隔 / 60s 退避都在服务里）：
+         *     这一条是**用户/页面明确要的一次**，所以它不等那 15 秒（§4.4 的"焦点"那一行）。
+         */
+        post: operations["revalidate_kb_cache_api_v1_local_kb_cache_revalidate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/kb-cache/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本机留的那一份有多大 / 最近更新（设置面板读它）
+         * @description **只读**报数（M4 阶段 6）：几项、合计多少字节、最旧/最新那份是什么时候看到的。
+         *
+         *     设置面板那一块（「本机留了一份」+ 行数 + 最近更新 + 「立即刷新」/「清除」）读的就是它，
+         *     而它和下面那条 ``DELETE`` 是一对：**说出来有多少，才谈得上清不清**。
+         *
+         *     三个口径写在这里：
+         *
+         *     - **零网络**：只读本机那张表（``KbMetaCacheService.stats``），一个字节都不打 NAS；
+         *     - **只算当前地址**（与 ``DELETE`` 不带参数时那一档不同）：换过地址之后旧地址的行还在
+         *       库里（§5：按地址隔离、不清旧行），但它们不是"这台机器现在连的那台 NAS"留的——
+         *       报数只报现在连的这一片，界面上那句「最近更新」才对得上刚看到的内容；
+         *     - **只读**：这一条一次写入都不做（库本身在启动时就已经准备好了，见
+         *       ``core/storage.py`` 的 ``prepare_sqlite_schema``）。
+         *
+         *     ``rows == 0`` 是合法状态（"这一台还没看过它"），不是错误。
+         */
+        get: operations["kb_cache_stats_api_v1_local_kb_cache_stats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/kb-cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 清掉本机留的快照（全清 / 按地址 / 按库）
+         * @description **清理粒度三档**（§3.4-4）：
+         *
+         *     - **什么参数都不给**：全清（所有地址、所有资源）——设置面板那颗「清除」；
+         *     - ``?provider=``：只清这一个地址留下的（§5：按地址隔离、不清旧行，所以清理得指得准）；
+         *     - ``?kb_id=``：按库清，清的是**当前地址**上的那三族；再给 ``?resource=`` 就只清那一族
+         *       （写类动作成功之后页面就地点一下失效，§3.4-1）。
+         *
+         *     按库清的映射照阶段 0+1 的口径：``doc_list`` **一次前缀清**（``<kb_id>|``，一个库的视图
+         *     有几十个，逐个删不是调用方该做的事）+ ``kb_detail`` / ``folders`` **两次精确清**
+         *     （一个键就是它自己）。``document`` 那一族不清——它的键是 ``document_id``，
+         *     认不出属于哪个库（要清它得按 id 清，或全清 / 按地址清）。
+         *
+         *     返回清掉的行数：0 是"本来就没有"，不是错误（快照严格可弃，重复清一次不该报错）。
+         */
+        delete: operations["purge_kb_cache_api_v1_local_kb_cache_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 导入 NAS 上的旧会话（后台跑，返回批次 id 供轮询）
+         * @description 开一个导入批次。
+         *
+         *     - ``dry_run=true``：**同步**算一遍"会新建/替换/跳过哪些"（要读完整条源端流，
+         *       所以不写在库里，也不产批次 id）；
+         *     - 否则**后台线程**里跑，这里立刻返回批次 id——几百条会话要走网络慢慢来，
+         *       按在请求上只会撞超时，而进度本来就写在库里（``GET /local/import/{id}`` 轮询，
+         *       CLI 那侧开的批次也一样查得到）。
+         *
+         *     线程是 ``daemon``：边车退出时不该被一次导入吊住（未写完的会话没有台账，
+         *     下次重跑就是接着导——R1 那条缓解）。
+         */
+        post: operations["start_import_api_v1_local_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/import/{batch_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 导入进度（轮询）
+         * @description 查一个批次到哪一步了（``imports.state`` + ``counts_json``）。
+         *
+         *     不选 SSE：这条进度是"几十秒一次的粗粒度数字"，断线无所谓，也没必要多一条流式形状
+         *     （方案 §3.1 的选择）。CLI 在另一个进程里开的批次同样查得到——**账写在库里**。
+         */
+        get: operations["import_status_api_v1_local_import__batch_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/import/{batch_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 回滚一个导入批次（删新建的 / 用快照恢复被替换的 / 本机改过的保留）
+         * @description 撤销一个批次——**两条规则逐条按台账办**（方案 §3.1）：
+         *
+         *     - ``created`` 且本机这条没再动过 → 删；
+         *     - ``replaced`` 且本机这条没再动过 → 用导入前的快照恢复；
+         *     - **本机改过的一律保留**并如实报数（回滚不是"把用户在本机说过的话一起抹掉"）。
+         *
+         *     **同步返回**（不像导入那样后台跑）：它通常是秒级的，而"撤销"这个动作用户要的就是
+         *     结果本身。返回的 ``counts`` 里逐条说着"删了几条 / 恢复几条 / 保留哪几条、为什么"。
+         */
+        post: operations["rollback_import_api_v1_local_import__batch_id__rollback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/backup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 备份：提供者状态 + 待传队列 + 最近几份（连不上也要给本机那一半）
+         * @description **备份这一页的整包**（方案 §7 A 第二行的判据）。
+         *
+         *     提供者那一半是 30s 缓存的三态（探针绝不抛：连不上 / 凭据错 / 版本不认识都是
+         *     ``unavailable`` + 原因）；本机那一半（队列读数与最近几行）**与提供者的状态无关**——
+         *     "这机器上有几份没备上去"是本地事实，NAS 断着它也照样答得上来。
+         */
+        get: operations["local_backup_api_v1_local_backup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 改备份提供者的地址 / 开关 / 含工作区 / 自动间隔（白名单四键，写完立刻重探）
+         * @description 改四个运行期键（落本机库 ``app_settings``），**写完立刻重探并回最新整包**。
+         *
+         *     - ``base_url``：空串 = **回继承**（壳里那台 NAS，那正是面板上的「恢复默认」）；
+         *     - ``enabled``：``false`` = 显式关掉（解析成 ``unconfigured`` + 那句"被关掉了"；
+         *       注意关掉**不影响本机打快照**，只是传不出去）；
+         *     - ``include_workspace`` / ``every_hours``：打包与自动快照那两个行为参数，
+         *       下一次调用立刻生效（打包器与队列都是每次现取）。
+         *
+         *     **凭据不在这里**（R3/R14）：``token`` 只从引导级来，被 ``extra="forbid"`` 挡在门外
+         *     ——本机库里因此永远不会出现 token。一个键都不给（空 body）= 只重探一次。
+         */
+        patch: operations["update_local_backup_api_v1_local_backup_patch"];
+        trace?: never;
+    };
+    "/api/v1/local/backup/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 立刻打一份快照并入队（断网也能打：202 + 队列一行 + 原因）
+         * @description 「立即备份」：**打包 → 入队 → 立刻试一次**（方案 §3.2 / §3.3）。
+         *
+         *     三件事的顺序就是要害：包先落在 ``<data_dir>/backup/pending/``（本地动作，不需要网络），
+         *     再登记成队列一行（跨重启续传的凭据），最后**顺手试一次上传**（不等那 5 分钟的节拍）。
+         *     所以断网时它照样回 202，而那一行是 ``failed`` + 一句 ``last_error`` ——
+         *     **那也是入队成功**（§7 A 第一行：两档都算成功）。
+         *
+         *     两处如实拒：没有**设备身份**（R12：壳没登录过 → 400 + 那句"先在桌面壳里登录一次"，
+         *     绝不编一个 id）与类型不在词表里（400）。打包与第一次尝试都在请求线程里（同步端点，
+         *     Starlette 会丢进线程池）——因为这一条的判据是"返回时队列已经有一行、原因可见"；
+         *     后续重试在 ``backup-upload`` 线程里，不挂在请求上。
+         */
+        post: operations["create_local_backup_snapshot_api_v1_local_backup_snapshots_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/backup/points": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 恢复点清单（透传 NAS；连不上就如实回三态，不是 500）
+         * @description **能恢复哪些点**（方案 §3.4：本机端点透传 NAS ``GET /backup/snapshots``）。
+         *
+         *     缓存 30s（与提供者状态同一 TTL 口径）；``refresh=1`` 强制重取（用户点「刷新」时用）。
+         *     ``available=false`` 时 ``items`` / ``total`` / ``quota`` 是空的，界面据此说"看不到"
+         *     而不是"还没备过"——那两句话的下一步完全不同。
+         *
+         *     **阶段 5 的按点恢复从这里挑一份**：拿到 ``device_id`` + ``snapshot_id`` 之后走
+         *     ``services.backup_provider.download_snapshot`` 把那包取回来（见那一处的说明）。
+         */
+        get: operations["local_backup_points_api_v1_local_backup_points_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/backup/points/{device_id}/{snapshot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删一个恢复点（整份；服务端本来就没有 → 404 如实回）
+         * @description 删**一个恢复点**（快照体 + 清单一起走，方案 §1.2 规矩 2：没有"删某个对象"的入口）。
+         *
+         *     两种失败各说各的话：服务端上没有这一份 → **404**（想删的那一份不在这儿，值得知道——
+         *     与 NAS 侧那条删除端点同一个判断）；连不上 → 503 + 原因（换一步再试）。
+         *
+         *     **本机队列那一行不动**：远端删掉的是"那一份备份"，而本机队列记的是"这份打到哪一步了"
+         *     ——两份账各有各的用途（传成过的那些行是"这台机器备过什么"的历史）。
+         */
+        delete: operations["delete_local_backup_point_api_v1_local_backup_points__device_id___snapshot_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/backup/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 按点恢复：从一份快照重建本机（dry_run=true 只预演，同步回报告）
+         * @description **按点恢复**（方案 §3.4）：把 ``device_id``/``snapshot_id`` 那一份取回来重建本机。
+         *
+         *     预演与真恢复**走同一套读**，区别只在写不写：
+         *
+         *     - ``dry_run=true`` → 同步返回 :class:`RestorePlan`（四段：会新建 / 会替换 / 会跳过
+         *       （含原因）/ 包里没有的产物 + 要重配的凭据）。它**会**下载并解包到
+         *       ``<data_dir>/restore-staging/``（"这一条会怎么处理"必须与本机台账逐条比，那要读包里的
+         *       库），但不碰本机库 / 记忆 / 产物，也不打恢复前那份兜底；
+         *     - 否则 → 202 + 批次 id。真恢复那一步自己会：打一份 ``pre_restore`` 本地兜底
+         *       （落 ``<data_dir>/restore-backup/<ts>/``，**不入队**）→ 走 M2 导入器写会话（幂等 /
+         *       一次会话一个事务 / 台账）→ 记忆（默认只补不覆盖）/ 设置（只补本机没有的键、凭据不写）/
+         *       产物字节（同 Key 同内容跳过、不同内容**如实报冲突**不覆盖）。失败不抛，写进台账。
+         *
+         *     **恢复前的状态先兜一份**（第 3 步）就是要害：这条路上"覆盖"是可能的，而兜底那一份
+         *     落在本机、不排队上传——它是给"按错了"用的，不是一份要传出去的备份。
+         */
+        post: operations["restore_local_backup_point_api_v1_local_backup_restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/secrets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 钥匙串：可用性与还有几处明文（只报数，不回显任何秘密）
+         * @description **凭据这一页要的那两个数**（阶段 7 的"凭据"一节靠它渲染）。
+         *
+         *     永远是 200：钥匙串不可用也是一种**结论**（`store: unavailable`），而不是一次失败
+         *     ——把它做成错误的话，页面就没法说清"这台机器收不了凭据"这件事。
+         */
+        get: operations["local_secrets_api_v1_local_secrets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local/secrets/migrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把库里的旧明文凭据收进系统钥匙串（逐项、幂等、可重跑）
+         * @description **显式收编**：逐项搬进钥匙串、搬一项清一项，然后收一次空闲页（VACUUM）。
+         *
+         *     幂等：已经迁过的项会跳过（顺手清掉库里那份重复的），所以"再点一次"是安全的。
+         *     失败的那些**明文不动**并如实进 ``failed``，可以重跑。
+         *
+         *     钥匙串整条不可用时**不返回报告而是 503**（`SecretStoreUnavailable` 那个信封）：
+         *     那种情况下"逐项失败"没有意义——一项都写不进去，而报告里一长串同样的原因
+         *     比一句"这台机器没有系统钥匙串"难懂得多。
+         */
+        post: operations["migrate_local_secrets_api_v1_local_secrets_migrate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chat/context-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 上下文用量（按来源分解，估算）
+         * @description 这一轮上下文**被什么占着**（P1-3 的仪表，照 ZCode 的 ``chat.contextUsage.breakdown``）。
+         *
+         *     为什么值得有：用户看到"它怎么变笨了 / 怎么变慢了"，能回答的一句话是
+         *     "上下文里 60% 是技能目录"。按来源分解比一个百分比有用得多，
+         *     也是"装了多少技能、给了多少工具"这件事第一次变得可核对。
+         *
+         *     三件事按顺序说清：
+         *
+         *     1. **算的是这一轮真会发出去的那一份**：历史（摘要 + 摘要之后的消息）、
+         *        基础提示词 + 当前模式那段 + 库级提示词、技能目录、工具表、人设文件，
+         *        外加框架开销那一项。工具表由协议层现拼（要调用者身份与这一轮的库范围）。
+         *     2. **只读**：调它**不会**触发压缩（``prepare_context`` 那条路才会），
+         *        所以它可以被界面随时刷新。
+         *     3. **是估算**：按字符数算（刻意偏高），``estimated`` 恒真、``note`` 里写着这句话
+         *        ——真实的用量只有模型端点返回的 ``usage`` 才知道。
+         *
+         *     归属判定与既有的会话端点同一套（成员越主 404，不暴露存在性）。
+         */
+        get: operations["context_usage_api_v1_chat_context_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 会话事件日志（只追加，按 seq 正序）
+         * @description 这条会话的**事件日志**——"当时到底发生了什么"的原始记录（P0-2）。
+         *
+         *     与 ``GET /conversations/{id}`` 的分工：那个端点返回消息（含 ``steps`` 快照，
+         *     是**回看时要显示的东西**），这个返回**只追加的原始事件**（流式过程中的每一步、
+         *     每一次工具调用、中断与失败）。两者是"投影"与"事实"的关系——快照的每一条
+         *     都能在日志里找到出处（``services/session_events.steps_from_events``
+         *     就是那条换算，端到端用例比对了两者相等）。
+         *
+         *     归属判定与既有的会话端点**同一套**（成员越主 404，不暴露存在性）。
+         *
+         *     ``kinds`` 里出现词表之外的取值会 **422**：这个端点是给人读日志、给脚本做
+         *     "只看中断"这类筛选用的，拼错了却拿到空列表会让人以为"这条会话没有这类事件"。
+         */
+        get: operations["conversation_events_api_v1_conversations__conversation_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chat/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 可用命令（内置 + 自定义 + 技能，被遮蔽的也在里面）
+         * @description 斜杠命令的目录：前端那个 ``/`` 菜单就吃这一份（P1-2 第 4 条）。
+         *
+         *     三条与界面直接相关的约定：
+         *
+         *     1. **``{name, summary, usage, group}`` 四个字段是给菜单的**（``group`` 是**菜单
+         *        分组**：``builtin`` / ``user`` / ``repo`` / ``skill``，见 ``CommandDef.group``
+         *        ——技能那批是单独一档，不再借技能自己的发现源分组），其余字段是顺带给出的排错信息；
+         *     2. **被遮蔽的与加载失败的都在列表里**（``shadowed_by`` / ``error``，与插件列表
+         *        同一套做法）：静默藏掉会让用户以为文件没生效，而原因只有这里知道；
+         *     3. **``short_circuit`` 只是"这条通常要不要模型"的说明**：为真的是 ``/help`` ``/mode``
+         *        这一类，为假的是改写类（``/skill``、**技能自己的那条命令**与自定义 md 命令）。
+         *        **界面不据它分流**——它是**表级**的保守口径，判不出 ``/plan`` 这种
+         *        "看有没有参数"的两面派；真正的判据是这一轮的结果。
+         */
+        get: operations["list_commands_api_v1_chat_commands_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/stats/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 用量（本机 usage_events：token 与调用量，不含钱）
+         * @description 最近 N 天的用量（对话 / 向量化 / 检索 / 重排）。
+         *
+         *     **只给 token 与调用量，不给钱**：单价随供应商、版本、缓存命中、时段折扣
+         *     不断变，内置一张价目表必然过期——而过期的价钱比不给更糟，
+         *     用户会照着它做决定。
+         *
+         *     ``unreported_calls`` 说清"有几次调用供应商没报用量"：不区分的话，
+         *     统计页会把"没报"画成"没用"，那是在撒谎。
+         *
+         *     **一条已知的缺口，写在这里免得把 0 读成"没用"**：本机那条**主链**今天不记账
+         *     ——``ChatService.tool_loop``（边车 ``/turn`` 与定时任务默认走的那条 Agent 链）
+         *     不调 ``UsageService.record``，边车的 ``RemoteModelClient`` 也不记。
+         *     今天会往这张表写的只有 ``ChatService.answer()``（Agent 工作流被关掉时那条）与
+         *     ``summarize_history``（上下文压缩）。所以这一条端点在本机**多数时候读到 0**，
+         *     那是"没记账"而**不是**"没用量"——真要让它有意义，得让本机那条主链也记账
+         *     （落点与"哪些 agent 步骤该按次记"一起定，属另一个单元）。
+         */
+        get: operations["usage_summary_api_v1_stats_usage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2697,115 +2652,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** AccountOut */
-        AccountOut: {
-            /** Id */
-            id: string;
-            /** Username */
-            username: string;
-            /** Name */
-            name: string;
-            /** Role */
-            role: string;
-            /**
-             * Avatar Url
-             * @default
-             */
-            avatar_url: string;
-        };
-        /**
-         * ActivityPointOut
-         * @description 一天的活跃度。
-         */
-        ActivityPointOut: {
-            /**
-             * Day
-             * Format: date
-             */
-            day: string;
-            /** Documents */
-            documents: number;
-            /** Chunks */
-            chunks: number;
-            /** Tasks */
-            tasks: number;
-        };
-        /** ApiKeyCreateIn */
-        ApiKeyCreateIn: {
-            /** Name */
-            name: string;
-            /** @default readonly */
-            permission: components["schemas"]["ApiKeyPermission"];
-            /** Knowledge Base Ids */
-            knowledge_base_ids?: string[];
-        };
-        /**
-         * ApiKeyIssuedOut
-         * @description 创建响应：``token`` 是明文**唯一一次**出现的地方。
-         */
-        ApiKeyIssuedOut: {
-            /** Id */
-            id: string;
-            /** Name */
-            name: string;
-            permission: components["schemas"]["ApiKeyPermission"];
-            /** Knowledge Base Ids */
-            knowledge_base_ids?: string[];
-            /** Created At */
-            created_at?: string | null;
-            /** Last Used At */
-            last_used_at?: string | null;
-            /**
-             * Prefix
-             * @description 展示用前缀（``kylab_sk_ab12…``），让用户能分辨"哪把是哪把"。
-             * @default
-             */
-            prefix: string;
-            /** Token */
-            token: string;
-        };
-        /** ApiKeyListOut */
-        ApiKeyListOut: {
-            /** Items */
-            items: components["schemas"]["ApiKeyOut"][];
-        };
-        /**
-         * ApiKeyOut
-         * @description 列表展示用。**绝不回显 key_hash 或明文**——只有创建响应里有明文。
-         */
-        ApiKeyOut: {
-            /** Id */
-            id: string;
-            /** Name */
-            name: string;
-            permission: components["schemas"]["ApiKeyPermission"];
-            /** Knowledge Base Ids */
-            knowledge_base_ids?: string[];
-            /** Created At */
-            created_at?: string | null;
-            /** Last Used At */
-            last_used_at?: string | null;
-            /**
-             * Prefix
-             * @description 展示用前缀（``kylab_sk_ab12…``），让用户能分辨"哪把是哪把"。
-             * @default
-             */
-            prefix: string;
-        };
-        /**
-         * ApiKeyPermission
-         * @description API Key 权限（《架构设计 v0.2》§3.2：只读 / 读写 两种）。
-         * @enum {string}
-         */
-        ApiKeyPermission: "readonly" | "readwrite";
-        /**
-         * AuthStatusOut
-         * @description 前端据此决定显示"首次设置管理员"还是"登录"。
-         */
-        AuthStatusOut: {
-            /** Needs Setup */
-            needs_setup: boolean;
-        };
         /**
          * AvailableModelOut
          * @description 上游 ``GET /models`` 列表里的一条。
@@ -2835,377 +2681,369 @@ export interface components {
             count: number;
         };
         /**
-         * BackupCapabilitiesOut
-         * @description 备份提供者的能力集（方案 §1.3 契约）。
+         * BackupBacklogOut
+         * @description 「有几份没备上去」那一读（方案 §3.2：**如实报，不静默**）。
          *
-         *     每一项都回答"这台提供者**现在**能不能做这件事"——与知识库那族同一条口径：
-         *     不认识的字段忽略、不认识的能力位就不摆，所以新增能力位是向后兼容的。
+         *     ``queued`` 是还没传上去的份数（pending / uploading / failed 三档）；
+         *     ``discarded`` 是被本地上限丢掉的份数——那几份确实没备上去，而原因不是网络。
          */
-        BackupCapabilitiesOut: {
-            snapshot: components["schemas"]["BackupSnapshotCapsOut"];
-            restore: components["schemas"]["BackupRestoreCapsOut"];
-            retention: components["schemas"]["BackupQuotaOut"];
-        };
-        /**
-         * BackupDeviceBriefOut
-         * @description 握手里的一台设备：**几份、多大、最近一份是什么时候**。
-         */
-        BackupDeviceBriefOut: {
+        BackupBacklogOut: {
             /**
-             * Device Id
-             * @description 设备 id（壳的 ``config.json.device_id``，UUID v4）。
-             */
-            device_id: string;
-            /**
-             * Device Name
-             * @description 设备名（清单里自报的那个，只给人看，不参与判等——与工作区那个设备头同一条口径）。
-             * @default
-             */
-            device_name: string;
-            /**
-             * Snapshots
-             * @description 这台设备有几份**完整**的恢复点。
+             * Queued
+             * @description 还没备上去的份数
              * @default 0
              */
-            snapshots: number;
+            queued: number;
             /**
              * Bytes
-             * @description 这台的恢复点一共占了多少字节（快照体之和）。
+             * @description 它们占的本地字节
              * @default 0
              */
             bytes: number;
             /**
-             * Latest Snapshot Id
-             * @description 最近那一份的 ``snapshot_id``（恢复点目录名；配 ``device_id`` 用）。
+             * Failed
+             * @description 其中失败过的份数
+             * @default 0
+             */
+            failed: number;
+            /**
+             * Discarded
+             * @description 被本地上限丢掉的份数（如实报）
+             * @default 0
+             */
+            discarded: number;
+            /**
+             * Oldest Created At
+             * @description 队列里最旧那份的时刻
+             */
+            oldest_created_at?: string | null;
+            /**
+             * Last Error
+             * @description 最近一条失败原因
              * @default
              */
-            latest_snapshot_id: string;
-            /**
-             * Latest At
-             * @description 最近那一份的时间（清单里的 ``created_at``，取不到时退到对象时间）。
-             */
-            latest_at?: string | null;
+            last_error: string;
         };
         /**
-         * BackupHandshakeOut
-         * @description 备份提供者握手（方案 §1.3）。
+         * BackupPatchIn
+         * @description ``PATCH /local/backup`` 的请求体：**只有四个键**（M5 §2.2 / §3.2 的运行期键）。
          *
-         *     与知识库握手同一个形状（``provider`` / ``protocol_version`` / ``capabilities`` /
-         *     ``caller`` / ``server_time``），把"库清单"换成"设备摘要 + 额度"：
+         *     ``extra="forbid"``（与 ``ProviderPatchIn`` 同一条纪律）：**凭据类键一个都不收**
+         *     （R3/R14——token 只从引导级来），``token`` / ``api_key`` 这些名字会以"未知键"被
+         *     422 拒掉。白名单只有这一处，不在端点函数里再列一遍。
          *
-         *     - ``devices``：**这次调用看得见**的全部设备。备份**不建 ACL**——可见范围就是这把钥匙
-         *       能看见的全部设备（方案 §1.5 的边界，登记为"将来要按设备限权"的一条）；
-         *     - ``retention`` 在 ``capabilities`` 里（与知识库把"库清单"放顶层不同）：额度是
-         *       "这台提供者怎么记账"的一部分，跟着能力集走更顺。
+         *     ``None`` = **不改这一项**（PATCH 的语义）。
+         */
+        BackupPatchIn: {
+            /**
+             * Base Url
+             * @description 备份提供者地址；空串 = 回继承（壳里那台 NAS）；None = 不改
+             */
+            base_url?: string | null;
+            /**
+             * Enabled
+             * @description 提供者开关；false = 显式关掉（快照照旧在本机打）；None = 不改
+             */
+            enabled?: boolean | null;
+            /**
+             * Include Workspace
+             * @description 快照里带不带工作区产物（默认不带）；None = 不改
+             */
+            include_workspace?: boolean | null;
+            /**
+             * Every Hours
+             * @description 每多少小时自动打一份（0 = 只手动）；None = 不改
+             */
+            every_hours?: number | null;
+        };
+        /**
+         * BackupPointDeletedOut
+         * @description ``DELETE /local/backup/points/{device}/{id}``：整份删掉几个对象（正常是 2）。
+         */
+        BackupPointDeletedOut: {
+            /**
+             * Removed
+             * @description 实际删掉的对象数（快照体 + 清单）
+             */
+            removed: number;
+        };
+        /**
+         * BackupPointsOut
+         * @description ``GET /local/backup/points``：**透传** NAS 的恢复点清单（本机只加一层三态）。
          *
-         *     响应体里同样**没有"凭据怎么了"**：401 / 403 走 HTTP 状态码与统一错误信封。
+         *     ``available=false`` 时 ``items`` / ``total`` / ``quota`` **没有意义**（它们会是空 / 0）：
+         *     判据是 ``available`` 与 ``reason``，界面据此显示"连不上，看不到恢复点"，
+         *     **不要把 0 显示成"还没备过"**（与 NAS 侧能力集里那句注释同一条口径）。
          */
-        BackupHandshakeOut: {
+        BackupPointsOut: {
             /**
-             * Provider
-             * @description 提供者种类，固定 ``backup``。
+             * State
+             * @description ready / unavailable / unconfigured
              */
-            provider: string;
-            /**
-             * Protocol Version
-             * @description **握手协议版本**：整数、只增，备份这边当前是 ``1``。
-             *
-             *     与知识库那个 ``1`` 是两件事：两个提供者各自演进，客户端**分开判**。
-             */
-            protocol_version: number;
-            /**
-             * App Version
-             * @description 服务端应用版本（给人看、排查用）。
-             */
-            app_version: string;
-            /**
-             * Api Version
-             * @description HTTP 路径版本（固定 ``v1``）。
-             */
-            api_version: string;
-            capabilities: components["schemas"]["BackupCapabilitiesOut"];
-            /** @description 这次调用在提供者看来是谁（**与知识库握手同一份形状**，所以客户端可以共用一份解析）。 */
-            caller: components["schemas"]["ProviderCallerOut"];
-            /**
-             * Devices
-             * @description **这次调用看得见**的设备摘要（含各自的份数、字节与最近一份）。
-             */
-            devices?: components["schemas"]["BackupDeviceBriefOut"][];
-            /**
-             * Server Time
-             * Format: date-time
-             * @description 服务端当前时间（UTC，带时区）。
-             */
-            server_time: string;
-        };
-        /**
-         * BackupQuotaOut
-         * @description 额度那一段：**配了多少、用了多少**（方案 §1.4：握手一次给全，不另开端点）。
-         */
-        BackupQuotaOut: {
-            /**
-             * Policy
-             * @description 保留策略：留最近 N 份。服务端**不替用户删**（超限报 409）——所以这里只有策略名。
-             * @default keep_n
-             */
-            policy: string;
-            /**
-             * Keep
-             * @description 每台设备的保留份数上限。
-             * @default 0
-             */
-            keep: number;
-            /**
-             * Quota Bytes
-             * @description 这一整批设备的字节上限（``KYLAB_BACKUP_QUOTA_BYTES``）。
-             * @default 0
-             */
-            quota_bytes: number;
-            /**
-             * Used Bytes
-             * @description 已经用了多少字节。桶不可用时是 ``0``——**那不是"零"，是数不出来**，
-             *     以 ``capabilities.snapshot.available`` 为准。
-             * @default 0
-             */
-            used_bytes: number;
-            /**
-             * Snapshots
-             * @description 已经有多少份恢复点（同上：桶不可用时数不出来）。
-             * @default 0
-             */
-            snapshots: number;
-        };
-        /**
-         * BackupRestoreCapsOut
-         * @description 恢复这一族：这份存储**够不够按点恢复**。
-         */
-        BackupRestoreCapsOut: {
-            /**
-             * Point In Time
-             * @description 能不能按时间点挑一份恢复点（就是"列恢复点 + 取清单"这两件事）。
-             * @default false
-             */
-            point_in_time: boolean;
-            /**
-             * Manifest Listing
-             * @description 恢复点清单里有没有清单（计数 / 被跳过项 / schema 版本都在里面，恢复前能先看）。
-             * @default false
-             */
-            manifest_listing: boolean;
-            /**
-             * Download
-             * @description 快照体能不能下载。
-             * @default false
-             */
-            download: boolean;
-            /**
-             * Partial Restore
-             * @description 一份快照够不够"只恢复一部分"（清单逐条列了内容物，成员也逐个可取）。
-             * @default false
-             */
-            partial_restore: boolean;
-        };
-        /**
-         * BackupSnapshotCapsOut
-         * @description 快照这一族能不能用、怎么用（``/backup/snapshots/*`` 那五条）。
-         */
-        BackupSnapshotCapsOut: {
+            state: string;
             /**
              * Available
-             * @description **现在能不能写快照**：为假时通常是"备份桶还没建出来"或对象存储连不上。
-             *
-             *     它是握手唯一会随环境变的能力位。为假时**握手仍然是 200**——客户端据此把页面切成
-             *     "这里还没准备好 + 下一步做什么"，而不是显示成服务器坏了（方案 R5）。
-             * @default true
+             * @description 这一份清单是不是真的取到了
              */
             available: boolean;
             /**
-             * Unavailable Reason
-             * @description ``available`` 为假时那句**可执行的下一步**（为真时是空串）。
+             * Reason
+             * @description 取不到时的原因（一句人话）
              * @default
              */
-            unavailable_reason: string;
+            reason: string;
             /**
-             * Transport
-             * @description 快照体怎么发：``octet-stream`` = 裸字节流 ``PUT``（不是 multipart 表单）。
-             * @default octet-stream
+             * Checked At
+             * @description 这次探到结论的时刻
              */
-            transport: string;
-            /**
-             * Format
-             * @description 打包格式。
-             * @default tar.gz
-             */
-            format: string;
-            /**
-             * Manifest
-             * @description 清单格式。
-             * @default json
-             */
-            manifest: string;
-            /**
-             * Checksum
-             * @description 校验算法：整份快照体的 sha256，服务端**边收边算**。
-             * @default sha256
-             */
-            checksum: string;
-            /**
-             * Max Blob Bytes
-             * @description 单份快照体的上限（字节）。超了是 ``413``，且不落桶——客户端据此在打包时就分档。
-             * @default 0
-             */
-            max_blob_bytes: number;
-            /**
-             * Max Snapshots Per Device
-             * @description 每台设备最多留几份（保留份数）。与 ``retention.keep`` **同一个数**。
-             * @default 0
-             */
-            max_snapshots_per_device: number;
-            /**
-             * Encryption
-             * @description 加密口径（自描述字段，当前恒为 ``none``）。
-             * @default none
-             */
-            encryption: string;
-        };
-        /**
-         * BackupSnapshotListOut
-         * @description ``GET /backup/snapshots`` 的响应（规范 §1.5 的分页）。
-         */
-        BackupSnapshotListOut: {
+            checked_at?: string | null;
             /**
              * Items
-             * @description 这一页的恢复点（**最近在前**）。
+             * @description 恢复点（新的在前）
              */
-            items?: components["schemas"]["BackupSnapshotOut"][];
+            items?: {
+                [key: string]: unknown;
+            }[];
             /**
              * Total
-             * @description 符合过滤条件的总数（不是这一页的条数）。
+             * @description 这台提供者上共几份（分页之外的总数）
              * @default 0
              */
             total: number;
-            /** @description 额度：**与设备过滤无关**，永远是这把钥匙看得见的全局用量。 */
-            quota: components["schemas"]["BackupQuotaOut"];
+            /**
+             * Quota
+             * @description 额度那一段（配了多少 / 用了多少）
+             */
+            quota?: {
+                [key: string]: unknown;
+            };
         };
         /**
-         * BackupSnapshotOut
-         * @description 一个恢复点（``GET /backup/snapshots`` 的一行）。
+         * BackupProviderOut
+         * @description ``BackupProviderStatus.to_payload()`` 的形状（**形状只在那一边拼一份**）。
          *
-         *     这几位的取值来自**清单**（客户端写的那份自描述文件）：服务端只做形状上的归一
-         *     （不认识的类型给默认值），不做业务解释——所以新增清单字段不需要改这里。
+         *     ``available``（端点族通了）与 ``snapshot_available``（桶能用）**是两件事**（R5）：
+         *     NAS 活着但还没建桶时前者为真、后者为假，而 ``snapshot_reason`` 里就是那句
+         *     "下一步敲什么"。不 ready 时后四段**键都不出现**（``response_model_exclude_unset``）——
+         *     回空对象会让界面去猜"是没探到还是真没有"。
          */
-        BackupSnapshotOut: {
+        BackupProviderOut: {
             /**
-             * Snapshot Id
-             * @description 恢复点目录名（``<snapshot_ts>-<hash8>``）。配 ``device_id`` 唯一确定一份。
+             * State
+             * @description ready / unavailable / unconfigured
              */
-            snapshot_id: string;
+            state: string;
             /**
-             * Device Id
-             * @description 哪台设备的。
+             * Available
+             * @description 端点族通了没有（**不是**「桶能用」，见 snapshot_available）
              */
-            device_id: string;
+            available: boolean;
             /**
-             * Device Name
-             * @description 设备名（只给人看）。
+             * Reason
+             * @description 不可用时的原因（一句人话 + 下一步）
              * @default
              */
-            device_name: string;
+            reason: string;
             /**
-             * Created At
-             * Format: date-time
-             * @description 这份快照的时间（UTC，带时区）。
+             * Checked At
+             * @description 这个结论是什么时候探的
              */
-            created_at: string;
+            checked_at?: string | null;
             /**
-             * Bytes
-             * @description 快照体在桶里的**真实字节数**（不是清单自报的那个）。
-             * @default 0
-             */
-            bytes: number;
-            /**
-             * Sha256
-             * @description 快照体的 sha256（清单里那份；清单没写就是空串）。
+             * Base Url
+             * @description 正在用的地址（未配时为空）
              * @default
              */
-            sha256: string;
+            base_url: string;
             /**
-             * Kind
-             * @description 怎么来的：``manual`` / ``auto`` / ``pre_restore``。
+             * Credential
+             * @description configured / missing——凭据只看有没有，永不回显
+             * @default missing
+             */
+            credential: string;
+            /**
+             * Snapshot Available
+             * @description 这台提供者现在能不能真收快照（桶建好没有）
+             * @default false
+             */
+            snapshot_available: boolean;
+            /**
+             * Snapshot Reason
+             * @description 不能收快照时那句话（服务端给的下一步，原样透传）
              * @default
              */
-            kind: string;
+            snapshot_reason: string;
             /**
-             * Schema Version
-             * @description 快照里那份本机库的 schema 版本（恢复前据此判"能不能读"）。
-             * @default 0
+             * Protocol Version
+             * @description 提供者报的协议版本；比本机所知更高即判不可用
              */
-            schema_version: number;
+            protocol_version?: number | null;
             /**
              * App Version
-             * @description 打这份快照时的应用版本。
+             * @description 提供者那一侧的版本（排障用）
              * @default
              */
             app_version: string;
             /**
-             * Counts
-             * @description 内容物计数（会话 / 消息 / 事件 / 笔记 / 产物…），清单里报什么就是什么。
+             * Capabilities
+             * @description 能力集（snapshot / restore / retention 三段）
              */
-            counts?: {
-                [key: string]: number;
+            capabilities?: {
+                [key: string]: unknown;
             };
             /**
-             * Skipped
-             * @description **没进包的内容物，逐条如实列**（名称 / 大小 / 原因）。
-             *
-             *     服务端原样透传（不裁剪字段）：界面与恢复报告都要照着它说清"哪些没备"。
+             * Devices
+             * @description 这台提供者看得见的设备（每台：几份、多大、最近一份）
              */
-            skipped?: {
+            devices?: {
                 [key: string]: unknown;
             }[];
             /**
-             * Encryption
-             * @description 加密口径（自描述字段）。
-             * @default none
+             * Enabled
+             * @description provider.backup.enabled 那一栏：开 / 关（没有这个键 = 开）
+             * @default true
              */
-            encryption: string;
-        };
-        /**
-         * BackupUploadOut
-         * @description 一次上传的结果（blob 与 manifest 同一个形状）。
-         *
-         *     ``bytes`` / ``sha256`` 都是**落桶之后从对象存储读回来的事实**（不是请求里自报的那个）
-         *     ——重试的客户端据此确认"桶里那一份和我手里这一份是不是同一份"。
-         */
-        BackupUploadOut: {
+            enabled: boolean;
             /**
-             * Snapshot Id
-             * @description 哪一份恢复点（``device_id`` 在路径里，所以这里只回它）。
+             * Include Workspace
+             * @description 快照里带不带工作区产物（默认不带）
+             * @default false
              */
-            snapshot_id: string;
+            include_workspace: boolean;
             /**
-             * Bytes
-             * @description 落桶之后的字节数。
+             * Every Hours
+             * @description 每多少小时自动打一份（0 = 只手动）
              * @default 0
              */
-            bytes: number;
+            every_hours: number;
+        };
+        /**
+         * BackupQueueRowOut
+         * @description 本机待传队列的一行（窄投影：界面要的那几列，不含 blob 路径这类本机细节）。
+         *
+         *     ``state`` 的五档与 ``attempts`` / ``next_attempt_at`` / ``last_error`` 一起回答
+         *     "这一份传到哪一步了、为什么没成、下次什么时候再试"——文案由界面组织，这里只给事实。
+         */
+        BackupQueueRowOut: {
             /**
-             * Sha256
-             * @description 落桶之后对象元数据里的 sha256。
+             * Id
+             * @description 快照 id（<device>-<ts>-<hash8>，内容寻址）
+             */
+            id: string;
+            /**
+             * Created At
+             * Format: date-time
+             * @description 这一份是什么时候打的
+             */
+            created_at: string;
+            /**
+             * Kind
+             * @description manual / auto / pre_restore
+             */
+            kind: string;
+            /**
+             * State
+             * @description pending / uploading / uploaded / failed / discarded
+             */
+            state: string;
+            /**
+             * Blob Bytes
+             * @description 本地那份包的大小
+             * @default 0
+             */
+            blob_bytes: number;
+            /**
+             * Attempts
+             * @description 试过几次（失败自增）
+             * @default 0
+             */
+            attempts: number;
+            /**
+             * Next Attempt At
+             * @description 下次可试的时刻（null = 立即到期）
+             */
+            next_attempt_at?: string | null;
+            /**
+             * Last Error
+             * @description 最近一次失败的原因（成功过就清空）
              * @default
              */
-            sha256: string;
-        };
-        /** Body_upload_avatar_api_v1_auth_avatar_post */
-        Body_upload_avatar_api_v1_auth_avatar_post: {
+            last_error: string;
             /**
-             * File
-             * @description 图片；前端会先缩到 256px 再传
+             * Uploaded At
+             * @description 传成的时刻（没成就是 null）
              */
+            uploaded_at?: string | null;
+            /**
+             * Remote Device Id
+             * @description 远端确认的设备坐标
+             */
+            remote_device_id?: string | null;
+            /**
+             * Remote Snapshot Id
+             * @description 远端确认的快照坐标
+             */
+            remote_snapshot_id?: string | null;
+        };
+        /**
+         * BackupRestoreOut
+         * @description ``POST /local/backup/restore`` 的回执：**预演的报告**或**开跑的批次 id**。
+         *
+         *     ``dry_run=true`` 时：``state="planned"`` + ``plan`` 里那四段（会新建 / 会替换 /
+         *     会跳过（含原因）/ 包里没有的产物）+ 要重配的凭据，而 ``batch_id`` 是空的
+         *     ——预演不产批次（它一个字节都不写库）。
+         *
+         *     否则：``batch_id`` 立刻可用，轮询 ``GET /local/import/{batch_id}``；那条台账的
+         *     ``counts["restore"]`` 里就是记忆 / 设置 / 产物 / 凭据那几段（终端与界面看到的是同一份）。
+         */
+        BackupRestoreOut: {
+            /**
+             * Batch Id
+             * @default
+             */
+            batch_id: string;
+            /**
+             * State
+             * @default
+             */
+            state: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /**
+             * Plan
+             * @description dry_run 时的报告（非预演时是空对象）
+             */
+            plan?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * BackupSnapshotCreatedOut
+         * @description ``POST /local/backup/snapshots`` 的 202：**那一行 + 最新的队列读数**。
+         *
+         *     入队那一步会顺手试一次上传（方案 §3.3「立即触发」），所以这里的 ``state`` 多半是
+         *     ``failed`` + 一句 ``last_error``——**那也是入队成功**：快照已经在盘上、在队列里，
+         *     联网后那一轮补传会把它传上去（§7 A 第一行就是按这个口径写的）。
+         */
+        BackupSnapshotCreatedOut: {
+            snapshot: components["schemas"]["BackupQueueRowOut"];
+            backlog: components["schemas"]["BackupBacklogOut"];
+        };
+        /** Body_upload_file_api_v1_conversations__conversation_id__files_post */
+        Body_upload_file_api_v1_conversations__conversation_id__files_post: {
+            /** File */
             file: string;
         };
-        /** Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post */
-        Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post: {
+        /** Body_upload_note_image_api_v1_notes__note_id__images_post */
+        Body_upload_note_image_api_v1_notes__note_id__images_post: {
             /** File */
             file: string;
         };
@@ -3223,598 +3061,713 @@ export interface components {
              */
             paths: string;
         };
-        /** ChannelStatOut */
-        ChannelStatOut: {
-            /** Channel */
-            channel: string;
-            /** Count */
-            count: number;
-            /** Elapsed Ms */
-            elapsed_ms: number;
-        };
-        /** ChunkList */
-        ChunkList: {
-            /** Items */
-            items: components["schemas"]["ChunkOut"][];
+        /**
+         * ChatAttachmentOut
+         * @description 用户消息随发的附件快照（v0.55，见 :class:`ChatAttachmentIn`）。
+         *
+         *     ``key`` 是文件区里的 key：界面拿它去预览 / 下载（与文件抽屉同一套端点），
+         *     所以就算那份文件后来被删了，这条消息仍然说得清"当时带的是它"。
+         */
+        ChatAttachmentOut: {
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
             /**
-             * Total
-             * @description 该文档的切块总数，与 items 长度无关（items 可能被 limit 截断）
+             * Kind
+             * @default
              */
-            total: number;
+            kind: string;
+            /**
+             * Size Bytes
+             * @default 0
+             */
+            size_bytes: number;
+        };
+        /** ChatMessageOut */
+        ChatMessageOut: {
+            /** Id */
+            id: string;
+            /** Role */
+            role: string;
+            /** Content */
+            content: string;
+            /** Sources */
+            sources?: components["schemas"]["ChatSourceOut"][];
+            /**
+             * Steps
+             * @description 当轮的过程步骤（工具调用、组织回答…，v0.25）。
+             *
+             *     与 ``sources`` 同为快照：回看旧回答时，当时调了哪些工具、每步拿到什么，
+             *     都该是当时的样子。老消息没有这一项，返回空列表。
+             */
+            steps?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Thinking
+             * @description 当轮的思考过程全文（v0.25）。空串 = 这一轮没有思考。
+             * @default
+             */
+            thinking: string;
+            /**
+             * Attachments
+             * @description 用户消息随发的附件（v0.55）。**只有用户消息会有**；老消息返回空列表。
+             */
+            attachments?: components["schemas"]["ChatAttachmentOut"][];
+            /** Created At */
+            created_at?: string | null;
         };
         /**
-         * ChunkOut
-         * @description 切块（文档详情页的正文预览）。
-         *
-         *     与 `SearchHitOut` 是两件事：命中带分数与通道，切块只描述"文档被切成了什么"。
+         * ChatSourceOut
+         * @description 回答引用的原文出处。带 preview，界面点开就能看到依据。
          */
-        ChunkOut: {
+        ChatSourceOut: {
+            /** Index */
+            index: number;
             /** Chunk Id */
             chunk_id: string;
             /** Document Id */
             document_id: string;
-            /** Ordinal */
-            ordinal: number;
-            /** Text */
-            text: string;
+            /** Document Name */
+            document_name: string;
             /** Heading Path */
             heading_path?: string | null;
             /** Page */
             page?: number | null;
-            /** Image Ids */
-            image_ids?: string[];
             /**
-             * Disabled
-             * @description 被禁用的块不再参与检索，但仍留在库里（§G3）。
-             * @default false
-             */
-            disabled: boolean;
-            /**
-             * Questions
-             * @description 入库时为这一段生成的问题（v23）。**只读展示**——它由模型产出，
-             *     用户要判断"出题质量如何、值不值得开着"，就得看得见它。
-             */
-            questions?: string[];
-        };
-        /**
-         * ChunkToggleIn
-         * @description 禁用 / 恢复一个块。
-         */
-        ChunkToggleIn: {
-            /** Disabled */
-            disabled: boolean;
-        };
-        /**
-         * ChunkUpdateIn
-         * @description 改块的正文。
-         *
-         *     只允许改文本：标题路径与页码来自解析器的版面分析，用户在这一页没有可对照的
-         *     依据去"修正"它们，开放了只会制造不一致。要改那些应当重新解析。
-         */
-        ChunkUpdateIn: {
-            /** Text */
-            text: string;
-        };
-        /**
-         * DashboardOut
-         * @description 驾驶舱要的全部数字。
-         */
-        DashboardOut: {
-            /**
-             * Generated At
-             * Format: date-time
-             */
-            generated_at: string;
-            /** Window Days */
-            window_days: number;
-            /** Total Knowledge Bases */
-            total_knowledge_bases: number;
-            /** Total Documents */
-            total_documents: number;
-            /** Total Chunks */
-            total_chunks: number;
-            /** Indexed Documents */
-            indexed_documents: number;
-            /** Failed Documents */
-            failed_documents: number;
-            /** Running Tasks */
-            running_tasks: number;
-            /** Failed Tasks */
-            failed_tasks: number;
-            /** Storage Bytes */
-            storage_bytes: number;
-            /** Recent Documents */
-            recent_documents: number;
-            /** Activity */
-            activity?: components["schemas"]["ActivityPointOut"][];
-            /** By Stage */
-            by_stage?: {
-                [key: string]: number;
-            };
-            /** By Suffix */
-            by_suffix?: {
-                [key: string]: number;
-            };
-            /** By Source Kind */
-            by_source_kind?: {
-                [key: string]: number;
-            };
-            /** Knowledge Bases */
-            knowledge_bases?: components["schemas"]["KbStatOut"][];
-        };
-        /**
-         * DataSourceCreateIn
-         * @description 登记一个数据源（M6 / T6.1）。
-         */
-        DataSourceCreateIn: {
-            /**
-             * Kind
-             * @description html 或 rss
-             */
-            kind: string;
-            /**
-             * Name
-             * @default
-             */
-            name: string;
-            /** Url */
-            url: string;
-            /** Max Items */
-            max_items?: number | null;
-        };
-        /**
-         * DataSourceKind
-         * @description 数据源类型（《架构设计 v0.2》§10）。
-         *
-         *     ``WEBDAV`` 为框架预留，MVP 不实现（架构 §14「缓做」）。
-         * @enum {string}
-         */
-        DataSourceKind: "upload" | "html" | "rss" | "webdav";
-        /** DataSourceListOut */
-        DataSourceListOut: {
-            /** Items */
-            items?: components["schemas"]["DataSourceOut"][];
-        };
-        /** DataSourceOut */
-        DataSourceOut: {
-            /** Id */
-            id: string;
-            /** Knowledge Base Id */
-            knowledge_base_id: string;
-            /** Kind */
-            kind: string;
-            /** Name */
-            name: string;
-            /** Url */
-            url: string;
-            /** Max Items */
-            max_items?: number | null;
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-            /** Etag */
-            etag?: string | null;
-            /** Last Pulled At */
-            last_pulled_at?: string | null;
-        };
-        /**
-         * DocumentBatchIn
-         * @description 批量动作：``delete``（进回收站）、``reprocess``（重新摄入）、``move``（移目录）、
-         *     ``enable`` / ``disable``（停用或恢复检索）或 ``questions``（为已索引文档补生成分段问题）。
-         *
-         *     ``document_ids`` 设上限而不是"随便多少"：一次勾几千篇会把请求体、逐条查询
-         *     与响应都拉大，而界面上的多选本来也到不了那个量级。
-         *
-         *     ``all=True``（v17）表示**对这个库的全部文档**执行，忽略 ``document_ids``。
-         *     它服务的场景是"切分参数改了、要整库重跑"：由服务端自己解析全集，
-         *     界面不必先翻页取 id 再回传（那个列表接口一次回全量，本身就是瓶颈）。
-         */
-        DocumentBatchIn: {
-            /**
-             * Action
-             * @enum {string}
-             */
-            action: "delete" | "reprocess" | "move" | "enable" | "disable" | "questions";
-            /** Document Ids */
-            document_ids?: string[];
-            /** Folder Id */
-            folder_id?: string | null;
-            /**
-             * All
-             * @default false
-             */
-            all: boolean;
-        };
-        /** DocumentBatchItemOut */
-        DocumentBatchItemOut: {
-            /** Document Id */
-            document_id: string;
-            /** Ok */
-            ok: boolean;
-            /** Error */
-            error?: string | null;
-        };
-        /**
-         * DocumentBatchOut
-         * @description 逐条结果。**部分失败是常态**，所以要给出每一篇的成败而不是一个总数。
-         */
-        DocumentBatchOut: {
-            /** Action */
-            action: string;
-            /** Succeeded */
-            succeeded: number;
-            /** Failed */
-            failed: number;
-            /** Items */
-            items: components["schemas"]["DocumentBatchItemOut"][];
-        };
-        /**
-         * DocumentDisabledIn
-         * @description 停用/恢复检索。**只动标记**：不删切块与向量，恢复零成本。
-         */
-        DocumentDisabledIn: {
-            /** Disabled */
-            disabled: boolean;
-        };
-        /**
-         * DocumentFolderIn
-         * @description 把文档移进目录；``folder_id`` 为 ``None`` 表示移回根目录。
-         */
-        DocumentFolderIn: {
-            /** Folder Id */
-            folder_id?: string | null;
-        };
-        /**
-         * DocumentList
-         * @description 一页文档。
-         *
-         *     ``total`` 是**这套筛选条件下的总数**（不是 ``items`` 的长度）：界面要显示
-         *     "共 N 篇 · 第 X / Y 页"，只回一页数据的话前端算不出总页数。
-         *     ``limit`` / ``offset`` 原样回显，调用方不必自己记住请求时传了什么。
-         */
-        DocumentList: {
-            /** Items */
-            items: components["schemas"]["DocumentOut"][];
-            /** Total */
-            total: number;
-            /** Limit */
-            limit: number;
-            /** Offset */
-            offset: number;
-        };
-        /** DocumentOut */
-        DocumentOut: {
-            /** Id */
-            id: string;
-            /** Knowledge Base Id */
-            knowledge_base_id: string;
-            /** Name */
-            name: string;
-            source_kind: components["schemas"]["DataSourceKind"];
-            stage: components["schemas"]["DocumentStage"];
-            /** Size Bytes */
-            size_bytes: number;
-            /** Mime Type */
-            mime_type?: string | null;
-            /** Page Count */
-            page_count?: number | null;
-            /**
-             * Is Split
-             * @default false
-             */
-            is_split: boolean;
-            /** Error */
-            error?: string | null;
-            /**
-             * Chunk Count
+             * Score
              * @default 0
              */
-            chunk_count: number;
+            score: number;
             /**
-             * Uploaded By
-             * @description 上传者的使用者 id（G6）。``None`` = 未记录，界面显示"未记录"而不是编一个名字。
-             */
-            uploaded_by?: string | null;
-            /**
-             * Uploaded By Name
-             * @description 解析后的名字。**由后端解析**：前端拿 id 还得再查一次名册，
-             *     列表里就会有 N 次多余请求。
+             * Preview
              * @default
              */
-            uploaded_by_name: string;
+            preview: string;
             /**
-             * Folder Id
-             * @description 所在目录（v13）。``None`` = 未归档（根目录）。
+             * Knowledge Base Id
+             * @default
              */
-            folder_id?: string | null;
+            knowledge_base_id: string;
             /**
-             * Disabled
-             * @description 停用（v14）。停用后不参与检索（两条通道都过滤），其余一切保留。
+             * Document Summary
+             * @default
+             */
+            document_summary: string;
+        };
+        /**
+         * CommandListOut
+         * @description ``GET /api/v1/chat/commands`` 的返回：菜单 + 两条发现源。
+         */
+        CommandListOut: {
+            /** Items */
+            items?: components["schemas"]["CommandOut"][];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * User Dir
+             * @default
+             */
+            user_dir: string;
+            /**
+             * Builtin Dir
+             * @default
+             */
+            builtin_dir: string;
+        };
+        /**
+         * CommandOut
+         * @description 一条斜杠命令（照 ZCode 的内置表 + ``commands/*.md`` 自定义命令）。
+         *
+         *     前四个字段 ``{name, summary, usage, group}`` 就是前端那个 ``/`` 菜单吃的东西
+         *     （``details`` 给 ``/help <命令名>`` 展开用；``shadowed_by`` / ``error`` 是排错用的）。
+         *     技能注册来的那批也在里面（``/技能名 [任务]``）——它们取 ``group="skill"``：
+         *     技能是**单独一档**（``CommandDef.group``），不混进"内置 / 你放的 / 随代码发布"
+         *     里，那三档装不下二十多条命令、也辨认不出技能。
+         */
+        CommandOut: {
+            /** Name */
+            name: string;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /**
+             * Usage
+             * @default
+             */
+            usage: string;
+            /**
+             * Group
+             * @default builtin
+             * @enum {string}
+             */
+            group: "builtin" | "user" | "repo" | "skill";
+            /** Details */
+            details?: string[];
+            /**
+             * Argument Hint
+             * @default
+             */
+            argument_hint: string;
+            /**
+             * Short Circuit
+             * @default true
+             */
+            short_circuit: boolean;
+            /**
+             * Shadowed By
+             * @default
+             */
+            shadowed_by: string;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+        };
+        /**
+         * ContextUsageItemOut
+         * @description 上下文用量分解里的**一项来源**（P1-3，抄 ZCode 的 ``chat.contextUsage.breakdown``）。
+         *
+         *     ``kind`` 是稳定取值（``messages`` / ``system_prompt`` / ``skills`` / ``tools`` /
+         *     ``memory`` / ``other``），``label`` 是界面上显示的那几个字——**界面不要自己翻译
+         *     ``kind``**：分解的口径是服务端定的（比如"记忆与人设"包含哪几份文件），
+         *     两处各写一份迟早会对不上。
+         */
+        ContextUsageItemOut: {
+            /**
+             * Kind
+             * @description 来源：消息 / 系统提示词 / 技能目录 / 工具定义 / 记忆与人设 / 其它。
+             */
+            kind: string;
+            /**
+             * Label
+             * @description 给人看的中文名。
+             */
+            label: string;
+            /**
+             * Chars
+             * @description 这一来源的字符数（估算所依据的那个数）。
+             * @default 0
+             */
+            chars: number;
+            /**
+             * Tokens
+             * @description 按字符数估的 token（见 ``estimated``）。
+             * @default 0
+             */
+            tokens: number;
+            /**
+             * Share
+             * @description 占**已用**的比例（0~1）。界面画分解条用它，比每次自己除一遍稳。
+             * @default 0
+             */
+            share: number;
+            /**
+             * Preview
+             * @description 这一项**实际文本的开头一段**（D09，2026-09-28 走查）。
+             *
+             *     这一排原先只有数字：能看出"系统提示词占多少 token"，但"本轮到底给它灌了什么"
+             *     没有入口（同一页里工具结果与出处早就有"加载全部 / 看全文"）。
+             *     截断长度是服务端定的（``services/chat.CONTEXT_PART_PREVIEW_CHARS``，600 字），
+             *     前端只负责显示，别自己再截一遍。
+             * @default
+             */
+            preview: string;
+        };
+        /**
+         * ContextUsageOut
+         * @description 这一轮上下文的占用与分解（P1-3 的仪表）。
+         *
+         *     **是估算**：按字符数算（中日韩 1 字 ≈ 1 token、其余 4 字符 ≈ 1，刻意偏高），
+         *     真实用量只有端点返回的 ``usage`` 才知道。所以 ``estimated`` 恒为真、
+         *     ``note`` 里写明这句话——仪表上不能把估算画成账单。
+         */
+        ContextUsageOut: {
+            /** Items */
+            items?: components["schemas"]["ContextUsageItemOut"][];
+            /**
+             * Used
+             * @default 0
+             */
+            used: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Ratio
+             * @default 0
+             */
+            ratio: number;
+            /**
+             * Compress At
+             * @default 0
+             */
+            compress_at: number;
+            /**
+             * Compress Budget
+             * @default 0
+             */
+            compress_budget: number;
+            /**
+             * Estimated
+             * @default true
+             */
+            estimated: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /** ConversationArtifactListOut */
+        ConversationArtifactListOut: {
+            /** Items */
+            items: components["schemas"]["ConversationArtifactOut"][];
+        };
+        /**
+         * ConversationArtifactOut
+         * @description 会话产出的一份文件（v0.26）。
+         *
+         *     与 ``ChatStep.artifacts`` 是**同一个形状**（由 ``ArtifactService.describe``
+         *     生成），这不是巧合：步骤里那一份是流式当时的样子，这里这一份是**现在的样子**。
+         *     两者分叉的话，"刷新之后卡片突然显示已入库"就成了必然。
+         */
+        ConversationArtifactOut: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Name */
+            name: string;
+            /**
+             * Size Bytes
+             * @default 0
+             */
+            size_bytes: number;
+            /**
+             * Format
+             * @default
+             */
+            format: string;
+            /**
+             * Storage
+             * @default object
+             */
+            storage: string;
+            /**
+             * Where
+             * @default
+             */
+            where: string;
+            /** Path */
+            path?: string | null;
+            /** Knowledge Base Id */
+            knowledge_base_id?: string | null;
+            /** Document Id */
+            document_id?: string | null;
+            /** Created At */
+            created_at?: string | null;
+        };
+        /**
+         * ConversationBranchIn
+         * @description **从这里重开**（D11）：从第 ``turn`` 轮分叉出一条新会话。
+         *
+         *     ``turn`` 是**第几个提问**（1 起数）。越界（0 / 超过总轮数）不夹到边界、
+         *     也不"取最后一条"，而是报错——静默夹过去会让用户以为分叉点就是他点的那一处，
+         *     而拿到的是另一段历史。``0`` 与小数由这一层的 ``ge=1`` 挡住（422）。
+         */
+        ConversationBranchIn: {
+            /** Turn */
+            turn: number;
+        };
+        /** ConversationCreateIn */
+        ConversationCreateIn: {
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Kb Ids */
+            kb_ids?: string[];
+            /** Workspace Id */
+            workspace_id?: string | null;
+            /** Model Pk */
+            model_pk?: string | null;
+            /** Thinking */
+            thinking?: boolean | null;
+            /** Thinking Effort */
+            thinking_effort?: ("low" | "medium" | "high") | null;
+        };
+        /** ConversationDetailOut */
+        ConversationDetailOut: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Kb Ids */
+            kb_ids?: string[];
+            /**
+             * Model Pk
+             * @description 本条会话选用的对话模型（v12）；``None`` = 全局默认。界面据此回填模型选择器。
+             */
+            model_pk?: string | null;
+            /**
+             * Thinking
+             * @description 本条会话是否开启思考（v16）；``None`` = 全局默认。界面据此回填思考开关。
+             */
+            thinking?: boolean | null;
+            /**
+             * Thinking Effort
+             * @description 本条会话的思考强度（v16）；``None`` = 全局默认。
+             */
+            thinking_effort?: string | null;
+            /**
+             * Pinned
+             * @description 置顶（v17）。置顶的会话排在列表最前，且聊天不改变它的名次。
              * @default false
              */
-            disabled: boolean;
+            pinned: boolean;
             /**
-             * Original Kind
-             * @description 原件能不能在这页里渲染出来（``pdf`` / ``image`` / ``docx`` / ``pptx`` / ``excel``）。
-             *
-             *     界面据此决定首页要不要给「原文版式 / 解析文本」这个切换、以及**先取哪一个**——
-             *     判在后端是为了不让前端去猜文件后缀（同 ``content_kind`` 的理由）。
-             * @default binary
+             * Workspace Id
+             * @description 所属工作区（v0.15）；``None`` = 未归档。
              */
-            original_kind: string;
+            workspace_id?: string | null;
+            /**
+             * Archived At
+             * @description 归档时间（v0.17）。非空 = 已归档——**归档不是删除**：
+             *     默认列表里看不到它，但内容还在，随时可以取消归档。
+             */
+            archived_at?: string | null;
+            /**
+             * Preview
+             * @description 最近一条回答的开头一段（历史会话面板的两行预览）。
+             *
+             *     给回答而不是给提问：用户回看历史时想认出的是"这次聊出了什么"，
+             *     而问题往往几条都长得很像（"帮我看看这个"）。
+             * @default
+             */
+            preview: string;
             /** Created At */
             created_at?: string | null;
             /** Updated At */
             updated_at?: string | null;
             /**
-             * Question Count
-             * @description 该文档各分段已生成问题的**总条数**（v24）。0 = 还没出过题。
+             * Message Count
              * @default 0
              */
-            question_count: number;
-            /**
-             * Questioned Chunk Count
-             * @description 有题的分段数。配合 ``chunk_count`` 显示"几段里有几段出了题"。
-             * @default 0
-             */
-            questioned_chunk_count: number;
-            /**
-             * Questions Pending
-             * @description 是否还有出题任务在队列里/在跑（v24）。
-             *
-             *     列表据此显示"生成中…"，也据此决定继续轮询——出题**不改变文档阶段**，
-             *     只看 ``stage`` 的话前端永远等不到它完成。
-             * @default false
-             */
-            questions_pending: boolean;
-            /**
-             * Summary
-             * @description 入库时生成的文档摘要（v25）。**问答上下文靠它省 token**，
-             *     界面也把它当一句话说明（抽屉里显示、列表行悬浮显示）。空串 = 还没生成。
-             * @default
-             */
-            summary: string;
-            /**
-             * @description 分段进度的摘要（§12.115）。列表行的进度条吃它；完整那棵树在
-             *     ``GET /documents/{id}/timeline``。``None`` = 这条路径没算（老调用点）。
-             */
-            progress?: components["schemas"]["DocumentProgressOut"] | null;
+            message_count: number;
+            /** Messages */
+            messages?: components["schemas"]["ChatMessageOut"][];
         };
-        /** DocumentPartList */
-        DocumentPartList: {
+        /**
+         * ConversationFileImportIn
+         * @description 把**项目目录**里的一份文件取进这条会话的文件区（D20）。
+         *
+         *     只给一个相对路径（项目档那一行给的 key）：落点、名字都归服务端算——
+         *     界面不该也不能决定"复制到哪儿"。路径只走工作区那道闸（绝对路径 / ``..`` /
+         *     符号链接出界都拒），与读文件、预览同一条。
+         */
+        ConversationFileImportIn: {
+            /** Path */
+            path: string;
+        };
+        /** ConversationListOut */
+        ConversationListOut: {
             /** Items */
-            items: components["schemas"]["DocumentPartOut"][];
+            items: components["schemas"]["ConversationOut"][];
         };
-        /** DocumentPartOut */
-        DocumentPartOut: {
+        /**
+         * ConversationOut
+         * @description 会话摘要。列表用它，所以带上 ``message_count`` 让界面能写"6 条消息"。
+         */
+        ConversationOut: {
             /** Id */
             id: string;
-            /** Part Index */
-            part_index: number;
-            /** Page Start */
-            page_start: number;
-            /** Page End */
-            page_end: number;
-            stage: components["schemas"]["DocumentStage"];
-            /** Error */
-            error?: string | null;
-        };
-        /**
-         * DocumentProgressOut
-         * @description 列表行上那条分段进度所需要的信息（§12.115）。
-         *
-         *     **不给百分比**（用户也这么要求）：6 个环节的耗时极不均（解析几分钟、切分几秒），
-         *     百分比只会编出一个对不上的数字——"第 3/6 步 · 解析内容 · 已用 2 分 14 秒"
-         *     每一项都能和实际对上。
-         */
-        DocumentProgressOut: {
+            /** Title */
+            title: string;
+            /** Kb Ids */
+            kb_ids?: string[];
             /**
-             * Status
-             * @default running
+             * Model Pk
+             * @description 本条会话选用的对话模型（v12）；``None`` = 全局默认。界面据此回填模型选择器。
              */
-            status: string;
+            model_pk?: string | null;
             /**
-             * Step Index
-             * @default 1
+             * Thinking
+             * @description 本条会话是否开启思考（v16）；``None`` = 全局默认。界面据此回填思考开关。
              */
-            step_index: number;
+            thinking?: boolean | null;
             /**
-             * Step Total
-             * @default 0
+             * Thinking Effort
+             * @description 本条会话的思考强度（v16）；``None`` = 全局默认。
              */
-            step_total: number;
+            thinking_effort?: string | null;
             /**
-             * Step Label
-             * @default
-             */
-            step_label: string;
-            /**
-             * Elapsed Ms
-             * @default 0
-             */
-            elapsed_ms: number;
-            /**
-             * Total Ms
-             * @default 0
-             */
-            total_ms: number;
-            /**
-             * Retries
-             * @default 0
-             */
-            retries: number;
-            /**
-             * Stalled
+             * Pinned
+             * @description 置顶（v17）。置顶的会话排在列表最前，且聊天不改变它的名次。
              * @default false
              */
-            stalled: boolean;
+            pinned: boolean;
+            /**
+             * Workspace Id
+             * @description 所属工作区（v0.15）；``None`` = 未归档。
+             */
+            workspace_id?: string | null;
+            /**
+             * Archived At
+             * @description 归档时间（v0.17）。非空 = 已归档——**归档不是删除**：
+             *     默认列表里看不到它，但内容还在，随时可以取消归档。
+             */
+            archived_at?: string | null;
+            /**
+             * Preview
+             * @description 最近一条回答的开头一段（历史会话面板的两行预览）。
+             *
+             *     给回答而不是给提问：用户回看历史时想认出的是"这次聊出了什么"，
+             *     而问题往往几条都长得很像（"帮我看看这个"）。
+             * @default
+             */
+            preview: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * Message Count
+             * @default 0
+             */
+            message_count: number;
         };
         /**
-         * DocumentRenameIn
-         * @description 改文件名。上限与服务层的常量一致（``DOCUMENT_NAME_MAX_CHARS``）。
+         * ConversationRewindIn
+         * @description 回退最近 N 轮问答（「重新生成」用）。默认一轮。
          */
-        DocumentRenameIn: {
+        ConversationRewindIn: {
+            /**
+             * Turns
+             * @default 1
+             */
+            turns: number;
+        };
+        /**
+         * ConversationRewindOut
+         * @description 回退结果：``query`` 是被删掉的那句提问，调用方拿它重新发一次。
+         *
+         *     没有可回退的内容时 ``query`` 为空串——调用方据此提示，而不是发一次空提问。
+         */
+        ConversationRewindOut: {
+            /**
+             * Query
+             * @default
+             */
+            query: string;
+            /**
+             * Removed
+             * @default 0
+             */
+            removed: number;
+        };
+        /**
+         * ConversationUpdateIn
+         * @description 改会话的可编辑属性：标题 / 置顶。**都可选**，只传要改的那个。
+         *
+         *     从一个字段扩成两个而不是新加一个端点：两者都是"整理这条会话"的同一类动作，
+         *     分两个端点只会让前端的"改完刷新"写两遍。
+         */
+        ConversationUpdateIn: {
+            /** Title */
+            title?: string | null;
+            /** Pinned */
+            pinned?: boolean | null;
+            /** Archived */
+            archived?: boolean | null;
+            /** Workspace Id */
+            workspace_id?: string | null;
+        };
+        /**
+         * DirectoryCreateIn
+         * @description 在服务器上新建一个目录（``POST /workspaces/dirs``，v0.36）。
+         */
+        DirectoryCreateIn: {
+            /** Parent */
+            parent: string;
             /** Name */
             name: string;
         };
         /**
-         * DocumentStage
-         * @description 文档摄入流水线状态（《架构设计 v0.2》§4）。
+         * DirectoryEntryOut
+         * @description 目录浏览里的一行：一个子目录，或一个"起点"。
          *
-         *     主链路：``uploaded → probing → parsing → parsed → chunking → chunked → embedding → indexed``。
-         *     ``enriching/enriched`` 是可选增强分支（图谱/Wiki，默认关闭，失败不影响主链路）。
-         * @enum {string}
+         *     **三对字段**（v0.41）：能不能选、能不能在它里面新建目录、能不能给它改名——
+         *     各带各的原因。合成一个 ``reason`` 会让人分不清"不能选"还是"不能建"，
+         *     而这两件事的下一步动作不一样（换一个目录 vs 换一个地方动手）。
          */
-        DocumentStage: "uploaded" | "probing" | "parsing" | "parsed" | "chunking" | "chunked" | "embedding" | "indexed" | "enriching" | "enriched" | "failed" | "canceled";
-        /**
-         * DocumentTimelineOut
-         * @description 一篇文档的处理进度：共几步、现在第几步、共耗时多少、每步各花多久。
-         *
-         *     **不给百分比**：摄入的环节耗时不均（解析可能几分钟、切分几秒），
-         *     百分比只会编出一个骗人的数字；"第 3/6 步 + 每步实际耗时"才是能对得上的信息。
-         */
-        DocumentTimelineOut: {
-            /** Document Id */
-            document_id: string;
+        DirectoryEntryOut: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
             /**
-             * Status
-             * @enum {string}
+             * Selectable
+             * @default true
              */
-            status: "running" | "done" | "failed" | "canceled";
-            /** Current Index */
-            current_index: number;
-            /** Step Total */
-            step_total: number;
-            /** Total Ms */
-            total_ms: number;
-            /** Steps */
-            steps?: components["schemas"]["TimelineStepOut"][];
+            selectable: boolean;
             /**
-             * Stalled
-             * @default false
+             * Reason
+             * @default
              */
-            stalled: boolean;
+            reason: string;
+            /**
+             * Creatable
+             * @default true
+             */
+            creatable: boolean;
+            /**
+             * Create Reason
+             * @default
+             */
+            create_reason: string;
+            /**
+             * Renamable
+             * @default true
+             */
+            renamable: boolean;
+            /**
+             * Rename Reason
+             * @default
+             */
+            rename_reason: string;
         };
         /**
-         * DownloadUrlOut
-         * @description 一条下载链接。**相对路径**：对外域名只有部署时才知道。
+         * DirectoryRenameIn
+         * @description 给服务器上的一个目录改名（``PATCH /workspaces/dirs``，v0.36）。**只改名，不搬位置**。
          */
-        DownloadUrlOut: {
+        DirectoryRenameIn: {
+            /** Path */
+            path: string;
+            /** Name */
+            name: string;
+        };
+        /**
+         * EmbedCheckOut
+         * @description ``GET /web/embed-check``：这一页能不能被浏览器嵌进来。
+         *
+         *     ``embeddable=false`` 时**不抛错**：那是"阅读模式该走另一条路"的正常答案
+         *     （``reason`` 是对方的原话 + 下一步），不是这次请求失败。
+         *     ``x_frame_options`` / ``frame_ancestors`` 都是**对方原话**，没有就是空串——
+         *     界面要显示"对方为什么不让嵌"时直接用它，不必再解析一遍。
+         */
+        EmbedCheckOut: {
+            /**
+             * Url
+             * @description 请求的那个地址
+             */
+            url: string;
+            /**
+             * Embeddable
+             * @description 浏览器会不会拒载这一页
+             */
+            embeddable: boolean;
+            /**
+             * Reason
+             * @description 为什么（对方的原话 + 下一步）
+             */
+            reason: string;
+            /**
+             * X Frame Options
+             * @description 对方设的那条头（没有就是空串）
+             * @default
+             */
+            x_frame_options: string;
+            /**
+             * Frame Ancestors
+             * @description CSP 里 frame-ancestors 那几句的值（没有就是空串；两条策略用「；」连）
+             * @default
+             */
+            frame_ancestors: string;
+        };
+        /**
+         * FileDownloadUrlOut
+         * @description 一条文件链接（预览与下载共用）。**相对路径**：对外域名只有部署时才知道。
+         */
+        FileDownloadUrlOut: {
             /** Url */
             url: string;
             /** Expires At */
             expires_at: number;
-            /** Format */
-            format: string;
-        };
-        /** FolderCreateIn */
-        FolderCreateIn: {
             /** Name */
             name: string;
         };
-        /** FolderListOut */
-        FolderListOut: {
-            /** Items */
-            items: components["schemas"]["FolderOut"][];
-        };
         /**
-         * FolderOut
-         * @description 知识库内的目录（v13）。``document_count`` 由后端算——列表要显示"几篇"。
+         * FileEntryOut
+         * @description 文件区里的一行（v0.26）。
+         *
+         *     ``key`` 是**在这个文件区里唯一指代它**的东西，界面拿它当不透明字符串用：
+         *     工作区模式是相对路径（``报告/初稿.docx``），临时区是产物 id。
          */
-        FolderOut: {
-            /** Id */
-            id: string;
-            /** Kb Id */
-            kb_id: string;
+        FileEntryOut: {
+            /** Key */
+            key: string;
             /** Name */
             name: string;
             /**
-             * Document Count
+             * Is Dir
+             * @default false
+             */
+            is_dir: boolean;
+            /**
+             * Size Bytes
              * @default 0
              */
-            document_count: number;
-            /** Created At */
-            created_at?: string | null;
+            size_bytes: number;
+            /** Modified At */
+            modified_at?: string | null;
+            /**
+             * Kind
+             * @default
+             */
+            kind: string;
         };
-        /** FolderRenameIn */
-        FolderRenameIn: {
-            /** Name */
-            name: string;
+        /**
+         * FileListingOut
+         * @description 一层目录（v0.26；两档都能进子目录，见 ``mode``）。
+         */
+        FileListingOut: {
+            /** Mode */
+            mode: string;
+            /** Label */
+            label: string;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+            /** Parent */
+            parent?: string | null;
+            /** Entries */
+            entries?: components["schemas"]["FileEntryOut"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
-        };
-        /**
-         * HardwareLoadOut
-         * @description 机器与本进程的资源占用（负载面板）。
-         */
-        HardwareLoadOut: {
-            /** Cpu Percent */
-            cpu_percent?: number | null;
-            /**
-             * Cpu Count
-             * @default 1
-             */
-            cpu_count: number;
-            /**
-             * Memory Used Bytes
-             * @default 0
-             */
-            memory_used_bytes: number;
-            /**
-             * Memory Total Bytes
-             * @default 0
-             */
-            memory_total_bytes: number;
-            /**
-             * Memory Percent
-             * @default 0
-             */
-            memory_percent: number;
-            /** Process Rss Bytes */
-            process_rss_bytes?: number | null;
-        };
-        /**
-         * HealthOverviewOut
-         * @description 运行态总览（T7.4）。
-         */
-        HealthOverviewOut: {
-            /**
-             * Total
-             * @default 0
-             */
-            total: number;
-            /**
-             * Running
-             * @default 0
-             */
-            running: number;
-            /**
-             * Queued
-             * @default 0
-             */
-            queued: number;
-            /**
-             * Stalled
-             * @default 0
-             */
-            stalled: number;
-            /**
-             * Overdue
-             * @default 0
-             */
-            overdue: number;
-            /** Problems */
-            problems?: components["schemas"]["TaskHealthOut"][];
-            /**
-             * Worker Enabled
-             * @default true
-             */
-            worker_enabled: boolean;
         };
         /**
          * HealthResponse
@@ -3831,315 +3784,534 @@ export interface components {
             api_version: string;
         };
         /**
-         * ImpactOut
-         * @description 删除会波及什么（M6 / T6.3）。
-         *
-         *     **数字要具体**：说"这会删除该知识库及其内容"没人会有感觉；
-         *     说"3 份文档、412 个切块"才会让人停一下。这是二次确认能有意义的前提。
+         * ImportBatchBriefOut
+         * @description 一个批次的摘要（``/local/status`` 里那几行）。
          */
-        ImpactOut: {
-            /** Kind */
-            kind: string;
-            /** Id */
-            id: string;
-            /** Name */
-            name: string;
+        ImportBatchBriefOut: {
+            /** Batch Id */
+            batch_id: string;
+            /** State */
+            state: string;
             /**
-             * Documents
-             * @default 0
-             */
-            documents: number;
-            /**
-             * Chunks
-             * @default 0
-             */
-            chunks: number;
-            /**
-             * Parts
-             * @default 0
-             */
-            parts: number;
-            /**
-             * Size Bytes
-             * @default 0
-             */
-            size_bytes: number;
-            /**
-             * Running Tasks
-             * @default 0
-             */
-            running_tasks: number;
-            /** Document Names */
-            document_names?: string[];
-            /**
-             * Restorable
-             * @default true
-             */
-            restorable: boolean;
-        };
-        /**
-         * KBPromptDraftOut
-         * @description 生成结果。**不落库**：用户在设置里看着改完再保存。
-         */
-        KBPromptDraftOut: {
-            /** Prompt */
-            prompt: string;
-            /** Sources */
-            sources?: components["schemas"]["KBPromptSourceOut"][];
-            /**
-             * Filename Style Citations
-             * @description 这段提示词里仍在要求把文件名写进正文的地方（旧口径，v0.41 起改成编号式引用）。
-             *
-             *     非空 = 模型没听那句"别把文件名写进正文"，界面据此提示核对。
-             */
-            filename_style_citations?: string[];
-        };
-        /**
-         * KBPromptGenerateIn
-         * @description 生成库提示词的入参（v0.19）。
-         */
-        KBPromptGenerateIn: {
-            /**
-             * Model Pk
-             * @description 用哪个对话模型来生成；留空用设置里的默认对话模型
-             */
-            model_pk?: string | null;
-        };
-        /**
-         * KBPromptSourceOut
-         * @description 生成时用到的某一篇文档摘要，以及它**有没有被生成的文本引用**。
-         */
-        KBPromptSourceOut: {
-            /** Document Id */
-            document_id: string;
-            /** Name */
-            name: string;
-            /** Summary */
-            summary: string;
-            /**
-             * Cited
-             * @description 生成的提示词里有没有 `[来源: 这篇]`。
-             *
-             *     ``False`` **不代表这篇没用上**——它可能只提供了背景，而没贡献具体事实。
-             *     界面据此把"被引用的"排在前面。
-             * @default false
-             */
-            cited: boolean;
-        };
-        /** KbStatOut */
-        KbStatOut: {
-            /** Id */
-            id: string;
-            /** Name */
-            name: string;
-            /** Embedding Model Id */
-            embedding_model_id: string;
-            /** Embedding Dim */
-            embedding_dim: number;
-            /** Documents */
-            documents: number;
-            /** Chunks */
-            chunks: number;
-            /** Last Activity */
-            last_activity?: string | null;
-        };
-        /** KnowledgeBaseCreate */
-        KnowledgeBaseCreate: {
-            /** Name */
-            name: string;
-            /**
-             * Chunk Size
-             * @default 512
-             */
-            chunk_size: number;
-            /**
-             * Chunk Overlap
-             * @default 64
-             */
-            chunk_overlap: number;
-            /** Embedding Model Pk */
-            embedding_model_pk?: string | null;
-            /**
-             * Suggested Enabled
-             * @default false
-             */
-            suggested_enabled: boolean;
-            /**
-             * Suggested Count
-             * @default 3
-             */
-            suggested_count: number;
-            /** Suggested Model Pk */
-            suggested_model_pk?: string | null;
-            /**
-             * Suggested Prompt
+             * Source
              * @default
              */
-            suggested_prompt: string;
+            source: string;
+            /** Counts */
+            counts?: {
+                [key: string]: unknown;
+            };
             /**
-             * Wiki Enabled
+             * Error
+             * @default
+             */
+            error: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * ImportBatchOut
+         * @description 批次的状态与计数（``dry_run`` 时带着"会怎么处理"，没有批次 id）。
+         */
+        ImportBatchOut: {
+            /**
+             * Batch Id
+             * @default
+             */
+            batch_id: string;
+            /**
+             * State
+             * @default
+             */
+            state: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
+             * Dry Run
              * @default false
              */
-            wiki_enabled: boolean;
+            dry_run: boolean;
+            /** Counts */
+            counts?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /** Updated At */
+            updated_at?: string | null;
         };
-        /** KnowledgeBaseList */
-        KnowledgeBaseList: {
+        /**
+         * ImportRequestIn
+         * @description 导入请求。
+         *
+         *     **来源与令牌不在这里**：它们从这一档的引导配置来（``KYLAB_SERVER_URL`` /
+         *     ``KYLAB_TOKEN``，壳起边车时传的就是它们）。令牌再走一遍请求体只会多一条
+         *     让它出现在日志里、或落进库里的路（R6 明写它不落库）。
+         */
+        ImportRequestIn: {
+            /**
+             * Since
+             * @description 只导**严格晚于**这个时刻更新过的会话（增量）
+             */
+            since?: string | null;
+            /**
+             * Dry Run
+             * @description true = 只报会怎么处理，一个字节都不写
+             * @default false
+             */
+            dry_run: boolean;
+        };
+        /**
+         * IngestArtifactIn
+         * @description 把一份产物存进知识库。**库必须由调用方点明**——服务端不替他挑。
+         */
+        IngestArtifactIn: {
+            /** Knowledge Base Id */
+            knowledge_base_id: string;
+        };
+        /**
+         * KbCachePurgeOut
+         * @description 清理结果：清掉了几行（0 = 本来就没有，不是错误）。
+         */
+        KbCachePurgeOut: {
+            /**
+             * Removed
+             * @description 删掉的快照行数
+             * @default 0
+             */
+            removed: number;
+        };
+        /**
+         * KbCacheRevalidateIn
+         * @description ``POST /local/kb-cache/revalidate`` 的请求体：只说要再确认**哪一份**快照。
+         *
+         *     ``extra="forbid"``（与 ``ProviderPatchIn`` 同一条纪律）：**筛选参数在这里没有位置**
+         *     ——``q`` / ``stage`` / ``source_kind`` 换不出缓存键（D-D），也就没有"这一份"可以再确认，
+         *     给了就是 422（"顺手缓存一下搜索结果"这条路在那一步撞墙）。
+         */
+        KbCacheRevalidateIn: {
+            /**
+             * Resource
+             * @description kb_list / kb_detail / doc_list / document / folders
+             */
+            resource: string;
+            /**
+             * Kb Id
+             * @description 按库的那几族要给（kb_detail / doc_list / folders）
+             * @default
+             */
+            kb_id: string;
+            /**
+             * Document Id
+             * @description document 那一族要给
+             * @default
+             */
+            document_id: string;
+            /**
+             * Folder
+             * @description doc_list：只看这个目录（空 = 整个库）
+             * @default
+             */
+            folder: string;
+            /**
+             * Root
+             * @description doc_list：只看未归档的（与 folder 互斥）
+             * @default false
+             */
+            root: boolean;
+            /**
+             * Page
+             * @description doc_list：第几页（与 size 一起换算 offset）
+             * @default 1
+             */
+            page: number;
+            /**
+             * Size
+             * @description doc_list：一页几篇
+             * @default 50
+             */
+            size: number;
+        };
+        /**
+         * KbCacheSnapshotOut
+         * @description 一份知识库元数据快照（``/local/kb-cache/*`` 那几条读共用这一个形状）。
+         *
+         *     形状**恒定**（可用与不可用都是这几个键）：``available:false`` 是明确回给前端的语义
+         *     （"这台还没看过它"），所以这里**不用** ``response_model_exclude_unset``——
+         *     回一个"键都不在"的对象只会让页面去猜，而它要做的动作就是一目了然的骨架屏。
+         *
+         *     ``items`` 是列表型资源（``kb_list`` / ``doc_list`` / ``folders``）的行，``payload``
+         *     是这一份内容的**原样**（列表型的 ``total`` / ``limit`` / ``offset``、单个对象型的
+         *     那个对象）。**两份不是两份形状**：``items`` 就是 ``payload["items"]``，
+         *     前端画表画它、要更多细节时看 ``payload``。
+         *
+         *     ``fetched_at`` 与 ``checked_at`` 是**两句话**（§3.1 / §5）：前者是"这份内容是什么时候
+         *     看到的"（界面那句"上次更新于 X"），后者是"最近一次确认过"（含"确认过没变"）。
+         */
+        KbCacheSnapshotOut: {
+            /**
+             * Available
+             * @description 本机有没有这份内容的副本（false 时看 reason）
+             */
+            available: boolean;
+            /**
+             * Resource
+             * @description kb_list / kb_detail / doc_list / document / folders
+             */
+            resource: string;
+            /**
+             * Scope Key
+             * @description 资源内的键（库 id / 文档 id / 视图指纹）；带筛选的那一档没有键
+             * @default
+             */
+            scope_key: string;
+            /**
+             * Reason
+             * @description available=false 时为什么（一句人话）
+             * @default
+             */
+            reason: string;
+            /**
+             * Items
+             * @description 列表型资源的行（别的资源是空表）
+             */
+            items?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Payload
+             * @description 这份内容的原样（NAS 那边的形状）；没有副本时是 null
+             */
+            payload?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Version
+             * @description 内容哈希（sha256:…）——变没变看它
+             * @default
+             */
+            version: string;
+            /**
+             * Source
+             * @description reader / revalidate：这行是怎么来的（只作排障）
+             * @default
+             */
+            source: string;
+            /**
+             * Fetched At
+             * @description 这份**内容**是什么时候看到的
+             */
+            fetched_at?: string | null;
+            /**
+             * Checked At
+             * @description 最近一次**确认**（含「确认过没变」）
+             */
+            checked_at?: string | null;
+            /**
+             * Stale
+             * @description 上次再验证失败了：内容照旧可读，但没被确认
+             * @default false
+             */
+            stale: boolean;
+            /**
+             * Last Error
+             * @description 那次失败的原因（stale 时才非空）
+             * @default
+             */
+            last_error: string;
+            /**
+             * Revalidating
+             * @description 刚刚顺带排了一次后台再验证
+             * @default false
+             */
+            revalidating: boolean;
+        };
+        /**
+         * KbCacheStatsOut
+         * @description 本机留的那一份的**用量读数**（设置面板「本机留了一份」那一块的数据源）。
+         *
+         *     形状对着 ``storage.base.KbMetaCacheStats``（那个 dataclass 是这四个数的作者），
+         *     这里只做一次校验与文档化——**不另拼一份**，那个类型的字段名就是这里的字段名。
+         *
+         *     ``newest_fetched_at`` 是界面上「最近更新」那一行（**内容**上次是什么时候看到的）；
+         *     ``oldest_fetched_at`` 只作排障（回答"这一份是不是很久以前留的"）。
+         */
+        KbCacheStatsOut: {
+            /**
+             * Rows
+             * @description 留着几项（库列表 / 每库详情 / 每个文档清单视图各一项）
+             * @default 0
+             */
+            rows: number;
+            /**
+             * Payload Bytes
+             * @description 这些内容合计多少字节（与淘汰时用的那把尺子逐字一致）
+             * @default 0
+             */
+            payload_bytes: number;
+            /**
+             * Oldest Fetched At
+             * @description 最旧那一项是什么时候看到的（没行就是 null）
+             */
+            oldest_fetched_at?: string | null;
+            /**
+             * Newest Fetched At
+             * @description 最新那一项是什么时候看到的（界面上的「最近更新」就是它）
+             */
+            newest_fetched_at?: string | null;
+        };
+        /**
+         * LocalBackupOut
+         * @description ``GET|PATCH /local/backup`` 的整包：**提供者 + 队列 + 最近几行**。
+         *
+         *     **提供者不可用时本机那一半照常给**（方案 §7 A 第二行）：``provider.state`` 说
+         *     "连不上"，而 ``backlog`` / ``snapshots`` 说的是这台机器自己的事——两者互不掩盖。
+         */
+        LocalBackupOut: {
+            provider: components["schemas"]["BackupProviderOut"];
+            backlog: components["schemas"]["BackupBacklogOut"];
+            /**
+             * Snapshots
+             * @description 本机队列最近几份（新的在前）
+             */
+            snapshots?: components["schemas"]["BackupQueueRowOut"][];
+        };
+        /**
+         * LocalStatusOut
+         * @description 本机档的运行态（只读）。
+         */
+        LocalStatusOut: {
+            /**
+             * Deployment
+             * @description 部署档。**恒为 local**：这个后端只有本机一种形态，留着这一位是为了不改客户端的契约——前端拿它判「本机后端在不在」（`api/local.ts` 的探活）
+             * @default local
+             */
+            deployment: string;
+            /**
+             * Data Dir
+             * @description 本机数据目录（沙箱、记忆、对象存储都在它下面）
+             */
+            data_dir: string;
+            /**
+             * Database
+             * @description 本机库文件（SQLite；-wal / -shm 与它同目录）
+             */
+            database: string;
+            /**
+             * Database Exists
+             * @description 库文件是否已经建出来（还没落过东西时为假）
+             */
+            database_exists: boolean;
+            /**
+             * Database Bytes
+             * @description 库文件字节数（0 = 还没建出来）
+             * @default 0
+             */
+            database_bytes: number;
+            /**
+             * Database Wal Bytes
+             * @description WAL 文件的字节数（它是流动的：检查点之后归零，别拿它当「库有多大」）
+             * @default 0
+             */
+            database_wal_bytes: number;
+            /**
+             * Server Url
+             * @description 知识库/模型远端的基址；空 = 这一档没有接 NAS
+             */
+            server_url?: string | null;
+            /**
+             * Imports
+             * @description 最近几个导入批次（新的在前）
+             */
+            imports?: components["schemas"]["ImportBatchBriefOut"][];
+            /**
+             * Unfinished Imports
+             * @description 没跑完的导入批次数（planned/running）：重跑同一来源即可续上
+             * @default 0
+             */
+            unfinished_imports: number;
+            /**
+             * Unimported File References
+             * @description 最近一次导入里**没有随导入过来**的文件引用数（产物 + 消息附件）
+             * @default 0
+             */
+            unimported_file_references: number;
+            /**
+             * Note
+             * @description 这一档的能力边界（如实写）
+             * @default
+             */
+            note: string;
+        };
+        /** MCPCallIn */
+        MCPCallIn: {
+            /** Tool */
+            tool: string;
+            /** Arguments */
+            arguments?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Approved
+             * @default false
+             */
+            approved: boolean;
+            /**
+             * Remember
+             * @default false
+             */
+            remember: boolean;
+        };
+        /** MCPCallOut */
+        MCPCallOut: {
+            /** Server Id */
+            server_id: string;
+            /** Tool */
+            tool: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * MCPServerCreateIn
+         * @description 登记一个外部 MCP 服务。见《Agent-工作区与能力层设计》§6.2。
+         */
+        MCPServerCreateIn: {
+            /** Name */
+            name: string;
+            /**
+             * Transport
+             * @enum {string}
+             */
+            transport: "stdio" | "http";
+            /** Target */
+            target: string;
+            /** Args */
+            args?: string[];
+            /** Env */
+            env?: {
+                [key: string]: string;
+            };
+            /** Headers */
+            headers?: {
+                [key: string]: string;
+            };
+            /**
+             * Policy
+             * @default ask
+             * @enum {string}
+             */
+            policy: "allow" | "ask" | "deny";
+        };
+        /** MCPServerListOut */
+        MCPServerListOut: {
             /** Items */
-            items: components["schemas"]["KnowledgeBaseOut"][];
+            items?: components["schemas"]["MCPServerOut"][];
         };
-        /** KnowledgeBaseOut */
-        KnowledgeBaseOut: {
+        /** MCPServerOut */
+        MCPServerOut: {
             /** Id */
             id: string;
             /** Name */
             name: string;
             /**
+             * Transport
+             * @enum {string}
+             */
+            transport: "stdio" | "http";
+            /** Target */
+            target: string;
+            /** Args */
+            args?: string[];
+            /**
+             * Policy
+             * @default ask
+             * @enum {string}
+             */
+            policy: "allow" | "ask" | "deny";
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Secret Keys */
+            secret_keys?: string[];
+            /**
+             * Has Secrets
+             * @default false
+             */
+            has_secrets: boolean;
+            /**
+             * Tool Prefix
+             * @default
+             */
+            tool_prefix: string;
+            /** Reachable */
+            reachable?: boolean | null;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Tools */
+            tools?: components["schemas"]["MCPToolOut"][];
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * MCPServerUpdateIn
+         * @description 改配置。**凭据是整份替换**（合并语义下"删掉"与"没传"分不开）。
+         */
+        MCPServerUpdateIn: {
+            /** Name */
+            name?: string | null;
+            /** Transport */
+            transport?: ("stdio" | "http") | null;
+            /** Target */
+            target?: string | null;
+            /** Args */
+            args?: string[] | null;
+            /** Env */
+            env?: {
+                [key: string]: string;
+            } | null;
+            /** Headers */
+            headers?: {
+                [key: string]: string;
+            } | null;
+            /** Policy */
+            policy?: ("allow" | "ask" | "deny") | null;
+            /** Enabled */
+            enabled?: boolean | null;
+        };
+        /** MCPToolOut */
+        MCPToolOut: {
+            /** Name */
+            name: string;
+            /** Qualified */
+            qualified: string;
+            /**
              * Description
-             * @description 库简介（v15）。空串 = 未填写，卡片上显示"暂无简介"。
              * @default
              */
             description: string;
-            /** Embedding Model Id */
-            embedding_model_id: string;
-            /** Embedding Dim */
-            embedding_dim: number;
-            /** Chunk Strategy */
-            chunk_strategy: string;
-            /** Chunk Size */
-            chunk_size: number;
-            /** Chunk Overlap */
-            chunk_overlap: number;
             /**
-             * Suggested Enabled
-             * @description 是否为每个分段生成推荐问题（v23）。界面据此回显。
-             * @default false
-             */
-            suggested_enabled: boolean;
-            /**
-             * Suggested Count
-             * @default 3
-             */
-            suggested_count: number;
-            /**
-             * Suggested Model Pk
-             * @description 出题模型。``None`` = 跟随对话页当前选的模型。
-             */
-            suggested_model_pk?: string | null;
-            /**
-             * Suggested Prompt
-             * @description 自定义出题提示词；空串 = 用内置提示词。
+             * Server Id
              * @default
              */
-            suggested_prompt: string;
+            server_id: string;
             /**
-             * System Prompt
-             * @description 库级提示词；空串 = 只用内置提示词。界面在库设置里回显与编辑。
+             * Server Name
              * @default
              */
-            system_prompt: string;
-            /**
-             * Wiki Enabled
-             * @description 库形态（v24）：``False`` = 仅向量检索；``True`` = 向量检索 + Wiki 页面。
-             *
-             *     界面据此决定要不要给「Wiki」入口、以及在设置里回显勾选态。
-             * @default false
-             */
-            wiki_enabled: boolean;
-            /** Created At */
-            created_at?: string | null;
-            /**
-             * Can Manage
-             * @description 当前调用主体能否管理这个库的分享（owner / 管理员）。
-             *
-             *     **由后端算而不是前端推**：判定规则在 `services/share.py`（"看得见"与"管得动"
-             *     是两次判定），前端再实现一遍必然与它漂。界面据此决定要不要显示「分享」入口。
-             * @default false
-             */
-            can_manage: boolean;
-            /**
-             * Can Write
-             * @description 能否写入这个库（上传/删除）。只读分享的成员看得见但写不动，界面据此收起写入口。
-             * @default false
-             */
-            can_write: boolean;
-            /**
-             * Document Count
-             * @description 库内文档数。**由列表接口一并算出**（一条 GROUP BY），
-             *     前端不必再"逐库拉一次文档列表只为了数数"——那会随库数量线性放大请求数。
-             * @default 0
-             */
-            document_count: number;
-            /**
-             * Last Activity
-             * @description 库内文档的最近更新时间；没有文档时为 None（界面显示占位符，而不是一个含糊的 0）。
-             */
-            last_activity?: string | null;
-        };
-        /**
-         * KnowledgeBaseUpdate
-         * @description 改知识库的可编辑属性：名称 / 简介 / 切分参数。**都可选**，只传要改的那个。
-         *
-         *     名称与建库同一个上限（120），改名不该比建库更宽松；简介上限 200（卡片两行）。
-         *     空简介（``""``）是合法值 = 清空，所以不加 min_length。
-         *
-         *     切分参数（v17）改的是**之后摄入的文档**怎么切；已经切好的块不会自己变，
-         *     界面据此提示"已有文档需要重新摄入"。范围常量与建库同源。
-         */
-        KnowledgeBaseUpdate: {
-            /** Name */
-            name?: string | null;
-            /** Description */
-            description?: string | null;
-            /** Chunk Size */
-            chunk_size?: number | null;
-            /** Chunk Overlap */
-            chunk_overlap?: number | null;
-            /** Suggested Enabled */
-            suggested_enabled?: boolean | null;
-            /** Suggested Count */
-            suggested_count?: number | null;
-            /** Suggested Model Pk */
-            suggested_model_pk?: string | null;
-            /** Suggested Prompt */
-            suggested_prompt?: string | null;
-            /** Wiki Enabled */
-            wiki_enabled?: boolean | null;
-            /** System Prompt */
-            system_prompt?: string | null;
-        };
-        /** LoginIn */
-        LoginIn: {
-            /** Username */
-            username: string;
-            /** Password */
-            password: string;
-        };
-        /**
-         * LoginOut
-         * @description 登录/初始化成功。``token`` 只在这一次响应里出现。
-         */
-        LoginOut: {
-            /** Token */
-            token: string;
-            user: components["schemas"]["AccountOut"];
-        };
-        /**
-         * ManifestOut
-         * @description 壳取包之前先问的那份清单（规范 §4.1）。
-         */
-        ManifestOut: {
-            /** Version */
-            version: string;
-            /** Package Url */
-            package_url: string;
-            /** Sha256 */
-            sha256: string;
-            /** Size */
-            size: number;
-            /** Min Shell Version */
-            min_shell_version: string;
-            /** Released At */
-            released_at: string;
+            server_name: string;
         };
         /**
          * MarketSkillOut
@@ -4735,17 +4907,6 @@ export interface components {
              */
             last_changed_at: string;
         };
-        /** MetadataFilterIn */
-        MetadataFilterIn: {
-            /** Document Ids */
-            document_ids?: string[] | null;
-            /** Source Kinds */
-            source_kinds?: components["schemas"]["DataSourceKind"][] | null;
-            /** Created After */
-            created_after?: string | null;
-            /** Created Before */
-            created_before?: string | null;
-        };
         /** ModelListOut */
         ModelListOut: {
             /** Items */
@@ -4831,57 +4992,253 @@ export interface components {
             } | null;
         };
         /**
-         * ParserQuotaOut
-         * @description 云端解析器的当日额度。
+         * NoteAiIn
+         * @description 笔记 AI 处理请求。
+         *
+         *     ``action`` 三档：``format`` 只排版 / ``polish`` 只润色 / ``both`` 两者一起。
          */
-        ParserQuotaOut: {
+        NoteAiIn: {
             /**
-             * Parser Name
+             * Action
+             * @enum {string}
+             */
+            action: "format" | "polish" | "both";
+            /** Model Pk */
+            model_pk?: string | null;
+        };
+        /** NoteAiOut */
+        NoteAiOut: {
+            /** Content Md */
+            content_md: string;
+        };
+        /** NoteAttachIn */
+        NoteAttachIn: {
+            /** Kb Id */
+            kb_id: string;
+        };
+        /** NoteCreateIn */
+        NoteCreateIn: {
+            /**
+             * Title
              * @default
              */
-            parser_name: string;
+            title: string;
             /**
-             * Configured
+             * Content Md
+             * @default
+             */
+            content_md: string;
+            /**
+             * Source Kind
+             * @default manual
+             * @enum {string}
+             */
+            source_kind: "manual" | "chat" | "clip";
+            /** Source Ref */
+            source_ref?: string | null;
+            /** Tags */
+            tags?: string[];
+            /** Folder Id */
+            folder_id?: string | null;
+        };
+        /** NoteFolderCreateIn */
+        NoteFolderCreateIn: {
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: string | null;
+        };
+        /**
+         * NoteFolderListOut
+         * @description 左栏那棵树的读数：文件夹 + 三个数字（未归档 / 总数）一次给全。
+         *
+         *     **为什么不只给树**：树上每个节点都要显示条数，未归档与"全部"也各要一个，
+         *     而它们每次移动笔记都会一起变；拆成"列表 + 额外两次计数请求"只会让
+         *     三个数字有机会对不上（用户看到的是一棵树，数字就该是同一时刻的）。
+         */
+        NoteFolderListOut: {
+            /** Items */
+            items?: components["schemas"]["NoteFolderOut"][];
+            /**
+             * Unfiled Count
+             * @default 0
+             */
+            unfiled_count: number;
+            /**
+             * Total Count
+             * @default 0
+             */
+            total_count: number;
+        };
+        /** NoteFolderOut */
+        NoteFolderOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: string | null;
+            /**
+             * Note Count
+             * @description 这个文件夹里**直接**有多少篇笔记（不含子文件夹里的）。
+             * @default 0
+             */
+            note_count: number;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * NoteFolderParentIn
+         * @description 把文件夹移动到某个文件夹下；``parent_id=None`` = 挪回根级。
+         */
+        NoteFolderParentIn: {
+            /** Parent Id */
+            parent_id?: string | null;
+        };
+        /** NoteFolderRenameIn */
+        NoteFolderRenameIn: {
+            /** Name */
+            name: string;
+        };
+        /** NoteImageOut */
+        NoteImageOut: {
+            /** Url */
+            url: string;
+            /** Name */
+            name: string;
+            /** Alt */
+            alt: string;
+        };
+        /**
+         * NoteListItemOut
+         * @description 列表项不带正文：列表页只要标题、标签与时间，带上正文会让响应体积翻很多倍。
+         */
+        NoteListItemOut: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /**
+             * Content Md
+             * @default
+             */
+            content_md: string;
+            /** Source Kind */
+            source_kind: string;
+            /** Source Ref */
+            source_ref?: string | null;
+            /** Kb Id */
+            kb_id?: string | null;
+            /** Doc Id */
+            doc_id?: string | null;
+            /** Folder Id */
+            folder_id?: string | null;
+            /**
+             * Pinned
              * @default false
              */
-            configured: boolean;
+            pinned: boolean;
+            /** Tags */
+            tags?: string[];
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
             /**
-             * Pages Used
+             * Preview
+             * @default
+             */
+            preview: string;
+        };
+        /** NoteListOut */
+        NoteListOut: {
+            /** Items */
+            items?: components["schemas"]["NoteListItemOut"][];
+            /**
+             * Total
              * @default 0
              */
-            pages_used: number;
+            total: number;
             /**
-             * Calls
+             * Limit
              * @default 0
              */
-            calls: number;
+            limit: number;
             /**
-             * Daily Quota
+             * Offset
              * @default 0
              */
-            daily_quota: number;
+            offset: number;
+        };
+        /**
+         * NoteMoveIn
+         * @description 把笔记移动到某个文件夹；``folder_id=None`` = 移回未归档。
+         */
+        NoteMoveIn: {
+            /** Folder Id */
+            folder_id?: string | null;
+        };
+        /** NoteOut */
+        NoteOut: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Content Md */
+            content_md: string;
+            /** Source Kind */
+            source_kind: string;
+            /** Source Ref */
+            source_ref?: string | null;
+            /** Kb Id */
+            kb_id?: string | null;
+            /** Doc Id */
+            doc_id?: string | null;
+            /** Folder Id */
+            folder_id?: string | null;
             /**
-             * Remaining
-             * @default 0
-             */
-            remaining: number;
-            /**
-             * Exhausted
+             * Pinned
              * @default false
              */
-            exhausted: boolean;
+            pinned: boolean;
+            /** Tags */
+            tags?: string[];
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
         };
-        /** PasswordChangeIn */
-        PasswordChangeIn: {
-            /** Old Password */
-            old_password: string;
-            /** New Password */
-            new_password: string;
+        /** NoteTagListOut */
+        NoteTagListOut: {
+            /** Items */
+            items?: components["schemas"]["NoteTagOut"][];
         };
-        /** PasswordChangeOut */
-        PasswordChangeOut: {
-            /** Revoked Sessions */
-            revoked_sessions: number;
+        /** NoteTagOut */
+        NoteTagOut: {
+            /** Tag */
+            tag: string;
+            /** Count */
+            count: number;
+        };
+        /**
+         * NoteUpdateIn
+         * @description 全部字段可空：只传要改的字段。``None`` = 不动这一项。
+         *
+         *     **刻意没有 ``folder_id``**：归属走 ``PATCH /notes/{id}/folder``。
+         *     编辑器每 800ms 自动保存一次，如果归属也走这条路径，草稿里那份旧的 folder_id
+         *     会把用户在左栏刚移好的位置刷回去（理由详见服务层 ``NotesService.move_note``）。
+         */
+        NoteUpdateIn: {
+            /** Title */
+            title?: string | null;
+            /** Content Md */
+            content_md?: string | null;
+            /** Pinned */
+            pinned?: boolean | null;
+            /** Tags */
+            tags?: string[] | null;
         };
         /**
          * PluginComponentOut
@@ -5035,87 +5392,6 @@ export interface components {
             dim?: number | null;
         };
         /**
-         * PreviewOut
-         * @description 「阅读」视角的内容。
-         *
-         *     文本类直接内联返回（Markdown / 纯文本），非文本类只回一条签名 URL 让浏览器自己渲染
-         *     （PDF、图片）。**不把二进制塞进 JSON**：那要 base64，体积涨三分之一，
-         *     而且浏览器拿到 base64 还得再解回来才能渲染。
-         */
-        PreviewOut: {
-            /** Kind */
-            kind: string;
-            /** Filename */
-            filename: string;
-            /** Text */
-            text?: string | null;
-            /** Url */
-            url?: string | null;
-            /** Expires At */
-            expires_at?: number | null;
-            /** Original Kind */
-            original_kind?: string | null;
-        };
-        /**
-         * ProviderCallerOut
-         * @description 这次调用在提供者看来**是谁**。
-         *
-         *     带这一段是因为**同一台 NAS 上有两套身份是事实**（页面用登录会话、本机后端用
-         *     长期 API Key，方案 §1.4 R7）：客户端把它显示出来，两边对不上时用户能自己看出来，
-         *     而不是遇到一个说不清的 403。
-         */
-        ProviderCallerOut: {
-            /**
-             * Kind
-             * @description 凭据种类：登录会话（页面那半）还是长期 API Key（本机后端那半）。
-             * @enum {string}
-             */
-            kind: "session" | "api_key";
-            /**
-             * @description 权限档：``readwrite`` / ``readonly``。
-             *
-             *     不受库范围限制的那两档（管理员、登录成员）报 ``readwrite``——
-             *     它们都能写，报一个空值只会让人以为只是只读。**某个库能不能写看那一项的
-             *     ``can_write``**，那才是判定。
-             */
-            permission: components["schemas"]["ApiKeyPermission"];
-            /**
-             * Is Admin
-             * @description **如实报**。本机后端那把 API Key 在 NAS 侧**不是管理员**（方案 §1.4）：
-             *     管理员专属的那些端点（``/settings``、``/api-keys``、``/users``、``/trash``、
-             *     ``/maintenance``、``/sandbox``）对它是 403，界面据此**隐藏**这类入口，
-             *     而不是摆出来等着失败。
-             * @default false
-             */
-            is_admin: boolean;
-            /**
-             * Can Write
-             * @description 这把凭据的权限档能不能写（**不看具体库**）。逐库的答案在每项的 ``can_write``。
-             * @default false
-             */
-            can_write: boolean;
-            /**
-             * Knowledge Base Ids
-             * @description 这把凭据被限定的库范围。**空 = 不限范围**（与发钥匙时的约定同一套）。
-             */
-            knowledge_base_ids?: string[];
-        };
-        /**
-         * ProviderCapabilitiesOut
-         * @description 提供者的能力集（方案 §1.2 契约）。
-         *
-         *     每一项都回答"这台提供者**现在**能不能做这件事"，而不是"这份代码支持不支持"。
-         *     客户端按它决定摆哪些入口；**不认识的字段忽略、不认识的能力位就不摆**——
-         *     所以新增能力位是向后兼容的（``protocol_version`` 不用动）。
-         */
-        ProviderCapabilitiesOut: {
-            retrieval: components["schemas"]["ProviderRetrievalCapsOut"];
-            ingest: components["schemas"]["ProviderIngestCapsOut"];
-            tracking: components["schemas"]["ProviderTrackingCapsOut"];
-            knowledge_bases: components["schemas"]["ProviderKbCapsOut"];
-            embedding: components["schemas"]["ProviderEmbeddingCapsOut"];
-        };
-        /**
          * ProviderCreateIn
          * @description 新建供应商。
          */
@@ -5142,214 +5418,6 @@ export interface components {
              * @default true
              */
             enabled: boolean;
-        };
-        /**
-         * ProviderEmbeddingCapsOut
-         * @description 向量化能力（**如实报当前这一台的状态**，不是"代码里支持什么"）。
-         */
-        ProviderEmbeddingCapsOut: {
-            /**
-             * Configured
-             * @description 嵌入模型配好了没有。为假时仍然能上传，但检索拿不到向量通道。
-             * @default false
-             */
-            configured: boolean;
-            /**
-             * Is Development
-             * @description 是不是开发用的确定性嵌入：为真时检索结果**不代表真实效果**。
-             * @default false
-             */
-            is_development: boolean;
-            /**
-             * Model Id
-             * @description 当前嵌入模型标识。
-             * @default
-             */
-            model_id: string;
-            /**
-             * Dim
-             * @description 向量维度。
-             * @default 0
-             */
-            dim: number;
-        };
-        /**
-         * ProviderHandshakeOut
-         * @description 知识库提供者握手（方案 §1.2）。
-         *
-         *     一次调用回答三件事：**连通且凭据有效**（否则根本到不了这里——凭据问题走 401/403，
-         *     见 `api/v1/provider.py` 的模块头）、**这台提供者能做什么**、**我能用哪些库**。
-         *
-         *     **响应体里没有"凭据错"这类字段**：那是 HTTP 状态码 + 统一错误信封的事
-         *     （规范 §1.3）。客户端据此把"改钥匙"与"改地址"分成两档——一次连不上变成
-         *     一句"凭据无效"是最让人绕路的一种错。
-         */
-        ProviderHandshakeOut: {
-            /**
-             * Provider
-             * @description 提供者种类，固定 ``knowledge``（将来还有别的提供者时用它分流）。
-             */
-            provider: string;
-            /**
-             * Protocol Version
-             * @description **握手协议版本**：整数、只增。
-             *
-             *     M3 的值是 ``1``。客户端规则：**不认识（大于本机所知）即判不可用**，
-             *     原因句子里带上版本号，**绝不硬试**（方案 §1.2 裁量 3）——一个"试着发一条
-             *     请求看看能不能用"的实现会把新协议的语义错误当成网络故障。
-             */
-            protocol_version: number;
-            /**
-             * App Version
-             * @description 服务端应用版本（给人看、排查用）。
-             */
-            app_version: string;
-            /**
-             * Api Version
-             * @description HTTP 路径版本（固定 ``v1``）。与 ``protocol_version`` 是两件事：
-             *     前者是"地址怎么拼"，后者是"两侧谈得下去吗"。
-             */
-            api_version: string;
-            capabilities: components["schemas"]["ProviderCapabilitiesOut"];
-            /** @description 这次调用在提供者看来是谁。 */
-            caller: components["schemas"]["ProviderCallerOut"];
-            /**
-             * Knowledge Bases
-             * @description **这次调用看得见**的库（受限 key 只看到范围内的：方案 R9 要防的元信息泄露）。
-             */
-            knowledge_bases?: components["schemas"]["ProviderKbBriefOut"][];
-            /**
-             * Server Time
-             * Format: date-time
-             * @description 服务端当前时间（UTC，带时区）。界面据此显示"上次确认是什么时候"。
-             */
-            server_time: string;
-        };
-        /**
-         * ProviderIngestCapsOut
-         * @description 入库能力（``POST /knowledge-bases/{kb_id}/documents`` 那一条）。
-         */
-        ProviderIngestCapsOut: {
-            /**
-             * Transport
-             * @description 上传的编码：``multipart/form-data``。
-             * @default multipart
-             */
-            transport: string;
-            /**
-             * Async
-             * @description 上传是不是异步的。
-             *
-             *     ``true`` = 立刻回 202 + ``document_id``，解析 / 切分 / 向量化在服务端的队列里跑，
-             *     进度另走 ``tracking`` 那两条。**对外名字是 ``async``**（Python 关键字，
-             *     所以这个属性只能叫 ``async_``；序列化与 OpenAPI 都用别名）。
-             * @default false
-             */
-            async: boolean;
-            /**
-             * Dedup
-             * @description 去重口径：``content_hash`` = 同一份内容重复上传回 ``is_duplicate=true``，
-             *     不会入两份（幂等键 ``Idempotency-Key`` 是另一件事，见规范 §1.6）。
-             * @default
-             */
-            dedup: string;
-            /**
-             * Max Bytes
-             * @description 单文件上限（字节）。**就是上传端点自己的那个常量**，
-             *     界面据此做上传前的校验，不再自己硬编码一份。
-             * @default 0
-             */
-            max_bytes: number;
-            /**
-             * Extensions
-             * @description 界面要提示的格式（不带点号）。
-             *
-             *     **是提示，不是硬白名单**：服务端不按扩展名拦截，真正的接受面由解析路由按
-             *     后缀 / MIME / 内容探测决定，比这份宽（见 ``api/v1/provider.py`` 的模块头）。
-             */
-            extensions?: string[];
-        };
-        /**
-         * ProviderKbBriefOut
-         * @description 握手里的库摘要：**够界面与客户端判断"这个库是什么、我能不能写"**。
-         *
-         *     不是完整的 ``KnowledgeBaseOut``：握手可能带回几十个库，而切分参数 / 提示词那些
-         *     只有库设置页要，页面本来就直接打 ``GET /knowledge-bases``。
-         */
-        ProviderKbBriefOut: {
-            /** Id */
-            id: string;
-            /** Name */
-            name: string;
-            /**
-             * Document Count
-             * @description 库内文档数（**一次聚合查询**算出来的，与列表端点同一个数）。
-             * @default 0
-             */
-            document_count: number;
-            /**
-             * Last Activity
-             * @description 库内文档的最近更新时间；没有文档时为 ``None``。
-             */
-            last_activity?: string | null;
-            /**
-             * Can Write
-             * @description 这把凭据能不能往这个库里写（上传 / 删除）。
-             *
-             *     **由后端算**，与 ``GET /knowledge-bases`` 走同一份口径
-             *     （``api/v1/knowledge_bases.kb_access_flags``）：只读档分享的成员是 ``false``。
-             * @default false
-             */
-            can_write: boolean;
-            /**
-             * Embedding Model Id
-             * @description 这个库冻结的嵌入模型标识（换模型要重建库，所以它随库走）。
-             */
-            embedding_model_id: string;
-            /** Embedding Dim */
-            embedding_dim: number;
-            /**
-             * Wiki Enabled
-             * @description 库形态：``True`` = 向量检索 + Wiki 页面。
-             * @default false
-             */
-            wiki_enabled: boolean;
-        };
-        /**
-         * ProviderKbCapsOut
-         * @description 库管理能力（页面直连的那一族）。
-         */
-        ProviderKbCapsOut: {
-            /**
-             * Create
-             * @description 建库。
-             * @default false
-             */
-            create: boolean;
-            /**
-             * Delete
-             * @description 删除（含影响清单）。
-             * @default false
-             */
-            delete: boolean;
-            /**
-             * Folders
-             * @description 库内目录。
-             * @default false
-             */
-            folders: boolean;
-            /**
-             * Shares
-             * @description 把库分享给其他成员（读 / 写两档）。
-             * @default false
-             */
-            shares: boolean;
-            /**
-             * Wiki
-             * @description 库形态里的 Wiki 页面。
-             * @default false
-             */
-            wiki: boolean;
         };
         /** ProviderListOut */
         ProviderListOut: {
@@ -5391,6 +5459,29 @@ export interface components {
             model_count: number;
         };
         /**
+         * ProviderPatchIn
+         * @description ``PATCH /local/provider`` 的请求体：**只有两个键**（方案 §4.1 的运行期键）。
+         *
+         *     ``extra="forbid"`` 是有意的（与 ``PATCH /settings`` 那条"拒绝未知键"同一道理，
+         *     ``api/v1/settings.py``）：**凭据类键一个都不收**（R3——token 只从引导级来，
+         *     不落库、不进日志），而 ``token`` / ``kb_token`` / ``api_key`` 这些名字在这里
+         *     会以"未知键"被 422 拒掉。白名单只有这一处，不在端点函数里再列一遍。
+         *
+         *     ``None`` = **不改这一项**（PATCH 的语义：只动你给的那些键）。
+         */
+        ProviderPatchIn: {
+            /**
+             * Base Url
+             * @description 提供者地址；空串 = 清掉覆盖、回继承（壳里那台 NAS）；None = 不改
+             */
+            base_url?: string | null;
+            /**
+             * Enabled
+             * @description 提供者开关；false = 显式关掉（页面与 KB 工具都不摆）；None = 不改
+             */
+            enabled?: boolean | null;
+        };
+        /**
          * ProviderPresetOut
          * @description 常见供应商预设：一键填好名称 / 类别 / 接口地址与几条常见模型。
          */
@@ -5412,63 +5503,85 @@ export interface components {
             models?: components["schemas"]["PresetModelOut"][];
         };
         /**
-         * ProviderRetrievalCapsOut
-         * @description 检索能力（``POST /search`` 那一条）。
+         * ProviderStatusOut
+         * @description 知识库提供者的状态（``GET /local/provider``，形状照方案 §3.1）。
+         *
+         *     字段与 ``ProviderStatus.to_payload()`` **一一对应**——那一个是这个形状的作者
+         *     （``services/knowledge_provider.py``），本模型只做一次校验与文档化，**不另拼一份**
+         *     （两处各建一份迟早漂：端点多算一个字段、客户端少读一个字段都不会有人发现）。
+         *
+         *     ``ready`` 起的那五段（协议版本 / 应用版本 / 能力集 / 调用者 / 库清单）靠
+         *     ``response_model_exclude_unset`` 实现"**没有**"而不是"空"：不 ready 时它们**根本
+         *     不在响应里**（方案 §3.1 那句"ready 时才有"）。回成空对象的话，界面就得去猜
+         *     "是没探到还是真没有"——而这两件事的下一步动作完全不同。
          */
-        ProviderRetrievalCapsOut: {
+        ProviderStatusOut: {
             /**
-             * Modes
-             * @description 支持的检索模式：``hybrid`` / ``vector`` / ``fulltext``。
+             * State
+             * @description unconfigured / unavailable / ready（三态，没有第四种）
              */
-            modes?: string[];
+            state: string;
             /**
-             * Default Mode
-             * @description 不指定 ``mode`` 时用的那一个。
-             * @default hybrid
+             * Available
+             * @description ``state == ready`` 的别名（页面显隐只看它）
              */
-            default_mode: string;
+            available: boolean;
             /**
-             * Rerank
-             * @description 支不支持重排（``SearchRequest.rerank``）。
-             * @default false
+             * Reason
+             * @description 两种「不在」各一句人话 + 下一步；ready 时为空
+             * @default
              */
-            rerank: boolean;
+            reason: string;
             /**
-             * Filters
-             * @description 支不支持元数据过滤（``SearchRequest.filters``）。
-             * @default false
+             * Checked At
+             * Format: date-time
+             * @description 这个结论是什么时候得到的（ISO 时间）
              */
-            filters: boolean;
+            checked_at: string;
             /**
-             * Top K Max
-             * @description ``top_k`` 的上限。**从请求模型的约束读出来**，不另写一份数字。
-             * @default 0
+             * Base Url
+             * @description 解析后的实际地址（空 = 没配）。**它不是秘密**，不必脱敏
+             * @default
              */
-            top_k_max: number;
+            base_url: string;
             /**
-             * Candidate K Max
-             * @description ``candidate_k`` 的上限（同上）。
-             * @default 0
+             * Credential
+             * @description configured / missing——凭据只看有没有，永不回显
+             * @default missing
              */
-            candidate_k_max: number;
-        };
-        /**
-         * ProviderTrackingCapsOut
-         * @description 入库进度跟踪的能力。
-         */
-        ProviderTrackingCapsOut: {
+            credential: string;
             /**
-             * Document
-             * @description 能不能查单个文档的当前状态。
-             * @default false
+             * Protocol Version
+             * @description 提供者报的协议版本；比本机所知更高即判不可用
              */
-            document: boolean;
+            protocol_version?: number | null;
             /**
-             * Timeline
-             * @description 能不能查它的阶段时间线（每一步什么时候完成、失败在哪一步）。
-             * @default false
+             * App Version
+             * @description 提供者那一侧的版本（排障用）
+             * @default
              */
-            timeline: boolean;
+            app_version: string;
+            /**
+             * Capabilities
+             * @description 能力集（两侧契约）
+             */
+            capabilities?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Caller
+             * @description 这把凭据在 NAS 侧被认成谁（页面用会话、边车用钥匙）
+             */
+            caller?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Knowledge Bases
+             * @description 这次调用看得见的库（受限 key 只看到范围内的）
+             */
+            knowledge_bases?: {
+                [key: string]: unknown;
+            }[];
         };
         /**
          * ProviderUpdateIn
@@ -5487,65 +5600,6 @@ export interface components {
             api_key?: string | null;
             /** Enabled */
             enabled?: boolean | null;
-        };
-        /** ProxyRequest */
-        ProxyRequest: {
-            /** Messages */
-            messages?: components["schemas"]["_WireMessage"][];
-            /** Tools */
-            tools?: components["schemas"]["_WireTool"][];
-            /**
-             * Model Pk
-             * @description 留空用全局默认模型
-             */
-            model_pk?: string | null;
-            /**
-             * Thinking
-             * @description 要不要让上游**思考**。留空 = **不思考**（见 `PROXY_DEFAULT_THINKING` 的理由）；显式 true 才打开。语义与进程内那条完全一致（`LLMConfig.enable_thinking` → `thinking.build_thinking_payload` 按方言翻译），**不是新造的字段**。
-             */
-            thinking?: boolean | null;
-        };
-        /** ProxyTextOut */
-        ProxyTextOut: {
-            /** Text */
-            text: string;
-        };
-        /**
-         * QueueLoadOut
-         * @description 队列深度与并发槽位。
-         */
-        QueueLoadOut: {
-            /**
-             * Running
-             * @default 0
-             */
-            running: number;
-            /**
-             * Pending
-             * @default 0
-             */
-            pending: number;
-            /**
-             * Slots
-             * @default 1
-             */
-            slots: number;
-            /** Pending By Kind */
-            pending_by_kind?: {
-                [key: string]: number;
-            };
-            /** Oldest Pending Seconds */
-            oldest_pending_seconds?: number | null;
-            /**
-             * Stalled
-             * @default 0
-             */
-            stalled: number;
-            /**
-             * Overdue
-             * @default 0
-             */
-            overdue: number;
         };
         /**
          * RegistryOut
@@ -5568,6 +5622,38 @@ export interface components {
             };
             /** Provider Presets */
             provider_presets?: components["schemas"]["ProviderPresetOut"][];
+        };
+        /**
+         * RestoreRequestIn
+         * @description ``POST /local/backup/restore`` 的请求体：**恢复哪一份 + 预演不预演**。
+         *
+         *     ``extra="forbid"``（与 ``BackupPatchIn`` 同一条纪律）：这条路上没有"临时填一次 NAS
+         *     地址 / 令牌"的入口（R3/R14）——地址与令牌仍然只从这一档的引导配置来，要恢复的那一份
+         *     由 ``device_id`` + ``snapshot_id`` 指定（``GET /local/backup/points`` 里有这两个值）。
+         */
+        RestoreRequestIn: {
+            /**
+             * Device Id
+             * @description 哪台设备的恢复点（自己那份也在其中）
+             */
+            device_id: string;
+            /**
+             * Snapshot Id
+             * @description 哪一份（<ts>-<hash8>，用 points 看）
+             */
+            snapshot_id: string;
+            /**
+             * Dry Run
+             * @description true = 只预演：不碰本机库 / 记忆 / 产物（只落暂存区）
+             * @default false
+             */
+            dry_run: boolean;
+            /**
+             * Overwrite Memory
+             * @description 记忆也覆盖（默认只补本机没有的那几份，保护本机学到的东西）
+             * @default false
+             */
+            overwrite_memory: boolean;
         };
         /**
          * SandboxCapabilityOut
@@ -5633,36 +5719,6 @@ export interface components {
              */
             remember: boolean;
         };
-        /** SandboxExecOut */
-        SandboxExecOut: {
-            /** Exit Code */
-            exit_code: number;
-            /**
-             * Stdout
-             * @default
-             */
-            stdout: string;
-            /**
-             * Stderr
-             * @default
-             */
-            stderr: string;
-            /**
-             * Truncated
-             * @default false
-             */
-            truncated: boolean;
-            /**
-             * Timed Out
-             * @default false
-             */
-            timed_out: boolean;
-            /**
-             * Backend
-             * @default
-             */
-            backend: string;
-        };
         /**
          * SandboxPlanOut
          * @description 隔离后的命令行——**给用户核对的**。
@@ -5685,154 +5741,326 @@ export interface components {
              */
             workdir: string;
         };
-        /** SearchHitOut */
-        SearchHitOut: {
-            /** Chunk Id */
-            chunk_id: string;
-            /** Document Id */
-            document_id: string;
-            /** Document Name */
-            document_name?: string | null;
-            /** Knowledge Base Id */
-            knowledge_base_id: string;
-            /** Text */
-            text: string;
-            /**
-             * Score
-             * @description **融合分**（RRF 家族：``1/(k+rank)`` 量级），只反映**名次**、不是相似度。
-             *
-             *     实测：向量档第 1 名恒为 ``0.0164``、hybrid 档第 1 名恒为 ``0.0328``——
-             *     它随名次走，不随"像不像"走。**界面不要把它显示成"相似度"**，
-             *     也不要拿它跟"相关度下限"比（那是 ``similarity`` 的活）。
-             */
-            score: number;
-            /**
-             * Similarity
-             * @description 这条命中的**真实余弦相似度**（向量通道的原始分；``None`` = 只被全文捞到）。
-             *
-             *     **这个才是"相似度"**：相关度地板比的是它（bge-m3 0.531 / WeMM 0.35，按模型标定，
-             *     见 `services/retrieval/service.py` 的 `MIN_VECTOR_SCORE_BY_MODEL`）。
-             *     界面要显示相似度、或要判断"到此为止"，读这一位。
-             */
-            similarity?: number | null;
-            /** Page */
-            page?: number | null;
-            /** Heading Path */
-            heading_path?: string | null;
-            /** Image Ids */
-            image_ids?: string[];
-            /** Channels */
-            channels?: string[];
-            /** Ranks */
-            ranks?: {
-                [key: string]: number;
-            };
-            /** Raw Scores */
-            raw_scores?: {
-                [key: string]: number;
-            };
-            /** Rerank Score */
-            rerank_score?: number | null;
-        };
-        /** SearchRequest */
-        SearchRequest: {
-            /** Query */
-            query: string;
-            /** Kb Ids */
-            kb_ids: string[];
-            /**
-             * Top K
-             * @default 8
-             */
-            top_k: number;
-            /**
-             * Mode
-             * @default hybrid
-             */
-            mode: string;
-            /**
-             * Candidate K
-             * @default 40
-             */
-            candidate_k: number;
-            /** Score Threshold */
-            score_threshold?: number | null;
-            /** Min Vector Score */
-            min_vector_score?: number | null;
-            /** Min Term Coverage */
-            min_term_coverage?: number | null;
-            /**
-             * Rerank
-             * @default false
-             */
-            rerank: boolean;
-            filters?: components["schemas"]["MetadataFilterIn"] | null;
-        };
-        /** SearchResponse */
-        SearchResponse: {
-            /** Hits */
-            hits: components["schemas"]["SearchHitOut"][];
-            /** Mode */
-            mode: string;
-            /** Reranked */
-            reranked: boolean;
-            /**
-             * Filtered Out
-             * @default 0
-             */
-            filtered_out: number;
-            /** Stats */
-            stats?: components["schemas"]["ChannelStatOut"][];
-            /**
-             * Embedding Configured
-             * @default true
-             */
-            embedding_configured: boolean;
-            /**
-             * Embedding Is Development
-             * @default false
-             */
-            embedding_is_development: boolean;
-        };
-        /** SetupIn */
-        SetupIn: {
-            /** Username */
-            username: string;
-            /** Password */
-            password: string;
-            /** Name */
-            name?: string | null;
-        };
-        /** ShareGrantIn */
-        ShareGrantIn: {
-            /** Username */
-            username: string;
-            /** @default read */
-            permission: components["schemas"]["SharePermission"];
-        };
-        /** ShareListOut */
-        ShareListOut: {
-            /** Items */
-            items: components["schemas"]["ShareOut"][];
-        };
-        /** ShareOut */
-        ShareOut: {
-            /** User Id */
-            user_id: string;
-            /** Username */
-            username: string;
+        /**
+         * ScheduledTaskCreateIn
+         * @description 新建一条定时任务。见《Agent-工作区与能力层设计》§6.6。
+         */
+        ScheduledTaskCreateIn: {
             /** Name */
             name: string;
-            permission: components["schemas"]["SharePermission"];
+            /** Prompt */
+            prompt: string;
+            /**
+             * Kind
+             * @default cron
+             * @enum {string}
+             */
+            kind: "cron" | "once";
+            /**
+             * Cron
+             * @default
+             */
+            cron: string;
+            /** Run At */
+            run_at?: string | null;
+            /** Kb Ids */
+            kb_ids?: string[];
+            /** Model Pk */
+            model_pk?: string | null;
+            /** Thinking */
+            thinking?: boolean | null;
+            /** Thinking Effort */
+            thinking_effort?: string | null;
+        };
+        /** ScheduledTaskListOut */
+        ScheduledTaskListOut: {
+            /** Items */
+            items?: components["schemas"]["ScheduledTaskOut"][];
+            /**
+             * Timezone
+             * @default
+             */
+            timezone: string;
+        };
+        /** ScheduledTaskOut */
+        ScheduledTaskOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "cron" | "once";
+            /**
+             * Cron
+             * @default
+             */
+            cron: string;
+            /** Run At */
+            run_at?: string | null;
+            /** Next Run At */
+            next_run_at?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Kb Ids */
+            kb_ids?: string[];
+            /** Model Pk */
+            model_pk?: string | null;
+            /** Thinking */
+            thinking?: boolean | null;
+            /** Thinking Effort */
+            thinking_effort?: string | null;
+            /**
+             * Conversation Id
+             * @description 结果落在哪条会话里（首次运行后才会有）。界面据此给"看跑过的结果"一个落点。
+             */
+            conversation_id?: string | null;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /**
+             * Last Status
+             * @description ``ok`` / ``degraded`` / ``failed`` / 空串（还没跑过）。
+             *     ``degraded`` = 跑完了但没跑完（撞上步数或时间闸，可以在那条会话里点「继续」）。
+             * @default
+             */
+            last_status: string;
+            /**
+             * Last Error
+             * @default
+             */
+            last_error: string;
+            /**
+             * Run Count
+             * @default 0
+             */
+            run_count: number;
+            /**
+             * Schedule Text
+             * @description 给人看的一句话（"每天 09:00" / "2026-09-21 09:00 跑一次"）。由服务端生成——
+             *     界面自己把 cron 翻成人话，就得再维护一份解析。
+             * @default
+             */
+            schedule_text: string;
             /** Created At */
-            created_at: string | null;
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /**
-         * SharePermission
-         * @description 知识库分享档位：读 = 可检索可对话；写 = 还能上传与删除。
-         * @enum {string}
+         * ScheduledTaskRunOut
+         * @description 「立即跑一次」的结果：任务已经入队。
          */
-        SharePermission: "read" | "write";
+        ScheduledTaskRunOut: {
+            /** Task Id */
+            task_id: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /**
+         * ScheduledTaskUpdateIn
+         * @description 改一条。**只改传进来的字段**（``None`` = 不动）。
+         */
+        ScheduledTaskUpdateIn: {
+            /** Name */
+            name?: string | null;
+            /** Prompt */
+            prompt?: string | null;
+            /** Kind */
+            kind?: ("cron" | "once") | null;
+            /** Cron */
+            cron?: string | null;
+            /** Run At */
+            run_at?: string | null;
+            /** Kb Ids */
+            kb_ids?: string[] | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Model Pk */
+            model_pk?: string | null;
+        };
+        /**
+         * SecretMigrationOut
+         * @description ``POST /local/secrets/migrate``：**逐项**说清迁了 / 跳过了（为什么）/ 失败了（为什么）。
+         *
+         *     ``pending_migration`` 是**跑完之后**还剩几处——成功是 0，有失败的就是失败那几处
+         *     （那个数就是"可重跑"的判据）；``failed`` 里那几条的明文**原样留在库里**
+         *     （方案 §4.3-5：不清就不算迁完），所以失败了也不会丢凭据。
+         */
+        SecretMigrationOut: {
+            /**
+             * Store
+             * @description available / unavailable
+             */
+            store: string;
+            /**
+             * Migrated
+             * @description 这次搬进钥匙串的项
+             */
+            migrated?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Skipped
+             * @description 跳过没搬的项（含原因：已经迁过 / 钥匙串里已有别的值）
+             */
+            skipped?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Failed
+             * @description 没搬成的项（含原因；那几处的明文没动）
+             */
+            failed?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Pending Migration
+             * @description 跑完之后还剩几处明文
+             * @default 0
+             */
+            pending_migration: number;
+        };
+        /**
+         * SecretsStatusOut
+         * @description ``GET /local/secrets``：**只报数与可用性，绝不回显任何秘密**。
+         *
+         *     ``pending_migration`` 是"库里还有几处明文等着收编"（设置里那一个键 + 每个还带明文
+         *     列的供应商算一处）。钥匙串不可用（Linux 桌面 / 容器 / CI）时它**恒为 0**：
+         *     那种机器上库就是凭据的家，没有"等着迁"这回事——`store: unavailable` 已经说清了。
+         */
+        SecretsStatusOut: {
+            /**
+             * Store
+             * @description available / unavailable（这台机器有没有可用的系统钥匙串）
+             */
+            store: string;
+            /**
+             * Pending Migration
+             * @description 库里还剩几处明文等着收编（钥匙串不可用时恒 0）
+             * @default 0
+             */
+            pending_migration: number;
+        };
+        /** SessionEventListOut */
+        SessionEventListOut: {
+            /** Items */
+            items?: components["schemas"]["SessionEventOut"][];
+        };
+        /**
+         * SessionEventOut
+         * @description 会话日志里的一条事件（P0-2，只追加）。
+         *
+         *     抄的是 ZCode 的会话事件日志（开发计划 §12.225）：会话是一串不可变事件，
+         *     消息里的 ``steps`` 是它的投影。字段刻意贴着存储的列（``seq`` / ``kind`` /
+         *     ``payload``）——读的人要能照着日志判断"当时到底发生了什么"，
+         *     在这里再包一层"好看的形状"只会让日志与它的读取方变成两件事。
+         *
+         *     ``kind`` 是**词表**取值（``turn/start``、``turn/end``、``step``、
+         *     ``tool_call``、``thinking``、``error``、``interrupted``、``mode/changed``、
+         *     ``command``），定义在 ``services/session_events.py`` 一处。
+         */
+        SessionEventOut: {
+            /** Id */
+            id: number;
+            /**
+             * Seq
+             * @description **会话内**单调递增的序号。同一条会话不会出现两个相同的 ``seq``
+             *     （表上有唯一约束），所以它同时是"事件只追加"的判据。
+             */
+            seq: number;
+            /** Kind */
+            kind: string;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+            /** Created At */
+            created_at?: string | null;
+        };
+        /** SettingFieldOptionOut */
+        SettingFieldOptionOut: {
+            /** Value */
+            value: string;
+            /** Label */
+            label: string;
+        };
+        /**
+         * SettingFieldOut
+         * @description 一个配置项。密钥只给掩码，``configured`` 说明是否已填。
+         */
+        SettingFieldOut: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Type */
+            type: string;
+            /** Value */
+            value: string;
+            /** Configured */
+            configured: boolean;
+            /** Options */
+            options?: components["schemas"]["SettingFieldOptionOut"][];
+        };
+        /** SettingGroupOut */
+        SettingGroupOut: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Fields */
+            fields: components["schemas"]["SettingFieldOut"][];
+        };
+        /** SettingValueIn */
+        SettingValueIn: {
+            /** Key */
+            key: string;
+            /**
+             * Value
+             * @default
+             */
+            value: string;
+        };
+        /** SettingsPatchIn */
+        SettingsPatchIn: {
+            /** Values */
+            values: components["schemas"]["SettingValueIn"][];
+        };
+        /** SettingsPatchOut */
+        SettingsPatchOut: {
+            /** Updated */
+            updated: number;
+            /** Rejected */
+            rejected?: string[];
+        };
+        /**
+         * SettingsViewOut
+         * @description 设置页要的全部信息：分组字段 + 当前实际生效的模型与模式。
+         */
+        SettingsViewOut: {
+            /** Groups */
+            groups: components["schemas"]["SettingGroupOut"][];
+            /** Embedding Model Id */
+            embedding_model_id: string;
+            /** Embedding Dim */
+            embedding_dim: number;
+            /** Embedding Configured */
+            embedding_configured: boolean;
+            /** Embedding Is Development */
+            embedding_is_development: boolean;
+            /** Rerank Enabled */
+            rerank_enabled: boolean;
+        };
         /** SkillBrowseIn */
         SkillBrowseIn: {
             /** Source Id */
@@ -6271,305 +6499,12 @@ export interface components {
              */
             source: string;
         };
-        /**
-         * StorageOverviewOut
-         * @description 存储空间概览（v17，管理员）。
-         *
-         *     ``data_bytes + free_bytes`` 就是数据库文件大小——拆成两个数是因为
-         *     "可回收"才是用户能动手改的那部分：删掉的行留下**死元组**，
-         *     ``VACUUM (ANALYZE)`` 之后那部分空间才可被复用。
-         *     **文件本身不会因此变小**（那是 ``VACUUM FULL`` 的事，它要独占重写整库，本项目不做）。
-         */
-        StorageOverviewOut: {
-            /** File Bytes */
-            file_bytes: number;
-            /** Data Bytes */
-            data_bytes: number;
-            /** Free Bytes */
-            free_bytes: number;
-            /**
-             * Partitions
-             * @description 向量分区数。每个分区写入第一个向量就占一个 4MB 块，所以它值得单独看。
-             */
-            partitions: number;
-            /**
-             * Orphans
-             * @description 无主的向量分区（知识库已删、表还留在库里）。「整理存储」会丢掉它们。
-             */
-            orphans?: string[];
-        };
-        /**
-         * SuggestedQuestionsOut
-         * @description 对话页空状态的示例问题。
-         *
-         *     ``generated`` 为假（``questions`` 为空）时前端回退到静态样例——
-         *     生成不出来不是错误，只是没有语料依据的建议可给。
-         */
-        SuggestedQuestionsOut: {
-            /** Questions */
-            questions?: string[];
-            /**
-             * Generated
-             * @default false
-             */
-            generated: boolean;
-        };
-        /**
-         * SyncResultOut
-         * @description 一次拉取的结果。
-         *
-         *     ``duplicates`` 与 ``created`` 分开报：用户看到"取回 20 条但新入库 0 条"
-         *     时该立刻明白"这个源没更新"，而不是以为抓取失败了。
-         */
-        SyncResultOut: {
-            /** Task Id */
-            task_id?: string | null;
-            /**
-             * Source Id
-             * @default
-             */
-            source_id: string;
-            /**
-             * Fetched
-             * @default 0
-             */
-            fetched: number;
-            /**
-             * Created
-             * @default 0
-             */
-            created: number;
-            /**
-             * Duplicates
-             * @default 0
-             */
-            duplicates: number;
-            /**
-             * Not Modified
-             * @default false
-             */
-            not_modified: boolean;
-            /** Errors */
-            errors?: string[];
-        };
-        /**
-         * SystemLoadOut
-         * @description 负载面板（§12.115）：CPU / 内存 / 队列 / 槽位 / 云端额度。
-         */
-        SystemLoadOut: {
-            hardware: components["schemas"]["HardwareLoadOut"];
-            queue: components["schemas"]["QueueLoadOut"];
-            quota: components["schemas"]["ParserQuotaOut"];
-            /**
-             * Sampled At
-             * Format: date-time
-             */
-            sampled_at: string;
-        };
-        /**
-         * TableRowsOut
-         * @description 表格文档的结构化副本（M2 / T2.11）。
-         *
-         *     ``rows`` 是**字符串矩阵**而不是对象数组：表格副本刻意不做类型推断
-         *     （``007`` 变成 ``7`` 是数据损失），所以返回时也保持原样。
-         */
-        TableRowsOut: {
-            /** Document Id */
-            document_id: string;
-            /** Columns */
-            columns?: string[];
-            /** Rows */
-            rows?: string[][];
-            /**
-             * Total
-             * @default 0
-             */
-            total: number;
-        };
-        /**
-         * TaskCancelIn
-         * @description 取消还没结束的任务（v24）。
-         *
-         *     **两种用法**，都支持：
-         *
-         *     - 点名取消：给 ``task_ids``；
-         *     - 一键清空排队：不给 ids，只给 ``state``（默认 ``pending``），
-         *       服务端按调用方**可见范围**解析出全部候选——这才是"几十条堵在队列里"时
-         *       真正想点的那个按钮。
-         */
-        TaskCancelIn: {
-            /** Task Ids */
-            task_ids?: string[];
-            /**
-             * State
-             * @default pending
-             * @enum {string}
-             */
-            state: "pending" | "running" | "all";
-        };
-        /** TaskCancelItemOut */
-        TaskCancelItemOut: {
-            /** Task Id */
-            task_id: string;
+        /** TestConnectionOut */
+        TestConnectionOut: {
             /** Ok */
             ok: boolean;
-            /** Error */
-            error?: string | null;
-        };
-        /**
-         * TaskCancelOut
-         * @description 逐条结果：批量里"30 条撤下 28 条"是正常结果，界面要能指出剩下两条为什么没成。
-         */
-        TaskCancelOut: {
-            /** Succeeded */
-            succeeded: number;
-            /** Failed */
-            failed: number;
-            /** Items */
-            items?: components["schemas"]["TaskCancelItemOut"][];
-        };
-        /** TaskHealthOut */
-        TaskHealthOut: {
-            /** Task Id */
-            task_id: string;
-            /** Status */
-            status: string;
-            /** Label */
-            label: string;
-            /**
-             * Detail
-             * @default
-             */
+            /** Detail */
             detail: string;
-        };
-        /**
-         * TaskKind
-         * @description 任务类型。每个摄入阶段与数据源动作都是独立任务，便于按阶段重试。
-         * @enum {string}
-         */
-        TaskKind: "probe" | "parse" | "chunk" | "embed" | "enrich" | "delete" | "fetch_source" | "questions" | "wiki" | "memory" | "scheduled";
-        /** TaskList */
-        TaskList: {
-            /** Items */
-            items: components["schemas"]["TaskOut"][];
-        };
-        /** TaskOut */
-        TaskOut: {
-            /** Id */
-            id: string;
-            kind: components["schemas"]["TaskKind"];
-            state: components["schemas"]["TaskState"];
-            /** Document Id */
-            document_id?: string | null;
-            /**
-             * Knowledge Base Id
-             * @description 任务所属文档的知识库（v14 后随列表带回）。
-             *
-             *     界面的"按知识库筛选"靠它——没有它，任务中心就得逐个库拉文档来反查归属。
-             *     没有挂文档的任务（数据源拉取）为 None。
-             */
-            knowledge_base_id?: string | null;
-            /**
-             * Document Name
-             * @description 关联文档名。**由后端批量解析**：否则任务中心要为每个库各拉一次文档列表
-             *     只为把 id 换成名字（实测那是这一页最慢的一段）。
-             * @default
-             */
-            document_name: string;
-            /** Attempts */
-            attempts: number;
-            /** Max Attempts */
-            max_attempts: number;
-            /** Error */
-            error?: string | null;
-            /** Next Run At */
-            next_run_at?: string | null;
-            /** Lease Expires At */
-            lease_expires_at?: string | null;
-            /** Created At */
-            created_at?: string | null;
-            /** Updated At */
-            updated_at?: string | null;
-            /**
-             * Health
-             * @description ``running`` / ``stalled`` / ``overdue`` / ``idle`` / ``done``（M7 / T7.4）。
-             *
-             *     **由后端判定而不是前端猜**：它要比较租约到期时间与当前时刻，
-             *     还要知道租约时长，那些只有后端有。前端只负责按这个值上色。
-             * @default idle
-             */
-            health: string;
-            /**
-             * Health Label
-             * @default
-             */
-            health_label: string;
-            /**
-             * Health Detail
-             * @default
-             */
-            health_detail: string;
-        };
-        /**
-         * TaskState
-         * @description 任务状态。
-         *
-         *     ``RUNNING`` 依赖租约（lease）+ 心跳回收：进程崩溃后超时任务回到 ``PENDING`` 实现断点续跑。
-         * @enum {string}
-         */
-        TaskState: "pending" | "running" | "succeeded" | "failed" | "canceled";
-        /**
-         * TimelineStepOut
-         * @description 时间线上的一个环节。
-         */
-        TimelineStepOut: {
-            /** Key */
-            key: string;
-            /** Label */
-            label: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "done" | "running" | "pending" | "failed" | "canceled";
-            /** Duration Ms */
-            duration_ms: number;
-            /** Visits */
-            visits: number;
-            /** Error */
-            error?: string | null;
-        };
-        /** TrashEntryOut */
-        TrashEntryOut: {
-            /** Id */
-            id: string;
-            /** Document Id */
-            document_id: string;
-            /** Kind */
-            kind: string;
-            /**
-             * Expires At
-             * Format: date-time
-             */
-            expires_at: string;
-            /** Created At */
-            created_at?: string | null;
-        };
-        /** TrashListOut */
-        TrashListOut: {
-            /** Items */
-            items?: components["schemas"]["TrashEntryOut"][];
-        };
-        /**
-         * UploadAccepted
-         * @description 上传响应。``is_duplicate`` 对应架构 §6.3 的"检测到相同文件"提醒。
-         */
-        UploadAccepted: {
-            document: components["schemas"]["DocumentOut"];
-            /** Is Duplicate */
-            is_duplicate: boolean;
-            /** Task Id */
-            task_id?: string | null;
         };
         /** UsageDayOut */
         UsageDayOut: {
@@ -6749,87 +6684,6 @@ export interface components {
              */
             estimated: number;
         };
-        /** UserCreateIn */
-        UserCreateIn: {
-            /** Name */
-            name: string;
-            /**
-             * Note
-             * @default
-             */
-            note: string;
-            /** Username */
-            username?: string | null;
-            /** Password */
-            password?: string | null;
-            /**
-             * Role
-             * @default member
-             * @enum {string}
-             */
-            role: "admin" | "member";
-        };
-        /** UserDisabledIn */
-        UserDisabledIn: {
-            /** Disabled */
-            disabled: boolean;
-        };
-        /** UserListOut */
-        UserListOut: {
-            /** Items */
-            items: components["schemas"]["UserOut"][];
-            /**
-             * Header
-             * @default
-             */
-            header: string;
-        };
-        /** UserOut */
-        UserOut: {
-            /** Id */
-            id: string;
-            /** Name */
-            name: string;
-            /**
-             * Note
-             * @default
-             */
-            note: string;
-            /** Username */
-            username?: string | null;
-            /**
-             * Role
-             * @default member
-             */
-            role: string;
-            /**
-             * Disabled
-             * @default false
-             */
-            disabled: boolean;
-            /** Created At */
-            created_at?: string | null;
-            /**
-             * Document Count
-             * @description 这个人传过多少文档——删他之前要能说清"会影响什么"。
-             * @default 0
-             */
-            document_count: number;
-            /**
-             * Avatar Url
-             * @description 头像链接（签名 URL，v0.29）。空 = 没有头像 → 界面用名字生成默认头像。
-             * @default
-             */
-            avatar_url: string;
-        };
-        /**
-         * UserPasswordIn
-         * @description 管理员重置某人的密码。
-         */
-        UserPasswordIn: {
-            /** Password */
-            password: string;
-        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -6843,275 +6697,157 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
-        /** WebhookCreateIn */
-        WebhookCreateIn: {
-            /** Url */
-            url: string;
-            /** Events */
-            events?: string[];
-            /** Secret */
-            secret?: string | null;
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-        };
-        /** WebhookEventListOut */
-        WebhookEventListOut: {
-            /** Events */
-            events?: string[];
-            /**
-             * Signature Header
-             * @default
-             */
-            signature_header: string;
-            /**
-             * Max Attempts
-             * @default 0
-             */
-            max_attempts: number;
-            /**
-             * Delivery Semantics
-             * @default
-             */
-            delivery_semantics: string;
-        };
-        /** WebhookListOut */
-        WebhookListOut: {
-            /** Items */
-            items?: components["schemas"]["WebhookOut"][];
-        };
-        /** WebhookOut */
-        WebhookOut: {
-            /** Id */
-            id: string;
-            /** Url */
-            url: string;
-            /** Events */
-            events?: string[];
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-            /**
-             * Has Secret
-             * @default false
-             */
-            has_secret: boolean;
-            /** Secret Masked */
-            secret_masked?: string | null;
-            /** Secret */
-            secret?: string | null;
-        };
         /**
-         * WebhookUpdateIn
-         * @description PATCH 只改开关。
+         * WebPageOut
+         * @description ``GET /web/page``：一页的正文——**给阅读模式渲染的那一份**。
          *
-         *     **单独一个模型而不是复用 ``WebhookCreateIn``**：复用会强迫调用方
-         *     在改开关时也传 ``url``，而那个字段会被静默忽略——"传了但没用"是最迷惑人的
-         *     一类接口。真传了 url 就明确报错（多出来的字段被忽略，见下方注释），
-         *     想换地址请删了重建，那一步是有意识的。
+         *     ``text`` 是 Markdown（服务层用 ``extract_article`` 抽过正文），最多
+         *     ``MAX_FETCH_CHARS`` 字；``truncated`` 是"被截过"这件事本身，界面据此说一句
+         *     "只读了前一段"，而不是让用户以为文章就那么长（服务层在正文尾部也留了那句话）。
          */
-        WebhookUpdateIn: {
-            /** Enabled */
-            enabled: boolean;
-        };
-        /** WikiGenerateOut */
-        WikiGenerateOut: {
-            /** Task Id */
-            task_id: string;
-            /** Kb Id */
-            kb_id: string;
-        };
-        /**
-         * WikiOverviewOut
-         * @description Wiki 页头需要的全部信息 + 页面目录。
-         *
-         *     ``status`` 只有四档（``idle`` / ``generating`` / ``ready`` / ``failed``），
-         *     **由后端推出来**（有没有在跑的任务 + 有没有页面），前端不自己组合状态。
-         */
-        WikiOverviewOut: {
-            /** Kb Id */
-            kb_id: string;
-            /** Enabled */
-            enabled: boolean;
-            /** Status */
-            status: string;
+        WebPageOut: {
             /**
-             * Page Count
-             * @default 0
+             * Url
+             * @description 请求的那个地址
              */
-            page_count: number;
-            /** Generated At */
-            generated_at?: string | null;
-            /** Model */
-            model?: string | null;
-            /** Last Error */
-            last_error?: string | null;
-            /** Pages */
-            pages?: components["schemas"]["WikiPageOut"][];
-        };
-        /** WikiPageDetailOut */
-        WikiPageDetailOut: {
-            /** Id */
-            id: string;
-            /** Parent Id */
-            parent_id?: string | null;
+            url: string;
             /**
-             * Level
-             * @default 0
+             * Final Url
+             * @description 真正读到的那一页（跳转之后）；当前等于 url，见模块头
              */
-            level: number;
+            final_url: string;
             /**
-             * Ord
-             * @default 0
+             * Title
+             * @description 页面标题（取不到时是地址本身）
              */
-            ord: number;
-            /** Title */
             title: string;
             /**
-             * Brief
-             * @default
+             * Text
+             * @description 正文（Markdown；超长已截断）
              */
-            brief: string;
+            text: string;
             /**
-             * Status
-             * @default ready
+             * Truncated
+             * @description 正文是不是被截断了
              */
-            status: string;
-            /** Generated At */
-            generated_at?: string | null;
-            /** Kb Id */
-            kb_id: string;
+            truncated: boolean;
             /**
-             * Content Md
-             * @default
+             * Fetched At
+             * Format: date-time
+             * @description 取回的时刻（UTC）
              */
-            content_md: string;
-            /** Model */
-            model?: string | null;
-            /** Updated At */
-            updated_at?: string | null;
-            /** Sources */
-            sources?: components["schemas"]["WikiSourceOut"][];
+            fetched_at: string;
         };
         /**
-         * WikiPageOut
-         * @description 目录里的一个页面（不含正文，导航树只需要这些）。
-         */
-        WikiPageOut: {
-            /** Id */
-            id: string;
-            /** Parent Id */
-            parent_id?: string | null;
-            /**
-             * Level
-             * @default 0
-             */
-            level: number;
-            /**
-             * Ord
-             * @default 0
-             */
-            ord: number;
-            /** Title */
-            title: string;
-            /**
-             * Brief
-             * @default
-             */
-            brief: string;
-            /**
-             * Status
-             * @default ready
-             */
-            status: string;
-            /** Generated At */
-            generated_at?: string | null;
-        };
-        /**
-         * WikiSourceOut
-         * @description Wiki 页面的一条出处。``index`` 就是正文里 ``[n]`` 的 n。
-         */
-        WikiSourceOut: {
-            /** Index */
-            index: number;
-            /** Chunk Id */
-            chunk_id: string;
-            /** Document Id */
-            document_id: string;
-            /**
-             * Document Name
-             * @default
-             */
-            document_name: string;
-            /** Heading Path */
-            heading_path?: string | null;
-            /** Page */
-            page?: number | null;
-        };
-        /**
-         * _WireMessage
-         * @description 客户端传来的消息（OpenAI 兼容形状 ✓，与 `llm._message_wire` 的产物一致 ✓）。
+         * WorkspaceBrowseOut
+         * @description 浏览服务器目录的结果（``GET /workspaces/browse``，v0.35）。
          *
-         *     ⚠️ **`tool_call_id` 与 `tool_calls` 必须在这儿收下**（2026-09-29 实测 422 的根因）：
-         *     工具循环的第二轮要发回两条特殊消息 —— ``assistant``（带 `tool_calls` ✓）与
-         *     ``tool``（带 `tool_call_id` ✓，见 `llm.py:664-665`）。Pydantic 默认**丢掉未声明的字段** ✗，
-         *     所以这两个字段一旦不在模型里，代理转发给上游的消息就**缺 `tool_call_id`** ✗ →
-         *     上游直接 422：``messages[3]: missing field `tool_call_id` `` ✓✓。
-         *
-         *     症状比错误码更难认：422 是在**流已经吐了几块之后**才发生的 ✗ → Starlette 只能抛
-         *     ``RuntimeError: Caught handled exception, but response already started`` ✓，
-         *     客户端看到的是"代理连不上（incomplete chunked read）" ✗ —— 而**真正的错在消息不带 id** ✓。
+         *     **为什么这件事在服务端做**：工作区根目录是**服务器上**的路径（后端跑在 NAS 上），
+         *     而浏览器既拿不到、也不该拿到服务器上的绝对路径——客户端的目录选择器指向的是
+         *     另一台机器。所以"选择"只能是"服务端列给你看"。
          */
-        _WireMessage: {
-            /** Role */
-            role: string;
+        WorkspaceBrowseOut: {
+            /** Path */
+            path: string;
+            current: components["schemas"]["DirectoryEntryOut"];
+            /** Parent */
+            parent?: string | null;
+            /** Entries */
+            entries?: components["schemas"]["DirectoryEntryOut"][];
+            /** Roots */
+            roots?: components["schemas"]["DirectoryEntryOut"][];
             /**
-             * Content
+             * Note
              * @default
              */
-            content: string;
-            /** Tool Call Id */
-            tool_call_id?: string | null;
-            /** Tool Calls */
-            tool_calls?: components["schemas"]["_WireToolCall"][] | null;
+            note: string;
+            /**
+             * Area
+             * @default
+             */
+            area: string;
         };
-        /** _WireTool */
-        _WireTool: {
+        /**
+         * WorkspaceCreateIn
+         * @description 新建工作区。``root_path`` 是**用户指定的真实目录**——
+         *     这是"可以指定路径作为工作区"的落点。
+         */
+        WorkspaceCreateIn: {
             /** Name */
             name: string;
+            /** Root Path */
+            root_path: string;
             /**
              * Description
              * @default
              */
             description: string;
-            /** Parameters */
-            parameters?: {
-                [key: string]: unknown;
-            };
+            /** Kb Ids */
+            kb_ids?: string[];
         };
-        /**
-         * _WireToolCall
-         * @description 助手消息里那一轮的调用（形状与 `llm._message_wire` 的产物一致：嵌套 `function` ✓）。
-         */
-        _WireToolCall: {
+        /** WorkspaceListOut */
+        WorkspaceListOut: {
+            /** Items */
+            items?: components["schemas"]["WorkspaceOut"][];
+        };
+        /** WorkspaceOut */
+        WorkspaceOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Root Path */
+            root_path: string;
             /**
-             * Id
+             * Description
              * @default
              */
-            id: string;
+            description: string;
+            /** Kb Ids */
+            kb_ids?: string[];
             /**
-             * Type
-             * @default function
+             * Conversation Count
+             * @description 这个工作区下的会话数。侧栏每个工作区后面那个数字。
+             * @default 0
              */
-            type: string;
-            /** Function */
-            function?: {
-                [key: string]: unknown;
-            };
+            conversation_count: number;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * Archived At
+             * @description 归档时间（v0.55）。``None`` = 未归档。
+             */
+            archived_at?: string | null;
+            /**
+             * Device Id
+             * @description 归属设备（v0.59）。``None`` = **服务器端**：这个项目的 ``root_path`` 在服务器的
+             *     盘上（网页版/直连 API 建的）。非空 = 桌面壳那台机器（``X-Kylab-Device``）。
+             */
+            device_id?: string | null;
+            /**
+             * Device Name
+             * @description 设备名（``X-Kylab-Device-Name``，可空）。只给人看，判定按 ``device_id``。
+             * @default
+             */
+            device_name: string;
+        };
+        /**
+         * WorkspaceUpdateIn
+         * @description 改工作区。**都可选**，只改传了的那些（``None`` = 不动）。
+         */
+        WorkspaceUpdateIn: {
+            /** Name */
+            name?: string | null;
+            /** Root Path */
+            root_path?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Kb Ids */
+            kb_ids?: string[] | null;
+            /** Archived */
+            archived?: boolean | null;
         };
     };
     responses: never;
@@ -7142,483 +6878,28 @@ export interface operations {
             };
         };
     };
-    status_api_v1_auth_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthStatusOut"];
-                };
-            };
-        };
-    };
-    setup_api_v1_auth_setup_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SetupIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LoginOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    login_api_v1_auth_login_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LoginIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LoginOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    logout_api_v1_auth_logout_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    me_api_v1_auth_me_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AccountOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    upload_avatar_api_v1_auth_avatar_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": components["schemas"]["Body_upload_avatar_api_v1_auth_avatar_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AccountOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    clear_avatar_api_v1_auth_avatar_delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AccountOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    change_password_api_v1_auth_password_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PasswordChangeIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PasswordChangeOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_knowledge_bases_api_v1_knowledge_bases_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["KnowledgeBaseList"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_knowledge_base_api_v1_knowledge_bases_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["KnowledgeBaseCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["KnowledgeBaseOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_knowledge_base_api_v1_knowledge_bases__kb_id__get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["KnowledgeBaseOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_knowledge_base_api_v1_knowledge_bases__kb_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImpactOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_knowledge_base_api_v1_knowledge_bases__kb_id__patch: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["KnowledgeBaseUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["KnowledgeBaseOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    generate_kb_prompt_api_v1_knowledge_bases__kb_id__prompt_generate_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["KBPromptGenerateIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["KBPromptDraftOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_documents_api_v1_knowledge_bases__kb_id__documents_get: {
+    list_conversations_api_v1_conversations_get: {
         parameters: {
             query?: {
-                /** @description 只看这个目录里的文档 */
-                folder_id?: string | null;
-                /** @description 只看未归档（根目录）的文档 */
-                root?: boolean;
-                /** @description 按文件名模糊搜（大小写不敏感） */
+                limit?: number;
+                /** @description 按标题**或消息正文**搜索（包含匹配，忽略大小写） */
                 q?: string | null;
-                /** @description 只保留这个流水线阶段 */
-                stage?: components["schemas"]["DocumentStage"] | null;
-                /** @description 只保留这个来源类型 */
-                source_kind?: components["schemas"]["DataSourceKind"] | null;
-                /** @description 这一页取几篇 */
-                limit?: number;
-                /** @description 从第几篇开始取（跳过多少篇） */
-                offset?: number;
+                /** @description 只看这个工作区下的会话（v0.15） */
+                workspace_id?: string | null;
+                /** @description 只看**未归档**的会话（不属于任何工作区） */
+                ungrouped?: boolean;
+                /** @description 看**已归档**的会话（历史会话面板的归档视图） */
+                archived?: boolean;
+                /** @description 是否带上最近一条回答的开头（历史会话面板的两行预览） */
+                with_preview?: boolean;
             };
             header?: {
-                authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
-            path: {
-                kb_id: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -7629,7 +6910,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DocumentList"];
+                    "application/json": components["schemas"]["ConversationListOut"];
                 };
             };
             /** @description Validation Error */
@@ -7643,555 +6924,21 @@ export interface operations {
             };
         };
     };
-    upload_document_api_v1_knowledge_bases__kb_id__documents_post: {
+    create_conversation_api_v1_conversations_post: {
         parameters: {
-            query?: {
-                /** @description 是否立即入队摄入；false 表示仅登记 */
-                start?: boolean;
-                /** @description 放进哪个目录（v13）；留空=根目录 */
-                folder_id?: string | null;
-            };
+            query?: never;
             header?: {
-                /** @description 可选。带上它则同一键的重试不会产生第二份文档（架构 §3.2） */
-                "Idempotency-Key"?: string | null;
-                /** @description 可选。使用者名册里的 id（形如 user_xxx），记录是谁传的（G6）。不参与鉴权。**用 id 而不是名字**：HTTP 头只能是 ASCII，而名字可能是中文（实测浏览器与 curl 都会报编码错） */
-                "X-Kylab-Operator"?: string | null;
-                authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
-            path: {
-                kb_id: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "multipart/form-data": components["schemas"]["Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UploadAccepted"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    batch_documents_api_v1_knowledge_bases__kb_id__documents_batch_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DocumentBatchIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentBatchOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_document_api_v1_documents__document_id__get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_document_api_v1_documents__document_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TrashEntryOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    rename_document_api_v1_documents__document_id__patch: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DocumentRenameIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    document_timeline_api_v1_documents__document_id__timeline_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentTimelineOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    set_document_disabled_api_v1_documents__document_id__disabled_patch: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DocumentDisabledIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_document_api_v1_documents__document_id__cancel_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_document_parts_api_v1_documents__document_id__parts_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentPartList"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_document_chunks_api_v1_documents__document_id__chunks_get: {
-        parameters: {
-            query?: {
-                /** @description 最多返回多少块 */
-                limit?: number;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChunkList"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reprocess_document_api_v1_documents__document_id__reprocess_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UploadAccepted"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    preview_document_api_v1_documents__document_id__preview_get: {
-        parameters: {
-            query?: {
-                /** @description auto=有解析产物就给解析文本；original=强制看原件版式 */
-                source?: string;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PreviewOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    document_download_url_api_v1_documents__document_id__download_url_get: {
-        parameters: {
-            query?: {
-                /** @description original=原文件（默认），markdown=解析产物 */
-                format?: string;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DownloadUrlOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    download_document_content_api_v1_documents__document_id__content_get: {
-        parameters: {
-            query: {
-                format?: string;
-                /** @description 签发时给出的到期时间戳 */
-                expires: number;
-                /** @description 签发时给出的签名 */
-                signature: string;
-                /** @description inline 供页面内直接渲染（PDF / 位图）；其余类型服务端强制 attachment */
-                disposition?: string;
-            };
-            header?: never;
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 文件内容 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_folders_api_v1_knowledge_bases__kb_id__folders_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FolderListOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_folder_api_v1_knowledge_bases__kb_id__folders_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FolderCreateIn"];
+                "application/json": components["schemas"]["ConversationCreateIn"];
             };
         };
         responses: {
@@ -8201,819 +6948,8 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["FolderOut"];
+                    "application/json": components["schemas"]["ConversationOut"];
                 };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_folder_api_v1_folders__folder_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                folder_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    rename_folder_api_v1_folders__folder_id__patch: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                folder_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FolderRenameIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FolderOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    move_document_api_v1_documents__document_id__folder_patch: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DocumentFolderIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    search_api_v1_search_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SearchRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SearchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    handshake_api_v1_provider_handshake_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProviderHandshakeOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    handshake_api_v1_backup_handshake_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BackupHandshakeOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_snapshots_api_v1_backup_snapshots_get: {
-        parameters: {
-            query?: {
-                /** @description 只看这台设备的（默认全部） */
-                device_id?: string | null;
-                limit?: number;
-                offset?: number;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BackupSnapshotListOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_snapshot_blob_api_v1_backup_snapshots__device_id___snapshot_id__blob_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                device_id: string;
-                snapshot_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 快照体（tar.gz） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                    "application/octet-stream": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    put_snapshot_blob_api_v1_backup_snapshots__device_id___snapshot_id__blob_put: {
-        parameters: {
-            query: {
-                /** @description 整份快照体的 sha256（十六进制 64 位） */
-                sha256: string;
-                /** @description 整份快照体的字节数 */
-                bytes: number;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                device_id: string;
-                snapshot_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 同路径同内容：幂等 no-op，桶里那份不动 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BackupUploadOut"];
-                };
-            };
-            /** @description 新建了一份恢复点的快照体 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description sha256 / bytes 与实收不符：拒收，且**不落桶** */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 同路径不同内容 / 超保留份数 / 超配额（服务端不覆盖、也不替你删） */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 超过 max_blob_bytes：不落桶 */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    put_snapshot_manifest_api_v1_backup_snapshots__device_id___snapshot_id__manifest_put: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                device_id: string;
-                snapshot_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 同一份清单已经在了：幂等 no-op */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BackupUploadOut"];
-                };
-            };
-            /** @description 清单已落桶——这一刻起这个恢复点可枚举、可恢复 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 不是合法 JSON 对象 / 清单里的 device_id、snapshot_id 与路径不符 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 快照体不在（先传 blob）/ 同路径清单内容不同 */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description 超过 1 MiB */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_snapshot_manifest_api_v1_backup_snapshots__device_id___snapshot_id__get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                device_id: string;
-                snapshot_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 清单原文 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_snapshot_api_v1_backup_snapshots__device_id___snapshot_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                device_id: string;
-                snapshot_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: number;
-                    };
-                };
-            };
-            /** @description 这条路径上什么都没有 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    suggested_questions_api_v1_chat_suggested_questions_get: {
-        parameters: {
-            query?: {
-                /** @description 逗号分隔的知识库 id；留空返回空列表 */
-                kb_ids?: string;
-                /** @description 最多返回几条；留空用默认 */
-                limit?: number | null;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SuggestedQuestionsOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    dashboard_api_v1_stats_dashboard_get: {
-        parameters: {
-            query?: {
-                /** @description 活跃度观察窗口（天） */
-                window_days?: number;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DashboardOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    usage_summary_api_v1_stats_usage_get: {
-        parameters: {
-            query?: {
-                /** @description 观察窗口（天） */
-                days?: number;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UsageOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_tasks_api_v1_tasks_get: {
-        parameters: {
-            query?: {
-                /** @description 按状态过滤 */
-                state?: components["schemas"]["TaskState"] | null;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskList"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    tasks_health_api_v1_tasks_health_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HealthOverviewOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    tasks_load_api_v1_tasks_load_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SystemLoadOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_tasks_api_v1_tasks_cancel_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TaskCancelIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskCancelOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_api_keys_api_v1_api_keys_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiKeyListOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_api_key_api_v1_api_keys_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ApiKeyCreateIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiKeyIssuedOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    revoke_api_key_api_v1_api_keys__key_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                key_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -9036,9 +6972,7 @@ export interface operations {
                 /** @description 只导**严格晚于**这个时刻更新过的会话（ISO 8601）。增量导入用 */
                 since?: string | null;
             };
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -9064,14 +6998,12 @@ export interface operations {
             };
         };
     };
-    get_chunk_api_v1_chunks__chunk_id__get: {
+    get_conversation_api_v1_conversations__conversation_id__get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                chunk_id: string;
+                conversation_id: string;
             };
             cookie?: never;
         };
@@ -9083,7 +7015,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChunkOut"];
+                    "application/json": components["schemas"]["ConversationDetailOut"];
                 };
             };
             /** @description Validation Error */
@@ -9097,14 +7029,12 @@ export interface operations {
             };
         };
     };
-    delete_chunk_api_v1_chunks__chunk_id__delete: {
+    delete_conversation_api_v1_conversations__conversation_id__delete: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                chunk_id: string;
+                conversation_id: string;
             };
             cookie?: never;
         };
@@ -9128,20 +7058,23 @@ export interface operations {
             };
         };
     };
-    update_chunk_api_v1_chunks__chunk_id__patch: {
+    update_conversation_api_v1_conversations__conversation_id__patch: {
         parameters: {
             query?: never;
             header?: {
-                authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path: {
-                chunk_id: string;
+                conversation_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ChunkUpdateIn"];
+                "application/json": components["schemas"]["ConversationUpdateIn"];
             };
         };
         responses: {
@@ -9151,7 +7084,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChunkOut"];
+                    "application/json": components["schemas"]["ConversationOut"];
                 };
             };
             /** @description Validation Error */
@@ -9165,20 +7098,18 @@ export interface operations {
             };
         };
     };
-    toggle_chunk_api_v1_chunks__chunk_id__disabled_put: {
+    rewind_conversation_api_v1_conversations__conversation_id__rewind_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                chunk_id: string;
+                conversation_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ChunkToggleIn"];
+                "application/json": components["schemas"]["ConversationRewindIn"];
             };
         };
         responses: {
@@ -9188,7 +7119,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChunkOut"];
+                    "application/json": components["schemas"]["ConversationRewindOut"];
                 };
             };
             /** @description Validation Error */
@@ -9202,15 +7133,47 @@ export interface operations {
             };
         };
     };
-    get_chunk_by_ordinal_api_v1_documents__document_id__chunks_by_ordinal__ordinal__get: {
+    branch_conversation_api_v1_conversations__conversation_id__branch_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                document_id: string;
-                ordinal: number;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationBranchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_artifacts_api_v1_conversations__conversation_id__artifacts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
             };
             cookie?: never;
         };
@@ -9222,7 +7185,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChunkOut"];
+                    "application/json": components["schemas"]["ConversationArtifactListOut"];
                 };
             };
             /** @description Validation Error */
@@ -9236,15 +7199,377 @@ export interface operations {
             };
         };
     };
-    delete_chunk_by_ordinal_api_v1_documents__document_id__chunks_by_ordinal__ordinal__delete: {
+    list_files_api_v1_conversations__conversation_id__files_get: {
+        parameters: {
+            query?: {
+                /** @description 要列的那一层子目录（两档都认） */
+                path?: string;
+                /** @description conversation（默认）= 这条会话的文件（上传 + 产出，可进子目录）；project = 会话挂着的项目目录（可进子目录） */
+                scope?: string;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileListingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_file_api_v1_conversations__conversation_id__files_post: {
+        parameters: {
+            query?: {
+                /** @description 旧参数，已不用（上传恒落会话文件区，平铺） */
+                path?: string;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_file_api_v1_conversations__conversation_id__files_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_project_file_api_v1_conversations__conversation_id__files_import_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                document_id: string;
-                ordinal: number;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationFileImportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    file_download_url_api_v1_conversations__conversation_id__files_download_url_get: {
+        parameters: {
+            query: {
+                /** @description 文件区里的 key（工作区是相对路径，临时区是产物 id） */
+                key: string;
+                /** @description inline 供页面内预览（PDF / 图片 / Office）；其余类型服务端强制 attachment */
+                disposition?: string;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileDownloadUrlOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_file_content_api_v1_conversations__conversation_id__files_content_get: {
+        parameters: {
+            query: {
+                /** @description 文件区里的 key */
+                key: string;
+                /** @description 签发时给出的到期时间戳 */
+                expires: number;
+                /** @description 签发时给出的签名 */
+                signature: string;
+                /** @description inline 供页面内预览；只有白名单里的类型才会真的内联 */
+                disposition?: string;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 文件内容 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_artifact_api_v1_conversations__conversation_id__artifacts__artifact_id__ingest_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IngestArtifactIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationArtifactOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_notes_api_v1_notes_get: {
+        parameters: {
+            query?: {
+                /** @description 标题/正文子串搜索 */
+                q?: string | null;
+                /** @description 按标签过滤 */
+                tag?: string | null;
+                /** @description 按文件夹过滤：文件夹 id，或 unfiled（未归档）；留空 = 全部 */
+                folder?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_note_api_v1_notes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_tags_api_v1_notes_tags_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteTagListOut"];
+                };
+            };
+        };
+    };
+    list_note_folders_api_v1_notes_folders_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteFolderListOut"];
+                };
+            };
+        };
+    };
+    create_note_folder_api_v1_notes_folders_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteFolderCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteFolderOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_note_folder_api_v1_notes_folders__folder_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                folder_id: string;
             };
             cookie?: never;
         };
@@ -9268,21 +7593,18 @@ export interface operations {
             };
         };
     };
-    update_chunk_by_ordinal_api_v1_documents__document_id__chunks_by_ordinal__ordinal__patch: {
+    rename_note_folder_api_v1_notes_folders__folder_id__patch: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                document_id: string;
-                ordinal: number;
+                folder_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ChunkUpdateIn"];
+                "application/json": components["schemas"]["NoteFolderRenameIn"];
             };
         };
         responses: {
@@ -9292,7 +7614,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChunkOut"];
+                    "application/json": components["schemas"]["NoteFolderOut"];
                 };
             };
             /** @description Validation Error */
@@ -9306,21 +7628,18 @@ export interface operations {
             };
         };
     };
-    toggle_chunk_by_ordinal_api_v1_documents__document_id__chunks_by_ordinal__ordinal__disabled_put: {
+    move_note_folder_api_v1_notes_folders__folder_id__parent_patch: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                document_id: string;
-                ordinal: number;
+                folder_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ChunkToggleIn"];
+                "application/json": components["schemas"]["NoteFolderParentIn"];
             };
         };
         responses: {
@@ -9330,7 +7649,361 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChunkOut"];
+                    "application/json": components["schemas"]["NoteFolderOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_note_api_v1_notes__note_id__folder_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteMoveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_note_api_v1_notes__note_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_note_api_v1_notes__note_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_note_api_v1_notes__note_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteUpdateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attach_note_api_v1_notes__note_id__attach_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteAttachIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ai_transform_api_v1_notes__note_id__ai_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteAiIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteAiOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_note_image_api_v1_notes__note_id__images_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_note_image_api_v1_notes__note_id__images_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteImageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_note_image_api_v1_notes__note_id__images__name__get: {
+        parameters: {
+            query: {
+                expires: number;
+                signature: string;
+            };
+            header?: never;
+            path: {
+                note_id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_settings_api_v1_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsViewOut"];
+                };
+            };
+        };
+    };
+    update_settings_api_v1_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsPatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsPatchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_connection_api_v1_settings_test__target__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestConnectionOut"];
                 };
             };
             /** @description Validation Error */
@@ -9347,9 +8020,7 @@ export interface operations {
     get_registry_api_v1_model_registry_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -9364,23 +8035,12 @@ export interface operations {
                     "application/json": components["schemas"]["RegistryOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     list_providers_api_v1_model_registry_providers_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -9395,23 +8055,12 @@ export interface operations {
                     "application/json": components["schemas"]["ProviderListOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     create_provider_api_v1_model_registry_providers_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -9444,9 +8093,7 @@ export interface operations {
     delete_provider_api_v1_model_registry_providers__provider_id__delete: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 provider_id: string;
             };
@@ -9475,9 +8122,7 @@ export interface operations {
     update_provider_api_v1_model_registry_providers__provider_id__patch: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 provider_id: string;
             };
@@ -9512,9 +8157,7 @@ export interface operations {
     list_models_api_v1_model_registry_models_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -9529,23 +8172,12 @@ export interface operations {
                     "application/json": components["schemas"]["ModelListOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     register_model_api_v1_model_registry_models_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -9578,9 +8210,7 @@ export interface operations {
     delete_model_api_v1_model_registry_models__model_pk__delete: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 model_pk: string;
             };
@@ -9609,9 +8239,7 @@ export interface operations {
     update_model_api_v1_model_registry_models__model_pk__patch: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 model_pk: string;
             };
@@ -9646,9 +8274,7 @@ export interface operations {
     list_slots_api_v1_model_registry_slots_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -9663,23 +8289,12 @@ export interface operations {
                     "application/json": components["schemas"]["SlotOut"][];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     bind_slot_api_v1_model_registry_slots__slot__put: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 slot: string;
             };
@@ -9714,9 +8329,7 @@ export interface operations {
     test_provider_api_v1_model_registry_providers__provider_id__test_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 provider_id: string;
             };
@@ -9749,9 +8362,7 @@ export interface operations {
     list_available_models_api_v1_model_registry_providers__provider_id__available_models_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 provider_id: string;
             };
@@ -9782,9 +8393,7 @@ export interface operations {
     test_slot_api_v1_model_registry_slots__slot__test_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 slot: string;
             };
@@ -9814,11 +8423,19 @@ export interface operations {
             };
         };
     };
-    list_users_api_v1_users_get: {
+    list_workspaces_api_v1_workspaces_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description false（默认）= 未归档的项目；true = 已归档的项目（v0.55） */
+                archived?: boolean;
+                /** @description **管理员专属的额外通道**：传 all 返回**全部设备**的工作区（跨机清理用）。不传 = 按请求头 X-Kylab-Device 隔离（不带那个头就是服务器端的项目） */
+                device?: string | null;
+            };
             header?: {
-                authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -9831,7 +8448,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["UserListOut"];
+                    "application/json": components["schemas"]["WorkspaceListOut"];
                 };
             };
             /** @description Validation Error */
@@ -9845,18 +8462,21 @@ export interface operations {
             };
         };
     };
-    create_user_api_v1_users_post: {
+    create_workspace_api_v1_workspaces_post: {
         parameters: {
             query?: never;
             header?: {
-                authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserCreateIn"];
+                "application/json": components["schemas"]["WorkspaceCreateIn"];
             };
         };
         responses: {
@@ -9866,7 +8486,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["UserOut"];
+                    "application/json": components["schemas"]["WorkspaceOut"];
                 };
             };
             /** @description Validation Error */
@@ -9880,217 +8500,13 @@ export interface operations {
             };
         };
     };
-    reset_password_api_v1_users__user_id__password_put: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                user_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserPasswordIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    set_disabled_api_v1_users__user_id__disabled_put: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                user_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserDisabledIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UserOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_user_api_v1_users__user_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                user_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_avatar_api_v1_avatars__user_id__get: {
+    browse_directories_api_v1_workspaces_browse_get: {
         parameters: {
             query?: {
-                /** @description 到期时间戳；由签发方给出 */
-                expires?: number;
-                /** @description 签名；见 core/signing.py */
-                signature?: string;
+                /** @description 要看哪个目录；留空 = 落在「工作区」区域 */
+                path?: string | null;
             };
             header?: never;
-            path: {
-                user_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    document_impact_api_v1_documents__document_id__impact_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImpactOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    knowledge_base_impact_api_v1_knowledge_bases__kb_id__impact_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImpactOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_trash_api_v1_trash_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
             path?: never;
             cookie?: never;
         };
@@ -10102,7 +8518,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TrashListOut"];
+                    "application/json": components["schemas"]["WorkspaceBrowseOut"];
                 };
             };
             /** @description Validation Error */
@@ -10116,119 +8532,16 @@ export interface operations {
             };
         };
     };
-    restore_from_trash_api_v1_trash__trash_id__restore_post: {
+    create_directory_api_v1_workspaces_dirs_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                trash_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    drop_trash_api_v1_trash__trash_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                trash_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_data_sources_api_v1_knowledge_bases__kb_id__data_sources_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DataSourceListOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_data_source_api_v1_knowledge_bases__kb_id__data_sources_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DataSourceCreateIn"];
+                "application/json": components["schemas"]["DirectoryCreateIn"];
             };
         };
         responses: {
@@ -10238,7 +8551,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DataSourceOut"];
+                    "application/json": components["schemas"]["DirectoryEntryOut"];
                 };
             };
             /** @description Validation Error */
@@ -10252,17 +8565,50 @@ export interface operations {
             };
         };
     };
-    toggle_data_source_api_v1_data_sources__source_id__enabled_patch: {
+    rename_directory_api_v1_workspaces_dirs_patch: {
         parameters: {
-            query: {
-                /** @description 是否启用 */
-                enabled: boolean;
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DirectoryRenameIn"];
             };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectoryEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_workspace_api_v1_workspaces__workspace_id__get: {
+        parameters: {
+            query?: never;
             header?: {
-                authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path: {
-                source_id: string;
+                workspace_id: string;
             };
             cookie?: never;
         };
@@ -10274,7 +8620,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DataSourceOut"];
+                    "application/json": components["schemas"]["WorkspaceOut"];
                 };
             };
             /** @description Validation Error */
@@ -10288,14 +8634,17 @@ export interface operations {
             };
         };
     };
-    delete_data_source_api_v1_data_sources__source_id__delete: {
+    delete_workspace_api_v1_workspaces__workspace_id__delete: {
         parameters: {
             query?: never;
             header?: {
-                authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path: {
-                source_id: string;
+                workspace_id: string;
             };
             cookie?: never;
         };
@@ -10319,89 +8668,23 @@ export interface operations {
             };
         };
     };
-    sync_data_source_api_v1_data_sources__source_id__sync_post: {
-        parameters: {
-            query?: {
-                /** @description true 则同步做完并返回统计 */
-                wait?: boolean;
-            };
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                source_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SyncResultOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_shares_api_v1_knowledge_bases__kb_id__shares_get: {
+    update_workspace_api_v1_workspaces__workspace_id__patch: {
         parameters: {
             query?: never;
             header?: {
-                authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ShareListOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    grant_share_api_v1_knowledge_bases__kb_id__shares_put: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
+                workspace_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ShareGrantIn"];
+                "application/json": components["schemas"]["WorkspaceUpdateIn"];
             };
         };
         responses: {
@@ -10411,7 +8694,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ShareOut"];
+                    "application/json": components["schemas"]["WorkspaceOut"];
                 };
             };
             /** @description Validation Error */
@@ -10425,15 +8708,65 @@ export interface operations {
             };
         };
     };
-    revoke_share_api_v1_knowledge_bases__kb_id__shares__user_id__delete: {
+    list_scheduled_tasks_api_v1_scheduled_tasks_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskListOut"];
+                };
             };
+        };
+    };
+    create_scheduled_task_api_v1_scheduled_tasks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduledTaskCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_scheduled_task_api_v1_scheduled_tasks__scheduled_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
             path: {
-                kb_id: string;
-                user_id: string;
+                scheduled_id: string;
             };
             cookie?: never;
         };
@@ -10457,21 +8790,20 @@ export interface operations {
             };
         };
     };
-    read_table_api_v1_documents__document_id__table_get: {
+    update_scheduled_task_api_v1_scheduled_tasks__scheduled_id__patch: {
         parameters: {
-            query?: {
-                limit?: number;
-                offset?: number;
-            };
-            header?: {
-                authorization?: string | null;
-            };
+            query?: never;
+            header?: never;
             path: {
-                document_id: string;
+                scheduled_id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduledTaskUpdateIn"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -10479,7 +8811,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TableRowsOut"];
+                    "application/json": components["schemas"]["ScheduledTaskOut"];
                 };
             };
             /** @description Validation Error */
@@ -10493,12 +8825,41 @@ export interface operations {
             };
         };
     };
-    list_events_api_v1_webhooks_events_get: {
+    run_scheduled_task_now_api_v1_scheduled_tasks__scheduled_id__run_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
+            header?: never;
+            path: {
+                scheduled_id: string;
             };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_servers_api_v1_mcp_servers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -10510,63 +8871,21 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WebhookEventListOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["MCPServerListOut"];
                 };
             };
         };
     };
-    list_webhooks_api_v1_webhooks_get: {
+    create_server_api_v1_mcp_servers_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WebhookListOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_webhook_api_v1_webhooks_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WebhookCreateIn"];
+                "application/json": components["schemas"]["MCPServerCreateIn"];
             };
         };
         responses: {
@@ -10576,7 +8895,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WebhookOut"];
+                    "application/json": components["schemas"]["MCPServerOut"];
                 };
             };
             /** @description Validation Error */
@@ -10590,14 +8909,43 @@ export interface operations {
             };
         };
     };
-    delete_webhook_api_v1_webhooks__webhook_id__delete: {
+    get_server_api_v1_mcp_servers__server_id__get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                webhook_id: string;
+                server_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPServerOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_server_api_v1_mcp_servers__server_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                server_id: string;
             };
             cookie?: never;
         };
@@ -10621,20 +8969,18 @@ export interface operations {
             };
         };
     };
-    update_webhook_api_v1_webhooks__webhook_id__patch: {
+    update_server_api_v1_mcp_servers__server_id__patch: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
-                webhook_id: string;
+                server_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WebhookUpdateIn"];
+                "application/json": components["schemas"]["MCPServerUpdateIn"];
             };
         };
         responses: {
@@ -10644,7 +8990,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WebhookOut"];
+                    "application/json": components["schemas"]["MCPServerOut"];
                 };
             };
             /** @description Validation Error */
@@ -10658,12 +9004,76 @@ export interface operations {
             };
         };
     };
-    storage_overview_api_v1_maintenance_storage_get: {
+    probe_server_api_v1_mcp_servers__server_id__probe_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
+            header?: never;
+            path: {
+                server_id: string;
             };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPServerOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    call_tool_api_v1_mcp_servers__server_id__call_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                server_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPCallIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPCallOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_all_tools_api_v1_mcp_servers_tools_get: {
+        parameters: {
+            query?: never;
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -10675,177 +9085,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StorageOverviewOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    compact_storage_api_v1_maintenance_compact_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StorageOverviewOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_wiki_api_v1_knowledge_bases__kb_id__wiki_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WikiOverviewOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    clear_wiki_api_v1_knowledge_bases__kb_id__wiki_delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_wiki_page_api_v1_wiki_pages__page_id__get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                page_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WikiPageDetailOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    generate_wiki_api_v1_knowledge_bases__kb_id__wiki_generate_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kb_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WikiGenerateOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["MCPToolOut"][];
                 };
             };
         };
@@ -10853,9 +9093,7 @@ export interface operations {
     get_memory_api_v1_memory_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -10870,23 +9108,12 @@ export interface operations {
                     "application/json": components["schemas"]["MemoryOverviewOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     read_memory_file_api_v1_memory_files__path__get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 path: string;
             };
@@ -10917,9 +9144,7 @@ export interface operations {
     recall_memory_api_v1_memory_recall_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -10952,9 +9177,7 @@ export interface operations {
     remember_api_v1_memory_remember_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -10987,9 +9210,7 @@ export interface operations {
     get_memory_archive_api_v1_memory_archive_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11004,23 +9225,12 @@ export interface operations {
                     "application/json": components["schemas"]["MemoryArchiveOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     get_memory_changes_api_v1_memory_changes_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11035,23 +9245,12 @@ export interface operations {
                     "application/json": components["schemas"]["MemoryChangesOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     forget_memory_api_v1_memory_forget_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11084,9 +9283,7 @@ export interface operations {
     restore_memory_api_v1_memory_restore_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11119,9 +9316,7 @@ export interface operations {
     rename_memory_group_api_v1_memory_group_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11154,9 +9349,7 @@ export interface operations {
     migrate_memory_api_v1_memory_migrate_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11171,23 +9364,12 @@ export interface operations {
                     "application/json": components["schemas"]["MemoryMigrationOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     organize_memory_draft_api_v1_memory_draft_organize_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11202,15 +9384,6 @@ export interface operations {
                     "application/json": components["schemas"]["MemoryDraftOrganizeOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     list_skills_api_v1_skills_get: {
@@ -11219,9 +9392,7 @@ export interface operations {
                 limit?: number | null;
                 offset?: number;
             };
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11250,9 +9421,7 @@ export interface operations {
     set_skill_enabled_api_v1_skills__name__enabled_put: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 name: string;
             };
@@ -11287,9 +9456,7 @@ export interface operations {
     get_skill_api_v1_skills__name__get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 name: string;
             };
@@ -11320,9 +9487,7 @@ export interface operations {
     browse_market_api_v1_skills_market_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11355,9 +9520,7 @@ export interface operations {
     installed_skills_api_v1_skills_market_installed_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11372,23 +9535,12 @@ export interface operations {
                     "application/json": components["schemas"]["SkillInstalledOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     install_skill_api_v1_skills_market_install_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11421,9 +9573,7 @@ export interface operations {
     uninstall_skill_api_v1_skills_market_installed__name__delete: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 name: string;
             };
@@ -11452,9 +9602,7 @@ export interface operations {
     list_sources_api_v1_skills_market_sources_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11469,23 +9617,12 @@ export interface operations {
                     "application/json": components["schemas"]["SkillSourceListOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     add_source_api_v1_skills_market_sources_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11518,9 +9655,7 @@ export interface operations {
     delete_source_api_v1_skills_market_sources__source_id__delete: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 source_id: string;
             };
@@ -11549,9 +9684,7 @@ export interface operations {
     patch_source_api_v1_skills_market_sources__source_id__patch: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 source_id: string;
             };
@@ -11586,9 +9719,7 @@ export interface operations {
     browse_source_api_v1_skills_market_browse_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11621,9 +9752,7 @@ export interface operations {
     inspect_skill_api_v1_skills_market_inspect_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11656,9 +9785,7 @@ export interface operations {
     upload_skill_api_v1_skills_market_upload_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11691,9 +9818,7 @@ export interface operations {
     install_from_source_api_v1_skills_market_install_source_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11726,9 +9851,7 @@ export interface operations {
     list_plugins_api_v1_plugins_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11743,23 +9866,12 @@ export interface operations {
                     "application/json": components["schemas"]["PluginListOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     enable_plugin_api_v1_plugins__plugin_id__enable_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 plugin_id: string;
             };
@@ -11790,9 +9902,7 @@ export interface operations {
     disable_plugin_api_v1_plugins__plugin_id__disable_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path: {
                 plugin_id: string;
             };
@@ -11823,9 +9933,7 @@ export interface operations {
     get_capability_api_v1_sandbox_get: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11840,23 +9948,12 @@ export interface operations {
                     "application/json": components["schemas"]["SandboxCapabilityOut"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
     preview_plan_api_v1_sandbox_plan_post: {
         parameters: {
             query?: never;
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11886,50 +9983,13 @@ export interface operations {
             };
         };
     };
-    exec_command_api_v1_sandbox_exec_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SandboxExecIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SandboxExecOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     site_icon_api_v1_site_icons_get: {
         parameters: {
             query: {
                 /** @description 站点域名（任意合法域名，SSRF 由 check_public_url 兜底） */
                 domain: string;
             };
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -11953,20 +10013,17 @@ export interface operations {
             };
         };
     };
-    complete_api_v1_model_proxy_complete_post: {
+    web_page_api_v1_web_page_get: {
         parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
+            query: {
+                /** @description 要读的绝对地址（http/https，公网） */
+                url: string;
             };
+            header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProxyRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -11974,7 +10031,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProxyTextOut"];
+                    "application/json": components["schemas"]["WebPageOut"];
                 };
             };
             /** @description Validation Error */
@@ -11988,20 +10045,17 @@ export interface operations {
             };
         };
     };
-    stream_api_v1_model_proxy_stream_post: {
+    web_embed_check_api_v1_web_embed_check_get: {
         parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
+            query: {
+                /** @description 要嵌的绝对地址（http/https，公网） */
+                url: string;
             };
+            header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProxyRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -12009,7 +10063,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["EmbedCheckOut"];
                 };
             };
             /** @description Validation Error */
@@ -12023,42 +10077,7 @@ export interface operations {
             };
         };
     };
-    events_api_v1_model_proxy_events_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProxyRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    manifest_api_v1_app_frontend_manifest_get: {
+    local_status_api_v1_local_status_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -12073,12 +10092,76 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ManifestOut"];
+                    "application/json": components["schemas"]["LocalStatusOut"];
                 };
             };
         };
     };
-    package_api_v1_app_frontend_package_get: {
+    local_provider_api_v1_local_provider_get: {
+        parameters: {
+            query?: {
+                refresh?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_local_provider_api_v1_local_provider_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderPatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kb_cache_knowledge_bases_api_v1_local_kb_cache_knowledge_bases_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -12093,7 +10176,657 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["KbCacheSnapshotOut"];
+                };
+            };
+        };
+    };
+    kb_cache_knowledge_base_api_v1_local_kb_cache_knowledge_bases__kb_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbCacheSnapshotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kb_cache_documents_api_v1_local_kb_cache_knowledge_bases__kb_id__documents_get: {
+        parameters: {
+            query?: {
+                /** @description 只看这个目录（NAS 那边的 folder_id） */
+                folder?: string;
+                /** @description 只看未归档的（与 folder 互斥） */
+                root?: boolean;
+                /** @description 第几页（与 size 一起换算 offset/limit） */
+                page?: number;
+                /** @description 一页几篇 */
+                size?: number;
+                /** @description 按文件名搜——**这一档不留副本**（D-D） */
+                q?: string;
+                /** @description 只看某个流水线阶段——同上 */
+                stage?: string;
+                /** @description 只看某个来源类型——同上 */
+                source_kind?: string;
+            };
+            header?: never;
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbCacheSnapshotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kb_cache_folders_api_v1_local_kb_cache_knowledge_bases__kb_id__folders_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kb_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbCacheSnapshotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kb_cache_document_api_v1_local_kb_cache_documents__document_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbCacheSnapshotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revalidate_kb_cache_api_v1_local_kb_cache_revalidate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KbCacheRevalidateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbCacheSnapshotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kb_cache_stats_api_v1_local_kb_cache_stats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbCacheStatsOut"];
+                };
+            };
+        };
+    };
+    purge_kb_cache_api_v1_local_kb_cache_delete: {
+        parameters: {
+            query?: {
+                /** @description 只清这个地址留下的（空 = 所有地址） */
+                provider?: string;
+                /** @description 与 kb_id 搭配：只清这一族（doc_list / kb_detail / folders） */
+                resource?: string;
+                /** @description 只清这个库（当前地址上的那三族） */
+                kb_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbCachePurgeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_import_api_v1_local_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportRequestIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportBatchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_status_api_v1_local_import__batch_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportBatchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rollback_import_api_v1_local_import__batch_id__rollback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportBatchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    local_backup_api_v1_local_backup_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocalBackupOut"];
+                };
+            };
+        };
+    };
+    update_local_backup_api_v1_local_backup_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupPatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocalBackupOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_local_backup_snapshot_api_v1_local_backup_snapshots_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupSnapshotCreatedOut"];
+                };
+            };
+        };
+    };
+    local_backup_points_api_v1_local_backup_points_get: {
+        parameters: {
+            query?: {
+                refresh?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupPointsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_local_backup_point_api_v1_local_backup_points__device_id___snapshot_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: string;
+                snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupPointDeletedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_local_backup_point_api_v1_local_backup_restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreRequestIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupRestoreOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    local_secrets_api_v1_local_secrets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretsStatusOut"];
+                };
+            };
+        };
+    };
+    migrate_local_secrets_api_v1_local_secrets_migrate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretMigrationOut"];
+                };
+            };
+        };
+    };
+    context_usage_api_v1_chat_context_usage_get: {
+        parameters: {
+            query: {
+                /** @description 要算哪条会话的上下文；必填 */
+                conversation_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextUsageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    conversation_events_api_v1_conversations__conversation_id__events_get: {
+        parameters: {
+            query?: {
+                /** @description 逗号分隔的事件类型（turn/start、turn/end、step、tool_call、thinking、error、interrupted、mode/changed、command）；留空返回全部 */
+                kinds?: string;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionEventListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_commands_api_v1_chat_commands_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandListOut"];
+                };
+            };
+        };
+    };
+    usage_summary_api_v1_stats_usage_get: {
+        parameters: {
+            query?: {
+                /** @description 观察窗口（天） */
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

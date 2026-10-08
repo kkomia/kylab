@@ -5,7 +5,12 @@
  */
 
 import { request, upload } from './client'
-import type { components } from './schema'
+import type {
+  DataSourceKind,
+  DocumentOut,
+  DocumentProgressOut,
+  DocumentStage,
+} from './knowledge-face'
 
 /**
  * 处理阶段与来源：**取值直接取后端 schema**（`./schema.d.ts`）。
@@ -14,11 +19,10 @@ import type { components } from './schema'
  * 别名之后后端加一个阶段，前端的 `switch`/映射表会立刻提示漏了分支，
  * 而不是安静地把新阶段显示成空白。
  */
-export type DocumentStage = components['schemas']['DocumentStage']
-export type DataSourceKind = components['schemas']['DataSourceKind']
+export type { DataSourceKind, DocumentStage }
 
-type DocumentOut = Required<components['schemas']['DocumentOut']>
-type DocumentProgressOut = Required<components['schemas']['DocumentProgressOut']>
+type RequiredDocumentOut = Required<DocumentOut>
+type RequiredDocumentProgressOut = Required<DocumentProgressOut>
 
 /**
  * 列表行上的文档：契约来自后端的 OpenAPI（见 `conversations.ts` 头注的三条约定）。
@@ -27,7 +31,7 @@ type DocumentProgressOut = Required<components['schemas']['DocumentProgressOut']
  * 而界面只认那几种渲染器。收窄在这里是有用的——`PreviewKind` 是"这页能不能渲染"
  * 的判断依据，放成 string 会让每个用它的地方自己再判一遍。
  */
-export type DocumentSummary = Omit<DocumentOut, 'original_kind'> & {
+export type DocumentSummary = Omit<RequiredDocumentOut, 'original_kind'> & {
   original_kind: PreviewKind
 }
 
@@ -37,7 +41,7 @@ export type DocumentSummary = Omit<DocumentOut, 'original_kind'> & {
  * 字段含义（为什么**没有百分比**、`stalled` 为什么是最可信的那条判据等）
  * 写在 `./schema.d.ts` 里带过来的说明中，后端改一处两边都变。
  */
-export type DocumentProgress = DocumentProgressOut
+export type DocumentProgress = RequiredDocumentProgressOut
 
 export interface DocumentPart {
   id: string

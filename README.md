@@ -92,13 +92,12 @@ CI 在 **Gitee Go**（`.workflow/kylab-ci.yml`）；GitHub Actions 版保留备�
 
 - 改一处时用 `python scripts/affected_tests.py --run` 按反向依赖图挑该跑的用例；
   一个大版块收尾才跑真全量，报告里给全量自己的数字。
-- 后端门禁要一个带 pgvector 的测试库（`KYLAB_TEST_DATABASE_URL`），没配会直接报错——
-  静默变绿比跳过更糟。只想跑本机档那一半（不需要 PG）：
-  `cd backend && uv run pytest tests -q -m local`。
+- 后端测试不需要任何外部服务：存储只有本机一套（SQLite + 数据目录），
+  每个用例自带临时目录（`cd backend && uv run pytest tests -q`）。
 
 三条分层铁律由 `scripts/check_layering.py` 机械核查，不靠 review 记忆：
 
-1. `api/`、`mcp_server/` 只做协议适配，禁写业务逻辑；
+1. `api/` 只做协议适配，禁写业务逻辑；
 2. `services/` 禁止直接写 SQL，存储访问只能经 `storage/` 的 Repository 接口；
 3. `parsers/` 各实现只依赖 `base.py` 的 `ParseResult`，实现之间禁止互相 import。
 

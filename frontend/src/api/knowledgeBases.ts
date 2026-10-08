@@ -4,7 +4,7 @@
  */
 
 import { request } from './client'
-import type { components } from './schema'
+import type { KnowledgeBaseOut } from './knowledge-face'
 import type { ImpactReport } from './documents'
 
 /**
@@ -15,7 +15,7 @@ import type { ImpactReport } from './documents'
  * `document_count` 由后端 `GROUP BY` 一次算出；`embedding_model_id` 与 `embedding_dim`
  * 是建库时定下的**库属性**——不同库可以用不同嵌入模型，各自的向量空间互不污染。
  */
-export type KnowledgeBase = Required<components['schemas']['KnowledgeBaseOut']>
+export type KnowledgeBase = Required<KnowledgeBaseOut>
 
 export interface KnowledgeBaseCreate {
   name: string
