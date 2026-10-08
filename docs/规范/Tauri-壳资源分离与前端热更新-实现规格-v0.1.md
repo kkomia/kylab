@@ -282,7 +282,7 @@ fn resolve_resource(app: &tauri::AppHandle, path: &str) -> Option<Vec<u8>> {
 
 | 清单项 | 结果 |
 | --- | --- |
-| 全新安装：首启走兜底版 | ✅ 把 `frontend-resources/` 整份挪走（= 全新机器）后起 `target/release/kylab-desktop.exe`：启动日志 `资源：bundled（…\target\release\frontend-dist\index.html…）` + `兜底前端：…\frontend-dist`，界面就是真实前端（概览页），**首屏 41 ms**（`domContentLoaded`/`loadEventEnd`，transferSize = 5119 B 的本地文档） |
+| 全新安装：首启走兜底版 | ✅ 把 `frontend-resources/` 整份挪走（= 全新机器）后起 `target/release/kylab-desktop.exe`：启动日志 `资源：bundled（…\target\release\frontend-dist\index.html…）` + `兜底前端：…\frontend-dist`，界面就是真实前端（当时落在概览页；那一页 2026-10-08 下线，`/` 现在重定向到对话页），**首屏 41 ms**（`domContentLoaded`/`loadEventEnd`，transferSize = 5119 B 的本地文档） |
 | 后台下载 → 二启为新版本 | ✅ 首启同期 `资源更新：装好 ebea4f869398（**下次启动生效**）`（装出的 dist 与本机 `frontend/dist` 内容逐字节同哈希）；二启启动日志 `资源：version（版本 ebea4f869398，…\frontend-resources\vebea4f869398\dist\index.html，…）` |
 | 断网/服务器不可达 | ✅ 配置指向 `http://127.0.0.1:8123`（没人听）：停在配置页，标题「连不上这台服务器」+ 红字 `连不上 http://127.0.0.1:8123：连接被拒绝：确认 NAS 开着、服务在跑，端口也没写错（默认 8000）`，地址栏可改可重试（**截图 `.shots/shell-m1/offline-final.png`**）；同一次启动的更新检查只留一行 `资源更新：这次跳过（清单拿不到（…）：os error 10061）` |
 | 打开不再从 NAS 拉 UI | ✅ 壳里 32 个请求**全部**在 `http://app.localhost`（文档 + 16 个 chunk/css + favicon + 全部 `/api/**` 同源转发），远端直连 0 条；`/notes` 这种路由由协议层回退 `index.html` 后交给前端路由（实测落到 `/notes/note_001006e64d6b`，标题「笔记 · KYLAB 知识库」）；`/assets/nope.js` 如实 404（**没有**回退成 HTML） |
