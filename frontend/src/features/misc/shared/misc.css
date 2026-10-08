@@ -293,17 +293,6 @@
     outline: none;
   }
 
-  .m-toolbar-note {
-    font-size: var(--text-micro-size);
-    color: var(--text-tertiary);
-  }
-
-  .m-toolbar-count {
-    margin-left: auto;
-    font-size: var(--text-micro-size);
-    color: var(--text-tertiary);
-  }
-
   .m-filter-select {
     flex: 0 0 148px;
   }
@@ -501,52 +490,10 @@
 
   /* ---------------------------------------------------------------- 列表骨架（清单页通用） */
 
-  .m-list-head {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: 0 var(--space-4);
-  }
-
   .m-list {
     margin: 0;
     padding: 0;
     list-style: none;
-  }
-
-  .m-list-item + .m-list-item {
-    border-top: 1px solid var(--border-hairline);
-  }
-
-  .m-row-time {
-    flex: 0 0 120px;
-    font-size: var(--text-meta-size);
-    color: var(--text-tertiary);
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* ---------------------------------------------------------------- 分页 */
-
-  .m-pager {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
-    margin-top: var(--space-3);
-    padding: 0 var(--space-1);
-  }
-
-  .m-pager-total,
-  .m-pager-page {
-    font-size: var(--text-meta-size);
-    color: var(--text-secondary);
-  }
-
-  .m-pager-controls {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
   }
 
   /* ---------------------------------------------------------------- 提示气泡（InfoTip） */
@@ -813,16 +760,6 @@
     display: flex;
     align-items: baseline;
     gap: var(--space-2);
-  }
-
-  .m-old {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-panel);
-    background: var(--bg-subtle);
   }
 
   .m-report {
@@ -2000,52 +1937,12 @@
     justify-content: flex-end;
   }
 
-  /* ---------------------------------------------------------------- 任务行 */
-
-  .m-task-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: 0 var(--space-4);
-  }
-
-  /**
- * 任务表的表头格子**与行内格子同宽**（评审 T3）。
- *
- * 此前表头只有 5 格：`.m-head-task` 用 `flex: 1` + `padding-left: 16px + gap`
- * 一口气横跨了"图标 + 类型 + 标题"三段，于是「任务」两个字正好落在每行的类型标签
- * 「解析」上面；「状态」那格又因为列宽对不上，比下面徽章的左边缘多出 30px。
- *
- * 现在两边列宽同源：
- *   类型列 = 图标 16 + gap 12 + 标签 56 = 84px（下面这格用左内边距让出图标那一段）
- *   标题列 = `flex: 1`，与 `.m-row-main` 共用同一套负外边距 + 内边距（命中区外扩，列不动）
- *   状态 84 / 健康 92 / 尝试次数 100 / 更新时间 120 —— 行与表头引用同一批值
- *   （行那侧是 `.m-col-status` / `.m-col-health` / `.m-row-attempts` / `.m-row-time`）。
- */
-  .m-head-kind {
-    flex: 0 0 84px;
-    padding-left: calc(16px + var(--space-3));
-  }
-
-  .m-head-task {
-    /* 与 `.m-row-main` 同一套盒子：负外边距把命中区向两侧各扩 8px，
-     内边距再把文字拉回列的原点——所以「任务」压在标题那一列上，不是类型列上。 */
-    flex: 1;
-    min-width: 0;
-    margin: 0 calc(-1 * var(--space-2));
-    padding: 0 var(--space-2);
-  }
-
-  .m-row-icon {
-    flex: 0 0 auto;
-    color: var(--text-tertiary);
-  }
-
-  .m-row-kind {
-    flex: 0 0 56px;
-    font-size: var(--text-meta-size);
-    color: var(--text-tertiary);
-  }
+  /* ------------------------------------------------- 任务行（流水线任务已删，见 TasksPage 文件头） */
+  /* 下面这两条的选择器是 `.m-row-main`——**通用列表行也在用**（`.m-row-label` + `.m-row-value`
+     那几处设置行）。它们当初是为任务行写的（行内要横排 + 悬停底色），但选择器是全局的，
+     删掉会连带改掉别处的观感，所以**留着不动**：要收拢得连调用点一起排一次视觉核对。
+     这个文件里 `.m-row-main` 因此有两条规则，靠出现顺序后者覆盖前者（方向由
+     `flex-direction: row` 定死），见上面那段的注释。 */
 
   .m-row-main {
     display: flex;
@@ -2072,113 +1969,6 @@
 
   .m-row-main:hover {
     background: var(--bg-hover);
-  }
-
-  .m-row-main:hover .m-row-name {
-    color: var(--accent);
-  }
-
-  .m-row-name {
-    min-width: 0;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .m-row-attention {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-0-5);
-    flex: 0 0 auto;
-    font-size: var(--text-micro-size);
-    color: var(--status-danger);
-  }
-
-  .m-col-status {
-    flex: 0 0 84px;
-    display: flex;
-  }
-
-  .m-col-health {
-    flex: 0 0 92px;
-    display: flex;
-  }
-
-  .m-head-col-status {
-    flex: 0 0 84px;
-  }
-
-  .m-head-col-health {
-    flex: 0 0 92px;
-  }
-
-  .m-head-col-attempts {
-    flex: 0 0 100px;
-    text-align: right;
-  }
-
-  .m-row-health-done {
-    flex: 0 0 92px;
-    font-size: var(--text-micro-size);
-    color: var(--text-tertiary);
-  }
-
-  .m-row-attempts {
-    flex: 0 0 100px;
-    font-size: var(--text-meta-size);
-    color: var(--text-tertiary);
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .m-filter-empty {
-    margin: var(--space-4) 0;
-    padding: var(--space-3) var(--space-4);
-    background: var(--bg-subtle);
-    border-radius: var(--radius-control);
-    font-size: var(--text-meta-size);
-    color: var(--text-secondary);
-  }
-
-  .m-detail-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-2) var(--space-4);
-    margin: 0;
-  }
-
-  .m-detail-grid dt {
-    font-size: var(--text-micro-size);
-    color: var(--text-tertiary);
-  }
-
-  .m-detail-grid dd {
-    margin: var(--space-0-5) 0 0;
-    font-size: var(--text-meta-size);
-    color: var(--text-primary);
-    overflow-wrap: anywhere;
-  }
-
-  .m-detail-error {
-    margin: 0;
-    padding: var(--space-3);
-    max-height: 240px;
-    overflow: auto;
-    background: var(--bg-subtle);
-    border-radius: var(--radius-panel);
-    font-family: var(--font-mono);
-    font-size: var(--text-micro-size);
-    line-height: var(--line-prose);
-    color: var(--text-primary);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-
-  .m-detail-id {
-    margin: var(--space-4) 0 0;
-    font-size: var(--text-micro-size);
-    color: var(--text-tertiary);
   }
 
   /* ---------------------------------------------------------------- 窄屏 */

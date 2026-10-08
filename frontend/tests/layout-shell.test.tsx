@@ -92,7 +92,7 @@ function renderShell(initialPath = '/notes') {
             <Route path="/notes" element={<div>笔记页</div>} />
             <Route path="/memory" element={<div>记忆页</div>} />
             <Route path="/capabilities" element={<div>能力页</div>} />
-            <Route path="/tasks" element={<div>任务中心页</div>} />
+            <Route path="/tasks" element={<div>定时任务页</div>} />
             <Route path="/workspaces" element={<LocationProbe />} />
             <Route path="/chat/:conversationId?" element={<LocationProbe />} />
           </Route>
@@ -123,7 +123,7 @@ describe('侧栏导航', () => {
     renderShell('/notes')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
-    for (const label of ['笔记', '记忆', '能力', '任务中心']) {
+    for (const label of ['笔记', '记忆', '能力', '定时任务']) {
       expect(within(nav).getByText(label)).toBeInTheDocument()
     }
     // 当前页那一项标了 aria-current（旧版只有一个 CSS class）
@@ -136,11 +136,11 @@ describe('侧栏导航', () => {
     expect(screen.queryByRole('link', { name: '所有知识库' })).not.toBeInTheDocument()
   })
 
-  it('「任务中心」在主导航里指向 `/tasks`，站在那儿时点亮', async () => {
+  it('「定时任务」在主导航里指向 `/tasks`，站在那儿时点亮', async () => {
     renderShell('/tasks')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
-    const tasks = within(nav).getByRole('link', { name: '任务中心' })
+    const tasks = within(nav).getByRole('link', { name: '定时任务' })
     expect(tasks).toHaveAttribute('href', '/tasks')
     expect(tasks).toHaveAttribute('aria-current', 'page')
     // 其余几项都不点亮（当前项整栏只有一种样子）

@@ -279,7 +279,7 @@ describe('有本机后端：进壳，一个账号请求都不发（本机档免�
   })
 
   it(
-    '会话面那几页都在（新建会话 + 笔记 / 记忆 / 能力 / 任务中心）',
+    '会话面那几页都在（新建会话 + 笔记 / 记忆 / 能力 / 定时任务）',
     { timeout: 15_000 },
     async () => {
       render(<App />)
@@ -287,7 +287,7 @@ describe('有本机后端：进壳，一个账号请求都不发（本机档免�
       await expectInsideShell()
       expect(screen.getByRole('link', { name: /新建会话/ })).toBeInTheDocument()
       const nav = screen.getByRole('navigation', { name: '主导航' })
-      for (const label of ['笔记', '记忆', '能力', '任务中心']) {
+      for (const label of ['笔记', '记忆', '能力', '定时任务']) {
         expect(within(nav).getByRole('link', { name: label })).toBeInTheDocument()
       }
       // 「概览」那一项随页面一起删了（2026-10-09）
