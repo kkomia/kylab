@@ -1171,9 +1171,9 @@ class MemoryService:
     def persona_texts(self, user_id: str | None = None) -> list[tuple[str, str]]:
         """``[(文件名, 正文)]``，按 :meth:`persona_order` 的顺序，空的跳过。
 
-        **不在这里拼字符串**：拼装交给 `services/prompt.py` 的贡献者——
-        那里才知道"这一轮是工具循环还是检索链路""要不要带摘要"。档案也不在这里：
-        它是**另一个贡献者**（见 :meth:`archive_block`）。
+        **不在这里拼字符串**：拼装交给 `services/prompt.py` 的贡献者——那里决定
+        这些份怎么排、什么时候带摘要。档案也不在这里：它是**另一个贡献者**
+        （见 :meth:`archive_block`）。
         """
         found: list[tuple[str, str]] = []
         for name in self.persona_order():

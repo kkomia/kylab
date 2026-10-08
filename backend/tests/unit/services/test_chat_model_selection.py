@@ -13,6 +13,7 @@ import pytest
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.chat import ChatService
+from app.services.llm import ChatMessage
 from app.services.model_registry import ModelRegistryService
 from tests.conftest import bind_model
 
@@ -114,8 +115,13 @@ def test_llm_for_provider_without_key_is_rejected(runtime, bundle) -> None:  # t
 # --------------------------------------------------------------------- 透传
 
 
-def test_chat_answer_uses_the_selected_model(runtime, bundle) -> None:  # type: ignore[no-untyped-def]
-    """对话服务要真的把选中的模型交给客户端工厂，而不是继续用全局默认。"""
+def test_summarizing_uses_the_selected_model(runtime, bundle) -> None:  # type: ignore[no-untyped-def]
+    """对话服务要真的把选中的模型交给客户端工厂，而不是继续用全局默认。
+
+    载体是**上下文压缩**那次模型调用（`summarize_history`）：它是这条链路上
+    今天唯一会现建客户端的内部动作（用户可见的主链是工具循环，客户端由
+    `_build_chat` 现建，走的是同一个 `_resolve_llm`）。
+    """
     registry = ModelRegistryService(bundle)
     model = _provider_with_model(registry, model_id="m-chosen", capabilities=["chat"], base_url="https://chosen/v1")
     seen: dict[str, str] = {}
@@ -126,12 +132,12 @@ def test_chat_answer_uses_the_selected_model(runtime, bundle) -> None:  # type: 
         return _FakeChat()
 
     service = ChatService(runtime, chat_factory=factory)  # type: ignore[arg-type]
-    service.answer(query="问一句", sources=[], model_pk=model.id)
+    service.summarize_history("", [ChatMessage(role="user", content="问一句")], model.id)
 
     assert seen == {"model_id": "m-chosen", "base_url": "https://chosen/v1"}
 
 
-def test_chat_answer_without_model_pk_uses_the_global_default(runtime, bundle) -> None:  # type: ignore[no-untyped-def]
+def test_summarizing_without_model_pk_uses_the_global_default(runtime, bundle) -> None:  # type: ignore[no-untyped-def]
     bind_model(
         ModelRegistryService(bundle),
         "chat",
@@ -146,6 +152,6 @@ def test_chat_answer_without_model_pk_uses_the_global_default(runtime, bundle) -
         return _FakeChat()
 
     service = ChatService(runtime, chat_factory=factory)  # type: ignore[arg-type]
-    service.answer(query="问一句", sources=[])
+    service.summarize_history("", [ChatMessage(role="user", content="问一句")], None)
 
     assert seen["model_id"] == "m-default"

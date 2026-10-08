@@ -2569,8 +2569,8 @@ export interface paths {
          *     **一条已知的缺口，写在这里免得把 0 读成"没用"**：本机那条**主链**今天不记账
          *     ——``ChatService.tool_loop``（边车 ``/turn`` 与定时任务默认走的那条 Agent 链）
          *     不调 ``UsageService.record``，边车的 ``RemoteModelClient`` 也不记。
-         *     今天会往这张表写的只有 ``ChatService.answer()``（Agent 工作流被关掉时那条）与
-         *     ``summarize_history``（上下文压缩）。所以这一条端点在本机**多数时候读到 0**，
+         *     今天会往这张表写的只有 ``summarize_history``（上下文压缩那次模型调用）。
+         *     所以这一条端点在本机**多数时候读到 0**，
          *     那是"没记账"而**不是**"没用量"——真要让它有意义，得让本机那条主链也记账
          *     （落点与"哪些 agent 步骤该按次记"一起定，属另一个单元）。
          */

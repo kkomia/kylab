@@ -33,19 +33,19 @@ def source(index: int, name: str = "指南.pdf", **extra) -> SourceRef:
 
 
 class FakeChat:
-    """假的对话模型：记录收到的 messages，返回固定回答。"""
+    """假的对话模型：返回固定回答。
+
+    ``received`` / ``stream`` 随"带资料块的单轮流式链路"一起删了——那时候用例要断言
+    "资料真的进了第一条 system""碎片按顺序吐出"。今天这份假客户端只剩一个用途：
+    给组合根一个"能当客户端用"的东西（那条用例走不到它，见
+    ``test_unconfigured_llm_raises_actionable_error``）。
+    """
 
     def __init__(self, answer: str = "这是回答。[1]") -> None:
         self.answer = answer
-        self.received: list[list[ChatMessage]] = []
 
     def complete(self, messages):  # type: ignore[no-untyped-def]
-        self.received.append(list(messages))
         return self.answer
-
-    def stream(self, messages):  # type: ignore[no-untyped-def]
-        self.received.append(list(messages))
-        yield from self.answer
 
 
 # --------------------------------------------------------------------- 提示词
@@ -250,14 +250,13 @@ def test_custom_system_prompt_wins_but_blank_falls_back() -> None:
 # --------------------------------------------------------------------- 服务
 
 
-def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -> None:
-    """一轮问答把出处带上、把资料拼进 system，并把问题交给模型（假模型，不打网络）。
+def test_retrieve_sources_is_delegated_verbatim(runtime) -> None:
+    """检索那一半**整段交给 knowledge**（本机是知识库的客户端，见 `ChatService.retrieve_sources`）。
 
-    检索那一半**整段交给 knowledge**（本机是知识库的客户端，见
-    `ChatService.retrieve_sources`）——所以这里给一个假的知识库实现，
-    返回一条 `SourceRef`，与真实现同形。
+    这一条钉两件事：**参数原样转出去**（本机不解释 top_k / candidate_k / reader），
+    以及**回来的 `SourceRef` 原样交回**——尤其是 `knowledge_base_id`：界面靠它把引用
+    直连到库页抽屉，而不是走 `/documents` 转发一跳。
     """
-    fake = FakeChat("眼轴长度是主要监测指标。[1]")
     asked: list[dict] = []
 
     class _FakeKnowledge:
@@ -277,19 +276,13 @@ def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -
                 )
             ]
 
-    service = ChatService(runtime, knowledge=_FakeKnowledge(), chat_factory=lambda config: fake)
-    bind_slot("chat", model_id="Qwen/Qwen3.5-4B", capabilities=["chat"])
+    service = ChatService(runtime, knowledge=_FakeKnowledge())
 
-    turn = service.answer(
-        query="近视怎么监测",
-        sources=service.retrieve_sources(query="近视怎么监测", kb_ids=["kb_1"]),
-    )
+    sources = service.retrieve_sources(query="近视怎么监测", kb_ids=["kb_1"])
 
-    assert turn.answer == "眼轴长度是主要监测指标。[1]"
-    assert [s.index for s in turn.sources] == [1]
-    assert turn.sources[0].document_name == "眼轴共识.pdf"
-    # 出处要带上知识库 id：界面靠它把引用直连到库页抽屉，而不是走 /documents 转发一跳
-    assert turn.sources[0].knowledge_base_id == "kb_1"
+    assert [s.index for s in sources] == [1]
+    assert sources[0].document_name == "眼轴共识.pdf"
+    assert sources[0].knowledge_base_id == "kb_1"
     # 参数原样交给知识库那一侧（本机不解释它们）
     assert asked == [
         {
@@ -300,18 +293,6 @@ def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -
             "reader": None,
         }
     ]
-    # 资料确实进了第一条 system
-    assert "眼轴长度是主要参数之一" in fake.received[0][0].content
-
-
-def test_stream_yields_pieces_in_order(runtime, bind_slot) -> None:
-    fake = FakeChat("一二三")
-    service = ChatService(runtime, chat_factory=lambda config: fake)
-    bind_slot("chat", model_id="m", capabilities=["chat"])
-
-    pieces = list(service.answer_stream(query="q", sources=[]))
-
-    assert pieces == ["一", "二", "三"]
 
 
 def test_unconfigured_llm_raises_actionable_error(runtime) -> None:
@@ -319,7 +300,7 @@ def test_unconfigured_llm_raises_actionable_error(runtime) -> None:
     service = ChatService(runtime, chat_factory=lambda config: FakeChat())
 
     with pytest.raises(ChatError) as excinfo:
-        service.answer(query="q", sources=[])
+        service.probe()
 
     assert "设置" in str(excinfo.value)
 

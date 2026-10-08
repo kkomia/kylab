@@ -29,7 +29,6 @@ from app.services.prompt import (
     build_system_prompt,
     converge_note,
     default_contributors,
-    setting_blocks,
 )
 
 
@@ -287,8 +286,8 @@ def test_persona_does_not_depend_on_the_memory_service_switch(tmp_path) -> None:
 
     assert service.seed_persona("u1") == [SOUL_FILE, PROFILE_FILE, AGENTS_FILE]
     assert [name for name, _text in service.persona_texts("u1")] == [SOUL_FILE, AGENTS_FILE]
-    # 关着的是**档案那一块**：人设块照旧（这里用 `setting_blocks` 拼，与检索链路同源）
-    text = setting_blocks(
+    # 关着的是**档案那一块**：人设块照旧（这里用活的那张贡献者表拼，与工具循环同源）
+    text = build_system_prompt(
         PromptContext(
             persona=tuple(service.persona_texts("u1")),
             archive=service.archive_block("u1"),

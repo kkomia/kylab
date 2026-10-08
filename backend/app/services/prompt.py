@@ -28,7 +28,6 @@ __all__ = [
     "build_system_prompt",
     "converge_note",
     "default_contributors",
-    "setting_blocks",
 ]
 
 logger = logging.getLogger(__name__)
@@ -90,7 +89,7 @@ class PromptContext:
     """这一轮拼提示词要用到的全部素材（都是**待拼的原文**，不是拼好的块）。"""
 
     base: str = ""
-    """基础提示词。工具循环与检索链路各有一份默认，由调用方给。"""
+    """基础提示词。这一份默认由调用方给（工具循环那条链路给的是 ``AGENT_SYSTEM_PROMPT``）。"""
 
     persona: tuple[tuple[str, str], ...] = ()
     """``[(文件名, 正文)]``，来自 `MemoryService.persona_texts`（按人设顺序）。
@@ -243,28 +242,6 @@ _PERSONA_LABELS = {
     # 留着这个标签只是兜底（真出现时至少标对它是"对方的资料"，而不是裸文件名）。
     "PROFILE.md": "身份与对方",
 }
-
-
-#: 检索链路那几块的（优先级, 名字, 产出）表：**人设 + 档案 + 首次引导**。
-#:
-#: 检索链路（`chat.py::answer_stream`，**现已无入口**：那个开关 2026-10-09 随定时任务
-#: 一起删了）不走总表——它只有一条 system 消息，
-#: 资料块要并进同一条（见 ``chat.build_messages``），顺序由那条链路自己定。
-#: 但这三块的**样子与相对顺序**必须与工具循环那条**同一口径**：同一次对话换个链路，
-#: 模型对"我是谁、对方是谁"的认知不该跟着变。所以这里复用同一批贡献者与同一个
-#: 拼接器（`build_system_prompt`），只是把表缩到这三块。
-#:
-#: **它必须定义在 `_persona_block` 之后**（那份贡献者是它的一部分）。
-_SETTING_CONTRIBUTORS: tuple[PromptContributor, ...] = (
-    (PRIORITY_PERSONA, "persona", _persona_block),
-    (PRIORITY_ARCHIVE, "archive", lambda ctx: ctx.archive),
-    (PRIORITY_BOOTSTRAP, "bootstrap", lambda ctx: ctx.bootstrap),
-)
-
-
-def setting_blocks(context: PromptContext) -> str:
-    """**人设 + 用户档案 + 首次引导**这三块（检索链路用它拼 "memory" 那一块）。"""
-    return build_system_prompt(context, _SETTING_CONTRIBUTORS)
 
 
 def _summary_block(context: PromptContext) -> str:

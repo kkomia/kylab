@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.chat import ChatService, SourceRef
-from app.services.llm import LLMUsage
+from app.services.llm import ChatMessage, LLMUsage
 from app.services.model_registry import ModelRegistryService
 from app.services.runtime_config import RuntimeConfigService
 
@@ -87,11 +87,16 @@ def _source() -> SourceRef:
     )
 
 
-def test_answer_records_usage(chat: ChatService, recorded: list[dict]) -> None:
-    """一次非流式问答必须留下一条用量记录。"""
+def test_summarizing_records_usage(chat: ChatService, recorded: list[dict]) -> None:
+    """一次上下文压缩（``summarize_history``）必须留下一条用量记录。
+
+    载体是它而不是"一次问答"：问答那条内置链（`ChatService.answer` / `answer_stream`）
+    已随"检索走 MCP"整块删除，今天这条链路上会现建客户端、又带用量回调的
+    只剩压缩这一次模型调用。
+    """
     chat._chat_factory = lambda config: _FakeChat(LLMUsage(120, 80))  # type: ignore[method-assign]
 
-    chat.answer(query="问题", sources=[_source()])
+    chat.summarize_history("", [ChatMessage(role="user", content="问题")], None)
 
     assert len(recorded) == 1
     entry = recorded[0]
@@ -102,14 +107,14 @@ def test_answer_records_usage(chat: ChatService, recorded: list[dict]) -> None:
     assert entry["duration_ms"] >= 0
 
 
-def test_answer_records_even_when_usage_is_missing(
+def test_summarizing_records_even_when_usage_is_missing(
     chat: ChatService, recorded: list[dict]
 ) -> None:
     """供应商没报用量时**仍要记一条**——否则"调用了几次"也统计不到，
     而那恰恰是唯一还可靠的数字。"""
     chat._chat_factory = lambda config: _FakeChat(None)  # type: ignore[method-assign]
 
-    chat.answer(query="问题", sources=[_source()])
+    chat.summarize_history("", [ChatMessage(role="user", content="问题")], None)
 
     assert len(recorded) == 1
     assert recorded[0]["usage"] is None
@@ -122,13 +127,13 @@ def test_chat_without_a_recorder_still_works(bundle) -> None:  # type: ignore[no
     service = ChatService(runtime)  # 不传 recorder
     service._chat_factory = lambda config: _FakeChat(LLMUsage(10, 5))  # type: ignore[method-assign]
 
-    turn = service.answer(query="问题", sources=[_source()])
+    summary = service.summarize_history("", [ChatMessage(role="user", content="问题")], None)
 
-    assert turn.answer == "这是回答。[1]"
+    assert summary == "这是回答。[1]"
 
 
-def test_recorder_exception_does_not_break_the_answer(bundle) -> None:  # type: ignore[no-untyped-def]
-    """回调自己炸了也**不能把回答吞掉**——用户已经付过这次生成的钱。
+def test_recorder_exception_does_not_break_the_main_path(bundle) -> None:  # type: ignore[no-untyped-def]
+    """回调自己炸了也**不能把主路打断**——用户已经付过这次生成的钱。
 
     这是容易漏的一处：用量统计是旁路，旁路出问题绝不能反过来打断主路。
     ``UsageService.record`` 内部已经吞了自己那层异常，但回调本身可能被换成
@@ -142,8 +147,8 @@ def test_recorder_exception_does_not_break_the_answer(bundle) -> None:  # type: 
     service = ChatService(runtime, usage_recorder=boom)
     service._chat_factory = lambda config: _FakeChat(LLMUsage(10, 5))  # type: ignore[method-assign]
 
-    turn = service.answer(query="问题", sources=[_source()])
+    summary = service.summarize_history("", [ChatMessage(role="user", content="问题")], None)
 
-    assert turn.answer == "这是回答。[1]"
+    assert summary == "这是回答。[1]"
 
 

@@ -16,7 +16,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app.core.exceptions import InvalidRequestError
@@ -25,7 +25,7 @@ from app.services import modes, plan_gate
 from app.services import subagent as subagent_service
 from app.services.approvals import ApprovalRegistry
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
-from app.services.prompt import PromptContext, build_system_prompt, setting_blocks
+from app.services.prompt import PromptContext, build_system_prompt
 from app.services.runtime_config import RuntimeConfigService
 from app.services.thinking import normalize_effort
 from app.services.tool_loop import ToolLoop
@@ -38,7 +38,6 @@ __all__ = [
     "PRUNE_KEEP_TOOL_RESULTS",
     "TOOL_RESULT_PLACEHOLDER",
     "ChatService",
-    "ChatTurn",
     "ContextPart",
     "ContextUsage",
     "SourceRef",
@@ -397,14 +396,6 @@ class SourceRef:
 
 
 @dataclass(slots=True)
-class ChatTurn:
-    """一次问答的结果。"""
-
-    answer: str
-    sources: list[SourceRef] = field(default_factory=list)
-
-
-@dataclass(slots=True)
 class PreparedContext:
     """这一轮要带给模型的上下文（v20.1）。
 
@@ -616,36 +607,6 @@ class ChatService:
             return catalog
         return f"{catalog}{_SKILL_SEPARATOR}{loaded}" if catalog else loaded
 
-    def _memory_block(self, owner_id: str | None = None) -> str:
-        """要注入 system prompt 的设定块（人设 + 档案 + 记忆指导 + 首次引导）。
-
-        **按账号取**（v0.15）：甲用户的人格与档案不该出现在乙用户的提示词里——
-        注入是记忆里最容易"串号"的一环，因为它是每轮都静默发生的。
-
-        拼装交给 `prompt.setting_blocks`（与工具循环那条**同一批贡献者、同一个顺序**）：
-        同一次对话换个链路（历史上那条"单轮检索"旧链路），模型对"我是谁、对方是谁"
-        的认知不该跟着变。
-
-        三块的归属与开关各不相同（§7.3）：
-
-        - 档案块：``memory.enabled`` 管（服务层判，见 `MemoryService.archive_block`）；
-        - 人设两份：**不看**那道闸（它们由 ``memory.persona_files`` 取舍）；
-        - 记忆指导：跟 `recall` 一样看那道闸——关了还教它怎么查，只会换来一次无效调用。
-        """
-        if self._memory is None:
-            return ""
-        # 记忆指导**两条链路都给**：它是"档案怎么用"，与这一轮注入了哪几份人设文件无关。
-        # 只给工具循环那条而漏掉这条，换到另一条链路（`answer_stream`，现已无入口）时会
-        # 表现成"记忆又消失了"。
-        return setting_blocks(
-            PromptContext(
-                persona=self._persona_texts(owner_id),
-                archive=self._archive_block(owner_id),
-                memory_guidance=self._memory_guidance(),
-                bootstrap=self._bootstrap_note(owner_id),
-            )
-        )
-
     def _archive_block(self, owner_id: str | None = None) -> str:
         """**用户档案**块的文本；没接记忆服务、或服务说"没有"时是空串。
 
@@ -723,43 +684,6 @@ class ChatService:
             reader=reader,
         )
 
-    def answer(
-        self,
-        *,
-        query: str,
-        sources: list[SourceRef],
-        history: list[ChatMessage] | None = None,
-        summary: str = "",
-        system_prompt: str | None = None,
-        kb_prompt: str = "",
-        model_pk: str | None = None,
-        thinking: bool | None = None,
-        thinking_effort: str | None = None,
-        owner_id: str | None = None,
-    ) -> ChatTurn:
-        """非流式：一次拿完整回答。``model_pk`` 为空时用全局默认对话模型。
-
-        ``owner_id``（v0.15）：**这次问答属于哪个账号**。它决定注入哪一份记忆
-        （``data/memory/<owner_id>/``）——"一个账号一个 Agent"在对话链路上的落点。
-        ``None`` = 共享桶（本机主人，管理员档）。
-        """
-        config = self._resolve_llm(model_pk, thinking, thinking_effort)
-        chat = self._chat_factory(config)
-        messages = build_messages(
-            query=query,
-            sources=sources,
-            history=history,
-            system_prompt=system_prompt or "",
-            memory=self._memory_block(owner_id),
-            skills=self._skill_block(),
-            summary=summary,
-            kb_prompt=kb_prompt,
-        )
-        started = time.monotonic()
-        text = chat.complete(messages)
-        self._record_usage(chat, started, items=1, config=config)
-        return ChatTurn(answer=text, sources=sources)
-
     def _record_usage(self, chat, started: float, *, items: int, config: LLMConfig) -> None:
         """把这一次调用的用量交给回调（G7）。
 
@@ -788,41 +712,6 @@ class ChatService:
             # 回答，因为统计埋点炸了而把回答吞掉是本末倒置。
             # ``UsageService.record`` 内部也吞一层，但回调可能被换成别的实现
             logger.exception("对话用量记录失败（不影响本次回答）")
-
-    def answer_stream(
-        self,
-        *,
-        query: str,
-        sources: list[SourceRef],
-        history: list[ChatMessage] | None = None,
-        summary: str = "",
-        system_prompt: str | None = None,
-        kb_prompt: str = "",
-        model_pk: str | None = None,
-        thinking: bool | None = None,
-        thinking_effort: str | None = None,
-        owner_id: str | None = None,
-    ) -> Iterator[str]:
-        """流式：逐块产出回答文本。
-
-        模型没配好时**抛 ChatError**，由协议层翻成错误事件——
-        不能静默返回空答案，那会让用户以为"知识库里没有"。
-
-        ``thinking`` / ``thinking_effort``：请求级覆盖（输入框里的思考开关与强度），
-        为空表示"沿用会话/全局的那一档"。
-        """
-        chat = self._build_chat(model_pk, thinking, thinking_effort)
-        messages = build_messages(
-            query=query,
-            sources=sources,
-            history=history,
-            system_prompt=system_prompt or "",
-            memory=self._memory_block(owner_id),
-            skills=self._skill_block(),
-            summary=summary,
-            kb_prompt=kb_prompt,
-        )
-        return chat.stream(messages)
 
     def run_subagent(
         self,
@@ -1131,8 +1020,8 @@ class ChatService:
     ) -> list[ChatMessage]:
         """工具循环那条链路的输入消息。
 
-        与检索链路共用同一批"这个 agent 知道什么"（记忆 / 技能 / 库级提示词），
-        差别只在**没有资料块**——资料改成模型自己取的工具结果。
+        这个 agent 知道的东西全在这里：记忆（人设 + 档案 + 记忆指导）、技能目录、
+        库级提示词——**没有资料块**：资料改成模型自己取的工具结果。
 
         这一轮**没有可查的库**时（用户关掉了知识库开关）追加一句说明（``NO_KB_NOTE``）：
         工具表里那一侧的工具已经整个收起来了（见 ``agent_tools._KB_TOOLS``），
@@ -1221,7 +1110,7 @@ class ChatService:
     def _pinned_bodies(self, skill_names: list[str] | None) -> str:
         """用户钉住的技能正文（v0.18 的能力，工具链路照旧有）。
 
-        与检索链路同一口径：读不出来不让整轮失败（技能是增强，不是依赖），
+        读不出来不让整轮失败（技能是增强，不是依赖），
         钉住的不占 `MAX_SKILL_LOADS`（那是防模型自己反复读）。
         """
         bodies: list[str] = []
@@ -1315,8 +1204,8 @@ class ChatService:
     ) -> ToolLoop:
         """建一个工具循环。
 
-        模型客户端**按这一轮的档位现建**（与检索链路同一个 `_build_chat`）：
-        换模型、开关思考都只影响这一轮，不必重建 ChatService。
+        模型客户端**按这一轮的档位现建**（`_build_chat`）：换模型、开关思考都只
+        影响这一轮，不必重建 ChatService。
         工具与执行器由调用方给——它们需要 `Services` 与调用者身份，而那是 api 层才有的。
 
         ``approvals`` 非空 = 这一轮**有界面可以问**（``ask`` 档的工具调用要在那里
