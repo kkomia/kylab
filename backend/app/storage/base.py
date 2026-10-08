@@ -2222,15 +2222,6 @@ class MetaStore(ABC):
         """记下这份产物进了哪个库、成了哪份文档。"""
         ...
 
-    # ---- 文档计数（``count_documents_by_user`` 的域是文档）----
-    # 名册与会话那一族（``create_user`` / ``find_user_by_username`` / ``create_session`` …）
-    # 随账号体系一起删掉了；这一条当初按"谁的文件"被放进了名册那一节，它的 Protocol 家在
-    # ``repositories.py::DocumentRepo``。
-    @abstractmethod
-    def count_documents_by_user(self, user_id: str) -> int:
-        """某人传过多少文档（按 ``owner_id`` 数）。"""
-        ...
-
     # ---- 用量（调研报告 G7）----
     @abstractmethod
     def record_usage(self, record: UsageEventRecord) -> UsageEventRecord: ...

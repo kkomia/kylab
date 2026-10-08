@@ -140,11 +140,6 @@ SETTING_GROUPS: dict[str, Any] = {
         "fields": [
             {"key": "chat.top_k", "label": "带入资料的条数", "type": "int"},
             {
-                "key": "chat.section_chars",
-                "label": "每条资料的小节长度上限",
-                "type": "int",
-            },
-            {
                 "key": "chat.agent_enabled",
                 "label": "启用工具循环",
                 "type": "bool",
@@ -202,26 +197,6 @@ SETTING_GROUPS: dict[str, Any] = {
     # 没配时工具会明确说"去哪配"，而不是返回空结果——空结果会被模型读成
     # "网上没有这件事"，那比报错坏得多。
     # 抓网页（web_fetch）**不需要**这里的任何配置，它只认公网地址。
-    # 检索（v0.54 起这两个阈值是"动态返回"的）。
-    # **这两项是"用户可配的基础阈值"**：兜底阈值决定统计窗口看多宽，基线是判"这个问题
-    # 与库对不对得上"的参照线。它们的默认值来自本机实测（医学库 21580 chunk）：
-    # 数字是**真余弦**（旧刻度按欧氏公式算，整体虚高，2026-09-29 换过口径）——
-    # 无关问题整批落在 0.460–0.520、相关问题在 0.593–0.805，基线 0.531 卡在中间。
-    "retrieval": {
-        "label": "检索",
-        "fields": [
-            {
-                "key": "retrieval.floor_score",
-                "label": "兜底相似度阈值（动态返回的统计下沿）",
-                "type": "float",
-            },
-            {
-                "key": "retrieval.baseline_score",
-                "label": "契合度基线（0 = 按嵌入模型自动标定）",
-                "type": "float",
-            },
-        ],
-    },
     "web": {
         "label": "联网",
         "fields": [
@@ -366,31 +341,6 @@ DEFAULTS: dict[str, str] = {
     "llm.enable_thinking": "true",
     "llm.thinking_effort": "medium",
     "chat.top_k": "6",
-    # 动态返回的两个基础阈值（v0.54 起）。
-    # **两个数都在"真余弦"刻度上**（2026-09-29 换了口径：以前"相似度"按欧氏公式算，
-    # 整体虚高）。
-    # 旧刻度 → 真余弦的换算：``v = 1 - √(2(1 - 旧值))``，同一批实测数换算如下：
-    #   兜底阈值 0.80 → **0.368**（取 0.37）：实测无关问题整批落在 0.460–0.520，
-    #     统计窗口要比它更低，"答案周围围着多少噪声"才看得出来（相关度下限 0.531
-    #     会把这一段剪掉）；
-    #   基线 **0（= 自动）** → 按嵌入模型查标定表（bge-m3 → 0.531）。**默认不写死**：
-    #     余弦的绝对尺度是模型属性，别的模型上拿别人的基线判"契合程度"会把真命中
-    #     全判成噪声；没标定过的模型上这一层只报分布、不判也不收敛。
-    # 注意：这两个是**用户可改**的设置。若有人按旧刻度手工填过值（例如 0.80），
-    # 换算后它的含义变了（0.80 现在是"相当高"的一条线），应当按新刻度重填一次——
-    # 本机开发库里这一项没被改过（`retrieval.floor_score` 走默认）。
-    "retrieval.floor_score": "0.37",
-    "retrieval.baseline_score": "0",
-    # 检索按块命中，但**喂给模型的是整段小节**（v17，见 services/chat.py
-    # 的「小块检索、大块阅读」）：0 = 关闭，只给命中的那一块
-    "chat.section_chars": "1800",
-    # 整块资料的字数预算（v25）：按条数均摊，每条不低于 400 字。
-    # 摘要（见 services/summary.py）补上了"这篇文档在讲什么"这层背景，
-    # 于是片段本身可以更短——这是本轮省 token 的主要落点。
-    "chat.material_chars": "6000",
-    # 入库时给每篇文档生成摘要（v25）。它是**省 token 的机制**而不是锦上添花：
-    # 一次提问复用一篇摘要，能省掉成倍的资料 token。关掉它只会让问答更贵。
-    "ingest.summary_enabled": "true",
     # 对话主流程（见 services/tool_loop.py）：默认走工具循环，知识库检索、联网、
     # Office 导出、子 Agent 都是其中的工具。关掉就退回"原问题单轮检索"的旧路径
     # （services/chat.py::answer_stream）——那条路径还在，用于排查与省钱。
@@ -503,9 +453,8 @@ _CACHEABLE_KEYS = frozenset(DEFAULTS) | frozenset(
 #: 设置读取的缓存有效期（秒）。
 #:
 #: 一次读取的固定开销实测约 6ms（PG 自己只花 2ms，其余是连接池借还 + 往返），
-#: 而它在**每次请求**的路径上：一轮对话要读十几次（每建一次 LLM 客户端读一次快照，
-#: 每轮再读 top_k / section_chars / material_chars），设置页打开一次
-#: ``describe()`` 要读几十个键。
+#: 而它在**每次请求**的路径上：一轮对话要读十几次（每建一次 LLM 客户端读一次快照），
+#: 设置页打开一次 ``describe()`` 要读几十个键。
 #:
 #: 2 秒只为吃掉"同一轮里反复读同样的键"，短到改完设置立刻看得见；
 #: 何况本进程写设置时（``set``）会**主动清空**缓存——"改完马上看"这条路径根本不走 TTL。
@@ -732,18 +681,6 @@ class RuntimeConfigService:
             return int(raw)
         except ValueError:
             return int(DEFAULTS.get(key, "0") or 0)
-
-    def get_float(self, key: str) -> float:
-        """取一个浮点设置（口径与 :meth:`get_int` 一致：解析不了就回落默认值）。
-
-        检索那一侧的相关度下限（``retrieval.floor_score``）用的是它：那些数
-        必须能调，而不是钉在代码里。
-        """
-        raw = self.get(key)
-        try:
-            return float(raw)
-        except ValueError:
-            return float(DEFAULTS.get(key, "0") or 0)
 
     def get_bool(self, key: str, *, default: bool = False) -> bool:
         """取一个布尔设置。

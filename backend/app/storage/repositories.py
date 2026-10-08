@@ -1,6 +1,6 @@
-"""按域切开的仓储**窄协议**（strangler 的第二步：184 个方法全部切开）。
+"""按域切开的仓储**窄协议**（strangler 的第二步：183 个方法全部切开）。
 
-`MetaStore` 有 184 个方法、实现三千多行。问题不在行数，而在**接口本身**：
+`MetaStore` 有 183 个方法、实现三千多行。问题不在行数，而在**接口本身**：
 ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那个接口"——
 "这个模块到底需要什么"在签名里读不出来，拆分也被接口锁死。
 
@@ -23,7 +23,7 @@ ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那
 （拆到 `ConversationRepo`）、存储维护混在知识库节里（拆出 `MaintenanceRepo`）、
 阶段事件的读与清理分归两个域（读在文档、清理在维护）。
 
-**21 个协议、184 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
+**21 个协议、183 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
 某处切漏了）。签名逐字取自 ABC。**注意**：这三个数字是**手工维护**的——原先有一份
 ``tests/unit/storage/test_repositories.py`` 机械核对它们，那份文件已不在仓库里，
 动接口时记得自己再过一遍。
@@ -228,8 +228,6 @@ class DocumentRepo(Protocol):
     def list_document_stage_events_for_documents(
         self, document_ids: Sequence[str]
     ) -> dict[str, list[DocumentStageEventRecord]]: ...
-
-    def count_documents_by_user(self, user_id: str) -> int: ...
 
 
 @runtime_checkable

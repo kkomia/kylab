@@ -106,3 +106,29 @@ def test_settings_reports_whether_embedding_is_configured(local_client: TestClie
         "embedding.batch_size",
         "embedding.protocol",
     ]
+
+
+def test_retired_retrieval_thresholds_are_rejected(local_client: TestClient) -> None:
+    """「检索」那一组随进程内检索链路一起退役：两个键既不可写、也不再有任何默认值。
+
+    它们曾是用户可配的基础阈值（统计窗口下沿 + 契合度基线），而消费它们的那条链路
+    不在本仓库（检索在 NAS 上）——留着就是设置页上两个什么都不影响的旋钮。
+    白名单从 `SETTING_GROUPS` 派生，所以删掉声明之后写它们会**当场被拒**（不是静默保存），
+    而 `DEFAULTS` 里也不该再留回落值。
+    """
+    from app.services.runtime_config import DEFAULTS, SETTING_GROUPS
+
+    retired = ["retrieval.floor_score", "retrieval.baseline_score"]
+    response = local_client.patch(
+        "/api/v1/settings",
+        json={"values": [{"key": key, "value": "0.5"} for key in retired]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["updated"] == 0
+    assert sorted(body["rejected"]) == sorted(retired)
+
+    assert "retrieval" not in SETTING_GROUPS
+    for key in retired:
+        assert key not in DEFAULTS

@@ -393,7 +393,7 @@ def test_a_key_that_is_not_in_the_database_is_remembered_too(
 
 def test_many_reads_share_one_query(runtime, bundle, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """``get_many`` 只发一条 SQL（§12.116 的口径），且第二次不再发。"""
-    keys = ["chat.top_k", "chat.section_chars", "chat.material_chars"]
+    keys = ["chat.top_k", "chat.context_window", "chat.compress_at"]
     calls = _count_reads(bundle, monkeypatch)
 
     runtime.get_many(keys)
