@@ -82,7 +82,7 @@ export function PluginPackPanel() {
   /**
    * 启停那一颗（卡片右侧的「…」）只给管理员：后端那三条是管理员端点。
    * 判据走共享那一条（`lib/useIsAdmin`）——插件目录就是 `<data_dir>/plugins/`
-   * （`/plugins` 挂在本机档的白名单上），本机档没有账号体系（`currentUser` 恒为 null），
+   * （`/plugins` 挂在本机档的白名单上），这一档的用户就是这台机器的管理员，
    * 按"有没有登录"判会把这一颗藏掉。
    */
   const isAdmin = useIsAdmin()

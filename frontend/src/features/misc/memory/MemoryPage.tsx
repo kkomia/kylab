@@ -54,7 +54,7 @@ export function MemoryPage() {
   /**
    * 页头那颗「设置」（记忆那一组字段）只给管理员：它是管理员端点 `/settings`。
    * 判据走共享那一条（`lib/useIsAdmin`）——记忆本体就在本机 `data_dir/memory`
-   * （`/memory` 挂在本机档的白名单上），本机档没有账号体系（`currentUser` 恒为 null），
+   * （`/memory` 挂在本机档的白名单上），这一档的用户就是这台机器的管理员，
    * 按"有没有登录"判会把这一颗藏掉。
    */
   const isAdmin = useIsAdmin()

@@ -55,8 +55,8 @@ export function WorkspaceCreateDialog({
   /**
    * 「浏览…」只给管理员：它开的是目录浏览（三条管理员端点，见 `DirectoryPickerDialog`）。
    * 判据走共享那一条（`lib/useIsAdmin`）——工作区是**机器本地的路径**
-   * （`/workspaces` 挂在本机档的白名单上），而本机档没有账号体系
-   * （`currentUser` 恒为 null），按"有没有登录"判会把「浏览…」藏掉、只剩手填路径。
+   * （`/workspaces` 挂在本机档的白名单上），而这一档的用户就是这台机器的管理员，
+   * 按"有没有登录"判会把「浏览…」藏掉、只剩手填路径。
    */
   const isAdmin = useIsAdmin()
 

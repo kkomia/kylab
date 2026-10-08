@@ -22,23 +22,27 @@
  *
  * ## 本机档（没有账号体系）这一行的口径
  *
- * 桌面壳那一份里 `currentUser` **恒为 null**：本机档的 `/auth/*` 一族根本不挂在
- * `local_router` 上，后端把这一档短路成"本机主人"（`backend/app/api/auth.py::current_caller`）。
- * 所以名字与「设置」**都不能按"有没有登录"来判**——照"没有登录"判的表现是这一行空白、
- * 菜单里也没有「设置」，而设置里正是模型 key 与知识库连接唯一的入口（用户原话：
+ * 这一份界面只有本机档一种形态，而后端把这一档短路成「本机主人」
+ * （`backend/app/api/auth.py::current_caller`）。所以名字与「设置」**都不能按
+ * "有没有登录"来判**——照"没有登录"判的表现是这一行空白、菜单里也没有「设置」，
+ * 而设置里正是模型 key 与知识库连接唯一的入口（用户原话：
  * 「现在怎么左下角设置这些都没了？？」）。两处各自的判据：
  *
- * - **名字**：`currentUser?.name ?? (local.present ? LOCAL_CALLER_NAME : '')` —— 兜底只在
- *   **有本机后端**的那一份给（服务器档没有账号体系之外的"主人"，留白才是实话）；
- * - **设置**：`local.present && useIsAdmin()`——管理员判据与另外六处**共用同一条**
- *   （`lib/useIsAdmin`：有账号按角色，本机档按"有没有本机后端"；本机档没有账号体系，
- *   而"本机主人"在后端那条记录里就是管理员（`api_key.py::LOCAL_CALLER`：
- *   `is_admin=True`、`role=UserRole.ADMIN`），设置读的又正是本机那几张表）。
- *   前面那一条 `local.present` 是**这一处自己的**：服务器档整个不摆（那一档
- *   `/settings` 一族不存在，点进去只会 404）。
+ * - **名字**：`local.present ? LOCAL_CALLER_NAME : ''`——留白只给**没有本机后端**的那一档
+ *   （那一档没有账号体系之外的"主人"，留白才是实话）；
+ * - **设置**：`local.present`——就是 `lib/useIsAdmin` 那条判据（本仓唯一的判据：本机档的
+ *   用户就是这台机器的管理员，"本机主人"在后端那条记录里是 `is_admin=True`
+ *   （`api_key.py::LOCAL_CALLER`），设置读的又正是本机那几张表）。服务器档整个不摆
+ *   （那一档 `/settings` 一族不存在，点进去只会 404）。
  *
  * 「头像」「退出登录」两项 2026-10-09 删掉了（它们打的 `/auth/*` 一族随账号死面
  * 整族下线，见文件头），本机档与服务器档都只剩「设置」与主题翻转两件。
+ *
+ * 这一天还删掉了那一格里**与账号有关的两样**：头像图片（`currentUser.avatar_url`）与
+ * 角色徽章（「管理员 / 成员」）——`currentUser` 随名册 / 操作者链一起从会话状态里删了
+ * （见 `lib/session.ts` 的文件头），本机档的身份只有「本机主人」这一个事实，
+ * 而它**不是"管理员"这个角色**（角色是账号体系里的东西）。头像那一格留成
+ * 名字首字的兜底圆（`AvatarFallback`）。
  *
  * 页脚**只有这一行**：使用者下拉、独立的「设置」按钮、字体大小入口都已收进设置弹窗；
  * 旧版还把「后端在线」那行探针删掉了（真出问题会有请求报错）。
@@ -64,9 +68,8 @@ import { SettingsModal } from '@/features/misc/settings/SettingsModal'
 import { setTheme, useThemeMode } from '@/features/misc/settings/useTheme'
 import { useLocalBackend } from '@/api/local'
 import { cn } from '@/lib/utils'
-import { useSessionStore } from '@/lib/session'
 import { useIsAdmin } from '@/lib/useIsAdmin'
-import { Avatar, AvatarFallback, AvatarImage } from '@/ui/avatar'
+import { Avatar, AvatarFallback } from '@/ui/avatar'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -81,15 +84,14 @@ const ICON = 14
 /**
  * 本机档唯一调用主体的名字（后端起给它的**就是**这个）。
  *
- * 本机档没有账号体系，`currentUser` 恒为 null（见文件头"本机档"那一节），
- * 而这一行不能因此留白——后端起给本机档那个唯一主体的名字是「本机主人」
- * （`backend/app/services/api_key.py::LOCAL_CALLER`，`UserRecord(name="本机主人")`）。
- * 界面照抄同一个口径，**别在这里另起一个名字**：一句话在两处写法不同，
- * 用户会以为这是两个人。
+ * 这一份界面没有账号体系（登录页与 `/auth/*` 一族都删了），后端起给本机档那个唯一主体的
+ * 名字是「本机主人」（`backend/app/services/api_key.py::LOCAL_CALLER`，
+ * `UserRecord(name="本机主人")`）。界面照抄同一个口径，**别在这里另起一个名字**：
+ * 一句话在两处写法不同，用户会以为这是两个人。
  */
 const LOCAL_CALLER_NAME = '本机主人'
 
-/** 「我是谁」的兜底：没有头像就用名字的第一个字（与旧 `AppAvatar` 同一口径）。 */
+/** 「我是谁」的兜底：名字的第一个字（与旧 `AppAvatar` 同一口径）。 */
 function initialOf(name: string): string {
   return name.trim().slice(0, 1) || '·'
 }
@@ -108,7 +110,6 @@ function useResolvedDark(): boolean {
 }
 
 export function AccountMenu() {
-  const currentUser = useSessionStore((state) => state.currentUser)
   const dark = useResolvedDark()
   /**
    * 侧栏折叠态：这一行在折叠栏里只剩头像，于是**整行居中、gap 归零**。
@@ -119,29 +120,26 @@ export function AccountMenu() {
    * 与侧栏读的是同一份状态，不会出现"栏收了、行没动"）。
    */
   const { collapsed } = useSidebar()
-  /** 这一份界面有没有本机后端（决定「设置」那一项在不在，见下面 `settingsAvailable` 那段）。 */
+  /** 这一份界面有没有本机后端（决定名字与「设置」在不在，见下面那两段）。 */
   const local = useLocalBackend()
   /**
-   * 这一份界面上"当前这个人是不是管理员"——判据只有一处（`lib/useIsAdmin`）：
-   * 有账号按角色，本机档（没有账号体系，`currentUser` 恒为 null）按"有没有本机后端"。
+   * 这一份界面上"当前这个人是不是管理员"——判据只有一处（`lib/useIsAdmin`：
+   * 本机档的用户就是这台机器的管理员，与另外六处共用同一条）。
    *
-   * **它在下面只用于「设置」那一项**；屏幕上印的「管理员 / 成员」是账号自己的角色
-   * （`accountIsAdmin`），与本机档那一条无关——本机档那一行不印角色。
+   * **它在下面只用于「设置」那一项**（本机档就是管理员，服务器档这一处不摆）。
    */
   const isAdmin = useIsAdmin()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   /**
-   * 这一行写谁：真账号的名字，本机档则是「本机主人」（见 `LOCAL_CALLER_NAME`）。
+   * 这一行写谁：本机档是「本机主人」（见 `LOCAL_CALLER_NAME`）。
    *
-   * 服务器档里 `currentUser` 为 null 意味着"身份还没验完"：那不是一种身份，
-   * 写个名字只会让人以为登录被吞了——所以**只在本机档兜底**（`local.present`）。
+   * **留白只给没有本机后端的那一档**：那一档没有账号体系之外的"主人"，
+   * 写个名字只会让人以为身份被吞了（原先这里读的是会话状态里的 `currentUser`，
+   * 而那个字段 2026-10-09 随名册 / 操作者链一起删了——它在本机档恒为 null）。
    */
-  const identityName = currentUser?.name ?? (local.present ? LOCAL_CALLER_NAME : '')
-  /** 这一格是**账号自己的角色**（屏幕上印的「管理员 / 成员」），与本机档那一条无关。 */
-  const accountIsAdmin = currentUser?.role === 'admin'
-  const identityRole = currentUser ? (accountIsAdmin ? '管理员' : '成员') : ''
+  const identityName = local.present ? LOCAL_CALLER_NAME : ''
 
   /**
    * 「设置」那一项在不在——**与 `SettingsModal` 的挂载条件是同一个**（见文件头那两段）。
@@ -150,9 +148,8 @@ export function AccountMenu() {
    * - **服务器档不摆**（`local.present` 为假）：设置里那几节读的是本机那几张表
    *   （`/settings`、`/model-registry`、`/local/*`），这一档根本没有它们，点开只会得到
    *   一片"读不到"——摆一个点进去报错的入口比不显示更糟；
-   * - **管理员才摆**：成员拿到的一律是 403（`/settings` 是管理员端点）。判据本身在
-   *   `lib/useIsAdmin`：本机档没有账号体系（`currentUser` 恒为 null），而那一档
-   *   "本机主人"就是这台机器的管理员——按"有没有登录"判，这一项与弹窗会一起消失
+   * - **管理员才摆**（`isAdmin`）：本机档的用户就是这台机器的管理员（`lib/useIsAdmin`）——
+   *   按"有没有登录"判，这一项与弹窗会一起消失
    *   （用户原话：「现在怎么左下角设置这些都没了？？」）。
    */
   const settingsAvailable = local.present && isAdmin
@@ -175,12 +172,13 @@ export function AccountMenu() {
             aria-label={identityName ? `账号：${identityName}` : '账号'}
           >
             {/* 头像是**一个 28px 的圆**（`--avatar-size`），不是一枚线稿图标：
-                圆是"这里将来会是你的一张脸"，而灰色小人图标读起来像"一个叫『用户』的入口" */}
+                圆是"这里将来会是你的一张脸"，而灰色小人图标读起来像"一个叫『用户』的入口"。
+                里面那一位是名字首字：本机档的身份只有「本机主人」这一个事实，
+                头像图片（`avatar_url`）随账号一族 2026-10-09 删掉了。 */}
             <Avatar className="shrink-0">
-              {currentUser?.avatar_url && <AvatarImage src={currentUser.avatar_url} alt="" />}
               <AvatarFallback>{initialOf(identityName)}</AvatarFallback>
             </Avatar>
-            {/* 名字、角色、箭头都用 max-width 收（`.ly-collapsible`），
+            {/* 名字与箭头都用 max-width 收（`.ly-collapsible`），
                 折叠态收到 0 而不是 `display: none`——后者是瞬时的，没有过渡可接 */}
             {/* 行高**归 20px**（`leading-5` ✓）：Kimi 那份对照表里是 `14px/20px 500` ✓，
                 而默认行高在这套 token 下算出 20.58px ✗ —— 差 0.58px，
@@ -191,11 +189,8 @@ export function AccountMenu() {
             >
               {identityName}
             </span>
-            {identityRole && (
-              <span className="ly-collapsible shrink-0 text-[length:var(--text-micro-size)] whitespace-nowrap text-text-tertiary">
-                {identityRole}
-              </span>
-            )}
+            {/* 角色徽章（「管理员 / 成员」）2026-10-09 删掉了：那是**账号体系里的角色**，
+                而这一档的身份只有「本机主人」——它不是"管理员"这个角色。 */}
             {/* 行右端是**一个 44×44 的图标位** ✓（Kimi 对照表：行右端 `44×44` ✓；
                 改前只有一枚 14px 的裸箭头 ✗）。视觉上仍是那枚小箭头 ✓，
                 但命中区与行高同高（44）✓ —— 点起来不再需要瞄 ✓ */}

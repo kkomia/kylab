@@ -22,6 +22,14 @@
  * （只被 `sessionActions` 那份三态恢复用，那条链随登录页下线）、以及 store 上的
  * `authStatus` 字段（唯一写入者是 `sessionActions::ensureAuthStatus`）。
  *
+ * ## 2026-10-09（第二轮）：`currentUser` 也删了
+ *
+ * 名册 / 操作者链（`lib/operator.ts` + `api/users.ts`）整族删掉之后，`currentUser`
+ * 的**写入方与读方一起消失**（写入方是上一轮删掉的 `login`/`setup`/`restoreSession`，
+ * 读方是那一族与 AccountMenu 的兜底显示）。它的值在生产里**恒为 null**，
+ * 留着只会让每个读方都写一遍"恒 null 时怎么办"——所以字段与 `Account` 类型一起去掉，
+ * 「本机主人」那个显示改成 `AccountMenu` 里的常量（那一档的事实）。
+ *
  * 令牌从哪来：一个**也不再由这一份界面签发**——本机档后端没有 `/auth/*`
  * （`local_router` 上没有 `auth.router`），`setSessionToken` 如今只有测试在用
  * （拿它摆"手上有一条凭据"的现场）。留着它是因为"读 / 写 / 清"是同一套机制的三面，
@@ -30,29 +38,6 @@
 import { create } from 'zustand'
 
 export const SESSION_TOKEN_STORAGE_KEY = 'kylab-session-token'
-
-/**
- * 账号的形状。
- *
- * 原先定义在 `api/auth.ts`（那一族客户端已随账号死面删掉），现在**只有这一份状态
- * 还需要它**：`currentUser` 是"这一行印谁"的来源（`AccountMenu` 的名字 / 角色 /
- * 头像那一格，`lib/operator.ts` 的归属标注，`lib/useIsAdmin` 的角色判据）。
- * 本机档里它恒为 null——那一档没有账号体系，界面写的是「本机主人」。
- */
-export interface Account {
-  id: string
-  username: string
-  name: string
-  role: 'admin' | 'member'
-  /**
-   * 头像链接（后端签发的**签名 URL**）。空 = 没有头像。
-   *
-   * 它是个会过期的链接：`<img src>` 带不了 Authorization 头，所以"有权取这张图"
-   * 被编码进 URL 本身。过期了图会 401——界面那份退回"用名字生成的默认头像"
-   * （见帐号那一行的 `Avatar`）。
-   */
-  avatar_url: string
-}
 
 function read(): string {
   try {
@@ -65,19 +50,16 @@ function read(): string {
 
 interface SessionState {
   token: string
-  /** 当前登录账号（本机档恒为 null，见文件头）。 */
-  currentUser: Account | null
   /** 「请重新登录」的**计数器**：连续多个请求同时 401 时，布尔值只会跳一次。 */
   reloginCount: number
 }
 
 export const useSessionStore = create<SessionState>(() => ({
   token: typeof window === 'undefined' ? '' : read(),
-  currentUser: null,
   reloginCount: 0,
 }))
 
-/** 当前令牌（**每个请求都现取**：刚登录拿到的会话下一次请求就该生效）。 */
+/** 当前令牌（**每个请求都现取**：手上那条会话下一次请求就该生效）。 */
 export function sessionToken(): string {
   return useSessionStore.getState().token
 }
@@ -93,10 +75,9 @@ export function setSessionToken(next: string): void {
   }
 }
 
-/** 清除会话与账号缓存（凭据失效时那条链走它）。 */
+/** 清掉本地凭据（401 那条链走它）。 */
 export function clearSessionToken(): void {
   setSessionToken('')
-  useSessionStore.setState({ currentUser: null })
 }
 
 export function requestRelogin(): void {

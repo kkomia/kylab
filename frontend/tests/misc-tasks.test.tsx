@@ -142,13 +142,6 @@ function systemLoad(overrides: Partial<SystemLoad> = {}): SystemLoad {
   }
 }
 
-/** 进管理员视角：运行负载面板是管理员专属（端点在成员那里是 403）。 */
-function asAdmin() {
-  useSessionStore.setState({
-    token: 'st',
-    currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
-  })
-}
 
 /** 某个环上画了几笔：只有轨道（1）还是有进度弧（2）。 */
 function ringStrokes(panel: HTMLElement, name: string): number {
@@ -202,7 +195,7 @@ beforeEach(() => {
     fetchedUrls.push(String(url))
     throw new TypeError('这一份用例不发真请求')
   }) as unknown as typeof fetch
-  useSessionStore.setState({ token: '', currentUser: null, reloginCount: 0 })
+  useSessionStore.setState({ token: '', reloginCount: 0 })
   listTasksMock.mockResolvedValue({ items: [task()] })
   getTaskLoadMock.mockRejectedValue(new Error('403'))
   listSchedulesMock.mockResolvedValue({ items: [schedule()], timezone: 'CST UTC+08:00' })
@@ -527,7 +520,10 @@ describe('任务中心', () => {
     ).toBeInTheDocument()
   })
 
-  it('管理员才看得到运行负载面板（端点在成员那里是 403）', async () => {
+  it('本机档（唯一的档）+ 知识库接上：运行负载面板就在', async () => {
+    // 这一份界面没有"成员"这一说：判据是 `lib/useIsAdmin`（本机档的用户就是这台机器的
+    // 管理员），所以面板在不在只由"知识库接没接上"（`kbReady`）决定——本文件默认摆的就是
+    // 本机档 + 握手成功。
     getTaskLoadMock.mockResolvedValue(
       systemLoad({
         hardware: {
@@ -559,12 +555,6 @@ describe('任务中心', () => {
       }),
     )
 
-    const { unmount } = renderMisc(<TasksPage />)
-    await screen.findByText('手册.pdf')
-    expect(screen.queryByLabelText('运行负载')).not.toBeInTheDocument()
-    unmount()
-
-    asAdmin()
     renderMisc(<TasksPage />)
 
     expect(await screen.findByLabelText('运行负载')).toBeInTheDocument()
@@ -573,7 +563,6 @@ describe('任务中心', () => {
   })
 
   it('运行负载：五个读数是同一种控件，环里的读数进得了名字（评审 T4）', async () => {
-    asAdmin()
     getTaskLoadMock.mockResolvedValue(systemLoad())
 
     renderMisc(<TasksPage />)
@@ -598,7 +587,6 @@ describe('任务中心', () => {
   })
 
   it('0 值的环只留轨道，不画弧（评审 T5：0 / 1000 页 却有一段实心蓝弧）', async () => {
-    asAdmin()
     getTaskLoadMock.mockResolvedValue(
       systemLoad({
         hardware: {
@@ -711,8 +699,8 @@ describe('流水线任务：知识库接没接上的分流', () => {
   }
 
   it('本机档 + 提供者没接上：两个查询都不发、内容区换成空态，「定时任务」那一段照旧在', async () => {
-    // 管理员视角：这样"负载也不发"就只可能是 kbReady 这一条判据挡下来的（而不是非管理员）
-    asAdmin()
+    // 本文件默认就是"本机档 + 握手成功"（也就是管理员那一档），把提供者摆成没接上：
+    // 这样"负载也不发"就只可能是 kbReady 这一条判据挡下来的。
     setProviderStatusForTest(KB_UNCONFIGURED)
     renderMisc(<TasksPage />)
 

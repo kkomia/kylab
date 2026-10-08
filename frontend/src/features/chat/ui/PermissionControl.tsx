@@ -16,9 +16,9 @@
  * 必然出现"界面上写着允许、实际还是被拒"。
  *
  * 非管理员**不显示**：这一档背后是管理员端点，摆在成员眼前只会让他点了拿到 403。
- * **本机档照摆**：那一档没有账号体系（`currentUser` 恒为 null），而"本机主人"就是这台机器的
- * 管理员（`api_key.py::LOCAL_CALLER`）、`/settings` 也挂在本机那台白名单上——判据在
- * `lib/useIsAdmin`（用户报过"权限按钮不见了"，就是这一条按"有没有登录"判出来的）。
+ * **本机档照摆**：这一档的用户就是这台机器的管理员（"本机主人"，`api_key.py::LOCAL_CALLER`），
+ * `/settings` 也挂在本机那台白名单上——判据在 `lib/useIsAdmin`（用户报过"权限按钮不见了"，
+ * 就是这一条当年按"有没有登录"判出来的）。
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'

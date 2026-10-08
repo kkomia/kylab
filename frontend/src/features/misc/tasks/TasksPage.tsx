@@ -33,7 +33,7 @@ import { useLocalBackend } from '@/api/local'
 import { useKnowledgeProviderStatus } from '@/api/provider'
 import { cancelTasks, getTaskLoad, listTasks, type TaskSummary } from '@/api/tasks'
 import { formatCount, formatDate } from '@/lib/format'
-import { useSessionStore } from '@/lib/session'
+import { useIsAdmin } from '@/lib/useIsAdmin'
 
 import { useKnowledgeBases } from '../shared/knowledgeBases'
 import { isTaskProblem, taskHealthTone, taskKindLabel, taskStateView } from '../shared/status'
@@ -143,13 +143,21 @@ export function TasksPage() {
   const listRef = useRef<HTMLDivElement | null>(null)
 
   /**
-   * **这一处刻意不用共享那条判据**（`lib/useIsAdmin`）：它管的是**「运行负载」**
+   * **这一处原先刻意不用共享那条判据**（`lib/useIsAdmin`）：它管的是**「运行负载」**
    * （`/tasks/load`）那一块——数的是知识库那边的家当（文档 / 解析批次 / 索引）。
    * 那一族端点**只挂在服务器档**（`local_router` 那一张白名单里没有 `tasks.router`），
-   * 本机档按本机档判成管理员，只会让这一页白打一趟必被拒的请求（这个端点对非管理员是 403），
-   * 所以照旧按"有没有账号体系"判。
+   * 而这条判据当年是 `currentUser?.role === 'admin'`，本机档恒不成立，
+   * 于是那一档不会白打一趟必被拒的请求。
+   *
+   * **2026-10-09 改了**：`currentUser` 随名册 / 操作者链一起删掉（见 `lib/session.ts`
+   * 的文件头），"服务器档的管理员"已经没有第二种来源了——本机档的用户就是这台机器的
+   * 管理员，判据归 `lib/useIsAdmin`（与另外六处共用同一条）。**代价说清**：本机档 +
+   * 知识库接上时，运行负载面板现在会显示，也会发那条 `GET /tasks/load`
+   * （`enabled: isAdmin && kbReady`）；那条请求打的是服务器面（`request()`），
+   * 若对端不认（没有账号体系可带凭据），`LoadPanel` 会按"读不到"渲染骨架而不是报错
+   * （`retry: false`，这一页不渲染负载的错误态——见它下面那条注释）。
    */
-  const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
+  const isAdmin = useIsAdmin()
   const knowledgeBases = useKnowledgeBases()
   /**
    * 本机后端在不在（判据只有一处：`api/local.ts`）——它决定**「定时任务」那一段在不在**。

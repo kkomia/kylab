@@ -71,11 +71,6 @@ vi.mock('@/api/workspaces', async (importOriginal) => ({
   listWorkspaces: vi.fn(async () => ({ items: [] })),
 }))
 
-vi.mock('@/api/users', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/api/users')>()),
-  listUsers: vi.fn(async () => ({ items: [] })),
-}))
-
 vi.mock('@/api/modelRegistry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/modelRegistry')>()),
   getRegistry: vi.fn(async () => ({ providers: [], models: [], slots: [] })),
@@ -169,7 +164,7 @@ beforeEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 20))
   vi.clearAllMocks()
   window.history.pushState({}, '', '/')
-  useSessionStore.setState({ token: '', currentUser: null, reloginCount: 0 })
+  useSessionStore.setState({ token: '', reloginCount: 0 })
   resetSidecarProbe()
   resetProviderStore()
   resetBackupStore()

@@ -18,6 +18,11 @@
  * 2026-10-09 又删掉两处：「概览」那一项（页面整块删了，`/` 改成重定向到 `/chat`）
  * 与「头像 / 退出登录」（`api/auth.ts` 那一族端点随账号死面一起下线，
  * 见 `AccountMenu.tsx` 的文件头）。
+ *
+ * 同一天再收一轮：会话状态里的 `currentUser` 删了（它恒为 null，见 `lib/session.ts`），
+ * 所以这一份里那些"摆一个有账号的现场"的写法（`account('admin')` / `account('member')`）
+ * 一并去掉——用户区那一行现在只有一个事实：**本机主人**（有本机后端时），
+ * 「设置」在不在也只看那一条（`lib/useIsAdmin`）。
  */
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -44,10 +49,6 @@ vi.mock('@/api/workspaces', () => ({
   renameDirectory: vi.fn(),
 }))
 
-vi.mock('@/api/users', () => ({
-  listUsers: vi.fn(async () => ({ items: [], header: 'X-Kylab-Operator' })),
-}))
-
 /**
  * 设置弹窗**替身**：它是邻域的件（按 import 用，不改），
  * 而设置弹窗内部要 react-query 与半个设置域才起得来。这里只钉"壳把哪个 props 交给了它"
@@ -65,8 +66,8 @@ import { useConversationStore } from '@/features/layout/conversations'
 import { useSidebarStore } from '@/features/layout/useSidebar'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
 import { resetAllShortcuts } from '@/features/misc/settings/useShortcuts'
-import { requestRelogin, setSessionToken, type Account, useSessionStore } from '@/lib/session'
-import { useOperatorStore } from '@/lib/operator'
+import { setLocalBackendForTest } from '@/api/local'
+import { requestRelogin, setSessionToken, useSessionStore } from '@/lib/session'
 
 const listConversationsMock = vi.mocked(listConversations)
 const listWorkspacesMock = vi.mocked(listWorkspaces)
@@ -101,9 +102,6 @@ function renderShell(initialPath = '/notes') {
   )
 }
 
-function account(role: 'admin' | 'member' = 'admin'): Account {
-  return { id: 'u1', username: 'you', name: '小又', role, avatar_url: '' }
-}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -113,14 +111,16 @@ beforeEach(() => {
   useSidebarStore.setState({ collapsed: false })
   useConversationStore.getState().reset()
   useWorkspaceStore.getState().reset()
-  useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
-  useOperatorStore.setState({ operatorId: '', roster: [] })
+  useSessionStore.setState({ token: '', reloginCount: 0 })
+  // 这一档：**有本机后端**（壳的产品形态就是它）——用户区那一行写「本机主人」、
+  // 「设置」在不在都看它（`lib/useIsAdmin` 现在就是这一条判据）。
+  // 要摆"没有本机后端"那一档的用例自己再摆一次。
+  setLocalBackendForTest('local')
   resetAllShortcuts()
 })
 
 describe('侧栏导航', () => {
   it('渲染主导航项与当前路由高亮', async () => {
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
@@ -138,7 +138,6 @@ describe('侧栏导航', () => {
   })
 
   it('「任务中心」在主导航里指向 `/tasks`，站在那儿时点亮', async () => {
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/tasks')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
@@ -150,7 +149,6 @@ describe('侧栏导航', () => {
   })
 
   it('能力页在主导航里有归属：当前项标 aria-current 并带选中底', async () => {
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/capabilities')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
@@ -161,7 +159,6 @@ describe('侧栏导航', () => {
   })
 
   it('新建会话入口指向 /chat?new=1，并带快捷键提示', async () => {
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
 
     const entry = await screen.findByRole('link', { name: /新建会话/ })
@@ -174,7 +171,6 @@ describe('侧栏导航', () => {
 
   it('项目节：列出项目与条数，会话超过 5 条先收起，点「展开」看全部', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
     listWorkspacesMock.mockResolvedValue({
       items: [
         {
@@ -225,7 +221,6 @@ describe('侧栏导航', () => {
 describe('侧栏折叠', () => {
   it('点折叠开关：变窄条、落 kylab-sidebar-collapsed、再点回到展开', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
 
     const toggle = await screen.findByRole('button', { name: '收缩侧栏' })
@@ -249,7 +244,6 @@ describe('侧栏折叠', () => {
   })
 
   it('挂载时读存储：预置为 1 就直接是窄条', async () => {
-    useSessionStore.setState({ currentUser: account('member') })
     window.localStorage.setItem('kylab-sidebar-collapsed', '1')
     useSidebarStore.setState({ collapsed: true })
     renderShell('/notes')
@@ -262,7 +256,6 @@ describe('侧栏折叠', () => {
   })
 
   it('监听 kylab:sidebar-toggle：chat 域的快捷键广播能让侧栏当场收/开', async () => {
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
     await screen.findByRole('navigation', { name: '主导航' })
 
@@ -285,7 +278,6 @@ describe('侧栏折叠', () => {
 describe('全局快捷键', () => {
   it('Ctrl/Cmd+B 切换侧栏（落存储 + 侧栏当场变窄）', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
     await screen.findByRole('navigation', { name: '主导航' })
 
@@ -301,7 +293,6 @@ describe('全局快捷键', () => {
 
   it('Ctrl/Cmd+K 新建会话：跳到 /chat?new=1', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
 
     await user.keyboard('{Control>}k{/Control}')
@@ -311,7 +302,6 @@ describe('全局快捷键', () => {
 
   it('敲字的地方不抢：输入框里按 Ctrl+K 不跳转', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
 
     const input = document.createElement('input')
@@ -328,13 +318,15 @@ describe('全局快捷键', () => {
 describe('用户区', () => {
   it('账号菜单：只有「设置」与主题翻转两项（头像 / 退出登录 2026-10-09 随账号族删掉）', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('admin') })
     renderShell('/notes')
 
-    expect(await screen.findByText('小又')).toBeInTheDocument()
-    expect(screen.getByText('管理员')).toBeInTheDocument()
+    // 这一档的身份只有一个事实：本机主人（后端起给它的就是这个名字）
+    expect(await screen.findByText('本机主人')).toBeInTheDocument()
+    // 角色徽章不再印：那是**账号体系里的角色**，而本机主人不是"管理员"这个角色
+    expect(screen.queryByText('管理员')).toBeNull()
+    expect(screen.queryByText('成员')).toBeNull()
 
-    await user.click(screen.getByRole('button', { name: '账号：小又' }))
+    await user.click(screen.getByRole('button', { name: '账号：本机主人' }))
     const menu = await screen.findByRole('menu')
     expect(within(menu).getByRole('menuitem', { name: '设置' })).toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: '切换为深色' })).toBeInTheDocument()
@@ -343,44 +335,43 @@ describe('用户区', () => {
     expect(within(menu).queryByRole('menuitem', { name: '退出登录' })).toBeNull()
   })
 
-  it('成员：没有「设置」这一项（后端对成员一律 403）', async () => {
+  it('没有本机后端那一档：名字留白、也没有「设置」（那一档整套数据面都没有）', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
+    setLocalBackendForTest('absent')
     renderShell('/notes')
 
-    await user.click(await screen.findByRole('button', { name: '账号：小又' }))
+    // 没有账号体系之外的"主人"：留白才是实话（原先这一行读的是恒 null 的 currentUser）
+    await user.click(await screen.findByRole('button', { name: '账号' }))
     const menu = await screen.findByRole('menu')
     expect(within(menu).queryByRole('menuitem', { name: '设置' })).not.toBeInTheDocument()
-    // 身份那一行写着"成员"（角色由 currentUser 推出来）
-    expect(screen.getByText('成员')).toBeInTheDocument()
-    // 主题那一项与身份无关，照旧在
+    // 主题那一项与本机后端无关，照旧在
     expect(within(menu).getByRole('menuitem', { name: /切换为/ })).toBeInTheDocument()
+
+    setLocalBackendForTest('local')
   })
 
   it('「设置」开 SettingsModal', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('admin') })
     renderShell('/notes')
 
-    await user.click(await screen.findByRole('button', { name: '账号：小又' }))
+    await user.click(await screen.findByRole('button', { name: '账号：本机主人' }))
     await user.click(await screen.findByRole('menuitem', { name: '设置' }))
     expect(await screen.findByTestId('settings-modal')).toBeInTheDocument()
   })
 
   it('切换主题：菜单那句说清切过去是哪一边，点完写进 data-theme 与本地存储', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
     document.documentElement.dataset.theme = 'light'
     renderShell('/notes')
 
-    await user.click(await screen.findByRole('button', { name: '账号：小又' }))
+    await user.click(await screen.findByRole('button', { name: '账号：本机主人' }))
     await user.click(await screen.findByRole('menuitem', { name: '切换为深色' }))
 
     expect(document.documentElement.dataset.theme).toBe('dark')
     expect(window.localStorage.getItem('kylab-theme')).toBe('dark')
 
     // 再开一次：文案翻到另一边
-    await user.click(screen.getByRole('button', { name: '账号：小又' }))
+    await user.click(screen.getByRole('button', { name: '账号：本机主人' }))
     expect(await screen.findByRole('menuitem', { name: '切换为浅色' })).toBeInTheDocument()
   })
 })
@@ -388,7 +379,6 @@ describe('用户区', () => {
 describe('历史会话面板的开合', () => {
   it('点「查看全部会话」打开面板，Esc 关掉', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
 
     await user.click(await screen.findByRole('button', { name: '查看全部会话' }))
@@ -402,7 +392,7 @@ describe('历史会话面板的开合', () => {
   })
 
   it('会话失效（401）：清掉本地凭据，**不跳登录页**（登录页已删）', async () => {
-    useSessionStore.setState({ currentUser: account('member'), token: 'tok-1' })
+    useSessionStore.setState({ token: 'tok-1' })
     setSessionToken('tok-1')
     renderShell('/notes')
     await screen.findByRole('navigation', { name: '主导航' })
@@ -418,7 +408,7 @@ describe('历史会话面板的开合', () => {
   it('计数只在"变了"那一次动手：带着一个非零计数挂载不会再清一次', async () => {
     // 计数不会归零，所以判据只能是"这个数变了"——写成"计数非零就清"的话，
     // 每次挂载都会清一遍（用户刚拿到的凭据又被抹掉）。
-    useSessionStore.setState({ currentUser: account('member'), token: 'tok-2', reloginCount: 3 })
+    useSessionStore.setState({ token: 'tok-2', reloginCount: 3 })
     setSessionToken('tok-2')
     renderShell('/notes')
     await screen.findByRole('navigation', { name: '主导航' })
@@ -432,7 +422,6 @@ describe('历史会话面板的开合', () => {
 
   it('换页就关（§12.194：浮层没关等于菜单点不动）', async () => {
     const user = userEvent.setup()
-    useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')
 
     await user.click(await screen.findByRole('button', { name: '查看全部会话' }))
@@ -447,7 +436,6 @@ describe('历史会话面板的开合', () => {
 
 describe('启动后空闲预热（旧 SideNav 的 idle 预热口径）', () => {
   it('挂载后在空闲时预热任务列表', async () => {
-    useSessionStore.setState({ currentUser: account('member') })
     const prewarm = vi.spyOn(await import('@/features/misc/prewarm'), 'prewarmMisc')
     renderShell('/notes')
 

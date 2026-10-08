@@ -108,8 +108,10 @@ const MODULE_GROUP_KEYS = new Set(['memory', 'web', 'sandbox'])
  * （`local_router` 上没有 `auth.router` / `users.router`）——登录页删掉之后，
  * 这一族在界面上已经没有任何一条能成功的路。
  *
- * 后端 `/users` 那条**名册读**（`api/users.ts::listUsers`）照旧留着：侧栏的归属标注
- * 与 `lib/operator.ts` 用它，不属于账号管理。
+ * 第二轮（同一天稍后）：后端 `/users` 那条名册读（`api/users.ts`）与前端那条归属标注链
+ * （`lib/operator.ts`：`listUsers` + `setOperator` + `X-Kylab-Operator` 头）也整族删了
+ * ——它唯一的生产路径（`App.tsx::RosterBoot`）挂在恒为 null 的 `currentUser` 上，
+ * 一次都跑不到；名册那一族端点同样只属于账号管理。
  */
 const SECTIONS: { key: SectionKey; label: string; icon: typeof Server }[] = [
   // **「模型」放在最前**：它是配置模型的主路径（供应商 → 模型 → 用途）

@@ -1478,7 +1478,6 @@ describe('停止与回到最新', () => {
   it('权限那一颗：加号右边、知识库左边，档名从 /settings 读出来', async () => {
     // 管理员 + 设置里那一项有值，控件才渲染（读不到就不显示这个入口，与旧控件同一口径）
     useSessionStore.setState({
-      currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
       token: '',
       reloginCount: 0,
     })
@@ -1508,13 +1507,13 @@ describe('停止与回到最新', () => {
     expect(siblings.indexOf(pill)).toBe(1)
   })
 
-  it('本机档（没有账号体系）：这一颗照旧在，选一档会写回设置页那一份', async () => {
-    // 本机档的 `currentUser` **恒为 null**（`/auth/*` 一族根本不挂在边车的 `local_router` 上，
-    // 登录守卫直接放行），而那一档"本机主人"就是这台机器的管理员——判据在 `lib/useIsAdmin`：
-    // 有账号按角色，**没有账号按"这一份有没有本机后端"**。
+  it('本机档（本机主人）：这一颗照旧在，选一档会写回设置页那一份', async () => {
+    // 这一份界面没有账号体系（`currentUser` 随名册 / 操作者链 2026-10-09 一起删了），
+    // 而后端起给这一档那个唯一主体的名字是「本机主人」——**它就是这台机器的管理员**，
+    // 判据在 `lib/useIsAdmin`（如今就是"有没有本机后端"）。
     // 用户报过两次的 bug 就是这里按"有没有登录"判：侧栏「设置」不见了、这一颗不见了。
     setLocalBackendForTest('local')
-    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
+    useSessionStore.setState({ token: '', reloginCount: 0 })
     vi.mocked(getSettings).mockResolvedValueOnce({
       groups: [
         {
@@ -1545,12 +1544,12 @@ describe('停止与回到最新', () => {
   })
 
   /**
-   * 本机档 + 没有账号 = 这台机器的主人（`useIsAdmin` 那一条：有账号按角色、
-   * 没有账号按**这一份有没有本机后端**）——权限那几节都用这一份起手。
+   * 本机档 = 这台机器的主人（`useIsAdmin` 那一条：判据就是"有没有本机后端"）
+   * ——权限那几节都用这一份起手。
    */
   function asLocalOwner(): void {
     setLocalBackendForTest('local')
-    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
+    useSessionStore.setState({ token: '', reloginCount: 0 })
   }
 
   /** `/settings` 里的那一份 `chat.permission`（下面几条要把档位换着摆）。 */
@@ -1652,11 +1651,11 @@ describe('停止与回到最新', () => {
     expect(after.querySelector('svg.lucide-shield-check')).toBeNull()
   })
 
-  it('服务器档 + 没有账号：这一颗不在，而且**一条设置都不去读**', async () => {
-    // 反面：没有本机后端（NAS 网页端那一份）时 `currentUser` 为 null 意味着"还没验出身份"
-    // ——那不是管理员。读的那一趟只会拿到 401/404，所以连问都不问（`enabled: isAdmin`）。
+  it('服务器档：这一颗不在，而且**一条设置都不去读**', async () => {
+    // 反面：没有本机后端（NAS 网页端那一份）⇒ 不是管理员（`lib/useIsAdmin`）。
+    // 读的那一趟只会拿到 401/404，所以连问都不问（`enabled: isAdmin`）。
     setLocalBackendForTest('absent')
-    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
+    useSessionStore.setState({ token: '', reloginCount: 0 })
     vi.mocked(getConversation).mockResolvedValue(
       detail([stored('user', '你好'), stored('assistant', '你好呀')]),
     )

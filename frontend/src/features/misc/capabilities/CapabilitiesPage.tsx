@@ -247,8 +247,8 @@ export function CapabilitiesPage() {
    * 管理员判据走共享那一条（`lib/useIsAdmin`）：这一页上凡是它管着的入口
    * （页头那颗「设置」里的沙箱 / 联网搜索那一组、市场那几颗）读的都是**本机服务**的东西
    * ——`/settings`、`/skills`、`/plugins` 都挂在本机档的白名单上
-   * （`backend/app/api/v1/router.py` 的 `local_router`），而本机档没有账号体系
-   * （`currentUser` 恒为 null），按"有没有登录"判会把这些入口一并藏掉。
+   * （`backend/app/api/v1/router.py` 的 `local_router`），而这一档的用户就是这台机器的
+   * 管理员，按"有没有登录"判会把这些入口一并藏掉。
    */
   const isAdmin = useIsAdmin()
 

@@ -123,7 +123,9 @@ describe('api/client', () => {
  * 2. 会话还在 → **不登出、不清令牌**，把后端那句话原样抛给调用方（预览里就地显示原因）；
  * 3. 会话真失效（`/auth/me` 也 401）→ 照旧清令牌 + 落登录页（**原行为一个字没改**）；
  * 4. 探活问不出结论（网络错 / 5xx）→ 不登出（与 `App.tsx` 的"网络抖动不该把人强制登出"同一句）；
- * 5. **一次 401 风暴只探一趟**（单飞）；`authFailure: 'throw'` 那族（登录 / `/auth/me` 自己）不探。
+ * 5. **一次 401 风暴只探一趟**（单飞）。原先还有一档 `authFailure: 'throw'`（认证端点
+ *    自己的 401 不探活、不触发重新登录）——那一族端点（`api/auth.ts`）随账号死面删掉了，
+ *    这一档**连同 `RequestOptions` 一起删**（2026-10-09）：**现在所有 401 都走这条政策**。
  */
 describe('401：先核会话，只有真失效才登出', () => {
   /** 探活那一趟的地址（"是不是真打了 `/auth/me`"只看它）。 */
@@ -275,25 +277,6 @@ describe('401：先核会话，只有真失效才登出', () => {
     expect(failure.message).toBe('登录已过期，请重新登录')
     expect(calls.filter((call) => call.endsWith(PROBE))).toHaveLength(0)
     expect(useSessionStore.getState().reloginCount).toBe(before + 1)
-  })
-
-  it('⑤ `authFailure: throw` 那族（登录自己）**不探活**，行为不变', async () => {
-    setSessionToken('kylab_st_alive')
-    const calls = stubBusiness401(meOk)
-    const before = useSessionStore.getState().reloginCount
-
-    // 登录失败本身也是 401：此刻不能触发"重新登录"（用户本来就在登录页）
-    const failure = (await request(
-      '/auth/login',
-      { method: 'POST', body: JSON.stringify({}) },
-      { authFailure: 'throw' },
-    ).catch((error: unknown) => error)) as Error & { status?: number }
-
-    expect(failure.message).toBe('尚未配置下载签名密钥，请联系管理员')
-    expect(failure.status).toBe(401)
-    expect(calls.filter((call) => call.endsWith(PROBE))).toHaveLength(0)
-    expect(sessionToken()).toBe('kylab_st_alive')
-    expect(useSessionStore.getState().reloginCount).toBe(before)
   })
 
   it('⑥ 真机那条路（本机档：预览要签名链接打在边车上）也不把人弹走', async () => {

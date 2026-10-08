@@ -91,11 +91,6 @@ vi.mock('@/api/workspaces', async (importOriginal) => {
   return { ...actual, listWorkspaces: vi.fn(async () => ({ items: [] })) }
 })
 
-vi.mock('@/api/users', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/api/users')>()
-  return { ...actual, listUsers: vi.fn(async () => ({ items: [] })) }
-})
-
 describe('应用壳', () => {
   beforeEach(() => {
     window.history.pushState({}, '', '/')

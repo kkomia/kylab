@@ -201,7 +201,6 @@ beforeEach(() => {
   resetToasts()
   useSessionStore.setState({
     token: 'st',
-    currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
     reloginCount: 0,
   })
   listSkillsMock.mockResolvedValue({ items: [skill()], usable: 1 })
@@ -460,12 +459,10 @@ describe('能力页', () => {
     expect(hint.textContent).not.toContain('数据目录')
   })
 
-  it('不是管理员时按屏幕上**真的有**的那颗说（市场入口只给管理员）', async () => {
-    useSessionStore.setState({
-      token: 'st',
-      currentUser: { id: 'u2', username: 'member', name: '成员', role: 'member', avatar_url: '' },
-        reloginCount: 0,
-    })
+  it('不是管理员时按屏幕上**真的有**的那颗说（服务器档：市场入口不给）', async () => {
+    // 这一份界面只有"本机档 = 管理员"这一条判据了（`lib/useIsAdmin`），
+    // 所以"不是管理员"只剩服务器档这一种现场：那一档 `/skills` 那一族都不在本机。
+    setLocalBackendForTest('absent')
     listSkillsMock.mockResolvedValue({ items: [], usable: 0 })
 
     renderMisc(<CapabilitiesPage />)
@@ -924,11 +921,12 @@ describe('能力页', () => {
   })
 
   /**
-   * 管理员的定义（`lib/useIsAdmin`）：**本机档没有账号体系**（`currentUser` 恒为 null），
-   * 而那一档"本机主人"就是这台机器的管理员。这一页上被那条判据挡着的入口读的全是
-   * **本机服务**的东西（`/settings`、`/skills`、`/plugins` 都在本机档的白名单上），
-   * 所以按"有没有登录"判会把它们一并藏掉——用户报过两次同类 bug（侧栏「设置」、
-   * 输入框那排「权限」）。反面同样要钉：服务器档 + 没有账号 ⇒ 确实不该摆。
+   * 管理员的定义（`lib/useIsAdmin`）：**本机档的用户就是这台机器的管理员**
+   * （会话状态里的 `currentUser` 2026-10-09 删了，那条判据现在就是"有没有本机后端"）。
+   * 这一页上被那条判据挡着的入口读的全是**本机服务**的东西（`/settings`、`/skills`、
+   * `/plugins` 都在本机档的白名单上），所以按"有没有登录"判会把它们一并藏掉
+   * ——用户报过两次同类 bug（侧栏「设置」、输入框那排「权限」）。
+   * 反面同样要钉：服务器档 ⇒ 确实不该摆。
    */
   describe('能力页 · 管理员的入口（本机档 / 服务器档）', () => {
     /** 技能页上那三处（页头「设置」、联网搜索那一组、市场那一颗）。 */
@@ -940,9 +938,9 @@ describe('能力页', () => {
       ]
     }
 
-    it('本机档（没有账号）：页头「设置」、联网搜索那一组、市场、插件包卡上的操作都在', async () => {
+    it('本机档（本机主人）：页头「设置」、联网搜索那一组、市场、插件包卡上的操作都在', async () => {
       setLocalBackendForTest('local')
-      useSessionStore.setState({ token: '', currentUser: null, reloginCount: 0 })
+      useSessionStore.setState({ token: '', reloginCount: 0 })
 
       renderMisc(<CapabilitiesPage />)
       await screen.findByRole('button', { name: /浏览市场/ })
@@ -953,9 +951,9 @@ describe('能力页', () => {
       expect(await screen.findByRole('button', { name: 'demo-pack 的操作' })).toBeInTheDocument()
     })
 
-    it('服务器档 + 没有账号：这三处与插件包那一条**都不在**', async () => {
+    it('服务器档：这三处与插件包那一条**都不在**', async () => {
       setLocalBackendForTest('absent')
-      useSessionStore.setState({ token: '', currentUser: null, reloginCount: 0 })
+      useSessionStore.setState({ token: '', reloginCount: 0 })
 
       renderMisc(<CapabilitiesPage />)
       // 技能那一页照旧在（这一条钉的是那几处入口，不是整页）
@@ -966,19 +964,6 @@ describe('能力页', () => {
       await userEvent.click(screen.getByRole('tab', { name: '插件包' }))
       expect(await screen.findByText('demo-pack')).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'demo-pack 的操作' })).toBeNull()
-    })
-
-    it('服务器档 + 管理员账号：照旧都在（判据对"有账号"那一支没改）', async () => {
-      // 这一档是 NAS 网页端那一位管理员：没有本机后端，但账号是真的、角色是管理员
-      setLocalBackendForTest('absent')
-
-      renderMisc(<CapabilitiesPage />)
-      await screen.findByRole('button', { name: /浏览市场/ })
-
-      expect(entriesOnSkills().every((item) => item !== null)).toBe(true)
-
-      await userEvent.click(screen.getByRole('tab', { name: '插件包' }))
-      expect(await screen.findByRole('button', { name: 'demo-pack 的操作' })).toBeInTheDocument()
     })
   })
 

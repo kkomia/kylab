@@ -67,7 +67,6 @@ import { SettingsModal } from '@/features/misc/settings/SettingsModal'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
 import { resetAllShortcuts } from '@/features/misc/settings/useShortcuts'
-import { useSessionStore } from '@/lib/session'
 
 const getSettingsMock = vi.mocked(getSettings)
 const getRegistryMock = vi.mocked(getRegistry)
@@ -261,13 +260,6 @@ function registryView() {
   }
 }
 
-function asAdmin(): void {
-  useSessionStore.setState({
-    token: 'st',
-    currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
-    reloginCount: 0,
-  })
-}
 
 /** 把当前地址画出来：用来断言"点了那颗按钮真的跳到 `/backup`"（R5 那条唯一入口）。 */
 function LocationProbe() {
@@ -279,7 +271,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   resetToasts()
   resetAllShortcuts()
-  asAdmin()
   getSettingsMock.mockResolvedValue(settingsView())
   getRegistryMock.mockResolvedValue(registryView() as never)
   bindSlotMock.mockResolvedValue(registryView().slots[0] as never)
@@ -1112,13 +1103,14 @@ describe('「备份」与「凭据」两节（M5 阶段 7）', () => {
  * 这一行是**设置唯一的入口**（模型 key 与知识库连接都在弹窗里），所以它按什么判"我在不在"
  * 直接等于"进不进得去设置"。
  *
- * 本机档里 `currentUser` **恒为 null**：`/auth/*` 一族根本不挂 `local_router`
- * （`backend/app/api/v1/router.py`），后端把这一档短路成"本机主人"
- * （`backend/app/api/auth.py::current_caller`）。原先两处都按"有没有登录"判，于是
+ * 这一份界面没有账号体系（登录页与 `/auth/*` 一族都删了，会话状态里的 `currentUser`
+ * 也随名册 / 操作者链一起删掉）：后端把这一档短路成「本机主人」
+ * （`backend/app/api/auth.py::current_caller`），而**本机主人就是这台机器的管理员**
+ * （`lib/useIsAdmin`，判据如今就是"有没有本机后端"）。原先两处都按"有没有登录"判，于是
  * 名字留白、菜单里也没有「设置」——用户看到的就是「现在怎么左下角设置这些都没了？？」。
  *
- * 三档各摆一次答案（判据是 `api/local.ts::localBackendView`，用 `setLocalBackendForTest`
- * 直接摆好，不经过网络）：本机档无账号 / 服务器档无账号 / 本机档有管理员（回归）。
+ * 两档各摆一次答案（判据是 `api/local.ts::localBackendView`，用 `setLocalBackendForTest`
+ * 直接摆好，不经过网络）：本机档（有本机后端）/ 服务器档（没有）。
  */
 describe('账号菜单那一行（侧栏左下）', () => {
   afterEach(() => {
@@ -1126,18 +1118,8 @@ describe('账号菜单那一行（侧栏左下）', () => {
     resetLocalBackendForTest()
   })
 
-  /** 摆成"还没有账号"那一档（`currentUser` 为 null）。 */
-  function asNobody(): void {
-    useSessionStore.setState({
-      token: '',
-      currentUser: null,
-      reloginCount: 0,
-    })
-  }
-
   it('本机档：写着「本机主人」，菜单里有「设置」，点它能打开弹窗', async () => {
     setLocalBackendForTest('local')
-    asNobody()
 
     renderMisc(<AccountMenu />)
 
@@ -1161,7 +1143,6 @@ describe('账号菜单那一行（侧栏左下）', () => {
 
   it('服务器档（没有本机后端）：没有「设置」，主题那一项照旧', async () => {
     setLocalBackendForTest('absent')
-    asNobody()
 
     renderMisc(<AccountMenu />)
 
@@ -1180,32 +1161,15 @@ describe('账号菜单那一行（侧栏左下）', () => {
     expect(getRegistryMock).not.toHaveBeenCalled()
   })
 
-  it('回归：有账号的管理员 + 有本机后端——「设置」照旧在（与旧行为一致）', async () => {
+  it('回归：本机档（本机主人就是这台机器的管理员）——「设置」照旧在（与旧行为一致）', async () => {
     setLocalBackendForTest('local')
 
     renderMisc(<AccountMenu />)
 
-    await userEvent.click(screen.getByRole('button', { name: '账号：管理员' }))
+    await userEvent.click(screen.getByRole('button', { name: '账号：本机主人' }))
     const menu = await screen.findByRole('menu')
     expect(within(menu).getByRole('menuitem', { name: '设置' })).toBeInTheDocument()
     // 主题那一项的名字看当前生效的档（同文件里别的用例翻过主题，模块级状态是留着的）
     expect(within(menu).getByRole('menuitem', { name: /切换为/ })).toBeInTheDocument()
-  })
-
-  it('服务器档 + 有账号的管理员：这一档仍旧不摆「设置」（改成共享判据前后行为一字不差）', async () => {
-    // 判据从就地那一条 `local.present && (currentUser ? role === 'admin' : true)`
-    // 换成了 `lib/useIsAdmin`：有账号那一支只看角色，所以**本机后端在不在仍由这里
-    // 前面那条 `local.present` 管**——这一条钉的就是那一半没被换掉。
-    // （那一档 `/settings` 一族不存在，摆一个点进去 404 的入口比不显示更糟。）
-    setLocalBackendForTest('absent')
-    asAdmin()
-
-    renderMisc(<AccountMenu />)
-
-    await userEvent.click(screen.getByRole('button', { name: '账号：管理员' }))
-    const menu = await screen.findByRole('menu')
-    expect(within(menu).queryByRole('menuitem', { name: '设置' })).toBeNull()
-    // 入口不在，弹窗也没挂
-    expect(getSettingsMock).not.toHaveBeenCalled()
   })
 })

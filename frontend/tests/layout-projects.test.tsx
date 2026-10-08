@@ -37,10 +37,6 @@ vi.mock('@/api/conversations', () => ({
   rewindConversation: vi.fn(),
 }))
 
-vi.mock('@/api/users', () => ({
-  listUsers: vi.fn(async () => ({ items: [], header: 'X-Kylab-Operator' })),
-}))
-
 vi.mock('@/features/misc/settings/SettingsModal', () => ({ SettingsModal: () => null }))
 
 import { listConversations } from '@/api/conversations'
@@ -59,7 +55,7 @@ import { useWorkspaceStore } from '@/features/layout/workspaces'
 import { useSidebarStore } from '@/features/layout/useSidebar'
 import { resetAllShortcuts } from '@/features/misc/settings/useShortcuts'
 import { resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
-import { type Account, useSessionStore } from '@/lib/session'
+import { useSessionStore } from '@/lib/session'
 
 const listWorkspacesMock = vi.mocked(listWorkspaces)
 const createWorkspaceMock = vi.mocked(createWorkspace)
@@ -82,9 +78,6 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
   }
 }
 
-function account(role: 'admin' | 'member' = 'admin'): Account {
-  return { id: 'u1', username: 'you', name: '小又', role, avatar_url: '' }
-}
 
 function renderShell(initialPath = '/notes') {
   // 侧栏里有"划过就预取会话正文"（`prefetchConversationDetail`），它要一个 QueryClient
@@ -113,7 +106,7 @@ beforeEach(() => {
   useConversationStore.getState().reset()
   useWorkspaceStore.getState().reset()
   useSidebarStore.setState({ collapsed: false })
-  useSessionStore.setState({ currentUser: account(), token: '', reloginCount: 0 })
+  useSessionStore.setState({ token: '', reloginCount: 0 })
   resetAllShortcuts()
 })
 
@@ -341,9 +334,9 @@ describe('项目行展开要有子项（按项目补齐）', () => {
  * 新建弹窗里那颗「浏览…」的显隐（`lib/useIsAdmin`）。
  *
  * 它开的是目录浏览（三条管理员端点），而**工作区就是机器本地的路径**
- * （`/workspaces` 挂在本机档的白名单上）。本机档没有账号体系（`currentUser` 恒为 null），
- * 那一档"本机主人"就是这台机器的管理员——按"有没有登录"判会把「浏览…」藏掉，
- * 只剩一格要求用户手打路径的输入框。
+ * （`/workspaces` 挂在本机档的白名单上）。这一档的用户就是这台机器的管理员
+ * （`lib/useIsAdmin`：判据如今就是"有没有本机后端"）——按"有没有登录"判会把「浏览…」
+ * 藏掉，只剩一格要求用户手打路径的输入框。
  *
  * 三条都**直接挂弹窗**（不经侧栏）：服务器档里侧栏那节「项目」整段不渲染
  * （`api/local.ts` 那一层），从侧栏点进去根本到不了这个弹窗——而这一条要钉的是
@@ -356,9 +349,9 @@ describe('新建项目 · 「浏览…」（本机档 / 服务器档）', () => 
     return screen.getByLabelText('根目录')
   }
 
-  it('本机档（没有账号）：在，占位提示也指向它', () => {
+  it('本机档：在，占位提示也指向它', () => {
     setLocalBackendForTest('local')
-    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
+    useSessionStore.setState({ token: '', reloginCount: 0 })
 
     const root = openDialog()
 
@@ -366,22 +359,13 @@ describe('新建项目 · 「浏览…」（本机档 / 服务器档）', () => 
     expect(root).toHaveAttribute('placeholder', '点右边的「浏览…」挑一个')
   })
 
-  it('服务器档 + 没有账号：不在，那一格照旧请人直接填路径', () => {
+  it('服务器档：不在，那一格照旧请人直接填路径', () => {
     setLocalBackendForTest('absent')
-    useSessionStore.setState({ currentUser: null, token: '', reloginCount: 0 })
+    useSessionStore.setState({ token: '', reloginCount: 0 })
 
     const root = openDialog()
 
     expect(screen.queryByRole('button', { name: '浏览…' })).toBeNull()
     expect(root).toHaveAttribute('placeholder', '例如：/volume1/my-project')
-  })
-
-  it('服务器档 + 管理员账号：照旧在（判据对"有账号"那一支没改）', () => {
-    setLocalBackendForTest('absent')
-    useSessionStore.setState({ currentUser: account(), token: '', reloginCount: 0 })
-
-    openDialog()
-
-    expect(screen.getByRole('button', { name: '浏览…' })).toBeInTheDocument()
   })
 })

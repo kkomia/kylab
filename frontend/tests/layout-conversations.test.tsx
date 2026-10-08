@@ -37,10 +37,6 @@ vi.mock('@/api/workspaces', () => ({
   renameDirectory: vi.fn(),
 }))
 
-vi.mock('@/api/users', () => ({
-  listUsers: vi.fn(async () => ({ items: [], header: 'X-Kylab-Operator' })),
-}))
-
 vi.mock('@/features/misc/settings/SettingsModal', () => ({ SettingsModal: () => null }))
 
 import {
@@ -57,7 +53,7 @@ import { useConversationStore } from '@/features/layout/conversations'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
 import { useSidebarStore } from '@/features/layout/useSidebar'
 import { resetAllShortcuts } from '@/features/misc/settings/useShortcuts'
-import { type Account, useSessionStore } from '@/lib/session'
+import { useSessionStore } from '@/lib/session'
 
 const listConversationsMock = vi.mocked(listConversations)
 const updateConversationMock = vi.mocked(updateConversation)
@@ -99,9 +95,6 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
   }
 }
 
-function account(role: 'admin' | 'member' = 'admin'): Account {
-  return { id: 'u1', username: 'you', name: '小又', role, avatar_url: '' }
-}
 
 function renderShell(initialPath = '/notes') {
   // 侧栏/面板里有"划过就预取会话正文"（`prefetchConversationDetail`），它要一个
@@ -138,7 +131,7 @@ beforeEach(() => {
   useConversationStore.getState().reset()
   useWorkspaceStore.getState().reset()
   useSidebarStore.setState({ collapsed: false })
-  useSessionStore.setState({ currentUser: account(), token: '', reloginCount: 0 })
+  useSessionStore.setState({ token: '', reloginCount: 0 })
   resetAllShortcuts()
 })
 

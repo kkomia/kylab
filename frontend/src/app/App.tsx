@@ -58,8 +58,6 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { refresh as refreshProvider } from '@/api/provider'
 import { useLocalBackend } from '@/api/local'
 import { Toaster } from '@/ui/sonner'
-import { useSessionStore } from '@/lib/session'
-import { loadRoster } from '@/lib/operator'
 import { PAGES } from '@/app/routes'
 import { BackendMissingPage } from '@/app/BackendMissingPage'
 import { BackupRoute } from '@/features/backup/BackupRoute'
@@ -176,15 +174,6 @@ function BootSkeleton() {
   )
 }
 
-/** 会话恢复之后拉一次名册：上传者列、归属标注都要它（拿不到不影响使用）。 */
-function RosterBoot() {
-  const user = useSessionStore((state) => state.currentUser)
-  useEffect(() => {
-    if (user) void loadRoster()
-  }, [user])
-  return null
-}
-
 /**
  * 启动时**探一次知识库提供者**（M3 阶段 6）。
  *
@@ -220,7 +209,6 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <TitleSync />
-        <RosterBoot />
         <ProviderBoot />
         {/* 门禁在路由之外：没有本机后端时连壳都不渲染（见文件头） */}
         <LocalBackendGate>

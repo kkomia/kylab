@@ -71,7 +71,7 @@ export function DirectoryPickerDialog({
   /**
    * 目录浏览只给管理员：这三条（列目录 / 建目录 / 改名）是管理员端点。
    * 判据走共享那一条（`lib/useIsAdmin`）——`/workspaces` 那一族挂在本机档的白名单上，
-   * 而本机档没有账号体系（`currentUser` 恒为 null），按"有没有登录"判会把「浏览…」
+   * 而这一档的用户就是这台机器的管理员，按"有没有登录"判会把「浏览…」
    * 这条唯一能挑目录的路藏掉。
    */
   const isAdmin = useIsAdmin()
