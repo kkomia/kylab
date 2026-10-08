@@ -35,9 +35,9 @@ from fastapi import Depends, Header
 from app.core.config import Settings, get_settings
 from app.core.exceptions import ForbiddenError, ServiceUnavailableError, UnauthorizedError
 from app.core.services import KbServices, Services, get_kb_services
+from app.core.signing import URL_SIGNING_SECRET_SETTING
 from app.models.enums import ApiKeyPermission
 from app.services.api_key import LOCAL_CALLER, READ, WRITE, Caller, resolve_caller
-from app.services.auth import URL_SIGNING_SECRET_SETTING
 
 logger = logging.getLogger(__name__)
 

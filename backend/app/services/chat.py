@@ -15,7 +15,6 @@ import dataclasses
 import json
 import logging
 import re
-import threading
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
@@ -27,10 +26,10 @@ from app.services import subagent as subagent_service
 from app.services.approvals import ApprovalRegistry
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
 from app.services.prompt import PromptContext, build_system_prompt, setting_blocks
-from app.services.retrieval import RetrievalQuery, RetrievalService
 from app.services.runtime_config import RuntimeConfigService
 from app.services.thinking import normalize_effort
 from app.services.tool_loop import ToolLoop
+from app.storage.base import KnowledgeBaseUnavailable
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
@@ -365,27 +364,6 @@ MAX_SKILL_LOADS = 2
 #: 很容易被后续编辑弄坏（写这段时已经坏过一次：字符串里落进了真换行）。
 _SKILL_SEPARATOR = chr(10) * 2
 
-#: **整块资料的字数预算**（v25，设置项 `chat.material_chars`）。
-#:
-#: 上限的由来：6 条资料 × 每条补成 1800 字的"所在小节"最多 10800 字（约 7k token），
-#: 而真正与问题相关的往往只有其中几行。摘要（`services/summary.py`）补上了
-#: "这篇文档整体在讲什么"这层背景，于是片段本身可以更短：
-#: 预算按条数均摊，每条至少 `MIN_SOURCE_CHARS`（免得条数一多就每人只剩几十字）。
-MATERIAL_CHARS = 6000
-#: 单条资料的下限：再少就只剩下标题和表格残渣，不如不给。
-MIN_SOURCE_CHARS = 400
-#: 每条资料截断长度：一条 chunk 通常 500 字上下，超长的只取开头
-MAX_CHUNK_CHARS = 900
-
-#: 「小块检索、大块阅读」的默认预算（v17，设置项 `chat.section_chars`）。
-#:
-#: 检索按块命中（块是**定位**的粒度，RRF 与 rerank 都建立在它上面），但喂给模型的
-#: 是**命中块所在的那一小节**：一份 512 字的块常常只是某节的一段，模型据此作答时
-#: 看不到上下文，答出来的东西容易断章取义。补到 1800 字（约 3~4 块）通常够。
-#: **0 = 关闭**，只给命中的那一块——留这个开关是为了控制提示词成本，
-#: 因为这一点点上下文会让每轮多花一些 token。
-DEFAULT_SECTION_CHARS = 1800
-
 #: 资料区块的定界符。用尖括号包起来的整词，几乎不会与正常正文撞车；
 #: 区块外的一切（系统提示词、历史、用户问题）都不受这些标记影响。
 MATERIAL_BEGIN = "<<<资料 开始>>>"
@@ -394,11 +372,6 @@ MATERIAL_END = "<<<资料 结束>>>"
 #: 匹配"看起来像定界符"的写法（大小写不敏感、允许任意空白）。
 #: 用它把文档里自带的同形标记打散，见 ``neutralize``。
 _DELIMITER_LIKE = re.compile(r"<<<\s*资料\s*(开始|结束)\s*>>>", re.IGNORECASE)
-
-#: 云端解析器把 PDF 表格输出成 HTML，这些标签对模型和用户都是噪声。
-#: 只匹配真正的标签形态（``<td>``、``</tr>``、``<td rowspan="2">``、``<br/>``），
-#: 数学里的 ``a < b`` 不会被误伤。
-_HTML_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9]*(?:\s[^<>]*)?/?>")
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,77 +394,6 @@ class SourceRef:
     #: 它的作用是省 token：模型知道"这几段来自一篇讲什么的文档"，
     #: 就不必把每段都补成整个小节。空串 = 这篇还没生成摘要。
     document_summary: str = ""
-
-
-class _SectionReader:
-    """把命中块扩成"所在小节"，**一次检索内按文档缓存 chunk 列表**。
-
-    扩的口子收在这里而不是在检索服务：检索要回答的是"哪一块最像"，
-    所以命中仍是块（检索调试台看到的也是块级结果）；只有"喂给模型的内容"
-    才需要补全上下文。两者混在一起，就没法再解释"为什么这一条排第一"。
-
-    **按 ordinal 相邻向外扩，而不是按标题路径全取**：同一份文档里可能出现两处
-    同名标题（"参考资料"这类），按路径取会把两段不相干的内容拼在一起。
-    """
-
-    def __init__(self, stores, budget: int) -> None:
-        self._stores = stores
-        self._budget = budget
-        self._cache: dict[str, list] = {}
-        self._lock = threading.Lock()
-
-    def text_for(self, hit) -> str:  # type: ignore[no-untyped-def]
-        if self._budget <= 0 or not hit.heading_path:
-            return hit.text
-        chunks = self._section_chunks(hit)
-        index = next((i for i, item in enumerate(chunks) if item.chunk_id == hit.chunk_id), None)
-        if index is None:
-            return hit.text
-        picked = [chunks[index]]
-        size = len(chunks[index].text)
-        # 先往后、再往前交替取：同一小节里"下一段"通常比"上一段"更贴近命中句
-        step = 1
-        while size < self._budget:
-            moved = False
-            for offset in (index + step, index - step):
-                if not (0 <= offset < len(chunks)):
-                    continue
-                candidate = chunks[offset]
-                if size + len(candidate.text) > self._budget and len(picked) > 1:
-                    continue
-                picked.append(candidate)
-                size += len(candidate.text)
-                moved = True
-            if not moved:
-                break
-            step += 1
-        picked.sort(key=lambda item: item.ordinal)
-        return "\n\n".join(item.text for item in picked)
-
-    def _section_chunks(self, hit) -> list:  # type: ignore[no-untyped-def]
-        """命中所在**那一节**的切块（按 ordinal）。
-
-        以前这里是"把整篇文档的切块读进内存再按小节名筛"——一篇上千块时，
-        为补一段小节读了一千行。小节名就是现成的过滤条件，下推到 SQL
-        （``list_chunks_by_heading``）之后只回这一节。
-        缓存键因此是 ``(文档, 小节)`` 而不是只按文档：
-        同一篇里命中不同小节时要各取各的。
-
-        **加锁**：这个 reader 的历史用法是多查询检索时交给几个线程并发共用，
-        而字典的"查了没有就写"不是原子操作——并发下会重复读库（白花一次 IO），
-        极端时还会看到半填的列表。旧的多查询链路已随工具循环删除，现在这条路上
-        没有并发；锁留着是因为"哪天再把检索并行化"是很自然的下一步，
-        而那时候忘了加锁的数据竞争极难复现（读到半填列表，不是崩溃）。
-        """
-        key = (hit.document_id, hit.heading_path)
-        with self._lock:
-            cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        chunks = list(self._stores.meta.list_chunks_by_heading(hit.document_id, hit.heading_path))
-        with self._lock:
-            # 谁先写好算谁的：两次并发读到的是同一份库内容，覆盖也无害
-            return self._cache.setdefault(key, chunks)
 
 
 @dataclass(slots=True)
@@ -631,7 +533,6 @@ class ChatService:
 
     def __init__(
         self,
-        retrieval: RetrievalService,
         runtime: RuntimeConfigService,
         *,
         stores=None,  # type: ignore[no-untyped-def]
@@ -642,7 +543,6 @@ class ChatService:
         skills=None,  # type: ignore[no-untyped-def]
         knowledge=None,  # type: ignore[no-untyped-def]
     ) -> None:
-        self._retrieval = retrieval
         self._runtime = runtime
         #: 存储（v17）：用于把命中块补成整段小节。可选——不给就退回"只给命中的那一块"，
         #: 这样单测与脚本可以在没有存储的情况下构造它
@@ -786,113 +686,42 @@ class ChatService:
         kb_ids: list[str],
         top_k: int | None = None,
         candidate_k: int = 40,
-        reader: _SectionReader | None = None,
+        reader: object | None = None,
     ) -> list[SourceRef]:
         """先检索，拿到带编号的出处。流式回答时**先把这个发给前端**，
         用户能立刻看到"依据是哪几段"，不用等模型写完。
 
-        ``top_k`` 留空时读设置页里的「带入资料的条数」。
+        ``top_k`` 留空时由实现自己按设置取（本机这条路的默认在上游那一侧）。
 
-        ``reader`` 由调用方传入即可**跨查询/跨轮次复用**那份"按文档缓存的块列表"：
-        多查询检索时几条查询常常命中同一批文档，各建一个 reader 就会把同样的块
-        重复读好几遍（v25 起多查询并行，缓存还必须线程安全，见 ``_SectionReader``）。
+        ``reader`` 交给实现：它决定怎么把命中的块补成"所在小节"（本机不关心）。
 
-        **本机档整段委托**（M2 §2.2 的 KB 检索接缝）：构造时给了 ``knowledge`` 就把它
-        交给远端实现（NAS 上的 `POST /api/v1/search`），本机不再碰检索——向量 / 全文 /
-        切块都不在本机（见 `split_impl`）。两条路**同形同义**：返回同一形状的
-        `SourceRef`，失败**抛**（``RemoteUnavailableError``）而不是回空——
-        "没命中"与"没查到"必须分得开（见 `remote_clients.py` 模块头）。
+        **整段委托给知识库提供者**（M2 §2.2 的 KB 检索接缝）：检索（向量 / 全文 /
+        切块）都不在本机，本机只是它的客户端。返回的是同一形状的 `SourceRef`，
+        失败**抛**而不是回空——"没命中"与"没查到"必须分得开
+        （见 `remote_clients.py` 模块头）。
+
+        **没接提供者时如实抛 `KnowledgeBaseUnavailable`**（HTTP 面映射成 503）：
+        这个进程没有可查的知识库。回一个空列表等于告诉调用方"查过了，没有"，
+        而它其实**没查过**——而"资料中没有找到"这句会被模型当成结论用出去。
         """
         # 一个库都没给（v0.18 的「不使用知识库」开关）= 这一轮不查库。
-        # **在检索层直接返回空**，而不是让 `kb_ids=[]` 一路传到 SQL——
-        # 那样要么拼出 `IN ()`（语法错），要么被各存储实现各自解释一遍。
-        # 放在这里，四条调用路径（流式 / 一次性 / 非 Agent / 子 Agent）全都覆盖到；
-        # 也放在委托之前：远端那条路的交接点没有数据源，空范围不该变成一次网络往返
-        # （协议两侧本就同义，见 `knowledge_client.py` 的 ``kb_ids`` 那一行）。
+        # **在这里直接返回空**，而不是让 `kb_ids=[]` 一路传下去——
+        # 那样要么拼出 `IN ()`（语法错），要么被各实现各自解释一遍。
+        # 也放在委托之前：空范围不该变成一次网络往返（协议两侧本就同义，
+        # 见 `knowledge_client.py` 的 ``kb_ids`` 那一行）。
         if not kb_ids:
             return []
-        if self._knowledge is not None:
-            return self._knowledge.retrieve_sources(
-                query=query,
-                kb_ids=kb_ids,
-                top_k=top_k,
-                candidate_k=candidate_k,
-                reader=reader,
+        if self._knowledge is None:
+            raise KnowledgeBaseUnavailable(
+                "这个进程没有接知识库提供者：检索在别处，本机不持有那些数据"
             )
-        limit = top_k or self._runtime.get_int("chat.top_k") or MAX_CONTEXT_CHUNKS
-        # 动态返回（v0.54，见 services/retrieval/distribution.py 的模块头）：**这一条路也要开**。
-        # 它是"非 Agent / 定时任务"那条链路的取资料口，用户看到的"常见问题命中太多、
-        # 上下文太长"有一半是从这里来的（`chat.top_k` 默认 6 × 每段 ~2000 字）。
-        # 兜底阈值那两项读不到（老部署没这一项）时传空 = 保持既有行为。
-        floor = self._runtime.get_float("retrieval.floor_score")
-        baseline = self._runtime.get_float("retrieval.baseline_score") or None
-        response = self._retrieval.search(
-            RetrievalQuery(
-                query=query,
-                kb_ids=kb_ids,
-                top_k=limit,
-                candidate_k=candidate_k,
-                stats_floor=floor if floor > 0.0 else None,
-                baseline=baseline,
-            )
+        return self._knowledge.retrieve_sources(
+            query=query,
+            kb_ids=kb_ids,
+            top_k=top_k,
+            candidate_k=candidate_k,
+            reader=reader,
         )
-        if reader is None and self._stores is not None:
-            reader = _SectionReader(self._stores, self._section_chars)
-        # 每条资料的预算 = 总数均摊，**但不超过设置页那条 section_chars**，
-        # 也不低于 MIN_SOURCE_CHARS。这样"命中 6 条"总字数封顶，
-        # 而命中 2 条时仍然给得足（不必为没发生的拥挤买单）。
-        per_source = max(
-            MIN_SOURCE_CHARS,
-            min(
-                self._section_chars or MAX_CHUNK_CHARS,
-                self._material_chars // max(1, len(response.hits)),
-            ),
-        )
-        summaries = self._summaries_of([hit.document_id for hit in response.hits])
-        sources: list[SourceRef] = []
-        for index, hit in enumerate(response.hits, start=1):
-            text = reader.text_for(hit) if reader else hit.text
-            sources.append(
-                SourceRef(
-                    index=index,
-                    chunk_id=hit.chunk_id,
-                    document_id=hit.document_id,
-                    document_name=hit.document_name or hit.document_id,
-                    heading_path=hit.heading_path,
-                    page=hit.page,
-                    score=hit.score,
-                    preview=_preview(text, limit=per_source),
-                    knowledge_base_id=hit.knowledge_base_id,
-                    document_summary=summaries.get(hit.document_id, ""),
-                )
-            )
-        return sources
-
-    @property
-    def _section_chars(self) -> int:
-        """这一轮资料的小节预算。设置页把它设成 0 就等于回到"只给命中块"。"""
-        configured = self._runtime.get_int("chat.section_chars")
-        return DEFAULT_SECTION_CHARS if configured is None else configured
-
-    @property
-    def _material_chars(self) -> int:
-        """整块资料的字数预算（按条数均摊，见 ``MATERIAL_CHARS``）。"""
-        configured = self._runtime.get_int("chat.material_chars")
-        # 0 或负数视为"没配"：预算为 0 会让资料块整个空掉，那不是配置项该有的效果
-        return MATERIAL_CHARS if not configured or configured <= 0 else configured
-
-    def _summaries_of(self, document_ids: list[str]) -> dict[str, str]:
-        """一次取回这批文档的摘要（`{document_id: 摘要}`，空串表示还没生成）。
-
-        **一条批量查询**：逐篇取会变成 N+1，而这段代码在每轮问答的路径上。
-        """
-        if self._stores is None:
-            return {}
-        wanted = list(dict.fromkeys(document_ids))
-        if not wanted:
-            return {}
-        documents = self._stores.meta.get_documents_by_ids(wanted)
-        return {document_id: (record.summary or "") for document_id, record in documents.items()}
 
     def answer(
         self,
@@ -1783,23 +1612,3 @@ def neutralize(text: str) -> str:
     大小写不敏感：模型对大小写不敏感，防护也不能只防一种写法。
     """
     return _DELIMITER_LIKE.sub(lambda m: m.group(0).replace(" ", "·"), text)
-
-
-def _preview(text: str, *, limit: int = MAX_CHUNK_CHARS) -> str:
-    """压平空白 → 剥掉 HTML 标记 → 截断。
-
-    两个坑都是实测踩到的：
-
-    1. chunk 里带换行与缩进，直接拼进提示词会把「资料」的结构搞乱，先全部压成空格；
-    2. **解析器会把 PDF 的表格输出成 HTML**（实测一份专家共识里 40/136 个 chunk
-       是 ``<table><tr><td>`` 片段）。原样送进模型，表格数据会被标签噪声淹没；
-       原样显示在引用列表里，用户第一眼看到的是 ``</td><td>``。
-       这一层同时供提示词与界面使用，所以在这里剥最划算——改一处两处都对。
-
-    只剥"看起来像标签"的部分，不认识的角括号原样保留：正文里出现 ``a < b``
-    不该被连内容一起吃掉。
-    """
-    body = _HTML_TAG.sub(" ", " ".join(text.split()))
-    body = " ".join(body.split())
-    keep = max(1, int(limit))
-    return body[:keep] + ("…" if len(body) > keep else "")

@@ -12,13 +12,11 @@ from app.services.chat import (
     DEFAULT_SYSTEM_PROMPT,
     MATERIAL_BEGIN,
     MATERIAL_END,
-    MAX_CHUNK_CHARS,
     ChatService,
     SourceRef,
     build_messages,
     neutralize,
 )
-from app.services.chat import _preview as preview_of
 from app.services.llm import ChatError, ChatMessage
 from app.services.tool_loop import ToolOutcome
 
@@ -300,47 +298,6 @@ def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -
     assert "眼轴长度是主要参数之一" in fake.received[0][0].content
 
 
-def test_preview_is_truncated_and_whitespace_collapsed() -> None:
-    """资料原文要先压平空白再截断：chunk 里有换行与缩进，直接拼进提示词会把结构搞乱。"""
-    long_text = "第一行\n\n第二行   " + "内容" * 800
-
-    preview = preview_of(long_text)
-
-    assert "\n" not in preview
-    assert preview.endswith("…")
-    assert len(preview) <= MAX_CHUNK_CHARS + 1
-
-
-def test_preview_strips_table_html_from_parsers() -> None:
-    """云端解析器把表格输出成 HTML，标签必须剥掉。
-
-    实测一份专家共识里 40/136 个 chunk 是 ``<table><tr><td>`` 片段。
-    原样送进模型会淹没表格数据，原样显示在引用列表里，用户看到的第一眼是
-    ``</td><td>``。这一层同时供提示词与界面使用，所以在这里剥。
-    """
-    table = (
-        '<table><tr><td rowspan="2">年龄</td><td>21.19</td><td>21.38</td></tr>'
-        "<tr><td>6</td><td>21.74</td></tr></table>"
-    )
-
-    preview = preview_of(table)
-
-    assert "<" not in preview and ">" not in preview
-    assert "rowspan" not in preview
-    # 数据本身要留着——剥的是标记，不是内容
-    assert "21.19" in preview and "21.74" in preview
-    assert "年龄" in preview
-    assert "  " not in preview
-
-
-def test_preview_keeps_plain_angle_brackets() -> None:
-    """正文里的 ``a < b`` 不是标签，不能被连内容一起吃掉。"""
-    preview = preview_of("约束条件：当 a < b 且 b <= c 时成立。")
-
-    assert "a < b" in preview
-    assert "b <= c" in preview
-
-
 def test_stream_yields_pieces_in_order(runtime, bind_slot) -> None:
     fake = FakeChat("一二三")
     service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda config: fake)
@@ -380,17 +337,6 @@ class _EmptyRetrieval:
         return type("Response", (), {"hits": []})()
 
 
-# ------------------------------------------------- 小块检索、大块阅读（v17）
-
-
-def _chunk(chunk_id: str, ordinal: int, text: str, heading: str | None = "3 监测"):  # type: ignore[no-untyped-def]
-    return type(
-        "Chunk",
-        (),
-        {"chunk_id": chunk_id, "ordinal": ordinal, "text": text, "heading_path": heading},
-    )()
-
-
 class _SectionStores:
     """只提供 `meta.list_chunks_by_heading` 的假存储。
 
@@ -408,118 +354,7 @@ class _SectionStores:
         return [chunk for chunk in self._chunks if chunk.heading_path == heading_path]
 
 
-def _reader(chunks, budget: int):  # type: ignore[no-untyped-def]
-    from app.services.chat import _SectionReader
-
-    stores = _SectionStores(chunks)
-    return _SectionReader(stores, budget), stores
-
-
-def test_section_reader_extends_around_the_hit() -> None:
-    """命中块只是某节的一段：补上同一小节的相邻块，模型才看得到上下文。"""
-    chunks = [_chunk("c1", 0, "甲" * 10), _chunk("c2", 1, "乙" * 10), _chunk("c3", 2, "丙" * 10)]
-    reader, _ = _reader(chunks, 1000)
-    hit = type(
-        "Hit",
-        (),
-        {"chunk_id": "c2", "document_id": "d1", "heading_path": "3 监测", "text": "乙" * 10},
-    )()
-
-    text = reader.text_for(hit)
-
-    assert "甲" in text and "乙" in text and "丙" in text
-    # 顺序按 ordinal 还原，而不是按"取到的顺序"
-    assert text.index("甲") < text.index("乙") < text.index("丙")
-
-
-def test_section_reader_respects_the_budget() -> None:
-    """预算上限必须守住：小节合并是为了让模型看懂，不是为了把提示词撑爆。"""
-    chunks = [_chunk(f"c{i}", i, "字" * 100) for i in range(10)]
-    reader, _ = _reader(chunks, 250)
-    hit = type(
-        "Hit",
-        (),
-        {"chunk_id": "c0", "document_id": "d1", "heading_path": "3 监测", "text": "字" * 100},
-    )()
-
-    text = reader.text_for(hit)
-
-    assert len(text) <= 250
-
-
-def test_section_reader_stops_at_the_heading_boundary() -> None:
-    """相邻但不同小节的块不该混进来：那是另一段话，拼上会误导模型。"""
-    chunks = [
-        _chunk("c1", 0, "上一节的内容", heading="2 方法"),
-        _chunk("c2", 1, "命中的这一段", heading="3 监测"),
-        _chunk("c3", 2, "下一节的内容", heading="4 结论"),
-    ]
-    reader, _ = _reader(chunks, 1000)
-    hit = type(
-        "Hit",
-        (),
-        {"chunk_id": "c2", "document_id": "d1", "heading_path": "3 监测", "text": "命中的这一段"},
-    )()
-
-    text = reader.text_for(hit)
-
-    assert text == "命中的这一段"
-
-
-def test_section_reader_is_off_when_budget_is_zero() -> None:
-    """0 = 关闭（设置页的开关）：只给命中的那一块，且**不去读存储**。"""
-    reader, stores = _reader([_chunk("c1", 0, "内容")], 0)
-    hit = type(
-        "Hit", (), {"chunk_id": "c1", "document_id": "d1", "heading_path": "3 监测", "text": "内容"}
-    )()
-
-    assert reader.text_for(hit) == "内容"
-    assert stores.calls == 0
-
-
-def test_section_reader_without_heading_does_not_expand() -> None:
-    """没有标题路径（整篇没标题的纯文本）就没有"小节"可言，不扩。"""
-    reader, stores = _reader([_chunk("c1", 0, "内容", heading=None)], 1000)
-    hit = type(
-        "Hit", (), {"chunk_id": "c1", "document_id": "d1", "heading_path": None, "text": "内容"}
-    )()
-
-    assert reader.text_for(hit) == "内容"
-    assert stores.calls == 0
-
-
-def test_section_reader_reads_each_document_once() -> None:
-    """同一次检索里多条命中落在同一份文档：chunk 列表只读一次。"""
-    chunks = [_chunk(f"c{i}", i, "字" * 50) for i in range(4)]
-    reader, stores = _reader(chunks, 200)
-
-    def hit(cid: str):  # type: ignore[no-untyped-def]
-        return type(
-            "Hit",
-            (),
-            {
-                "chunk_id": cid,
-                "document_id": "d1",
-                "heading_path": "3 监测",
-                "text": "字" * 50,
-            },
-        )()
-
-    reader.text_for(hit("c0"))
-    reader.text_for(hit("c1"))
-
-    assert stores.calls == 1
-
-
-def test_preview_honours_a_custom_limit() -> None:
-    """截断上限可传：小节合并后按小节预算截，而不是老死 900 字。"""
-    body = "字" * 2000
-
-    assert len(preview_of(body, limit=1800)) <= 1801
-    assert len(preview_of(body)) <= MAX_CHUNK_CHARS + 1
-
-
-# ------------------------------------------------- 资料装配：摘要与预算（v25）
+# ------------------------------------------------- 资料装配：文档摘要（v25）
 
 
 def _source(index: int, document_id: str, summary: str = "", preview: str = "片段"):  # type: ignore[no-untyped-def]
@@ -564,19 +399,6 @@ def test_document_without_summary_adds_no_noise() -> None:
     )
 
     assert "文档背景" not in messages[0].content
-
-
-def test_material_budget_caps_the_total_material() -> None:
-    """**整块资料有字数预算**（v25）：命中 6 条时不再每人都补成 1800 字的小节。
-
-    这是省 token 的落点：摘要补上了"文档在讲什么"这层背景，片段本身可以更短。
-    """
-    from app.services.chat import MATERIAL_CHARS, MIN_SOURCE_CHARS
-
-    assert MATERIAL_CHARS == 6000
-    assert MIN_SOURCE_CHARS < MATERIAL_CHARS
-    # 6 条命中时每条的上限 = 6000 / 6 = 1000 字，明显小于 section_chars 的 1800
-    assert MATERIAL_CHARS // 6 < 1800
 
 
 # --------------------------------------------------------------- 长期记忆注入

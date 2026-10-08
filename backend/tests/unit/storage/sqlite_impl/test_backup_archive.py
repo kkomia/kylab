@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.auth import URL_SIGNING_SECRET_SETTING
+from app.core.signing import URL_SIGNING_SECRET_SETTING
 from app.services.runtime_config import SECRET_KEYS
 from app.storage.base import (
     ARTIFACT_IN_OBJECTS,

@@ -617,10 +617,10 @@ def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[n
 
 
 def test_the_kb_seam_is_delegated_when_given(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """**KB 接缝给了就整段委托**（M2 §2.2，落在 `ChatService.retrieve_sources`）✓。
+    """**KB 接缝整段委托**（M2 §2.2，落在 `ChatService.retrieve_sources`）✓。
 
-    边车这一侧换的只是实现 ✓（`build_runner` 的 `search` 那一支只认这个方法名 ✓，
-    所以"循环不改"成立 ✓）；服务器档**不传** knowledge，走进程内检索（一位不变 ✓）。
+    边车这一侧只有这一条实现：检索在别处（提供者），本机不碰向量仓库
+    ✓（`build_runner` 的 `search` 那一支只认这个方法名 ✓，所以"循环不改"成立 ✓）。
     """
     calls: list[dict[str, Any]] = []
 
@@ -629,9 +629,9 @@ def test_the_kb_seam_is_delegated_when_given(tmp_path) -> None:  # type: ignore[
             calls.append(kwargs)
             return ["远端命中的一段"]
 
-    # `retrieval` / `runtime` 给个占位对象即可：委托那一支**碰都不碰它们** ✓
+    # `runtime` 给个占位对象即可：委托那一支**碰都不碰它** ✓
     # （这正是"整段委托"的意思——本机连向量仓储都没有）。
-    chat = ChatService(object(), object(), knowledge=_FakeKnowledge())  # type: ignore[arg-type]
+    chat = ChatService(object(), knowledge=_FakeKnowledge())  # type: ignore[arg-type]
 
     found = chat.retrieve_sources(query="问一句", kb_ids=["kb1"], top_k=3)
 
@@ -643,6 +643,20 @@ def test_the_kb_seam_is_delegated_when_given(tmp_path) -> None:  # type: ignore[
     # 一个库都没给 = 这一轮不查库：**在委托之前就返回空** ✓（空范围不该变成一次网络往返）
     assert chat.retrieve_sources(query="问一句", kb_ids=[]) == []
     assert len(calls) == 1
+
+
+def test_without_a_knowledge_seam_the_retrieval_says_why(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """**没接提供者时如实抛 `KnowledgeBaseUnavailable`**（HTTP 面 503），不是回空列表。
+
+    回空等于告诉调用方"查过了，没有"——而它其实**没查过**，而"资料中没有找到"
+    这句会被模型当成结论用出去。
+    """
+    from app.storage.base import KnowledgeBaseUnavailable
+
+    chat = ChatService(object())  # type: ignore[arg-type]
+
+    with pytest.raises(KnowledgeBaseUnavailable):
+        chat.retrieve_sources(query="问一句", kb_ids=["kb1"])
 
 
 def test_search_in_a_turn_goes_to_the_nas(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

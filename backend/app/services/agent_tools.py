@@ -271,33 +271,6 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
         },
     },
     {
-        "name": "list_tables",
-        "description": (
-            "列出**有结构化副本的表格文档**（入库的 CSV / Excel），带表名、列名与行数。"
-            "**要回答统计类问题（一共多少、哪个月最高、按人汇总）时先调它**，"
-            "再用 query_table 查——检索只给最相关的几行，答不了「一共」。"
-        ),
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "query_table",
-        "description": (
-            "对表格副本跑一条**只读 SQL**（DuckDB 语法，只能 SELECT / WITH）。"
-            "表名就是 list_tables 给的那个 document_id，列名就是 CSV 的表头。"
-            "**聚合统计必须走它**：`SELECT sum(金额) FROM doc_xxx`。"
-            "结果最多回几百行——要精确的数字请让 SQL 自己算（sum / count / group by）。"
-            "它不能改数据、不能读写文件、也不能查这一轮范围之外的文档。"
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "sql": {"type": "string", "description": "一条 SELECT / WITH 查询"},
-                "limit": {"type": "integer", "description": "最多回多少行，默认 100"},
-            },
-            "required": ["sql"],
-        },
-    },
-    {
         "name": "schedule_task",
         "description": (
             "**挂一条定时任务**：到点自动替对方跑这句话，结果落在一条会话里。"
@@ -400,8 +373,8 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
         "description": (
             "把**会话里已经有的一份文件**加进知识库（对方上传的、或你自己产出的都算）。"
             "`path` 给 `list_conversation_files` 的 key，或工作区/沙箱里的相对路径"
-            "（后者可用 `where` 指定哪个根）。入库是异步的：返回 document_id 后"
-            "用 `get_document_status` 查进度，处理完就能被 `search` 检索到。"
+            "（后者可用 `where` 指定哪个根）。入库是异步的：返回 document_id 之后"
+            "还要等那边处理完才能被 `search` 检索到。"
             "**图片 / PDF / Office 这类读不出文本的文件，看内容就只有这一条路。**"
             "大文件也走这个（`upload_document` 要把内容写成 base64 放进参数，只适合很小的文本）。"
         ),
@@ -429,7 +402,7 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
 #: 这些工具**同样属于知识库那一侧**：关掉知识库开关时它们一起消失。
 #: 判据是"数据从哪来"——表格副本就是入库文档的产物，用户关掉知识库时
 #: 不该还留一条按 SQL 读库里内容的近路（与 ``_KB_TOOLS`` 同一条纪律）。
-_LOCAL_KB_TOOLS = frozenset({"list_tables", "query_table", "ingest_file"})
+_LOCAL_KB_TOOLS = frozenset({"ingest_file"})
 
 #: 文件三件事：一趟走 ``agent_files`` 的那三个函数（它们共用"两个根"的解析）。
 _FILE_TOOLS = frozenset({"list_files", "read_file", "search_files"})
@@ -500,8 +473,8 @@ def _memory_on(services: Any) -> bool:
 #:
 #: 用户把会话上的知识库开关关掉时（这一轮的 ``kb_ids`` 为空），这些工具
 #: **一个都不出现在工具表里**。改之前只是"检索会被拒绝"——工具照给，
-#: 于是模型每轮都先 `list_knowledge_bases` 看一眼、再 `search` 一次，
-#: 拿到一句"这一轮没有可查的知识库"，两个来回就这么花掉了
+#: 于是模型每轮都先问一句"有哪些库"、再 `search` 一次，拿到一句
+#: "这一轮没有可查的知识库"，两个来回就这么花掉了
 #: （用户报的现象："没开知识库，但每轮都去知识库检索"）。
 #:
 #: 边界**只画在知识库上**：记忆（`recall` / `remember`）与笔记（`create_note` /
@@ -511,13 +484,7 @@ def _memory_on(services: Any) -> bool:
 _KB_TOOLS = frozenset(
     {
         "search",
-        "list_knowledge_bases",
-        "create_knowledge_base",
-        "list_documents",
-        "get_document_status",
-        "delete_document",
         "upload_document",
-        "add_data_source",
         "attach_note_to_kb",
         "ingest_artifact",
     }
@@ -1236,10 +1203,6 @@ def build_runner(
                 approval=outcome.approval,
                 outcome=blocked_kind,
             )
-        if name == "list_tables":
-            return _list_tables(services, scope)
-        if name == "query_table":
-            return _query_table(services, scope, args)
         if name == "schedule_task":
             return _schedule_task(services, caller, scope, args)
         if name == "list_scheduled_tasks":
@@ -1723,7 +1686,7 @@ def _ingest_file(
             f"{outcome.document.name} → {outcome.document.id}",
             "内容与库里已有文档相同，没有重复入库"
             if outcome.is_duplicate
-            else "已入队处理，可以用 get_document_status 查进度；处理完就能被 search 检索到",
+            else "已入队处理，处理完就能被 search 检索到",
         ),
         summary="已放进知识库" if not outcome.is_duplicate else "库里已有同一份",
     )
@@ -1778,58 +1741,8 @@ def _write_memory(services: Any, caller: Caller, args: dict[str, Any]) -> ToolOu
     )
 
 
-def _list_tables(services: Any, scope: list[str]) -> ToolOutcome:
-    """列有结构化副本的表格。范围与 ``search`` 同一套：**会话选定的那些库**。"""
-    if not scope:
-        return ToolOutcome(content=_NO_KB_SCOPE, summary="没有可查的知识库")
-    items = services.kb.tabular.tables(kb_ids=scope)
-    if not items:
-        return ToolOutcome(
-            content=(
-                "这一轮能查的库里没有表格文档（只有 CSV / Excel 会有结构化副本）。"
-                "PDF、Word 里的表格答不了统计问题——那是检索的活。"
-            ),
-            summary="没有表格可查",
-        )
-    lines = []
-    for item in items:
-        columns = "、".join(str(name) for name in item["columns"])
-        lines.append(f"{item['document_id']}（{item['name']}，{item['rows']} 行）\n  列：{columns}")
-    return ToolOutcome(
-        content=_join_blocks(
-            "有结构化副本的表格（SQL 里用这个 id 当表名）：",
-            chr(10).join(lines),
-            "统计类问题用 query_table 跑 SQL；只是想看几行原文用 read_document 那条路（检索）。",
-        ),
-        summary=f"{len(items)} 张表",
-    )
 
 
-def _query_table(services: Any, scope: list[str], args: dict[str, Any]) -> ToolOutcome:
-    if not scope:
-        return ToolOutcome(content=_NO_KB_SCOPE, summary="没有可查的知识库")
-    sql = str(args.get("sql") or "")
-    try:
-        payload = services.kb.tabular.query_sql(
-            sql=sql, kb_ids=scope, limit=_int_or_none(args.get("limit")) or 100
-        )
-    except Exception as exc:
-        # 报错**原样回给模型**：里面的措辞是照着"它下一步该怎么做"写的
-        # （表名不在范围内会告诉它能用哪些表），包装成"查询失败"就白写了
-        logger.info("表格查询被拒或失败：%s", sanitize_log_value(exc))
-        return ToolOutcome(content=str(exc), summary="查询没跑成")
-    columns = [str(item) for item in payload["columns"]]
-    rows: list = payload["rows"] if isinstance(payload["rows"], list) else []
-    body = _table_text(columns, [[str(cell) for cell in row] for row in rows])
-    return ToolOutcome(
-        content=_join_blocks(
-            f"SQL：{payload['sql']}",
-            body,
-            f"{len(rows)} 行" + ("（已达上限，可能还有更多）" if payload["truncated"] else ""),
-            str(payload["note"]),
-        ),
-        summary=f"查到 {len(rows)} 行" if rows else "查询没有结果",
-    )
 
 
 def _table_text(columns: list[str], rows: list[list[str]]) -> str:
@@ -2085,7 +1998,7 @@ def _summary(name: str, payload: Any) -> str:
     """给过程面板一句人话。**只处理"结果里有条数"的那几个**，
     其余留给 `step_detail` 回退到结果开头——写死一堆猜的摘要不如不写。
 
-    **裸列表也要认**（v0.22）：`list_knowledge_bases` 返回的就是一个 list，
+    **裸列表也要认**（v0.22）：有些工具回的就是一个 list（比如技能清单），
     而第一版只处理 dict 里的 ``items``——于是那一行的回退路径把整个 JSON
     原样显示出来了（实测截图：面板里是
     ``[{"id": "kb_...", "name": "城市建成环境研究现状", "documents": 23…``）。
@@ -2099,14 +2012,6 @@ def _summary(name: str, payload: Any) -> str:
         if isinstance(payload, list)
         else (payload.get("items") if isinstance(payload, dict) else None)
     )
-    if name == "list_knowledge_bases" and isinstance(items, list):
-        return f"共 {len(items)} 个知识库"
-    if name == "list_documents" and isinstance(payload, dict):
-        total = payload.get("total")
-        if isinstance(total, int):
-            return f"共 {total} 篇文档"
-    if name == "get_document_status" and isinstance(payload, dict):
-        return f"当前阶段：{payload.get('stage') or '未知'}"
     if name == "recall" and isinstance(items, list):
         return f"查到 {len(items)} 条变更"
     if name == "list_notes" and isinstance(payload, dict):
@@ -2139,15 +2044,9 @@ def _summary(name: str, payload: Any) -> str:
         return f"已存为笔记「{payload.get('title') or ''}」"
     if name == "attach_note_to_kb" and isinstance(payload, dict):
         return "已把笔记加入知识库"
-    if name == "create_knowledge_base" and isinstance(payload, dict):
-        return f"已新建知识库「{payload.get('name') or ''}」"
     if name == "upload_document" and isinstance(payload, dict):
         suffix = "（库里已有同样的内容）" if payload.get("is_duplicate") else ""
         return f"已上传「{payload.get('name') or ''}」{suffix}"
-    if name == "add_data_source" and isinstance(payload, dict):
-        return f"已登记数据源「{payload.get('name') or ''}」"
-    if name == "delete_document" and isinstance(payload, dict):
-        return "已删除这份文档（7 天内可恢复）"
     if name == "search" and isinstance(payload, dict):
         hits = payload.get("hits")
         if isinstance(hits, list):

@@ -27,11 +27,10 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from app.parsers.mineru_cloud import MinerUCloudParser
-from app.services.observability import OVERDUE_AFTER, ObservabilityService
 from app.storage.base import StoreBundle
 
 __all__ = [
@@ -45,6 +44,10 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+#: PENDING 任务超过这个时间还没被领取，就认为"该跑没跑"。
+#: 正常情况下一秒内就会被领走——排队不该排十分钟。
+OVERDUE_AFTER = timedelta(minutes=10)
 
 CONFIG_CACHE_SECONDS = 30.0
 """运行期配置的短缓存时长。见 ``_mineru_configured_cached``。"""
@@ -176,7 +179,6 @@ class SystemLoadService:
         concurrency: int = 1,
         mineru_quota_pages: int = 1000,
         mineru_configured: Callable[[], bool] | None = None,
-        observability: ObservabilityService | None = None,
         host: HostProbe | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -184,10 +186,6 @@ class SystemLoadService:
         self._slots = max(1, int(concurrency))
         self._mineru_quota = max(0, int(mineru_quota_pages))
         self._mineru_configured = mineru_configured or (lambda: True)
-        # **复用可观测性那个唯一的判据**：停滞 = 租约过期、逾期 = 等太久，
-        # 都是 ``ObservabilityService.assess`` 的判断。在这里另写一套阈值
-        # 就等于同一件事有两种说法，而"哪一套才对"没人说得清。
-        self._observability = observability or ObservabilityService(stores)
         # 探针**惰性构造**：装配服务时不该去碰 psutil 的进程句柄，
         # 也不该让"没装 psutil"变成启动失败——面板挂了不该拖垮整个 API。
         self._host = host

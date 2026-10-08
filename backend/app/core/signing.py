@@ -11,18 +11,57 @@
 - 校验只需要一个密钥，因此重启进程、多进程部署都不影响已发出的链接；
 - 到期即失效，不需要清理任务。
 
-密钥来源：``KYLAB_URL_SIGNING_SECRET``（或首次初始化时落库的那一条）；都没有则签不出。
-**三个都没有时不允许签发**：那时系统处于"无鉴权"状态，与其发一个永远有效的链接，
-不如让调用方走需要鉴权的常规接口（见 api 层的处理）。
+密钥来源：``KYLAB_URL_SIGNING_SECRET``，或组合根在装配时补进 ``app_settings`` 的那一条
+（见 :func:`ensure_url_signing_secret`）；都没有则签不出。
+**两处都没有时不允许签发**：与其发一个永远有效的链接，不如让调用方如实回 503
+（那不是"没登录"，是"这台机器还没配好"，见 ``api/auth.py`` 的说明）。
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
+import secrets
 import time
+from typing import TYPE_CHECKING
 
-__all__ = ["DEFAULT_TTL_SECONDS", "SigningError", "sign_resource", "verify_resource"]
+if TYPE_CHECKING:  # 只为标注：这一层不该在导入期把存储层拉进来
+    from app.storage.base import MetaStore
+
+__all__ = [
+    "DEFAULT_TTL_SECONDS",
+    "URL_SIGNING_SECRET_SETTING",
+    "SigningError",
+    "ensure_url_signing_secret",
+    "sign_resource",
+    "verify_resource",
+]
+
+logger = logging.getLogger(__name__)
+
+#: 下载签名密钥在 ``app_settings`` 里的键。
+URL_SIGNING_SECRET_SETTING = "auth.url_signing_secret"  # noqa: S105
+
+
+def ensure_url_signing_secret(meta: MetaStore) -> str:
+    """把那条下载签名密钥准备好，回它的值（**幂等**：已经有就不动）。
+
+    **没有任何初始化流程**的部署靠它：这一档不挂 ``/auth/*``，而它的 ``kylab.db``
+    是全新的——不在组合根补这一下，那条键就永远是空的，于是"下载签名"这条线上的
+    每一个端点都回 503（笔记配图 / 产物下载 / 会话文件），前端再把它当成别的问题。
+    组合根在装配时调它一次（见 ``core/services.py``）。
+
+    **幂等是硬要求**：已有就原样返回，绝不每次启动换一把——换了的话，所有已经发出去
+    的签名链接会一起失效（而"凭据轮换、链接不失效"正是这条键独立存在的原因）。
+    """
+    current = meta.get_setting(URL_SIGNING_SECRET_SETTING)
+    if current:
+        return str(current)
+    generated = secrets.token_urlsafe(32)
+    meta.set_setting(URL_SIGNING_SECRET_SETTING, generated)
+    logger.info("已生成下载签名密钥并落库（这条键原来没有：组合根补的）")
+    return generated
 
 #: 默认有效期。下载是"点一下马上就开始"的动作，几分钟足够；
 #: 太长会让一条链接在聊天记录/日志里长期可用，而它的内容是知识库原文。

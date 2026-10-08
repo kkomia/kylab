@@ -1,42 +1,23 @@
-"""**本机档的消费者**（定时任务 + 本机库的空闲维护）。
+"""本机消费者：定时任务到点跑 + 本机库的空闲维护。
 
-服务器档那个消费者（``queue_worker.TaskWorker``）跑的是**摄取流水线**：认领任务 →
-解析 / 切块 / 嵌入 / 向量索引。本机档没有那几张表（知识库在 NAS 上），所以那条循环在本机
-只会每隔几秒撞一次不可用的库——于是 M2 时期的结论是"本机档不起消费者"
-（见 `app/main.py` 的 lifespan）。那个结论对**摄取**是对的，但它顺手把两件
-**本机真的需要、且数据真在本机**的事一起漏掉了：
+这个进程只服务**这台机器**，而它手上真正需要有人定期做的事只有两件：
 
 1. **定时任务到点了没人跑**：调度记录落在本机库的 `scheduled_tasks` 表里
    （`ScheduleRepo` 属本机域），"到点"判定也在本机（`due_scheduled_tasks`）——
-   但那条链的下一环是"入队"，而队列表（`TaskQueueRepo`）在 NAS 上。
-   于是界面上建好的任务永远是"下次运行时间"往后跳、什么也不发生；
+   没有这一环，界面上建好的任务永远是"下次运行时间"往后跳、什么也不发生；
 2. **本机库只增不减**：`usage_events` 有保留期（`usage.USAGE_RETENTION_DAYS`），
-   而清它的那个动作挂在服务器档消费者的空闲分支上（`core/services.py::_maintain`）
-   ——本机档没有那个分支，所以它一次都没跑过。
+   幂等键同理——没有这一环它们一次都不会被清。
 
-所以这一模块只做这两件事，**一行摄取都不做**：
+所以这一模块只做这两件事，**一行摄取都不做**：摄取（解析 / 切块 / 嵌入 / 向量索引）
+是知识库那边的家当，本机连那几张表都没有（知识库在别处，本机是它的客户端）。
 
-| 这一档 | 服务器档 |
-| --- | --- |
-| 到点 → 交给本机运行队列（`ScheduleRunner`）直接跑 | 到点 → 入队，消费者认领后跑 |
-| 空闲维护：**只碰本机表**（用量） | 空闲维护：清回收站 / 幂等键 / 任务与阶段事件 / 补摘要 |
+**安全边界**：本机的空闲维护**只调用本机域那几个方法**（过期的用量行与幂等键，
+保留期分别是 180 天与存储层自己那条）。不往知识库那份维护清单上凑：里面那些
+（清回收站 / 任务与阶段事件 / 文档摘要）动的是知识库的数据，而那些数据不在这台机器上，
+判定必须跟着数据走。
 
-**为什么不复用 `TaskWorker`**：它的一半循环（消费 / 续租 / 看门狗 / 补摘要）每一个
-第一步都要读 KB 域的表（`claim_task` / `reclaim_expired_tasks` / `sweep_stalled` /
-`list_documents_without_summary`），在本机档全部抛 `KnowledgeBaseUnavailable`
-——那是"进程里那个协程每几秒撞一次墙"的形态，正是 M2 要避免的。而本机这半边**没有**
-租约、没有重试、没有崩溃回收（本机档跑的是自己这台机器上的一次问答，进程没了就是没了，
-下一次到点会再来一遍）。
-
-**安全边界**（起点就在这条纪律上）：本机的空闲维护**只调用本机域那几个方法**
-（现在只有 `usage.purge_expired()`，它的下界是 `USAGE_RETENTION_DAYS = 180` 天）。
-不复制服务器那份 `_maintain`：里面的 `purge_expired_trash` 会**连磁盘上的原文一起删**，
-`prune_history` 删的是文档阶段事件——那些数据都在 NAS 上，而"什么该删"的判定必须跟着
-数据走（NAS 那份消费者自己会做，它管的是它自己的库）。
-
-**默认起、可关**：它只做"用户自己建过的定时任务"与"过期的用量行"，没有一条是
-"用户没要过的动作"，所以本机档默认就起（与服务器档的 `KYLAB_RUN_WORKER` 同一把开关：
-设成假值两边都不起，见两个入口里的那几行）。
+**默认起、可关**：它只做"用户自己建过的定时任务"与"到期的本机行"，没有一条是
+"用户没要过的动作"，所以默认就起（`KYLAB_RUN_WORKER=false` 可以关掉）。
 """
 
 from __future__ import annotations
@@ -49,14 +30,8 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from app.services.schedule_runner import run_scheduled_task
-from app.workers.queue_worker import (
-    DEFAULT_MAINTAIN_INTERVAL,
-    DEFAULT_SCHEDULE_INTERVAL,
-)
 
-if TYPE_CHECKING:
-    # **只在类型检查时导入**：`core.services` 的组合根要 import `workers.queue_worker`
-    # （上面的常量与服务器档那个消费者），运行时再 import 它就多一条无用的边。
+if TYPE_CHECKING:  # 只为标注：组合根与本模块互相是对方的调用方，运行时导入会成环
     from app.core.services import Services
 
 __all__ = ["LocalScheduler", "bind_local_scheduler", "run_local_scheduler"]
@@ -67,6 +42,13 @@ logger = logging.getLogger(__name__)
 #: 本机档没有队列表，这个 id 不进任何表，只在"立即跑一次"的响应里当标识用
 #: （见 `services/schedules.py::run_now` 的说明）。
 RUN_ID_PREFIX = "localrun_"
+
+#: 两个节拍。**原先住在 ``workers/queue_worker.py``**（服务器档那个消费者）——
+#: 那个消费者随服务器档一起删了，常量搬到这里，值一个没动。
+#: ``DEFAULT_MAINTAIN_INTERVAL``：本机库的空闲维护一小时一次（防表长大）；
+#: ``DEFAULT_SCHEDULE_INTERVAL``：定时任务到点判定 20 秒一轮。
+DEFAULT_MAINTAIN_INTERVAL = 3600.0
+DEFAULT_SCHEDULE_INTERVAL = 20.0
 
 
 class LocalScheduler:
@@ -163,12 +145,28 @@ class LocalScheduler:
     def _maintain(self) -> None:
         """本机库自己的收尾：**只碰本机域的表**（见模块头"安全边界"）。
 
-        现在只有一件：过期的用量行（`usage_events` 是本机域唯一的"有保留期的表"）。
-        做法与服务器档那份 `_maintain` 一致——由服务层去做（这个类不碰存储细节）。
+        两件，都是"本来就没有调用者"的承诺——写在存储层很久了，但从没人调，
+        于是"保留 180 天"和"键不会无限增长"实际上都没发生：
+
+        - 过期的用量行（`usage_events` 是本机域唯一的"有保留期的表"）；
+        - 过期的幂等键（`purge_expired`）。
+
+        逐件吞异常：一件失败不该让另一件也不跑，更不该影响消费。
         """
-        removed = self._services.usage.purge_expired()
-        if removed:
-            logger.info("本机档：清理过期用量记录 %d 条", removed)
+        try:
+            removed = self._services.usage.purge_expired()
+        except Exception:
+            logger.warning("本机档：清理过期用量记录失败", exc_info=True)
+        else:
+            if removed:
+                logger.info("本机档：清理过期用量记录 %d 条", removed)
+        try:
+            keys = self._services.idempotency.purge_expired()
+        except Exception:
+            logger.warning("本机档：清理过期幂等键失败", exc_info=True)
+        else:
+            if keys:
+                logger.info("本机档：清理过期幂等键 %d 条", keys)
 
     # ---------------------------------------------------------------- 跑一条
 

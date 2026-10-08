@@ -410,7 +410,7 @@ def _test_chat(services: Services) -> str:
 
 def _test_embedding(services: Services) -> str:
     snapshot = services.runtime.embedding()
-    vectors = services.kb.embedder.embed(["连通性测试"])
+    vectors = services.embedder.embed(["连通性测试"])
     return f"{snapshot.model_id} 可用（返回 {len(vectors[0])} 维向量）"
 
 
@@ -420,5 +420,5 @@ def _test_rerank(services: Services) -> str:
         raise InvalidRequestError("重排尚未配置")
     # 用两个词条真调一次：重排的失败常常是"接口能连但请求体格式不被接受"，
     # 只探连通性会漏掉这一类
-    services.kb.reranker.rerank(query="眼轴长度", documents=["眼轴测量", "近视防控"], top_n=1)
+    services.reranker.rerank(query="眼轴长度", documents=["眼轴测量", "近视防控"], top_n=1)
     return f"{snapshot.model_id} 可用"

@@ -37,7 +37,7 @@ from app.core.config import Settings
 from app.core.exceptions import InvalidRequestError
 from app.core.storage import build_stores, reset_stores
 from app.services import backup_snapshot as module
-from app.services.auth import URL_SIGNING_SECRET_SETTING
+from app.core.signing import URL_SIGNING_SECRET_SETTING
 from app.services.backup_snapshot import (
     COUNT_KEYS,
     FORMAT_NAME,

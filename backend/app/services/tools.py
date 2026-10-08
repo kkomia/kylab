@@ -1,20 +1,31 @@
-"""MCP 工具的装配与调用（M6 之后的独立里程碑 / T4.8）。
+"""工具目录与调用：名字、JSON Schema、执行体（M6 之后的独立里程碑 / T4.8）。
 
-架构 §5 定的七个工具，加上 v0.12 为"个人 agent 读写知识库"补的四个（标注 +）。
+**它今天服务的是 Agent 工具面**（`agent_tools.py` 从 ``tool_definitions()`` 取名字与
+schema，再按名字分派到这里的 ``call_tool``）；原先那个 MCP 服务端入口随服务器档
+拆掉了，所以"两种传输共用一份工具表"那段历史说明只留在这里当背景。
 
 | 工具 | 作用 |
 |------|------|
-| `list_knowledge_bases` | 有哪些库 |
-| `create_knowledge_base` | 建库 |
-| `upload_document` | 传文档（内容用 base64 传） |
-| `add_data_source` | 挂 RSS / 网页订阅 |
-| `search` | 检索（产品的主打能力） |
-| `list_documents` + | 库里有哪些文档、处理到什么状态 |
-| `get_document_status` | 文档处理到哪一步了 |
-| `delete_document` | 删文档（进回收站） |
+| `search` | 检索（产品的主打能力，走知识库提供者） |
+| `upload_document` | 传文档（内容用 base64 传，走知识库提供者） |
 | `create_note` + | 把成果存成笔记 |
 | `attach_note_to_kb` + | 把笔记加进知识库（"沉淀成果"的收口动作） |
 | `list_notes` + | 列笔记，并标明哪些还没进知识库 |
+| `recall` / `remember` / `forget` | 长期记忆的查证与写入 |
+| `export_document` / `export_table` / `export_deck` / `export_file` | 交付口（产物落在会话里） |
+| `ingest_artifact` | 把刚导出的那份文件存进知识库 |
+| `web_search` / `web_fetch` | 联网取资料 |
+
+**知识库的"管理面"工具不在这里了**（建库 / 列库 / 列文档 / 查进度 / 删文档 / 挂数据源 /
+表格副本的 SQL 查询）：它们实现依赖的是进程内的知识库服务，而那些服务随知识库产品
+剥离到独立仓库一起搬走了。本机是知识库的**客户端**——能做的只有"检索"与"把东西放进去"
+（`search` / `upload_document` / `attach_note_to_kb` / `ingest_artifact`），
+库与文档的日常查看在界面或 kybase 那一侧。
+
+**`search` 的执行不在这个模块**（工具定义与执行表里都查不到它）：它由
+`agent_tools.py` 那条链直接跑 ``ChatService.retrieve_sources``——那条路给模型的是
+"命中块所在的整段小节"加上文档摘要，比块级返回读得懂。定义留在这里是因为工具表
+（名字与 JSON Schema）只有这一份，两处各写一份必然漂。
 
 **为什么补那两个笔记工具**：知识库此前只有"上传文件"这一个入口，
 于是 agent 干完活之后无处安放——它没法把"刚整理出的结论"变成库里可检索的内容。
@@ -31,15 +42,14 @@
 与 `create_note` 的返回值里——**返回值那句是给"已经用错一次"准备的**，
 它不需要用户再纠正一遍。
 
-**为什么工具实现在这里、而不在 stdio/HTTP 的入口里**：两种传输方式要暴露同一批
-工具。写在入口里就得复制两份，而两份迟早会漂（一个加了字段另一个没加）。
-这里只依赖服务层，入口只负责把它挂到各自的传输上。
+**为什么工具实现在这里**：目录（名字 + schema）与执行体放在一处，调用方（工具循环、
+剧本、用例）只认这一份；拆成两份迟早会漂（一个加了字段另一个没加）。
 
-**与协议层的分层关系**：`mcp_server/` 与 `api/` 平级——都是"把服务层暴露出去"的适配层，
+**与协议层的分层关系**：它与 `api/` 平级——都是"把服务层暴露出去"的适配层，
 所以同样不许出现 SQL 与业务规则（工程规范 §3.3 L1）。工具函数做的是
 "参数校验 + 调服务 + 收成可序列化的形状"这三件事。
 
-**关于返回值**：MCP 工具的结果要给 LLM 读，所以**不用 pydantic 模型**，
+**关于返回值**：工具的结果要给 LLM 读，所以**不用 pydantic 模型**，
 直接给 dict / list——模型不需要 schema，而多一层转换只多一处出错的地方。
 
 **每个工具都必须带上调用者**（v0.12 起的收口）：``call_tool`` 的 ``caller``
@@ -54,14 +64,12 @@ import base64
 import binascii
 import logging
 import tempfile
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.core.services import Services
-from app.models.enums import DataSourceKind
 from app.services import deck, office, web
 from app.services.api_key import WRITE, Caller
 from app.services.archive import KNOWN_SECTIONS as KNOWN_ARCHIVE_SECTIONS
@@ -94,14 +102,8 @@ _NL = chr(10)
 NOTE_EXCERPT_CHARS = 200
 
 TOOL_NAMES = (
-    "list_knowledge_bases",
-    "create_knowledge_base",
     "upload_document",
-    "add_data_source",
     "search",
-    "list_documents",
-    "get_document_status",
-    "delete_document",
     "create_note",
     "attach_note_to_kb",
     "list_notes",
@@ -126,27 +128,6 @@ def tool_definitions() -> list[dict[str, Any]]:
     """
     return [
         {
-            "name": "list_knowledge_bases",
-            "description": (
-                "列出所有知识库及其文档数。"
-                "在检索之前先调它，确认要查哪个库——库里没有的东西检索不出来。"
-            ),
-            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-        },
-        {
-            "name": "create_knowledge_base",
-            "description": "新建一个知识库。库之间相互隔离，检索时按库过滤。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "库名"},
-                    "description": {"type": "string", "description": "可选说明"},
-                },
-                "required": ["name"],
-                "additionalProperties": False,
-            },
-        },
-        {
             "name": "upload_document",
             "description": (
                 "把一份文档加进知识库。内容用 base64 编码。"
@@ -160,24 +141,6 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "content_base64": {"type": "string", "description": "文件内容的 base64"},
                 },
                 "required": ["knowledge_base_id", "filename", "content_base64"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "add_data_source",
-            "description": (
-                "给知识库挂一个会持续更新的来源（RSS 订阅或某个网页），"
-                "之后内容会自动抓进来。**登记不会立刻抓取**。"
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "knowledge_base_id": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["rss", "html"]},
-                    "url": {"type": "string"},
-                    "name": {"type": "string"},
-                },
-                "required": ["knowledge_base_id", "kind", "url"],
                 "additionalProperties": False,
             },
         },
@@ -230,57 +193,6 @@ def tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["query"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "get_document_status",
-            "description": (
-                "查一份文档处理到哪一步了。"
-                "阶段依次是 uploaded → parsing → parsed → chunked → embedding → indexed。"
-                "**只有 indexed 才可被检索到**。"
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {"document_id": {"type": "string"}},
-                "required": ["document_id"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "delete_document",
-            "description": (
-                "删除一份文档。原文会进回收站保留 7 天，切块与向量立即清除——"
-                "所以删除后**立刻搜不到**了。"
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {"document_id": {"type": "string"}},
-                "required": ["document_id"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "list_documents",
-            "description": (
-                "列出某个知识库里的文档及其处理状态。"
-                "**想确认「这个库里到底有什么」时用它**——search 只返回与问题相关的片段，"
-                "看不出库的全貌。可按文件名片段过滤。"
-                "只有 searchable 为 true 的文档能被检索到。"
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "knowledge_base_id": {"type": "string"},
-                    "query": {"type": "string", "description": "按文件名片段过滤，可留空"},
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_DOC_PAGE,
-                        "description": f"最多返回几条，默认 {DEFAULT_DOC_PAGE}",
-                    },
-                },
-                "required": ["knowledge_base_id"],
                 "additionalProperties": False,
             },
         },
@@ -871,16 +783,26 @@ def call_tool(
     """执行一个工具。**未知工具报错而不是返回空**——静默失败会让模型
     以为"查到了但没有结果"，然后基于错误前提继续推理。
 
-    ``caller`` 是必填的（见模块头）：调用方从 ``auth.current_caller()`` 取，
-    拿不到就会在那里抛 401，而不是走到这里变成匿名调用。
+    ``caller`` 是必填的（见模块头）：拿不到调用者应当在上游就 401，
+    而不是走到这里变成匿名调用。
 
-    ``conversation_id`` 只有对话这条链路给得出（外部 MCP 客户端与一次性脚本
-    没有会话）——它决定产物落在哪儿，见 :func:`_save_export`。
+    ``conversation_id`` 只有对话这条链路给得出（一次性脚本没有会话）——
+    它决定产物落在哪儿，见 :func:`_save_export`。
+
+    **目录里的名字不全在这里执行**：``search`` 由 `agent_tools.py` 那条链直接跑
+    ``ChatService.retrieve_sources``（给模型的是整段小节），``ingest_file`` 与文件 /
+    执行 / 表格那几条也在那一侧。所以查不到执行体时那句话要说清是"不在这一层执行"
+    还是"根本没有这个工具"——两种情况下调用方该做的事不一样。
     """
     args = arguments or {}
     handler = _HANDLERS.get(name)
     if handler is None:
-        raise InvalidRequestError(f"未知的工具：{name}（可用：{'、'.join(TOOL_NAMES)}）")
+        if name in TOOL_NAMES:
+            raise InvalidRequestError(
+                f"工具 {name} 不在这一层执行：它由 Agent 工具面直接跑"
+                "（见 agent_tools.py 的分派），不经 call_tool"
+            )
+        raise InvalidRequestError(f"未知的工具：{name}（可用：{'、'.join(_HANDLERS)}）")
     if name in _CONTEXTUAL_TOOLS:
         return handler(services, args, caller=caller, conversation_id=conversation_id)
     return handler(services, args, caller=caller)
@@ -920,48 +842,10 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _visible_items(services: Services, caller: Caller) -> list[Any]:
-    """当前调用者能看到的库。``visible_kb_ids`` 返回 ``None`` 表示**不受限**
-    （管理员会话，或范围为空 = 不限范围的 API Key），此时不过滤。"""
-    visible = services.kb.api_keys.visible_kb_ids(caller)
-    items = services.kb.knowledge_bases.list_all()
-    if visible is None:
-        return items
-    allowed = set(visible)
-    return [item for item in items if item.id in allowed]
 
 
-def _list_knowledge_bases(
-    services: Services, args: dict[str, Any], *, caller: Caller
-) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": item.id,
-            "name": item.name,
-            "documents": services.kb.documents.count_documents(item.id),
-            "embedding_model": item.embedding_model_id,
-        }
-        for item in _visible_items(services, caller)
-    ]
 
 
-def _create_knowledge_base(
-    services: Services, args: dict[str, Any], *, caller: Caller
-) -> dict[str, Any]:
-    name = _require(args, "name")
-    # 不涉及既有库，所以只判权限档位（只读 Key 会被拒）。
-    # **kb_ids 传 None**：这是"要新建"，不是"要访问某个既有库"
-    services.kb.api_keys.check_access(caller, need=WRITE)
-    # kb_id 由调用方生成：服务层要求显式传入（与 REST 层同一口径），
-    # 这样将来要支持"由客户端指定 id"时不用改服务层签名
-    record = services.kb.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}",
-        name=name,
-        # 归属要跟着身份走：不写 owner 的话，成员建出来的库**自己都看不见**
-        # （visible_kb_ids 对成员只算"自己拥有的 + 被分享的"）
-        owner_id=caller.user.id if caller.user is not None else None,
-    )
-    return {"id": record.id, "name": record.name}
 
 
 def _upload_document(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
@@ -1008,157 +892,14 @@ def _upload_document(services: Services, args: dict[str, Any], *, caller: Caller
     }
 
 
-def _add_data_source(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    kb_id = _require(args, "knowledge_base_id")
-    kind = _require(args, "kind").lower()
-    url = _require(args, "url")
-    if kind not in ("rss", "html"):
-        raise InvalidRequestError(f"kind 只能是 rss 或 html，收到：{kind}")
-
-    # 挂数据源会让内容源源不断进库，是**写**操作
-    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
-
-    record = services.kb.sources.create(
-        knowledge_base_id=kb_id,
-        kind=DataSourceKind(kind),
-        name=str(args.get("name") or ""),
-        url=url,
-    )
-    return {
-        "id": record.id,
-        "name": record.name,
-        "note": "已登记。内容不会立刻抓取——等定时任务，或在控制台点「立即拉取」",
-    }
 
 
-def _search(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    query = _require(args, "query")
-    kb_ids = [str(item) for item in (args.get("knowledge_base_ids") or [])]
-    if not kb_ids:
-        # 留空 = 查**这个调用者能看到的全部**：Agent 常常不知道有哪些库，
-        # 逼它先列一遍是多余的一步。注意这里**不是** list_all()——
-        # 那是"所有人的库"，在收口之前正是越权的来源
-        kb_ids = [item.id for item in _visible_items(services, caller)]
-    else:
-        # 显式指定了库就把越界挡在检索之前：检索是很重的操作，
-        # 让它先跑完再拒，白烧一次算力
-        services.kb.api_keys.check_access(caller, kb_ids=kb_ids)
-    if not kb_ids:
-        return {"query": query, "hits": [], "note": "没有任何知识库"}
-
-    top_k = int(args.get("top_k") or 6)
-    top_k = max(1, min(MAX_TOP_K, top_k))
-
-    # 动态返回（v0.54）：兜底阈值与基线从设置读（用户可配），模型给的 keep/min_score/per_doc
-    # 覆盖分布的建议。两个设置都读不到时**保持既有行为**（不传 stats_floor = 不统计）。
-    floor = services.runtime.get_float("retrieval.floor_score")
-    baseline = services.runtime.get_float("retrieval.baseline_score") or None
-    response = services.kb.retrieval.search(
-        _query(
-            query=query,
-            kb_ids=kb_ids,
-            top_k=top_k,
-            stats_floor=floor if floor > 0.0 else None,
-            baseline=baseline,
-            keep=_int_or_none(args.get("keep")),
-            min_score=_float_or_none(args.get("min_score")),
-            per_doc=_int_or_none(args.get("per_doc")),
-        )
-    )
-    distribution = response.distribution
-    payload: dict[str, Any] = {
-        "query": query,
-        "hits": [
-            {
-                "document_id": hit.document_id,
-                "document_name": hit.document_name or hit.document_id,
-                "text": hit.text,
-                "score": round(hit.score, 4),
-                "page": hit.page,
-                "heading_path": hit.heading_path,
-                # `chunk_id` 与所属库是**给"要用这些片段做引用"的调用方**用的：
-                # 对话链路要把命中转成界面上的出处（`SourceRef` 要求 chunk_id），
-                # 没有它就只能给一个连不回原文的引用。对外部 MCP 客户端同样有用。
-                "chunk_id": hit.chunk_id,
-                "knowledge_base_id": hit.knowledge_base_id,
-                # 相似度（余弦）与融合分**不是一回事**：界面与模型都按它判断"多相关"
-                "similarity": (
-                    round(hit.raw_scores["vector"], 4) if "vector" in hit.raw_scores else None
-                ),
-            }
-            for hit in response.hits
-        ],
-        "filtered_out": response.filtered_out,
-        "returned": len(response.hits),
-        "decision": response.decision,
-        "distribution": distribution.as_payload() if distribution is not None else None,
-    }
-    if distribution is not None and distribution.fit == "none":
-        # 拟合度是"这份资料答不了"时**必须说清**：不说的话模型会把这批 0.8x 的片段
-        # 当依据编答案，而那正是最坏的一种回答（看着有出处，其实没有内容）
-        payload["note"] = distribution.note
-    elif distribution is not None and response.decision is not None:
-        payload["note"] = (
-            "这批是按上面的分布**收敛后**的结果"
-            f"（keep={response.decision['keep']}、min_score={response.decision['min_score']}、"
-            f"per_doc={response.decision['per_doc']}，{response.decision['decided_by']}）。"
-            "不够就直接说不够；要更多/更少就带着 keep / min_score / per_doc 再查一次。"
-        )
-    return payload
 
 
-def _document_or_403(services: Services, document_id: str, *, caller: Caller) -> Any:
-    """取文档并判它所属库的读权限。
-
-    顺序是"先取再判"：文档记录里才有所属库 id，没有它无从判起。
-    代价是"猜 id 探测存在性"——不存在的 id 报 404、存在但越界的报 403，
-    两者可分。局域网自用工具的这个量级上可接受，真要收紧就得把
-    doc_id 也变成不可枚举的。
-    """
-    record = services.kb.documents.get(document_id)
-    services.kb.api_keys.check_access(caller, kb_ids=[record.knowledge_base_id])
-    return record
 
 
-def _get_document_status(
-    services: Services, args: dict[str, Any], *, caller: Caller
-) -> dict[str, Any]:
-    document_id = _require(args, "document_id")
-    record = _document_or_403(services, document_id, caller=caller)
-    chunks = services.kb.documents.chunk_count(record.id)
-    # `searchable` 按**产物**算而不是按 stage（见 DocumentsService.is_searchable 的说明）：
-    # 卡在 embedding 但已经切好块/落了向量的文档**查得到**，原先这里回 false，
-    # 模型据此就不搜了。
-    searchable = services.kb.documents.is_searchable(record, chunks=chunks)
-    return {
-        "document_id": record.id,
-        "name": record.name,
-        "stage": record.stage.value,
-        "chunks": chunks,
-        "error": record.error,
-        "searchable": searchable,
-        "note": (
-            "已可检索"
-            if searchable
-            else "尚未完成处理，此时检索不到它"
-            if not record.disabled
-            else "这份文档已停用，不参与检索"
-        ),
-    }
 
 
-def _delete_document(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    document_id = _require(args, "document_id")
-    record = services.kb.documents.get(document_id)
-    # 删除是写操作：只读分享拿到的库不能删
-    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[record.knowledge_base_id])
-    entry = services.kb.lifecycle.delete_document(document_id)
-    return {
-        "document_id": document_id,
-        "trash_id": entry.id,
-        "restorable_until": entry.expires_at.isoformat(),
-        "note": "原文保留 7 天可恢复；切块与向量已清除，现在搜不到了",
-    }
 
 
 # --------------------------------------------------------------------- 笔记
@@ -1243,32 +984,6 @@ def _list_notes(services: Services, args: dict[str, Any], *, caller: Caller) -> 
     }
 
 
-def _list_documents(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    kb_id = _require(args, "knowledge_base_id")
-    services.kb.api_keys.check_access(caller, kb_ids=[kb_id])
-    limit = max(1, min(int(args.get("limit") or DEFAULT_DOC_PAGE), MAX_DOC_PAGE))
-    records = services.kb.documents.list_documents(
-        kb_id, q=str(args.get("query") or "").strip() or None, limit=limit
-    )
-    # 批量取切块数（一次查询），`searchable` 由此按产物算——见 DocumentsService.is_searchable
-    counts = services.kb.documents.chunk_counts([item.id for item in records])
-    return {
-        "knowledge_base_id": kb_id,
-        "total": services.kb.documents.count_documents(kb_id),
-        "documents": [
-            {
-                "document_id": item.id,
-                "name": item.name,
-                "stage": item.stage.value,
-                "searchable": services.kb.documents.is_searchable(
-                    item, chunks=counts.get(item.id, 0)
-                ),
-                "disabled": item.disabled,
-            }
-            for item in records
-        ],
-        "note": "searchable 为 true 的文档现在就能被 search 检索到（按已落库的切块算，不按阶段）",
-    }
 
 
 # --------------------------------------------------------------------- 记忆
@@ -2104,14 +1819,7 @@ def _suffix_of(filename: str) -> str:
 
 
 _HANDLERS = {
-    "list_knowledge_bases": _list_knowledge_bases,
-    "create_knowledge_base": _create_knowledge_base,
     "upload_document": _upload_document,
-    "add_data_source": _add_data_source,
-    "search": _search,
-    "list_documents": _list_documents,
-    "get_document_status": _get_document_status,
-    "delete_document": _delete_document,
     "create_note": _create_note,
     "attach_note_to_kb": _attach_note_to_kb,
     "list_notes": _list_notes,
@@ -2128,34 +1836,3 @@ _HANDLERS = {
 }
 
 
-def _query(  # type: ignore[no-untyped-def]
-    *,
-    query: str,
-    kb_ids: list[str],
-    top_k: int,
-    stats_floor: float | None = None,
-    baseline: float | None = None,
-    keep: int | None = None,
-    min_score: float | None = None,
-    per_doc: int | None = None,
-):
-    """构造检索请求。
-
-    放在函数里 import：``mcp`` 层与 ``services`` 层都往这儿引用，
-    顶层 import 会让这条单向依赖变得不明显。
-
-    ``stats_floor`` 非空 = **开启动态返回**（v0.54）：程序先按兜底低阈值收候选、
-    统计分布，再按 ``keep`` / ``min_score`` / ``per_doc``（模型给的，或分布的建议）收敛。
-    """
-    from app.services.kb.retrieval import RetrievalQuery
-
-    return RetrievalQuery(
-        query=query,
-        kb_ids=kb_ids,
-        top_k=top_k,
-        stats_floor=stats_floor,
-        baseline=baseline,
-        keep=keep,
-        min_score=min_score,
-        per_doc=per_doc,
-    )

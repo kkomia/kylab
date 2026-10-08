@@ -263,16 +263,10 @@ def _record_turn(
 def _caller_for(services: Services, owner_id: str | None) -> Caller:
     """这条任务以**谁的身份**跑。
 
-    任务有主（普通成员建的）就按那个账号跑：知识库范围、会话归属、
-    执行权限都该和他自己提问时一致。无主（管理员建的）按共享桶跑——
-    与"管理员会话的 owner_id 是 None"同一口径。
-    账号被删了则退回共享桶并留一条日志：任务还在、人没了，
-    让它继续跑比让它静默失败更合理。
+    本机只有一个主体：**本机主人**（见 `api/auth.py` 的本机短路）。任务上那个
+    ``owner_id`` 是历史字段（账号体系随知识库产品剥离搬走了），今天不参与判定
+    ——记着它只是为了排障时看得见"这条任务当初是谁建的"。
     """
-    if owner_id is None:
-        return Caller(is_admin=True)
-    try:
-        return Caller(is_admin=False, user=services.kb.users.get(owner_id))
-    except NotFoundError:
-        logger.warning("定时任务的主账号已不存在（%s），按共享桶跑", owner_id)
-        return Caller(is_admin=True)
+    if owner_id:
+        logger.debug("定时任务的主账号（%s）只作记录，本机一律以本机主人身份执行", owner_id)
+    return Caller(is_admin=True)

@@ -40,7 +40,6 @@ import pytest
 from app.core.config import Settings
 from app.core.storage import LOCAL_DB_NAME, build_stores
 from app.services import remote_clients
-from app.services.ingest import IngestService
 from app.services.knowledge_client import KnowledgeClient
 from app.services.knowledge_provider import (
     HANDSHAKE_TIMEOUT_SECONDS,
@@ -622,25 +621,6 @@ def test_submit_rejects_a_response_without_a_document_id() -> None:
 
     assert "id" in str(excinfo.value)
 
-
-def test_submit_signature_matches_ingest_service_verbatim() -> None:
-    """签名与 ``IngestService.submit`` **逐字一致**（含 ``mime_type`` / ``folder_id``）。
-
-    笔记与产物那两条路是照那个签名调的：少一个参数就是 ``TypeError``
-    —— M2 那份边车实现正是这么坏的（方案 §5.1 点名的那件事）。
-
-    比的是**每个形参的名字 / 种类 / 默认值 / 注解**（不比返回注解：一个是
-    ``IngestOutcome``，一个是同形的最小读法 —— 那是**有意**的差异，本模块头上写着）。
-    """
-    provider = inspect.signature(KnowledgeProviderClient.submit)
-    ingest = inspect.signature(IngestService.submit)
-
-    assert [
-        (item.name, item.kind, item.default, item.annotation)
-        for item in provider.parameters.values()
-    ] == [
-        (item.name, item.kind, item.default, item.annotation) for item in ingest.parameters.values()
-    ]
 
 
 def test_the_ingest_gateway_exposes_submit_only() -> None:
