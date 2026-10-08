@@ -260,7 +260,6 @@ function registryView() {
   }
 }
 
-
 /** 把当前地址画出来：用来断言"点了那颗按钮真的跳到 `/backup`"（R5 那条唯一入口）。 */
 function LocationProbe() {
   const location = useLocation()

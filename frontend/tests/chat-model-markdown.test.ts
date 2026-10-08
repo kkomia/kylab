@@ -434,12 +434,30 @@ describe('缓存分层（流式渲染的开销，v0.2）', () => {
     expect(again).not.toContain('戊')
   })
 
-  it('文本级缓存被挤掉之后重建，结果仍与首次完全一致', () => {
+  it('文本级缓存被挤掉之后重建，结果仍与首次完全一致', { timeout: 20_000 }, () => {
     // 上限是 300：灌满把目标挤出去，逼下一次渲染重走一遍解析。
     // 淘汰写错（或键串味）都会让这一条红。
     const target = '甲\n\n乙\n\n| 列 | 值 |\n| --- | --- |\n| 1 | 2 |\n\n```js\nconst a = 1\n```'
     const first = html(renderAnswerMarkdown(target))
-    for (let i = 0; i < 400; i += 1) html(renderAnswerMarkdown(`噪声 ${i}\n\n第二段 ${i}`))
+
+    /*
+     * **一次挂一棵树**，而不是原先的 400 次 `html(...)`。
+     *
+     * 要灌的是"300 个以上**不同的文本**各过一遍渲染"（上限 300、FIFO 淘汰），而每一次
+     * `html()` 都要新建一个根 + 走一遍 `act` 刷微任务——单跑实测 400 次要 882ms，
+     * 全量 65 worker 并发下这一条整条 6–8s（断言本身不到 1ms）。批量挂成一棵树之后
+     * 单跑 406ms；要证的那件事一个字没变：灌 320 条（> 上限 300，留 20 条余量）之后，
+     * 目标必然已被挤出缓存，重建结果仍与首次逐字相同。
+     * 超时提到 20s 只当天花板（纯 CPU 重活，满载实测 6–8s）。
+     */
+    const noise = Array.from({ length: 320 }, (_, index) =>
+      createElement(
+        Fragment,
+        { key: index },
+        renderAnswerMarkdown(`噪声 ${index}\n\n第二段 ${index}`),
+      ),
+    )
+    html(createElement(Fragment, null, noise))
 
     expect(html(renderAnswerMarkdown(target))).toBe(first)
   })

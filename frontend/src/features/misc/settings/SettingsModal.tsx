@@ -43,12 +43,7 @@ import { useBackupStatus } from '@/api/backup'
 import { useKnowledgeProviderStatus } from '@/api/provider'
 import { fetchHealth } from '@/api/health'
 import { bindSlot, getRegistry, type RegisteredModel, type Slot } from '@/api/modelRegistry'
-import {
-  getSettings,
-  testConnection,
-  updateSettings,
-  type SettingGroup,
-} from '@/api/settings'
+import { getSettings, testConnection, updateSettings, type SettingGroup } from '@/api/settings'
 
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'

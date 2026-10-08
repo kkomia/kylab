@@ -102,7 +102,6 @@ function renderShell(initialPath = '/notes') {
   )
 }
 
-
 beforeEach(() => {
   vi.clearAllMocks()
   listConversationsMock.mockResolvedValue({ items: [] })

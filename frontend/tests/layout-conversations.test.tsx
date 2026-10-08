@@ -95,7 +95,6 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
   }
 }
 
-
 function renderShell(initialPath = '/notes') {
   // 侧栏/面板里有"划过就预取会话正文"（`prefetchConversationDetail`），它要一个
   // QueryClient —— 真实应用里由 `App` 提供，夹具里补一个（retry 关掉，失败即时可见）

@@ -140,4 +140,3 @@ describe('formatCount', () => {
     expect(formatCount(-0.4)).toBe('0')
   })
 })
-

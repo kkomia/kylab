@@ -99,15 +99,34 @@ describe('应用壳', () => {
 
   // **门禁只认"有没有本机后端"**（2026-10-08）：本机档（边车在跑）直接进壳，
   // 一个字都不问——不问登录、也不问远端账号体系。所以这一条里**一个凭据都没有**。
-  it('本机档：没有凭据也放行，不问登录', { timeout: 15_000 }, async () => {
+  it('本机档：没有凭据也放行，不问登录', { timeout: 30_000 }, async () => {
     setLocalBackendForTest('local')
+
+    /*
+     * **先把对话页那一大包拉下来，再测重定向**（这一条为什么曾经被拖红，见下）。
+     *
+     * `/` 是一条重定向（2026-10-09 起），而标题由 `TitleSync` 在**提交之后**才写；
+     * "从 `/` 跳到 `/chat`"这一次更新会因为对话页在懒加载（assistant-ui 那一大包）
+     * 而**被 React 挂起**——挂起的更新不提交，标题就一直是旧值（实测：几个量测点上
+     * 它都只在 chunk 落地那一刻才变）。于是原先那条"对着 `document.title` 轮询 12s"
+     * 实质是在等 chunk：全量 65 worker 并发下实测 7–14s，撞线的正是它。
+     *
+     * 预热之后 chunk 进了模块缓存，重定向这一步**不再挂起**：地址同步变、标题下一拍就变
+     * ——等的是**条件**，不是墙钟。预热这一趟本身也写成条件等待（"对话页真的渲染出来了"），
+     * 30s 只当天花板（实测满载 7–14s）。真对话页的渲染由同文件的
+     * `/chat` 那条与 `tests/chat-ui.test.tsx` 覆盖，这一条只管门禁与重定向。
+     */
+    window.history.pushState({}, '', '/chat')
+    const warm = render(<App />)
+    await screen.findByLabelText('对话内容', undefined, { timeout: 30_000 })
+    warm.unmount()
+
+    window.history.pushState({}, '', '/')
     render(<App />)
 
-    // 根地址**重定向到对话页**（2026-10-09：「概览」那一页删了）：地址这一步立刻完成，
-    // 而标题要等**落地的那一页真正提交**——对话页是懒加载的（assistant-ui 那一大包，
-    // jsdom 里实测 ~1s），所以这里给足时间（与 `/chat` 那条用例同一处理由）。
+    // 地址这一步是同步完成的（`<Navigate>` 在 effect 里改 history），标题随后一拍
     await waitFor(() => expect(window.location.pathname).toBe('/chat'))
-    await waitFor(() => expect(document.title).toBe('对话 · KYLAB'), { timeout: 12_000 })
+    await waitFor(() => expect(document.title).toBe('对话 · KYLAB'))
     expect(screen.queryByText('本机后端未启动')).toBeNull()
   })
 

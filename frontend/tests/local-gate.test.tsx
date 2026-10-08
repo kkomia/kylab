@@ -152,9 +152,7 @@ function browserNetwork(localAnswer: () => Response): ReturnType<typeof vi.fn> {
  * 被调用）随那一族一起删掉了，判据改成看真发出去的东西。
  */
 function authCalls(fetchMock: ReturnType<typeof vi.fn>): string[] {
-  return fetchMock.mock.calls
-    .map((call) => String(call[0]))
-    .filter((url) => url.includes('/auth/'))
+  return fetchMock.mock.calls.map((call) => String(call[0])).filter((url) => url.includes('/auth/'))
 }
 
 beforeEach(async () => {

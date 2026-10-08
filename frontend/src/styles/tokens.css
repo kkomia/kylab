@@ -16,8 +16,7 @@
    看到——它挂在 `App` 的依赖子树里，而 `main.tsx` 把 `App` 引在本文件之前）。
    于是先出现的 `@layer components` 会拿到第 1 位，Tailwind 后来那句只能把 `theme / base /
    utilities` 追加在它**后面**——`base` 从此压住 `components`，`* { margin/padding/border: 0 }`
-   这类 preflight 重置会把整份组件样式吃掉（实测：收层后的 `.m-page-title` 字号退回 15px、
-   `.m-figure` 内边距归零）。
+   这类 preflight 重置会把整份组件样式吃掉（实测：收层后的 `.m-page-title` 字号退回 15px）。
 
    所以这句必须由**基座**先说出来，而且每个"可能先被看到"的开层文件都要重复一句同样的
    内容（`misc.css` 顶部那句就是），内容相同、重复声明是幂等的；顺序一旦定下，后面再声明

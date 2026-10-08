@@ -201,7 +201,7 @@ function sectionEl(name: string): HTMLElement {
 beforeEach(() => {
   vi.clearAllMocks()
   resetToasts()
-  useSessionStore.setState({ token: '', })
+  useSessionStore.setState({ token: '' })
 
   archiveState = archiveOf()
   changesState = []

@@ -107,8 +107,6 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
   }
 }
 
-
-
 /**
  * 页签当前态的抓手。
  *
@@ -479,7 +477,6 @@ describe('任务中心', () => {
       await screen.findByText(/撤下：1 个成功、1 个未撤下（任务已经开始执行）/),
     ).toBeInTheDocument()
   })
-
 })
 
 describe('定时任务分段', () => {
