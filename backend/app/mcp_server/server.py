@@ -45,7 +45,20 @@ _PARAMS: dict[str, tuple[str, ...]] = {
     "forget": ("topic",),
     "export_document": ("knowledge_base_id", "filename", "markdown", "title"),
     "export_table": ("knowledge_base_id", "filename", "rows", "sheet_name", "charts"),
-    "export_deck": ("knowledge_base_id", "filename", "slides", "title"),
+    # 幻灯这条口给的是**整份 deck 的新形状**（页型 / 密度 / 图表 / 指标卡，
+    # 见 `tools.tool_definitions` 里那段现算的契约说明）：白名单要跟着长，
+    # 它是**丢掉 schema 之外参数**的那道门，漏一个就等于那个参数在 MCP 通道上不存在
+    "export_deck": (
+        "knowledge_base_id",
+        "filename",
+        "title",
+        "subtitle",
+        "author",
+        "org",
+        "brand",
+        "default_density",
+        "slides",
+    ),
     "ingest_artifact": ("artifact_id", "knowledge_base_id"),
     # 交付沙箱里那份文件（v0.56）。外部 MCP 通道**没有会话上下文**，
     # 所以它在这个门里只会回一句"只能在这条对话里用"——参数仍要列全，

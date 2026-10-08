@@ -104,7 +104,7 @@ and ask which. Do not pick one for them, and do not file it "just in case".
 | --- | --- |
 | Document body | 200,000 characters |
 | Table | 5,000 rows × 100 columns |
-| Deck | 60 slides × 20 bullets per slide |
+| Deck | 60 slides × 12 bullets per slide (a longer list spills onto a follow-up page titled "…（续）") |
 
 Exceeding one returns an error naming the limit — split the material instead of retrying.
 

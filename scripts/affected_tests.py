@@ -562,12 +562,16 @@ def decide(
         if name.startswith("frontend/"):
             continue
         if name.startswith("scripts/"):
-            token = Path(name).name
+            # 两种写法都认：**仓库相对路径**（``scripts/deck/render.mjs``——用例按路径加载
+            # 脚本时点名写的就是它）与"scripts/ + 文件名"（顶层脚本那种写法）。
+            # 只认后者的后果是``scripts/`` 下**带子目录**的脚本静默失配：改了写盘脚本，
+            # 钉住它的用例不跑，而"没跑"与"跑了且绿"看起来一模一样。
+            tokens = (name, f"scripts/{Path(name).name}")
             for rel in sorted(all_backend):
                 if rel in hit_backend:
                     continue
                 text = (BACKEND / rel).read_text(encoding="utf-8", errors="replace")
-                if f"scripts/{token}" in text:
+                if any(token in text for token in tokens):
                     hit_backend.setdefault(rel, f"点名了 {name}")
 
     # ---- 阈值保险

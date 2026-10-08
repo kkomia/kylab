@@ -61,6 +61,9 @@ from app.services.deck.render import (
     render_script,
 )
 from app.services.deck.spec import (
+    MAX_BULLETS_PER_SLIDE,
+    MAX_SLIDES,
+    ChartKind,
     ChartSeries,
     ChartSpec,
     DeckSpec,
@@ -90,10 +93,13 @@ __all__ = [
     "ARCHETYPE_LABELS",
     "DEFAULT_THEME",
     "LAYOUTS",
+    "MAX_BULLETS_PER_SLIDE",
+    "MAX_SLIDES",
     "RENDER_SCRIPT_REL",
     "SLIDE_HEIGHT_IN",
     "SLIDE_WIDTH_IN",
     "Archetype",
+    "ChartKind",
     "ChartSeries",
     "ChartSpec",
     "Check",

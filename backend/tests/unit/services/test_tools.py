@@ -20,13 +20,17 @@ from __future__ import annotations
 
 import base64
 import uuid
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 from app.core.exceptions import ForbiddenError, InvalidRequestError, NotFoundError
 from app.core.services import Services
 from app.mcp_server.auth import current_caller
+from app.services import tools
 from app.services.api_key import READ, WRITE, Caller
+from app.services.deck import Archetype, find_node, load_deck_spec, map_deck, verify_pptx
 from app.services.tools import (
     MAX_TOP_K,
     MAX_UPLOAD_BYTES,
@@ -79,6 +83,14 @@ def key_for(services: Services):  # type: ignore[no-untyped-def]
 
 
 MARKDOWN = "# 眼轴\n\n眼轴长度是衡量儿童青少年眼球发育情况的主要参数之一，不受调节能力影响。\n"
+
+#: 幻灯那条口真要写盘（Node 跑 `scripts/deck/render.mjs`）。缺 Node 时**跳过而不是变红**，
+#: 但要把"什么没被验证"说清楚——不说原因的 skip 会变成"以为验过了，其实没跑"
+#: （与 `tests/unit/services/deck/test_render.py` 同一条口径）。
+_NO_NODE = (
+    "本机没有 Node.js：`export_deck` 的出片用例没跑（写盘层是 `scripts/deck/render.mjs`）。"
+    "装一个 Node 20 以上进 PATH，或用 KYLAB_NODE 指向可执行文件，这几条就会跑"
+)
 
 
 # --------------------------------------------------------------------- 工具清单
@@ -912,8 +924,17 @@ def test_export_document_refuses_a_name_without_an_extension(
         )
 
 
-def test_export_deck_builds_slides(services: Services, kb: str, admin: Caller) -> None:
-    """幻灯：封面 + 每页标题与要点，读回来能对上。"""
+@pytest.mark.skipif(find_node() is None, reason=_NO_NODE)
+def test_export_deck_builds_slides_from_the_old_shape(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """老入参（每页只有 title + bullets）**必须仍然出片**——这条钉的是"切链没把老调用切坏"。
+
+    新链的每一页都要有页型，而老调用从来没给过：补齐的活由 `tools._deck_payload` 干
+    （有要点→要点页、只有标题→章节页，`title` 补一页封面）。这里连"只有标题的那一页"
+    一起给，因为它是老形状里最容易被切坏的一种：旧链画得出来，
+    新链的页型校验却会先问它"你的视觉元素在哪"。
+    """
     from app.parsers.base import ProbeResult
     from app.parsers.local_office import LocalOfficeParser
 
@@ -924,7 +945,10 @@ def test_export_deck_builds_slides(services: Services, kb: str, admin: Caller) -
             "knowledge_base_id": kb,
             "filename": "方案.pptx",
             "title": "随访方案",
-            "slides": [{"title": "监测频率", "bullets": ["三个月一次", "首次全套"]}],
+            "slides": [
+                {"title": "监测频率", "bullets": ["三个月一次", "首次全套"]},
+                {"title": "第二部分"},
+            ],
         },
         caller=admin,
     )
@@ -936,8 +960,312 @@ def test_export_deck_builds_slides(services: Services, kb: str, admin: Caller) -
         content=raw,
         probe=ProbeResult(kind="office", text_coverage=1.0),
     )
-    assert "随访方案" in parsed.markdown
+    assert "随访方案" in parsed.markdown, "title 补出来的那页封面"
     assert "三个月一次" in parsed.markdown
+    assert "第二部分" in parsed.markdown, "只有标题的那一页（章节页）"
+
+
+def test_legacy_pages_get_an_archetype_and_a_cover() -> None:
+    """老形状补齐成什么样**在这里钉死**（不经过渲染器，所以什么机器上都能跑）。
+
+    三页老内容 → 封面 + 要点页 + 章节页：这正是"老调用还能出片"的全部依据。
+    """
+    payload = tools._deck_payload(
+        {
+            "filename": "方案.pptx",
+            "title": "随访方案",
+            "slides": [
+                {"title": "监测频率", "bullets": ["三个月一次"]},
+                {"title": "第二部分"},
+            ],
+        },
+        services=None,  # type: ignore[arg-type]
+        conversation_id=None,
+    )
+
+    assert payload["title"] == "随访方案"
+    assert [page["archetype"] for page in payload["slides"]] == ["cover", "bullets", "section"]
+    assert payload["slides"][1]["bullets"] == ["三个月一次"]
+
+
+def test_a_page_with_a_chart_but_no_archetype_becomes_a_data_page() -> None:
+    """给了图表却没写页型：补成**数据页**，而不是随手补个章节页。
+
+    补成章节页的话，模型收到的是"章节页收不了图表"，可它从没写过"章节页"这三个字
+    ——那句话它改不动。这正是"补齐"与"判据"分开的意义：补的要像它想说的那句话。
+    """
+    payload = tools._deck_payload(
+        {
+            "filename": "走势.pptx",
+            "slides": [
+                {
+                    "title": "营收走势",
+                    "chart": {
+                        "kind": "line",
+                        "categories": ["Q1", "Q2"],
+                        "series": [{"name": "营收", "values": [1.0, 2.0]}],
+                        "takeaway": "在涨",
+                    },
+                }
+            ],
+        },
+        services=None,  # type: ignore[arg-type]
+        conversation_id=None,
+    )
+
+    assert payload["slides"][0]["archetype"] == "data"
+    assert load_deck_spec(payload).slides[0].archetype is Archetype.DATA
+
+
+@pytest.mark.skipif(find_node() is None, reason=_NO_NODE)
+def test_export_deck_new_shape_renders_and_passes_structure_checks(
+    services: Services, kb: str, admin: Caller, tmp_path: Path
+) -> None:
+    """新形状（页型 / 原生图表 / 指标卡）出片，并**用计划把产物解包核对一遍**。
+
+    `verify_pptx` 才是"这份文件真是计划说的那样"的证据：图表是原生图表而不是图片、
+    中文拿到了指定的字体、页码是真字段——这三件事坏掉时渲染器都不会报错，
+    只会静默难看。只断言"渲染没报错"等于没验。
+    """
+    args: dict[str, Any] = {
+        "knowledge_base_id": kb,
+        "filename": "季度复盘.pptx",
+        "title": "季度复盘",
+        "subtitle": "2026 Q3",
+        "slides": [
+            {
+                "archetype": "bullets",
+                "title": "三件事",
+                "bullets": ["营收同比增长 18%", "毛利率回升到 42%"],
+            },
+            {
+                "archetype": "data",
+                "density": "heavy",
+                "title": "营收走势",
+                "kpis": [{"label": "本季营收", "value": "1.2 亿", "delta": "+18%"}],
+                "chart": {
+                    "kind": "column",
+                    "categories": ["Q1", "Q2", "Q3"],
+                    "series": [{"name": "营收", "values": [0.9, 1.05, 1.2]}],
+                    "takeaway": "连续三个季度上行",
+                    "unit": "亿元",
+                },
+            },
+            {"archetype": "closing", "title": "下一步", "subtitle": "下周同步排期"},
+        ],
+    }
+
+    result = call_tool(services, "export_deck", args, caller=admin)
+    raw = services.documents.content(result["document_id"]).data
+    written = tmp_path / "季度复盘.pptx"
+    written.write_bytes(raw)
+
+    plan = map_deck(
+        load_deck_spec(tools._deck_payload(args, services=services, conversation_id=None))
+    )
+    check = verify_pptx(written, plan)
+
+    assert check.ok, check.summary()
+    assert [page.archetype for page in plan.pages] == [
+        Archetype.COVER,
+        Archetype.BULLETS,
+        Archetype.DATA,
+        Archetype.CLOSING,
+    ], "title 补的那页封面要在最前面"
+    # 图表那页必须落到原生图表上（"用了 chart"与"画出原生图表"是两回事）
+    chart_page = next(page for page in plan.pages if page.archetype is Archetype.DATA)
+    assert chart_page.fill("data") is not None
+
+
+def test_export_deck_without_node_says_what_to_install(
+    services: Services, kb: str, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没有 Node 时**单独报"装什么"**，而不是一句"生成 pptx 失败"。
+
+    工具报错是给模型读的：它需要"这件事现在做不到、原因是这个、要装什么"，
+    不然它只会换个参数反复重试同一条走不通的路。**依赖缺失**（这台机器做不到）
+    与**内容不对**（这份内容造不出来）要给两句不同的话，改的东西完全不同。
+
+    打桩而不是改 PATH：改 PATH 会影响同进程里别的东西（与 `test_render.py` 同一条理由）。
+    """
+    from app.services.deck import render as deck_render
+
+    monkeypatch.setattr(deck_render, "find_node", lambda: None)
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        call_tool(
+            services,
+            "export_deck",
+            {
+                "knowledge_base_id": kb,
+                "filename": "方案.pptx",
+                "slides": [{"title": "监测频率", "bullets": ["三个月一次"]}],
+            },
+            caller=admin,
+        )
+    message = str(excinfo.value)
+    assert "Node.js" in message
+    assert "KYLAB_NODE" in message
+
+
+def test_legacy_slides_spill_over_the_bullet_cap_instead_of_losing_content() -> None:
+    """老形状一页塞 15 条要点：摊成「（续）」页，而不是报错、也不是截掉。
+
+    老链一页收到 20 条才截断，新链一页上限 12 条——两条口径中间那 13~20 条
+    必须有个说法，否则"老调用仍然出片"这件事在**内容最多的那几页**上不成立，
+    而那种页恰恰是用户最在意的那几页。
+    """
+    payload = tools._deck_payload(
+        {
+            "filename": "清单.pptx",
+            "slides": [
+                {"title": "清单", "bullets": [f"第 {index} 条" for index in range(1, 16)]}
+            ],
+        },
+        services=None,  # type: ignore[arg-type]
+        conversation_id=None,
+    )
+
+    assert [page["title"] for page in payload["slides"]] == ["清单", "清单（续）"]
+    assert [len(page["bullets"]) for page in payload["slides"]] == [12, 3]
+    # 补齐之后要能过契约校验——这就是"出片"的前半截
+    assert [slide.title for slide in load_deck_spec(payload).slides] == ["清单", "清单（续）"]
+
+
+def test_a_page_that_cannot_hold_its_payload_comes_back_as_a_sentence(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """页型收不了的载荷要**指到第几页哪一处**，而不是一句"服务内部错误"。
+
+    这正是把 `DeckSpecError` 翻出工具层的目的：模型照着这句话就能改内容
+    （"要点页收不了图表，那属于数据页（data）"）。所以断言的是**这句话在不在**，
+    而不是"抛了异常"。
+    """
+    with pytest.raises(InvalidRequestError) as excinfo:
+        call_tool(
+            services,
+            "export_deck",
+            {
+                "knowledge_base_id": kb,
+                "filename": "放错的图.pptx",
+                "slides": [
+                    {
+                        "archetype": "bullets",
+                        "title": "产能",
+                        "bullets": ["产线满负荷"],
+                        "chart": {
+                            "kind": "bar",
+                            "categories": ["一月"],
+                            "series": [{"name": "产量", "values": [12]}],
+                            "takeaway": "一月满负荷",
+                        },
+                    }
+                ],
+            },
+            caller=admin,
+        )
+
+    message = str(excinfo.value)
+    assert "第 1 页" in message and "图表" in message
+
+
+def test_export_deck_only_takes_images_that_already_exist_in_the_sandbox(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """图片只收**沙箱里已有的文件**：现生 / 检索那两种，写盘层画的是一个说明框。
+
+    "给了图但页面上没有图"是这类接口最坏的失败方式——没人会发现。所以在这里挡住，
+    并说清"先把它弄到沙箱里"；沙箱里没有那个文件时也要当场说清缺的是哪一张。
+    """
+    page = {
+        "archetype": "split",
+        "title": "两层分工",
+        "bullets": ["Python 决定画什么，Node 决定怎么落成 OOXML"],
+    }
+
+    with pytest.raises(InvalidRequestError, match=r"只能用 local"):
+        call_tool(
+            services,
+            "export_deck",
+            {
+                "knowledge_base_id": kb,
+                "filename": "带图.pptx",
+                "slides": [
+                    {
+                        **page,
+                        "image": {"kind": "generate", "prompt": "一张流程图", "alt": "流程图"},
+                    }
+                ],
+            },
+            caller=admin,
+        )
+
+    with pytest.raises(InvalidRequestError, match=r"沙箱里没有这张图"):
+        call_tool(
+            services,
+            "export_deck",
+            {
+                "filename": "带图.pptx",
+                "slides": [
+                    {
+                        **page,
+                        "image": {"kind": "local", "path": "没有这张.png", "alt": "图"},
+                    }
+                ],
+            },
+            caller=admin,
+            conversation_id="conv_deck_image",
+        )
+
+
+@pytest.mark.skipif(find_node() is None, reason=_NO_NODE)
+def test_export_deck_takes_a_local_image_out_of_the_sandbox(
+    services: Services, kb: str, admin: Caller, tmp_path: Path
+) -> None:
+    """沙箱里那张图**真的被贴进包里**（上面那条只钉了反面）。
+
+    这条走的是"模型先让代码画一张图，再让它进幻灯"这条路：路径相对沙箱目录给，
+    由 `sandbox.resolve_in` 解析成绝对路径交给写盘层。结构校验里"图片数吻合、
+    长宽比没被拉"那一条要真的跑过——图没进包时它会合理地跳过，
+    而"跳过"与"通过"在报告里长得一样。
+    """
+    from app.services.sandbox import sandbox_for
+    from tests.unit.services.deck.test_render import png_bytes
+
+    # 走**对话那条门**：产物落在这条会话的产物区，所以先得真有一条会话
+    conversation_id = services.conversations.create(title="把沙箱里那张图放进幻灯").id
+    box = sandbox_for(services.runtime.data_dir, conversation_id).ensure()
+    (box / "chart.png").write_bytes(png_bytes(48, 18, (0x1B, 0x4F, 0x8A)))
+
+    args: dict[str, Any] = {
+        "filename": "带图.pptx",
+        "slides": [
+            {
+                "archetype": "split",
+                "title": "两层分工",
+                "bullets": ["Python 决定画什么、画在哪", "Node 只把矩形落成 OOXML"],
+                "image": {"kind": "local", "path": "chart.png", "alt": "品牌色块"},
+            }
+        ],
+    }
+
+    result = call_tool(
+        services, "export_deck", args, caller=admin, conversation_id=conversation_id
+    )
+    raw, _ = services.artifacts.read_file(conversation_id, result["artifact_id"])
+    written = tmp_path / "带图.pptx"
+    written.write_bytes(raw)
+
+    plan = map_deck(
+        load_deck_spec(
+            tools._deck_payload(args, services=services, conversation_id=conversation_id)
+        )
+    )
+    check = verify_pptx(written, plan)
+
+    assert check.ok, check.summary()
+    raster = next(item for item in check.checks if item.code == "raster")
+    assert any("长宽比一致" in note for note in raster.notes), raster.notes
 
 
 def test_export_pdf_is_a_readable_pdf(services: Services, kb: str, admin: Caller) -> None:
@@ -1028,29 +1356,6 @@ def test_export_needs_write_access(services: Services, kb: str, key_for) -> None
             {"knowledge_base_id": kb, "filename": "报告.docx", "markdown": "内容"},
             caller=reader,
         )
-
-
-def test_export_reports_a_missing_dependency_as_a_readable_sentence(
-    services: Services, kb: str, admin: Caller, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """依赖没装**不是"服务内部错误"**，而是一句能照做的话。
-
-    工具报错是给模型读的：它需要"这件事现在做不到、原因是这个、要装什么"，
-    不然它只会换个参数反复重试同一条走不通的路。
-    """
-    from app.services import office
-
-    monkeypatch.setitem(office._REQUIREMENTS, "pptx", ("python-pptx", "不存在的模块名"))
-
-    with pytest.raises(InvalidRequestError) as excinfo:
-        call_tool(
-            services,
-            "export_deck",
-            {"knowledge_base_id": kb, "filename": "方案.pptx", "slides": [{"title": "a"}]},
-            caller=admin,
-        )
-    message = str(excinfo.value)
-    assert "python-pptx" in message and "office" in message
 
 
 # ------------------------------------------------------- 联网（v0.22）

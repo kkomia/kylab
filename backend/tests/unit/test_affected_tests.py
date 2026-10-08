@@ -94,6 +94,21 @@ def test_repo_level_script_is_found_by_name(affected: ModuleType) -> None:
     assert "tests/unit/test_check_layering.py" in info["targets"]
 
 
+def test_script_in_a_subdirectory_of_scripts_is_found_by_its_path(
+    affected: ModuleType,
+) -> None:
+    """``scripts/`` 下**带子目录**的脚本要按仓库相对路径找到它的用例（2026-10-05 补）。
+
+    这是一个真实缺口的钉子：原先只拿文件名拼 ``scripts/render.mjs``，
+    于是 ``scripts/deck/render.mjs`` 这条路**永远匹配不上**——改了写盘脚本，
+    钉住它的 ``tests/unit/services/deck/test_render.py`` 不跑，而"没跑"与
+    "跑了且绿"看起来完全一样。
+    """
+    info = _backend(affected, ["scripts/deck/render.mjs"])
+
+    assert "tests/unit/services/deck/test_render.py" in info["targets"]
+
+
 # ------------------------------------------------------------------ 前端
 
 def test_frontend_panel_maps_to_the_file_that_actually_pins_it(affected: ModuleType) -> None:

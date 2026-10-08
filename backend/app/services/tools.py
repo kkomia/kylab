@@ -53,14 +53,16 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.core.services import Services
 from app.models.enums import DataSourceKind
-from app.services import office, web
+from app.services import deck, office, web
 from app.services.api_key import WRITE, Caller
 from app.services.archive import KNOWN_SECTIONS as KNOWN_ARCHIVE_SECTIONS
 from app.services.memory import DEFAULT_RECALL, MAX_RECALL
@@ -598,9 +600,21 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "export_deck",
             "description": (
-                "把要点导出成一份 .pptx 幻灯。"
+                "把内容导出成一份**能直接投出去的 .pptx**：版式、配色、字号、页脚页码"
+                "由后端按内容决定，你只说清每页讲什么。"
                 "**当对方要「讲一遍」时用它**（汇报、方案、提纲）——"
-                "每页只放标题与要点，不要写成成段的文字。"
+                "一页一件事，不要写成成段的文字。"
+                + _NL
+                # 页型与载荷说明**从原型层现算**（`deck.contract_hint()`），不在这里手抄：
+                # 版式加了槽位而这段说明没跟着改的话，模型永远填不满那几个槽
+                + deck.contract_hint()
+                + _NL
+                + "图片只能引用**沙箱里已有的文件**（kind=local、path 相对沙箱目录）："
+                "写盘层不现生也不检索图片——要一张图，先用 run_command 在沙箱里"
+                "把它生成或下载下来，再把文件名填进 image.path。"
+                + _NL
+                + "`title` 是这份 deck 的标题（也写进文件的文档属性）："
+                "**给了它而第一页又不是 cover 时，会在最前面补一页封面**。"
                 "文件落在这条会话的产物区，**不进知识库**（要入用 ingest_artifact）。"
             ),
             "inputSchema": {
@@ -611,23 +625,162 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "description": "同 export_document：只有没有会话上下文的通道才需要",
                     },
                     "filename": {"type": "string", "description": "文件名，扩展名用 .pptx"},
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "这份 deck 的标题（也写进文件的文档属性）。"
+                            "第一页不是 cover 时，会在最前面补一页封面"
+                        ),
+                    },
+                    "subtitle": {"type": "string", "description": "副标题；封面与收尾页用"},
+                    "author": {"type": "string", "description": "作者"},
+                    "org": {"type": "string", "description": "单位 / 机构"},
+                    "brand": {
+                        "type": "object",
+                        "description": "可选：换掉默认主题的那两支颜色（只收 6 位十六进制）",
+                        "properties": {
+                            "primary": {"type": "string", "description": "主色，如 1B4F8A"},
+                            "accent": {"type": "string", "description": "强调色，如 E8A33D"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    "default_density": {
+                        "type": "string",
+                        "enum": ["auto", "light", "heavy"],
+                        "description": "整份 deck 的疏密档；默认 auto（按内容自动挑）",
+                    },
                     "slides": {
                         "type": "array",
+                        "description": "按顺序的页面",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "title": {"type": "string", "description": "这一页的标题"},
+                                "archetype": {
+                                    "type": "string",
+                                    "enum": [item.value for item in deck.Archetype],
+                                    "description": (
+                                        "页型；省略时按内容判：有图表或指标卡→data，"
+                                        "有图→split，有要点→bullets，只有标题→section"
+                                    ),
+                                },
+                                "title": {"type": "string", "description": "这一页的标题（必给）"},
+                                "subtitle": {"type": "string", "description": "副标题"},
+                                "body": {
+                                    "type": "string",
+                                    "description": "一段正文；与 bullets 二选一",
+                                },
                                 "bullets": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "这一页的要点",
+                                    "description": "要点，一条一句话",
+                                },
+                                "icons": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "每条要点前面那枚图标的名字（circle-check / arrow-right / "
+                                        "square-stack / triangle-up / hexagon-node 这类）；"
+                                        "省略则按主题循环取"
+                                    ),
+                                },
+                                "kpis": {
+                                    "type": "array",
+                                    "description": "指标卡（数据页用，最多 3 个）",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string", "description": "这是什么"},
+                                            "value": {"type": "string", "description": "多少"},
+                                            "delta": {
+                                                "type": "string",
+                                                "description": "那句话：同比 / 环比多少",
+                                            },
+                                        },
+                                        "required": ["label", "value"],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                                "chart": {
+                                    "type": "object",
+                                    "description": "原生图表（数据页必给）",
+                                    "properties": {
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": [item.value for item in deck.ChartKind],
+                                            "description": "图表类型；省略为 column",
+                                        },
+                                        "categories": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "类别轴（如月份）",
+                                        },
+                                        "series": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "name": {
+                                                        "type": "string",
+                                                        "description": "系列名（图例上写的就是它）",
+                                                    },
+                                                    "values": {
+                                                        "type": "array",
+                                                        "items": {"type": "number"},
+                                                        "description": "与类别一一对应的数值",
+                                                    },
+                                                },
+                                                "required": ["name", "values"],
+                                                "additionalProperties": False,
+                                            },
+                                        },
+                                        "takeaway": {
+                                            "type": "string",
+                                            "description": "一句结论（必给）：这一页要记住的那句话",
+                                        },
+                                        "unit": {"type": "string", "description": "数值单位"},
+                                    },
+                                    "required": ["categories", "series", "takeaway"],
+                                    "additionalProperties": False,
+                                },
+                                "image": {
+                                    "type": "object",
+                                    "description": "图文页（split）的图：只能是沙箱里已有的文件",
+                                    "properties": {
+                                        "kind": {"type": "string", "enum": ["local"]},
+                                        "path": {
+                                            "type": "string",
+                                            "description": "相对沙箱目录的路径（如 chart.png）",
+                                        },
+                                        "alt": {
+                                            "type": "string",
+                                            "description": "一句图注（必给）：它说明这张图在讲什么",
+                                        },
+                                    },
+                                    "required": ["path", "alt"],
+                                    "additionalProperties": False,
+                                },
+                                "quote": {
+                                    "type": "string",
+                                    "description": "结语 / 结论条（数据页与图文页 heavy 用）",
+                                },
+                                "meta": {
+                                    "type": "string",
+                                    "description": "元信息（封面用：日期、场合）",
+                                },
+                                "notes": {
+                                    "type": "string",
+                                    "description": "讲者备注：不印在页面上，讲的时候看",
+                                },
+                                "density": {
+                                    "type": "string",
+                                    "enum": ["auto", "light", "heavy"],
+                                    "description": "这一页的疏密档；默认 auto",
                                 },
                             },
                             "required": ["title"],
+                            "additionalProperties": False,
                         },
-                        "description": "按顺序的页面",
                     },
-                    "title": {"type": "string", "description": "封面标题；留空则不要封面"},
                 },
                 "required": ["filename", "slides"],
                 "additionalProperties": False,
@@ -1497,32 +1650,199 @@ def _export_deck(
     caller: Caller,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """要点 → .pptx → 落成一份文件。"""
+    """一份 deck spec → .pptx → 落成一份文件（**走四层新链**，见 `app/services/deck/`）。
+
+    与 `office.build_pptx` 那条旧链的差别全在"谁决定它长什么样"：模型只给内容与页型，
+    版式、令牌、溢出由 `deck` 那四层算，写盘交给 Node（`scripts/deck/render.mjs`），
+    最后用 `deck.verify_pptx` 解包核对——**"文件生成了"不等于"文件是计划说的那样"**：
+    图表被画成图片、中文没拿到字体、图丢了，这三件事都不会报错，只会静默难看。
+
+    三类失败各说各的话（模型据此要改的东西完全不同）：内容写错了（`DeckSpecError`）、
+    这台机器做不到（没有 Node）、写盘层自己出了问题（结构检查不过）。
+    """
+    kind = _suffix_of(_require(args, "filename"))
+    if kind != "pptx":
+        raise InvalidRequestError(f"export_deck 只做 .pptx（收到 .{kind}）")
+    payload = _deck_payload(args, services=services, conversation_id=conversation_id)
+    try:
+        spec = deck.load_deck_spec(payload)
+    except deck.DeckSpecError as exc:
+        raise InvalidRequestError(
+            f"{exc.message}{_NL}按上面每一条改好内容，再调一次 export_deck"
+        ) from exc
+
+    # 依赖缺失先判、单独报：与 `_build` 对待 `office.missing_requirement` 同一条理由
+    # ——"这台机器上做不到"与"这份内容造不出来"是两回事，合成一句话的话，
+    # 模型会去反复改内容，而问题根本不在那里
+    problem = deck.node_requirement()
+    if problem:
+        raise InvalidRequestError(problem)
+
+    plan = deck.map_deck(spec)
+    with tempfile.TemporaryDirectory(prefix="kylab-deck-") as workdir:
+        target = Path(workdir) / "deck.pptx"
+        try:
+            rendered = deck.render_deck(plan, target)
+        except deck.DeckRenderError as exc:
+            raise InvalidRequestError(exc.message) from exc
+        check = deck.verify_pptx(rendered.path, plan)
+        if not check.ok:
+            raise InvalidRequestError(
+                f"渲染出来的 PPT 没通过结构检查（这份文件不能当交付物）：{_NL}"
+                + _NL.join(f"- {item}" for item in check.failures)
+                + f"{_NL}**这不是内容要改**：是写盘层写出来的文件与计划对不上"
+                "（图表没落上、字体没写进去、图丢了那类）。请重试一次；"
+                "仍然这样的话，把这段话原样告诉对方，别把这份文件交出去"
+            )
+        try:
+            content = Path(rendered.path).read_bytes()
+        except OSError as exc:
+            raise InvalidRequestError(f"读不了刚渲染出来的文件：{exc}") from exc
+    return _save_export(
+        services, args, content, caller=caller, kind=kind, conversation_id=conversation_id
+    )
+
+
+def _deck_payload(
+    args: dict[str, Any], *, services: Services, conversation_id: str | None
+) -> dict[str, Any]:
+    """export_deck 的入参 → 一份 deck spec（`deck.load_deck_spec` 吃的形状）。
+
+    **这一层只做"补齐"，不做"判据"**：页型与密度的合法取值、载荷与页型相不相容、
+    每页有没有视觉元素，全部由 `load_deck_spec` 判——它那套报错比这里另写一套更准
+    （还会指到第几页哪一处）。这里只管老链留下来的三件事：
+
+    1. **老调用没有页型**（旧入参就是 ``{title, bullets}``）：按内容补一个
+       ——见 `_infer_archetype`（有要点就是要点页，只有标题就是章节页；新形状里
+       给了图表/图片却没写页型的也一起补）。补出来的页型都满足新链那条硬约束
+       （每页至少一个视觉元素）：要点页有图标列、章节页有大序号，
+       数据页与图文页由图表或图自己保证；
+    2. **老调用的 ``title`` 就是封面标题**（旧链给了它就在最前面加一页封面）：
+       保持同一个动作，只是第一页本身已经是 cover 时不再补；
+    3. **新链一页最多 12 条要点，老链到 20 条才截断**：把超出的摊到「（续）」页上
+       ——这正是映射层自己遇到溢出时会做的事，而多一页比丢内容好。
+    """
     raw = args.get("slides")
     if not isinstance(raw, list) or not raw:
-        raise InvalidRequestError("slides 要是一个非空的数组（每项 {title, bullets}）")
-    if len(raw) > office.MAX_SLIDES:
-        raise InvalidRequestError(f"页数太多（{len(raw)}，上限 {office.MAX_SLIDES}）")
+        raise InvalidRequestError(
+            "slides 要是一个非空的数组：老形状是每项 {title, bullets}，"
+            "新形状每项再给 archetype 与这一页型的载荷"
+        )
     slides: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
             raise InvalidRequestError("slides 里每一项都要是对象：{title, bullets}")
-        bullets = item.get("bullets") or []
-        if not isinstance(bullets, list):
-            raise InvalidRequestError("某一页的 bullets 不是数组")
-        slides.append(
-            {
-                "title": str(item.get("title") or ""),
-                "bullets": [str(text) for text in bullets[: office.MAX_BULLETS_PER_SLIDE]],
-            }
+        slides.extend(_deck_pages(item))
+    if len(slides) > deck.MAX_SLIDES:
+        # 在一处判，而不是先判原始页数：老页摊成「（续）」页之后也可能超限
+        raise InvalidRequestError(
+            f"页数太多（{len(slides)} 页，上限 {deck.MAX_SLIDES}）："
+            "要点多的页会被摊成「（续）」页，请先自己把它们拆成多页"
         )
-    kind = _suffix_of(_require(args, "filename"))
-    if kind != "pptx":
-        raise InvalidRequestError(f"export_deck 只做 .pptx（收到 .{kind}）")
-    content = _build(kind, office.build_pptx, slides, title=str(args.get("title") or ""))
-    return _save_export(
-        services, args, content, caller=caller, kind=kind, conversation_id=conversation_id
-    )
+    title = str(args.get("title") or "").strip()
+    if title and slides[0].get("archetype") != deck.Archetype.COVER.value:
+        slides.insert(0, {"archetype": deck.Archetype.COVER.value, "title": title})
+    payload: dict[str, Any] = {
+        # deck 标题只是文件的文档属性，所以拿不到时退回第一页的标题即可
+        "title": title or str(slides[0].get("title") or "未命名幻灯")
+    }
+    for key in ("subtitle", "author", "org", "brand", "default_density"):
+        if args.get(key):
+            payload[key] = args[key]
+    payload["slides"] = slides
+    _deck_images(payload, services=services, conversation_id=conversation_id)
+    return payload
+
+
+def _infer_archetype(page: dict[str, Any], bullets: list[str]) -> str:
+    """这一页没写页型时，按内容补一个（只在 ``archetype`` 缺失时用）。
+
+    前两条是"载荷即页型"：给了图表/指标卡就是数据页，给了图就是图文页。
+    **猜错也要猜得像**——补成章节页的话，模型收到的是"章节页收不了图表"，
+    而它从没写过"章节页"这三个字，那句话它改不动。
+    老形状（只有 title/bullets）落到后两条：有要点就是要点页，
+    只有标题就是章节页（"这一页只有一句话"最贴近的原型就是它）。
+    """
+    if page.get("chart") or page.get("kpis"):
+        return deck.Archetype.DATA.value
+    if page.get("image"):
+        return deck.Archetype.SPLIT.value
+    if bullets or page.get("body"):
+        return deck.Archetype.BULLETS.value
+    return deck.Archetype.SECTION.value
+
+
+def _deck_pages(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """一页（可能是老形状）→ 一页或多页 spec 页（见 :func:`_deck_payload` 的三条）。"""
+    page = dict(item)
+    bullets = page.get("bullets") or []
+    if not isinstance(bullets, list):
+        raise InvalidRequestError("某一页的 bullets 不是数组")
+    bullets = [str(text) for text in bullets]
+    if not page.get("archetype"):
+        page["archetype"] = _infer_archetype(page, bullets)
+    if page["archetype"] != deck.Archetype.BULLETS.value:
+        # 别的页型给了太多要点：那是"这一页收不了这么多"，让 spec 说（它的话更准）
+        page["bullets"] = bullets
+        return [page]
+    limit = deck.MAX_BULLETS_PER_SLIDE
+    if len(bullets) <= limit:
+        page["bullets"] = bullets
+        return [page]
+    icons = page.get("icons")
+    pages: list[dict[str, Any]] = []
+    for offset in range(0, len(bullets), limit):
+        part = {**page, "bullets": bullets[offset : offset + limit]}
+        # 图标一枚对一个要点：切要点时跟着切，否则第二页会从第一枚图标重新开始
+        if isinstance(icons, list) and len(icons) == len(bullets):
+            part["icons"] = icons[offset : offset + limit]
+        part["title"] = f"{page.get('title') or ''}{'（续）' if offset else ''}"
+        pages.append(part)
+    return pages
+
+
+def _deck_images(
+    payload: dict[str, Any], *, services: Services, conversation_id: str | None
+) -> None:
+    """把每页的 ``image`` 收成**沙箱里的一个绝对路径**（原地改 payload 里的页）。
+
+    写盘层只贴**本地文件**（``local``）：现生（generate）与检索（search）那两种，
+    它画的是一个"这一格该有图"的说明框——"给了图但页面上没有图"比报错坏得多，
+    所以这两种来路在这里挡住，并告诉模型该先做什么。
+
+    路径也从沙箱解析（`sandbox.resolve_in` 那四道：绝对路径 / ``..`` / 越界 / 敏感文件）：
+    它同样是**模型生成的路径**，没有理由比 `export_file` 松一档。
+    """
+    for page in payload["slides"]:
+        image = page.get("image")
+        if not isinstance(image, dict) or not image:
+            continue  # 空对象 / 类型不对交给 load_deck_spec 说
+        path = str(image.get("path") or "").strip()
+        # 给了 path 就按 local 算：这条路上只有 local 画得出来
+        kind = str(image.get("kind") or ("local" if path else "")).strip()
+        if kind != "local":
+            raise InvalidRequestError(
+                f"图片的来路只能用 local（收到「{image.get('kind') or '没给 kind'}」）："
+                "写盘层不现生也不检索图片。要一张图，先用 run_command 在沙箱里"
+                "把它生成或下载下来，再把文件名填进 image.path"
+            )
+        if not path:
+            continue  # 缺 path 由 spec 说（"用工作区文件（local）必须给 path"）
+        if not conversation_id:
+            raise InvalidRequestError(
+                "这条通道上没有沙箱（外部客户端直接调）：图片引用不了。"
+                "把这一页改成要点或图表，或者让对方在对话里要这份带图的幻灯"
+            )
+        from app.services.sandbox import resolve_in, sandbox_for
+
+        box = sandbox_for(services.runtime.data_dir, conversation_id).ensure()
+        target = resolve_in(box, path)
+        if not target.is_file():
+            raise InvalidRequestError(
+                f"沙箱里没有这张图：{path}。image.path 要写**相对沙箱目录**的路径"
+                "（如 chart.png），而且得先用 run_command 把它放到那里"
+            )
+        page["image"] = {**image, "kind": "local", "path": str(target)}
 
 
 def _build(fmt: str, builder: Any, *args: Any, **kwargs: Any) -> bytes:
