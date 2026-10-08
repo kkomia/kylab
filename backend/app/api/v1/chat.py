@@ -158,15 +158,6 @@ from app.services.session_events import (
     turn_end_draft,
     turn_start_draft,
 )
-from app.services.suggested_questions import (
-    DEFAULT_LIMIT as SUGGESTED_DEFAULT_LIMIT,
-)
-from app.services.suggested_questions import (
-    MAX_QUESTIONS as SUGGESTED_MAX,
-)
-from app.services.suggested_questions import (
-    MIN_QUESTIONS as SUGGESTED_MIN,
-)
 from app.services.tool_loop import (
     DEFAULT_MAX_SECONDS,
     DEFAULT_MAX_STEPS,
@@ -745,6 +736,15 @@ def conversation_events(
     wanted = [item.strip() for item in kinds.split(",") if item.strip()]
     events = services.conversations.session_events(conversation_id, kinds=wanted or None)
     return SessionEventListOut(items=[SessionEventOut.model_validate(event) for event in events])
+
+
+#: 推荐问题的条数边界。**双份并存期**：权威在 KB 侧
+#: （`services/suggested_questions.py` 的 `MIN_QUESTIONS` / `MAX_QUESTIONS` / `DEFAULT_LIMIT`），
+#: 这里留一份拷贝是为了让这个模块不 import KB 域（剥离阶段 0 的刀 2）。
+#: `/chat/suggested-questions` 按方案 §3.2 属 KB 面，**剥离收口时这条路由与这份拷贝一起删**。
+SUGGESTED_MIN = 1
+SUGGESTED_MAX = 5
+SUGGESTED_DEFAULT_LIMIT = 6
 
 
 @router.get(

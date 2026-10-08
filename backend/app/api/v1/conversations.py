@@ -40,6 +40,7 @@ from app.api.v1.schemas import (
 )
 from app.api.v1.workspaces import Device, device_from_headers
 from app.core.config import Settings, get_settings
+from app.core.downloads import content_disposition, media_type_of
 from app.core.exceptions import NotFoundError, PayloadTooLargeError, UnauthorizedError
 from app.core.services import Services, get_services
 from app.core.signing import SigningError, verify_resource
@@ -50,8 +51,6 @@ from app.services.artifacts import (
     split_filename,
 )
 from app.services.conversation_export import MEDIA_TYPE, PAGE_SIZE
-from app.services.documents import media_type_of
-from app.services.ingest import content_disposition
 from app.services.session_events import fill_missing_thinking, steps_per_turn
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])

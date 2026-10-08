@@ -1,10 +1,17 @@
-"""Embedding 提供方协议。"""
+"""Embedding 提供方协议。
+
+错误类（``EmbeddingError`` / ``EmbeddingNotConfiguredError``）**定义在
+`app/core/exceptions.py`**（2026-10-08 剥离阶段 0 搬过去）——它们要被两侧按类型分档，
+而"领域异常一律住 core"是本仓既有约定；这里 import 再导出，调用点一行没改。
+"""
 
 from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+
+from app.core.exceptions import EmbeddingError, EmbeddingNotConfiguredError
 
 __all__ = [
     "EmbeddingError",
@@ -13,26 +20,6 @@ __all__ = [
     "fit_dimension",
     "l2_normalize",
 ]
-
-
-class EmbeddingError(Exception):
-    """向量化失败。带 ``stage`` 便于状态机把失败定位到具体步骤。"""
-
-    def __init__(self, message: str, *, stage: str = "embedding") -> None:
-        super().__init__(message)
-        self.stage = stage
-
-
-class EmbeddingNotConfiguredError(EmbeddingError):
-    """**没有可用的嵌入模型**（是本机配置缺失，不是调用失败）。
-
-    单列一类是因为处置方式完全不同：重试没有意义，正确动作是去设置里选模型。
-    调用方据此选择"拒绝建库"或"跳过向量通道"，而不是把它当成上游抖动反复重试，
-    更不是退回一个无语义的兜底实现。
-    """
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, stage="config")
 
 
 def l2_normalize(vector: Sequence[float]) -> list[float]:

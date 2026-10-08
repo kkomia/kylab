@@ -19,8 +19,8 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from urllib.parse import quote
 
+from app.core.downloads import content_disposition
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
 from app.models.enums import TERMINAL_STAGES, DataSourceKind, DocumentStage, TaskKind, TaskState
 from app.parsers.base import ParseError, ParseResult, ParserProvider
@@ -1132,23 +1132,3 @@ def normalize_filename(filename: str) -> str:
     except (UnicodeEncodeError, UnicodeDecodeError):
         return filename
     return recovered or filename
-
-
-def content_disposition(filename: str, *, disposition: str = "attachment") -> str:
-    """按 RFC 6266 拼 ``Content-Disposition``。
-
-    中文文件名必须走 ``filename*=UTF-8''`` 那一支：HTTP 头是 latin-1，
-    直接把中文塞进 ``filename="..."`` 会被上游编码器拒掉（或变成乱码落盘）。
-
-    同时给两个参数是刻意的，不是冗余：
-    - ``filename=`` 是 ASCII 回退，给不认识 ``filename*`` 的老客户端；
-    - ``filename*=`` 是标准写法，现代浏览器优先用它。
-    只给后者，老客户端会拿到一个没名字的文件；只给前者，中文名就保不住。
-
-    ``%`` 与换行要转义/剔除：换行进头部就是响应拆分（response splitting），
-    而文件名是用户可控的输入。
-    """
-    safe = filename.replace("\r", "").replace("\n", "").replace('"', "")
-    ascii_fallback = safe.encode("ascii", "replace").decode("ascii") or "download"
-    quoted = quote(safe, safe="")
-    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quoted}"

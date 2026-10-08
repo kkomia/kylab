@@ -104,6 +104,38 @@ class UpstreamError(KylabError):
     message = "外部服务调用失败"
 
 
+class EmbeddingError(Exception):
+    """向量化失败。带 ``stage`` 便于状态机把失败定位到具体步骤。
+
+    **刻意不是 ``KylabError``**（搬到 core/ 时保持原样）：它由 embedding 提供方抛出、
+    被 ingest / retrieval / queue_worker 就地捕获并改写成任务失败状态，
+    改基类会同时改掉异常信封与各处 ``except`` 的行为。
+
+    **为什么住在这里而不是 ``services/embedding/base.py``**（2026-10-08 剥离阶段 0）：
+    Agent 侧的 `services/failures.py` 要把"向量化失败"翻成用户能读懂的一句话，
+    而它是**按类型**分档的（``EmbeddingNotConfiguredError`` 先于 ``EmbeddingError``）——
+    类型搬走就翻不了，复制一份又会让 ``isinstance`` 落空。
+    故按本模块既有的那条约定（``SecretStoreUnavailable`` 同一个理由）：
+    **领域异常一律住这里**，``services/embedding/base.py`` 再导出一次，调用点不用改。
+    """
+
+    def __init__(self, message: str, *, stage: str = "embedding") -> None:
+        super().__init__(message)
+        self.stage = stage
+
+
+class EmbeddingNotConfiguredError(EmbeddingError):
+    """**没有可用的嵌入模型**（是本机配置缺失，不是调用失败）。
+
+    单列一类是因为处置方式完全不同：重试没有意义，正确动作是去设置里选模型。
+    调用方据此选择"拒绝建库"或"跳过向量通道"，而不是把它当成上游抖动反复重试，
+    更不是退回一个无语义的兜底实现。
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, stage="config")
+
+
 class SecretStoreUnavailable(KylabError):
     """系统钥匙串现在用不上（M5 阶段 6，方案 §4.1 的第二条口径）。
 

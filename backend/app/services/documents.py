@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
+from app.core.downloads import media_type_of, suffix_of
 from app.core.exceptions import (
     ConflictError,
     InvalidRequestError,
@@ -97,7 +98,7 @@ def content_kind(filename: str, *, has_markdown: bool = False) -> str:
     """
     if has_markdown:
         return "markdown"
-    suffix = _suffix(filename)
+    suffix = suffix_of(filename)
     if suffix == ".pdf":
         return "pdf"
     if suffix in _IMAGE_SUFFIXES:
@@ -110,48 +111,9 @@ def content_kind(filename: str, *, has_markdown: bool = False) -> str:
     return "binary"
 
 
-def _suffix(name: str) -> str:
-    lowered = name.lower()
-    dot = lowered.rfind(".")
-    return lowered[dot:] if dot > 0 else ""
-
-
-#: 后缀 → 媒体类型，**只在上传时声明的类型缺失或过于笼统时兜底**。
-#:
-#: 为什么必须兜底：`Content-Type` 错了的后果很实在——一个
-#: ``application/octet-stream`` 的响应，**即使带 ``Content-Disposition: inline``，
-#: 浏览器也只会下载、不会渲染**。而上传时声明的类型是可选字段，浏览器之外的上传器
-#: （curl、SDK、脚本）常常留空，于是库里的 PDF 一预览就变下载（实测踩到）。
-#: 判后缀是服务端自己算的，比客户端声明的类型可靠。
-_FALLBACK_MEDIA_TYPES: dict[str, str] = {
-    ".pdf": "application/pdf",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-    ".avif": "image/avif",
-    ".svg": "image/svg+xml",
-    ".txt": "text/plain; charset=utf-8",
-    ".md": "text/markdown; charset=utf-8",
-    ".markdown": "text/markdown; charset=utf-8",
-    ".csv": "text/csv; charset=utf-8",
-    ".json": "application/json",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-}
-
-#: 「太笼统、等于没说」的媒体类型：留着它们还不如按后缀猜。
-_VAGUE_MEDIA_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream"})
-
-
-def media_type_of(filename: str, stored: str | None) -> str:
-    """一份内容该用哪个媒体类型：声明得具体就用它，笼统/缺失就按后缀兜底。"""
-    if stored and stored.strip().lower() not in _VAGUE_MEDIA_TYPES:
-        return stored
-    return _FALLBACK_MEDIA_TYPES.get(_suffix(filename), stored or "application/octet-stream")
+# 媒体类型判定与 `Content-Disposition` 已上移到 `app/core/downloads.py`（共享底座，
+# 见那里的模块头）：KB 侧下文档与 Agent 侧导出会话要用同一套判定，各写一遍迟早只改一边。
+# 这里 import 进来直接用（`suffix_of` 给 `content_kind`，`media_type_of` 给下载那条路）。
 
 
 def signature_resource(document_id: str, fmt: str) -> str:

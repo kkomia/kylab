@@ -17,9 +17,13 @@
 
 from __future__ import annotations
 
-from app.core.exceptions import KylabError, UpstreamError
+from app.core.exceptions import (
+    EmbeddingError,
+    EmbeddingNotConfiguredError,
+    KylabError,
+    UpstreamError,
+)
 from app.core.lazy_httpx import httpx
-from app.services.embedding.base import EmbeddingError, EmbeddingNotConfiguredError
 from app.services.llm import ChatError
 
 __all__ = ["failure_text"]
