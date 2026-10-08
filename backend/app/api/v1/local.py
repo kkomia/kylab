@@ -13,26 +13,12 @@
 4. ``/local/kb-cache/*``（`router`，M4 阶段 4/6）——**知识库元数据快照族的只读面**
    （页面"先画一帧"用的那几条读 + 一条用量读数 + 一条主动再验证 + 一条清理）。见下面那一节；
 5. ``/local/secrets`` 两条（`router`，M5 阶段 6）——**钥匙串**：这台机器有没有、
-   还有几处明文等着收编、以及"收编"这个显式动作。见下面那一节；
-6. **两条薄重声明**（`chat_reads`）——``GET /conversations/{id}/events`` 与
-   ``GET /chat/context-usage``；
-7. **一条薄重声明**（`stats_reads`）——``GET /stats/usage``。与上一条同一条理由，
-   只是它住在 `stats.py` 里，而那个 router 的兄弟端点（`/stats/dashboard`）数的是
-   知识库；分母是**本机**的那一条就挂出来（见模块末尾那一节）。
+   还有几处明文等着收编、以及"收编"这个显式动作。见下面那一节。
 
-## 为什么要"薄重声明"而不是整 include `chat.router`（M2 §4.2 照抄）
-
-那几条**只读本机数据**（会话事件日志落在本机库的 `session_events` 表里，上下文用量按
-会话历史与提示词现算，用量按本机 `usage_events` 现聚），本机档完全服务得了；
-但它们住在 `api/v1/chat.py` / `stats.py` 那两个 router 里，
-而同一个 router 还有**服务器专属**的端点（`/chat/stream` 要检索、要模型代理、要会话事件
-那一条完整链路；`/stats/dashboard` 数的是知识库的文档与任务）——整 include 就是
-**摆一条注定失败的路出来**（用户点得到、点下去 500），
-而"摆出来的东西应当是能用的"是这个项目一以贯之的规矩（见 `sidecar.py` 的
-`SIDECAR_TOOL_NAMES` 与 `agent_tools._KB_TOOLS`）。
-
-所以这几条**按原路径重声明**：函数体一个字不重写 ✗（直接把 `chat.py` / `stats.py` 里
-那些端点函数挂上来——同一份实现、同一套鉴权依赖、同一套归属判定），只是换一个 router 注册 ✓。
+对话侧那四条只读端点（事件日志 / 上下文用量 / 命令目录 / 用量面板）**曾经在这里**
+（``chat_reads`` / ``stats_reads`` 两条按原路径的"薄重声明"）。``api/v1/chat.py`` 与
+``api/v1/stats.py`` 整体删掉之后，它们搬去了 ``api/v1/local_chat.py`` 成为真实现
+——路径、依赖、响应模型都没变，只是不再需要借别人的 router 注册。
 
 ## ``/local/import*`` 的四条（阶段 5）
 
@@ -112,7 +98,6 @@ from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import ReadDep, WriteDep
-from app.api.v1 import chat, stats
 from app.core.config import Settings, get_settings
 from app.core.exceptions import (
     BadRequestError,
@@ -148,17 +133,11 @@ from app.services.knowledge_provider import (
 from app.services.legacy_import import UNFINISHED_STATES, LegacyImporter
 from app.services.remote_clients import RemoteRejectedError, RemoteUnavailableError
 
-__all__ = ["chat_reads", "router", "stats_reads"]
+__all__ = ["router"]
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/local", tags=["local"])
-
-#: 两条薄重声明的落点。**没有前缀**：它们就在原来的路径上（理由见模块头）。
-chat_reads = APIRouter(tags=["local"])
-
-#: 用量面板那一条的落点（同一条理由，见模块末尾那一节）。
-stats_reads = APIRouter(tags=["local"])
 
 
 class ImportBatchBriefOut(BaseModel):
@@ -1883,47 +1862,3 @@ def migrate_local_secrets(
     return SecretMigrationOut.model_validate(report.as_dict())
 
 
-# ---------------------------------------------------------------- 薄重声明两条
-
-chat_reads.add_api_route(
-    "/conversations/{conversation_id}/events",
-    chat.conversation_events,
-    methods=["GET"],
-    summary="会话事件日志（只追加，按 seq 正序）",
-    tags=["local"],
-)
-chat_reads.add_api_route(
-    "/chat/context-usage",
-    chat.context_usage,
-    methods=["GET"],
-    summary="上下文用量（按来源分解，估算）",
-    tags=["local"],
-)
-
-
-# ---------------------------------------------------------------- 薄重声明第三条
-
-#: `GET /stats/usage`（用量面板：token 与调用量）。
-#:
-#: **为什么单挂这一条、而不 include `stats.router`**：同一个 router 里的
-#: `/stats/dashboard` 数的是**知识库**（库数 / 文档数 / 切块数 / 任务数，见
-#: `services/stats.py::dashboard`）——本机档那几样都不存在，读它们必 503
-#: （KB 域方法在 `RemoteMetaStore` 上整体抛）。而这一条读的是**本机的
-#: `usage_events` 表**（`UsageRepo` 属本机域，见
-#: `app/storage/sqlite_impl/__init__.py` 的 `LOCAL_PROTOCOLS`）。所以按域判是"半挂"，
-#: 落地上就是这一条薄重声明（手法与上面那两条逐字相同：函数体一个字不重写）。
-#:
-#: ⚠️ **一条已知的缺口，写在这里免得把 0 读成"没用"**：本机那条**主链**今天不记账
-#: ——`ChatService.tool_loop`（边车 `/turn` 与定时任务默认走的那条 Agent 链）不调
-#: `UsageService.record`，边车的 `RemoteModelClient` 也不记（用量记在服务器那一侧）。
-#: 今天会往这张表写的只有 `ChatService.answer()`（Agent 工作流被关掉时那条）与
-#: `summarize_history`（上下文压缩）。所以这一条端点在本机**多数时候读到 0**，
-#: 那是"没记账"而**不是**"没用量"——真要让它有意义，得让本机那条主链也记账
-#: （落点与"哪些 agent 步骤该按次记"一起定，属另一个单元）。
-stats_reads.add_api_route(
-    "/stats/usage",
-    stats.usage_summary,
-    methods=["GET"],
-    summary="用量（本机 usage_events：token 与调用量，不含钱）",
-    tags=["local"],
-)

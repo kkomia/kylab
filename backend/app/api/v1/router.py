@@ -23,10 +23,10 @@ tabular / data_sources / shares）——那几张表不在本机库里，KB 域�
 from fastapi import APIRouter
 
 from app.api.v1 import (
-    chat,
     conversations,
     health,
     local,
+    local_chat,
     mcp_servers,
     memory,
     model_registry,
@@ -37,7 +37,6 @@ from app.api.v1 import (
     settings,
     site_icons,
     skills,
-    stats,
     web,
     workspaces,
 )
@@ -97,15 +96,7 @@ local_router.include_router(web.router)
 # 本机档专属：`/local/status`（导入的 `/local/import*` 与知识库提供者的
 # `/local/provider` 都在这个 router 上——三样都是"只在本机档成立"的东西，见 local.py）
 local_router.include_router(local.router)
-# 会话事件日志 / 上下文用量 / 用量面板这三条（`local.chat_reads` / `local.stats_reads`）
-local_router.include_router(local.chat_reads)
-local_router.include_router(local.stats_reads)
-# 命令目录（`GET /chat/commands`）：它读的是**这台机器上的**命令与技能
-# （`data/commands/` + 仓库命令 + `<data_dir>/skills/`，含"被禁用的技能"那栏的读法），
-# 而桌面真正执行那一轮的是**边车** —— 目录与执行必须同源，否则壳里列出来的
-# 与真正能被执行的不是同一批（同一个端点也就有了两个答案）。
-_chat_commands_local = APIRouter()
-_chat_commands_local.routes.extend(
-    route for route in chat.router.routes if getattr(route, "path", "") == "/chat/commands"
-)
-local_router.include_router(_chat_commands_local)
+# 会话事件日志 / 上下文用量 / 命令目录 / 用量面板这四条（`local_chat.router`）——
+# 读源全在本机库里（`session_events` / 会话历史与提示词 / 命令目录 / `usage_events`），
+# 逐条理由见那个模块的模块头。
+local_router.include_router(local_chat.router)

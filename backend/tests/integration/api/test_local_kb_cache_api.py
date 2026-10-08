@@ -659,37 +659,3 @@ def test_stats_reports_what_is_kept_without_asking_the_nas(
         assert _ok(client.get(f"{BASE}/stats"))["rows"] == 0
         assert client.patch("/api/v1/local/provider", json={"base_url": ""}).status_code == 200
         assert _ok(client.get(f"{BASE}/stats"))["rows"] == 7, "切回来还是那七项"
-
-
-# --------------------------------------------------------------- ⑦ 服务器档
-
-
-def test_the_server_deployment_does_not_serve_the_snapshot_family(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """服务器档**一条都不挂**（R8）：那一档没有"抄一份 NAS 快照"这条动作。
-
-    判据走**建出来的应用**（不是读内存里的 router 对象）：本机档那几条路径在服务器档那张
-    全量表里根本不存在，客户端打过去就是 **404**——与 ``/local/provider`` 同一条处置
-    （``provider.ts`` 的 ``unsupported``）。
-    """
-    monkeypatch.setenv("KYLAB_DEPLOYMENT", "server")
-    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
-    get_settings.cache_clear()
-    reset_services()
-    reset_stores()
-    from app.main import create_app
-
-    app = create_app()
-    try:
-        # 不建 PG 连接：直接用 TestClient 发一条请求（lifespan 只在那两个"没有快照"的用例里用得到）
-        client = TestClient(app)
-        assert client.get(f"{BASE}/knowledge-bases").status_code == 404
-        assert client.get(f"{BASE}/knowledge-bases/kb_a/documents").status_code == 404
-        assert client.get(f"{BASE}/stats").status_code == 404
-        assert client.post(f"{BASE}/revalidate", json={"resource": KB_LIST}).status_code == 404
-        assert client.delete(BASE).status_code == 404
-    finally:
-        reset_services()
-        reset_stores()
-        get_settings.cache_clear()
