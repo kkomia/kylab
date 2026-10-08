@@ -94,6 +94,7 @@ from app.api.v1 import (
     tabular,
     tasks,
     users,
+    web,
     webhooks,
     wiki,
     workspaces,
@@ -238,6 +239,10 @@ local_router.include_router(_sandbox_local)
 # 站点图标（D11-②）：抓取与 30 天磁盘缓存都在本机（`<data_dir>/site-icons/`，见
 # services/site_icons.py）——它本来就是"本机代浏览器去取"，服务器那一档才是顺带。
 local_router.include_router(site_icons.router)
+# 网页取页（阅读模式）：两个请求都是**这台机器**替界面发出去的——"读一页正文"与
+# "探一次对方让不让嵌"。同上：出口在本机，服务器档不挂（NAS 那一侧没有"某个用户正在
+# 读一页"这个场景，挂上去只会多出一条能被外部打进来、却没人调用的抓取口，见 web.py）。
+local_router.include_router(web.router)
 # 本机档专属：`/local/status`（导入的 `/local/import*` 与知识库提供者的
 # `/local/provider` 都在这个 router 上——三样都是"只在本机档成立"的东西，见 local.py）
 local_router.include_router(local.router)
