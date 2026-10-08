@@ -23,11 +23,8 @@ M3 起本机不再"没有知识库"——知识库在 NAS 上，本机是它的*
   本机不读文档树；"入库进度"是提供者客户端的能力（``document_status``），不进 ``stores.meta``；
 - ``TaskQueueRepo``：本机档**不启动消费者**，没有队列可管；
 - ``DataSourceRepo`` / ``WebhookRepo`` / ``IdempotencyRepo``：服务器家当；
-- ``ApiKeyRepo``：**尤其不许映射**——本机档的 ``Caller`` 是短路的本机主人，
-  把 NAS 的钥匙表映射进来等于给本机装第二套鉴权；
 - ``IdentityRepo``：本机不设门禁（v0.3 §8-1）；
-- ``ShareRepo`` / ``TrashRepo`` / ``WikiRepo`` / 流水线维护：属 NAS 的账号体系与后台，
-  页面直连；
+- ``TrashRepo`` / ``WikiRepo`` / 流水线维护：属 NAS 的账号体系与后台，页面直连；
 - 写类（建库 / 改名 / 改切分 / 改提示词 / 删库）：本机档**没有调用方**，
   知识库管理是页面直连 NAS 的事。
 

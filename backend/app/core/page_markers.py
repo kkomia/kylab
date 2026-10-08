@@ -1,18 +1,19 @@
-"""页标记（``<!-- page:N -->``）的写入与读取约定。
+"""页标记（``<!-- page:N -->``）的格式与写入工具。
 
 一份多页文档的解析产物是**一整段 Markdown**，"这条命中在第几页"这个问题只能靠
-标记来回答。标记由解析器逐页写入，**读取侧一律走这里的常量与函数**，不许各写一份：
+标记来回答。标记由解析器逐页写入，**格式只有这一份定义**，不许各写一份：
 
 - **写入**：解析器逐页产出时（PaddleOCR 天然逐页；MinerU 靠 ``content_list.json``
   的 ``page_idx`` 定位，见 :func:`locate_block_offsets`）；
-- **读取**：``PAGE_MARKER_RE`` 整行匹配一个标记、:func:`strip_page_markers` 把标记行
-  整行剥干净——两者是"标记长什么样"这份格式的唯一落点。
+- **格式**：``PAGE_MARKER_TEMPLATE`` 写、``PAGE_MARKER_RE`` 认。读侧今天没有生产
+  消费者（按标记剥行、按标记切块那一侧随知识库产品一起拆掉了），留着它是为了让
+  "写出去的东西一定有人能按同一份格式认回来"，用例也用它核对插入结果。
 
 **放在 ``app/core`` 而不是 ``services``**：解析器是插件层，禁止反向依赖 services
-（工程规范 L4），而写侧读侧又必须共用同一个格式——各写一份必然漂。
+（工程规范 L4），而格式定义必须只有一份——各写一份必然漂。
 
 标记长这样：``<!-- page:3 -->``，**独占一行**。用 HTML 注释是因为它对 Markdown
-渲染器不可见，且天然不参与正文检索；读取侧把它整行剥掉，不进入正文。
+渲染器不可见，且天然不参与正文检索。
 """
 
 from __future__ import annotations
@@ -26,10 +27,9 @@ __all__ = [
     "insert_page_markers",
     "locate_block_offsets",
     "page_marker",
-    "strip_page_markers",
 ]
 
-#: 标记模板。改它要同时改读取侧的 ``PAGE_MARKER_RE``（同一份文件里，不会分家）。
+#: 标记模板。改它要同时改读侧的 ``PAGE_MARKER_RE``（同一份文件里，不会分家）。
 PAGE_MARKER_TEMPLATE = "<!-- page:{page} -->"
 
 #: 读侧：整行匹配一个页标记。
@@ -46,26 +46,12 @@ def page_marker(page: int) -> str:
     return PAGE_MARKER_TEMPLATE.format(page=page)
 
 
-def strip_page_markers(markdown: str) -> str:
-    """剥掉所有页标记行，并顺手把多余的空行收一收。
-
-    给**面向前端/用户的文本**用（阅读视角、下载的 Markdown）：标记是我们内部的
-    页码锚点，不该出现在用户读到的正文里。
-    """
-    if "<!--" not in markdown:
-        return markdown
-    kept = [line for line in markdown.splitlines() if not PAGE_MARKER_RE.match(line.strip())]
-    text = "\n".join(kept)
-    # 标记原来占一行，剥掉后会留下连续空行；压回最多一个空行，免得正文到处是空洞
-    return re.sub(r"\n{3,}", "\n\n", text)
-
-
 def insert_page_markers(markdown: str, boundaries: Sequence[tuple[int, int]]) -> str:
     """在给定的字符偏移处插入页标记。
 
     ``boundaries`` 是 ``(offset, page)``，按 offset 升序；offset 必须是原串里的
     合法切点（一般来自 :func:`locate_block_offsets`）。重复页码会被跳过——
-    同一页里出现两个标记没有意义，只会让读取侧多做一次无用功。
+    "这一页从哪儿开始"只有一个答案，多插一个标记只会让下一次读的人多绕一步。
     """
     if not boundaries:
         return markdown

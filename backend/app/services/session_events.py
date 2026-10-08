@@ -201,8 +201,8 @@ class SessionEvent:
     """读出来的一条事件（服务层形状）。
 
     **刻意摊开字段而不是把存储层的记录交给调用方**：协议层只该看到服务层给的
-    东西（与 ``services/conversation.LastTurn`` 同一条理由——工程规范 §3.3 的 L1
-    按 import 的模块名判，``api/`` 里出现 ``app.storage`` 直接红）。
+    东西（工程规范 §3.3 的 L1 按 import 的模块名判，``api/`` 里出现
+    ``app.storage`` 直接红）。
     """
 
     id: int

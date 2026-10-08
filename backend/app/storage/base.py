@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     # **只在类型检查时导入**：窄协议模块反过来要在运行时导入本模块的记录类型，
     # 真导入就成环。注解有 `from __future__ import annotations` 兜底，运行时不需要它。
     from app.storage.repositories import (
-        ApiKeyRepo,
         ChunkRepo,
         ConversationRepo,
         DataSourceRepo,
@@ -42,7 +41,6 @@ if TYPE_CHECKING:
         ParseResultRepo,
         ScheduleRepo,
         SettingsRepo,
-        ShareRepo,
         TaskQueueRepo,
         TrashRepo,
         UsageRepo,
@@ -52,10 +50,8 @@ if TYPE_CHECKING:
     )
 
 from app.models.enums import (
-    ApiKeyPermission,
     DataSourceKind,
     DocumentStage,
-    SharePermission,
     TaskKind,
     TaskState,
     TrashKind,
@@ -72,7 +68,6 @@ __all__ = [
     "IMPORT_STATES",
     "IMPORT_UNFINISHED_STATES",
     "SNAPSHOT_EXCLUDED_SETTING_PREFIXES",
-    "ApiKeyRecord",
     "BackupSnapshotRecord",
     "BackupSnapshots",
     "ChunkRecord",
@@ -99,7 +94,6 @@ __all__ = [
     "SearchHit",
     "SessionEventRecord",
     "SessionRecord",
-    "ShareRecord",
     "SnapshotArtifactRef",
     "SnapshotConversationRef",
     "SnapshotDbView",
@@ -231,8 +225,8 @@ class StoreBundle:
     #
     # 它们**返回的是同一个 ``meta`` 实例**，只是按域收窄了类型：新代码依赖窄接口，
     # "这个模块需要什么"在签名里读得出来；老代码走 `meta.*` 零改动。
-    # 这是拆 MetaStore 的第一步，不是行为变更——23 个域与 183 个方法的归属
-    # 见 repositories.py，`tests/unit/storage/test_repositories.py` 机械核对。
+    # 这是拆 MetaStore 的第一步，不是行为变更——22 个域与 199 个方法的归属
+    # 见 repositories.py。
 
     @property
     def knowledge_bases(self) -> KnowledgeBaseRepo:
@@ -280,11 +274,6 @@ class StoreBundle:
         return self.meta  # type: ignore[return-value]
 
     @property
-    def api_keys(self) -> ApiKeyRepo:
-        """API Key 域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
     def webhooks(self) -> WebhookRepo:
         """Webhook 域视图（`meta` 的窄类型）。"""
         return self.meta  # type: ignore[return-value]
@@ -312,11 +301,6 @@ class StoreBundle:
     @property
     def identity(self) -> IdentityRepo:
         """身份域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
-
-    @property
-    def shares(self) -> ShareRepo:
-        """分享域视图（`meta` 的窄类型）。"""
         return self.meta  # type: ignore[return-value]
 
     @property
@@ -816,26 +800,6 @@ class DataSourceRecord:
 
 
 @dataclass(slots=True)
-class ApiKeyRecord:
-    """API Key：绑定知识库范围 + 只读/读写（《架构设计 v0.2》§3.2）。"""
-
-    id: str
-    name: str
-    key_hash: str
-    permission: ApiKeyPermission
-    knowledge_base_ids: Sequence[str] = field(default_factory=tuple)
-    key_prefix: str = ""
-    """明文的前若干位，**仅用于界面分辨"哪把是哪把"**。
-
-    明文本身永不落库；这一段来自高熵随机串，不足以定位任何密钥（见 migrations 002）。
-    """
-    created_by: str | None = None
-    """创建这把钥匙的账号 id（v10）。``None`` = 账号体系启用前发放的老钥匙。"""
-    created_at: datetime | None = None
-    last_used_at: datetime | None = None
-
-
-@dataclass(slots=True)
 class WebhookRecord:
     """Webhook 订阅（异步事件推送通道）。"""
 
@@ -1008,8 +972,8 @@ class WorkspaceRecord:
     """用户指定的真实目录（绝对路径）。创建时校验存在且是目录，
     并拒绝指向数据目录或文件系统根——否则"把工作区设成 /"就等于把整台机器交出去。"""
     owner_id: str | None = None
-    """归属账号。与知识库 / 会话同一套口径：``None`` = 管理员或 API Key 通道，
-    能看到全部；普通成员只看自己的。"""
+    """归属账号。与知识库 / 会话同一套口径：``None`` = 本机主人（管理员档，
+    共享桶，能看到全部）；带账号的那一档只看自己的。"""
     description: str = ""
     kb_ids: Sequence[str] = field(default_factory=tuple)
     """这个工作区**带着哪些知识库**。这是"知识库与 Agent 天生融合"的落点：
@@ -1139,7 +1103,7 @@ class ConversationArtifactRecord:
     workspace_id: str | None = None
     """挂在哪个工作区上（``None`` = 没挂，落在对象存储）。"""
     owner_id: str | None = None
-    """归属账号，与知识库/会话同一套口径：``None`` = 管理员或 API Key 通道。"""
+    """归属账号，与知识库/会话同一套口径：``None`` = 本机主人（管理员档，共享桶）。"""
     knowledge_base_id: str | None = None
     """进了哪个知识库（``None`` = 还没入）。"""
     document_id: str | None = None
@@ -1186,16 +1150,6 @@ class SessionRecord:
     expires_at: datetime
     created_at: datetime | None = None
     last_seen_at: datetime | None = None
-
-
-@dataclass(slots=True)
-class ShareRecord:
-    """知识库分享：owner 把库授给另一个成员（读/写两档）。"""
-
-    kb_id: str
-    user_id: str
-    permission: SharePermission
-    created_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -2039,23 +1993,6 @@ class MetaStore(ABC):
         ...
 
     @abstractmethod
-    def create_api_key(self, record: ApiKeyRecord) -> ApiKeyRecord: ...
-
-    @abstractmethod
-    def get_api_key_by_hash(self, key_hash: str) -> ApiKeyRecord | None: ...
-
-    @abstractmethod
-    def list_api_keys(self) -> list[ApiKeyRecord]: ...
-
-    @abstractmethod
-    def delete_api_key(self, key_id: str) -> None: ...
-
-    @abstractmethod
-    def touch_api_key(self, key_id: str, *, used_at: datetime | None = None) -> None:
-        """记录一次使用时间（只更新 ``last_used_at``，不动权限与范围）。"""
-        ...
-
-    @abstractmethod
     def create_webhook(self, record: WebhookRecord) -> WebhookRecord: ...
 
     @abstractmethod
@@ -2494,23 +2431,6 @@ class MetaStore(ABC):
         返回吊销了几条——改密后界面要告诉用户"其他 N 处登录已退出"。
         """
         ...
-
-    # ---- 知识库分享（v10）----
-    @abstractmethod
-    def put_share(self, record: ShareRecord) -> ShareRecord:
-        """授出/调整分享档位。重复分享同一库同一人 = 改档位（INSERT OR REPLACE）。"""
-        ...
-
-    @abstractmethod
-    def list_shares_for_kb(self, kb_id: str) -> list[ShareRecord]: ...
-
-    @abstractmethod
-    def list_shares_for_user(self, user_id: str) -> list[ShareRecord]:
-        """某人被分享了哪些库——可见性过滤（owned + shared）里的 shared 半边。"""
-        ...
-
-    @abstractmethod
-    def delete_share(self, kb_id: str, user_id: str) -> None: ...
 
     # ---- 用量（调研报告 G7）----
     @abstractmethod

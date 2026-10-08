@@ -190,7 +190,6 @@ SHARED_MODULES: tuple[str, ...] = (
     "app.storage.base",
     "app.storage.local_impl",
     "app.storage.repositories",
-    "app.storage.text",
     # 两档都要用、阶段 1 才分家的那几个入口与出面
     "app.api.v1.health",
     "app.api.v1.router",
@@ -253,8 +252,8 @@ CLAIM_NOTES: dict[str, str] = {
     "**身份契约已搬走**（`Caller` / `READ` / `WRITE` / `LOCAL_CALLER` / `LOCAL_USER_ID` → "
     "`app.core.caller`，见报告第 10.1 节）：发放/校验/成员与分享那几件随知识库产品剥离"
     "一起删了，那几个名字仍从这里的 `__all__` 再导出，KB 侧调用点一行没动",
-    "app.core.caller": "**身份契约**：`Caller`（frozen dataclass，含 `permission` / "
-    "`knowledge_base_ids` / `owner_id` 三个派生属性）、`READ` / `WRITE`（权限别名）、"
+    "app.core.caller": "**身份契约**：`Caller`（frozen dataclass，含 `owner_id` 派生属性）、"
+    "`READ` / `WRITE`（权限别名）、"
     "`LOCAL_CALLER` + `LOCAL_USER_ID`（本机档唯一的调用主体）。"
     "两侧都要它：KB 侧用它做准入判定，Agent 侧每个 api 模块拿它当类型、判 `WRITE`。"
     "住共享底座是 2026-10-08 那一刀的结果（实现仍留 `services/api_key.py`）",

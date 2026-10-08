@@ -82,11 +82,11 @@ def require_write(
 
 
 def require_admin(caller: CallerDep) -> Caller:
-    """管理员专属端点（设置页、模型注册、API Key 管理、用户管理）。
+    """管理员专属端点（设置页、模型注册、插件与技能、沙箱执行、工作区浏览/建目录）。
 
     **必须是管理员会话**，不能只要求"读写权限"：
     这些端点里是 embedding / rerank / LLM 的密钥与外部服务地址，而地址可改——
-    给了外部 API Key 就等于给它一条转发凭据的路。
+    拿到写权限就等于拿到一条转发凭据的路。
     """
     if not caller.is_admin:
         raise ForbiddenError(

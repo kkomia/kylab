@@ -1,6 +1,6 @@
-"""按域切开的仓储**窄协议**（strangler 的第二步：183 个方法全部切开）。
+"""按域切开的仓储**窄协议**（strangler 的第二步：199 个方法全部切开）。
 
-`MetaStore` 有 183 个方法、实现三千多行。问题不在行数，而在**接口本身**：
+`MetaStore` 有 199 个方法、实现三千多行。问题不在行数，而在**接口本身**：
 ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那个接口"——
 "这个模块到底需要什么"在签名里读不出来，拆分也被接口锁死。
 
@@ -21,8 +21,10 @@ ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那
 （拆到 `ConversationRepo`）、存储维护混在知识库节里（拆出 `MaintenanceRepo`）、
 阶段事件的读与清理分归两个域（读在文档、清理在维护）。
 
-``tests/unit/storage/test_repositories.py`` 机械核对三件事：**每个方法恰好属于一个协议**、
-**183 个方法一个不漏**、**签名与 ABC 逐字一致**。
+**22 个协议、199 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
+某处切漏了）。签名逐字取自 ABC。**注意**：这三个数字是**手工维护**的——原先有一份
+``tests/unit/storage/test_repositories.py`` 机械核对它们，那份文件已不在仓库里，
+动接口时记得自己再过一遍。
 """
 
 from __future__ import annotations
@@ -33,7 +35,6 @@ from typing import Protocol, runtime_checkable
 
 from app.models.enums import DocumentStage, TaskState
 from app.storage.base import (
-    ApiKeyRecord,
     ChatMessageRecord,
     ChunkRecord,
     ConversationArtifactRecord,
@@ -56,7 +57,6 @@ from app.storage.base import (
     ScheduledTaskRecord,
     SessionEventRecord,
     SessionRecord,
-    ShareRecord,
     TaskCounts,
     TaskRecord,
     TaskStatRow,
@@ -70,7 +70,6 @@ from app.storage.base import (
 )
 
 __all__ = [
-    "ApiKeyRepo",
     "ChunkRepo",
     "ConversationRepo",
     "DataSourceRepo",
@@ -87,7 +86,6 @@ __all__ = [
     "ParseResultRepo",
     "ScheduleRepo",
     "SettingsRepo",
-    "ShareRepo",
     "TaskQueueRepo",
     "TrashRepo",
     "UsageRepo",
@@ -463,30 +461,8 @@ class DataSourceRepo(Protocol):
 
 
 @runtime_checkable
-class ApiKeyRepo(Protocol):
-    """API Key 域：签发、按哈希查找、列举、吊销、触碰。
-
-    **只按哈希查**（`get_api_key_by_hash`）：明文只在签发那一刻返回一次，库里没有它。
-    """
-
-    def create_api_key(self, record: ApiKeyRecord) -> ApiKeyRecord: ...
-
-    def get_api_key_by_hash(self, key_hash: str) -> ApiKeyRecord | None: ...
-
-    def list_api_keys(self) -> list[ApiKeyRecord]: ...
-
-    def delete_api_key(self, key_id: str) -> None: ...
-
-    def touch_api_key(self, key_id: str, *, used_at: datetime | None = None) -> None: ...
-
-
-@runtime_checkable
 class WebhookRepo(Protocol):
-    """Webhook 域：订阅登记、开关与删除。
-
-    与 API Key 分开：它们同属"对外投递"，但一个是入站鉴权、一个是出站通知，
-    生命周期与权限面都不同。
-    """
+    """Webhook 域：订阅登记、开关与删除（**出站通知**：我们把事件推给订阅方）。"""
 
     def create_webhook(self, record: WebhookRecord) -> WebhookRecord: ...
 
@@ -716,23 +692,6 @@ class IdentityRepo(Protocol):
 
 
 @runtime_checkable
-class ShareRepo(Protocol):
-    r"""知识库分享域（v10）：私有是默认，owner 按登录名授出读 / 写两档。
-
-    三个查询口径（按库、按人、删）对应界面的三处：库设置里的分享名单、
-    \「别人分享给我的\」列表、以及撤销。
-    """
-
-    def put_share(self, record: ShareRecord) -> ShareRecord: ...
-
-    def list_shares_for_kb(self, kb_id: str) -> list[ShareRecord]: ...
-
-    def list_shares_for_user(self, user_id: str) -> list[ShareRecord]: ...
-
-    def delete_share(self, kb_id: str, user_id: str) -> None: ...
-
-
-@runtime_checkable
 class UsageRepo(Protocol):
     """用量域（G7）：token 与调用量的落库、聚合读取与留存清理。
 
@@ -785,7 +744,7 @@ class ModelRegistryRepo(Protocol):
 class MCPServerRepo(Protocol):
     """外部 MCP 服务域（v0.15）：登记、开关、删除。
 
-    与 `ApiKeyRepo` 相邻但不同：它管的是**对外连接**的配置，凭据在 `api_key` 字段里，
+    它管的是**对外连接**的配置，凭据在 `api_key` 字段里（与模型供应商同一形状），
     但准入策略由服务层的工具闸执行。
     """
 

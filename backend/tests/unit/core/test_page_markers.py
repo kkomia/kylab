@@ -12,7 +12,6 @@ from app.core.page_markers import (
     insert_page_markers,
     locate_block_offsets,
     page_marker,
-    strip_page_markers,
 )
 
 MARKDOWN = "# 标题\n\n第一段正文。\n\n# 第二节\n\n第二段正文。\n\n# 第三节\n\n第三段正文。"
@@ -24,18 +23,9 @@ MARKDOWN = "# 标题\n\n第一段正文。\n\n# 第二节\n\n第二段正文。\
 def test_page_marker_is_a_whole_line_html_comment() -> None:
     marker = page_marker(7)
     assert marker == "<!-- page:7 -->"
-    # 读取侧是按整行匹配的：前后有内容就认不出来
+    # 认侧是按整行匹配的：前后有内容就认不出来
     assert PAGE_MARKER_RE.match(marker)
     assert not PAGE_MARKER_RE.match(f"正文 {marker}")
-
-
-def test_strip_removes_markers_and_collapses_blank_lines() -> None:
-    text = "A\n\n<!-- page:1 -->\n\nB\n\n<!-- page:2 -->\n\nC"
-
-    stripped = strip_page_markers(text)
-
-    assert "page:" not in stripped
-    assert stripped == "A\n\nB\n\nC"
 
 
 # --------------------------------------------------------------------- 定位
@@ -115,12 +105,12 @@ def test_insert_puts_each_marker_on_its_own_line() -> None:
     lines = marked.splitlines()
     assert lines[0] == "<!-- page:1 -->"
     assert "<!-- page:2 -->" in lines
-    # 每一条标记都独占一行，读取侧才认得出
+    # 每一条标记都独占一行，认侧才认得出
     for line in lines:
         if "page:" in line:
             assert PAGE_MARKER_RE.match(line)
-    # 正文一个字都不能丢
-    assert strip_page_markers(marked) == MARKDOWN
+    # 正文一个字都不能丢：除去标记行，剩下的逐行等于原文
+    assert [line for line in lines if not PAGE_MARKER_RE.match(line)] == MARKDOWN.splitlines()
 
 
 def test_insert_skips_duplicate_consecutive_pages() -> None:

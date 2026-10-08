@@ -54,8 +54,8 @@ schema，再按名字分派到这里的 ``call_tool``）；原先那个 MCP 服�
 
 **每个工具都必须带上调用者**（v0.12 起的收口）：``call_tool`` 的 ``caller``
 是**必填关键字参数、没有默认值**——默认值一旦存在，"忘了传"就等于匿名放行，
-而这类洞不会报错。作用域判定一律走 ``ApiKeyService``（``check_access`` /
-``visible_kb_ids``），不在这里另写一套：两套判定必然相漂。
+而这类洞不会报错。作用域判定一律走 ``ApiKeyService.check_access``，
+不在这里另写一套：两套判定必然相漂。
 """
 
 from __future__ import annotations

@@ -24,7 +24,6 @@ import logging
 import re
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.llm import ChatMessage
@@ -61,24 +60,6 @@ TITLE_MAX_CHARS = 24
 #: 装载历史时的默认轮数上限。与前端原来的 HISTORY_LIMIT 取同一个量级：
 #: 无边界地带全部历史，提示词会先被自己挤爆。
 DEFAULT_HISTORY_TURNS = 6
-
-
-@dataclass(frozen=True, slots=True)
-class LastTurn:
-    """最后那一轮的快照（提问 + 那条回答的几个字段）。
-
-    **刻意摊开字段，而不是把存储层的 `ChatMessageRecord` 交给调用方**：
-    协议层只该看到服务层给的东西（《项目工程规范》§3.3 的 L1 就是这么查的——
-    它按 import 的模块名判，`api/` 里出现 `app.storage` 直接红）。
-    摊开之后续跑那条路拿到的也只是"文本与快照"，与它要做的事正好对上。
-    """
-
-    question: str
-    answer_id: str
-    answer: str
-    sources: Sequence[dict[str, object]]
-    steps: Sequence[dict[str, object]]
-    thinking: str
 
 
 class ConversationService:
@@ -371,36 +352,6 @@ class ConversationService:
         if summary and upto is not None and upto in id_map:
             self.set_summary(created.id, summary, id_map[upto])
         return self.get(created.id)
-
-    def last_turn(self, conversation_id: str) -> LastTurn | None:
-        """最后一轮的快照，没有就返回 None。
-
-        与 ``rewind`` 的区别：那个删掉整轮（提问 + 回答）把问题还给调用方重发；
-        这里只看不删——"同一轮接着做"要的是提问留在原地。
-
-        找不到"提问 + 回答"的成对结构就返回 None（会话只有提问、或刚被回退过）；
-        能不能接着做由调用方判断（它还要看那条回答有没有降级标记）。
-
-        **注意**：今天没有调用方（唯一那个随 `services/resume.py` 一起删了）——它只读、
-        不改任何状态，去掉它属于接口收缩，等确认没有第二条"接着上一轮做"的路再说。
-        """
-        messages = self._stores.meta.list_messages(conversation_id)
-        for index in range(len(messages) - 1, -1, -1):
-            answer = messages[index]
-            if answer.role != "assistant":
-                continue
-            for earlier in range(index - 1, -1, -1):
-                if messages[earlier].role == "user":
-                    return LastTurn(
-                        question=messages[earlier].content,
-                        answer_id=answer.id,
-                        answer=answer.content,
-                        sources=tuple(answer.sources),
-                        steps=tuple(answer.steps),
-                        thinking=answer.thinking,
-                    )
-            return None
-        return None
 
     def drop_answer(self, conversation_id: str, *, answer_id: str) -> None:
         """删掉一条回答。**续跑时用**：新的回答会顶替它。
