@@ -2,8 +2,11 @@
  * 纯格式化函数（`lib/format.ts`）——**从旧 Vue 版 `tests/unit/composables/useFormat.test.ts`
  * 逐条搬来的**（实现是同一份代码，只换了 import 路径）。
  *
- * 迁移期新前端漏了它：这些函数是纯的、又处处在用（体积 / 相对时间 / 时长 / 千分位），
- * 缺值该显示占位符还是 0、"只给两级"这些口径一旦被顺手改掉，界面会悄悄变得误导。
+ * 迁移期新前端漏了它：这些函数是纯的、又处处在用（体积 / 相对时间 / 千分位），
+ * 缺值该显示占位符还是 0、这些口径一旦被顺手改掉，界面会悄悄变得误导。
+ *
+ * 2026-10-09：「运行负载」面板下线之后，只被它调用的 `formatDuration` 也随之下线，
+ * 钉它的那四条用例一并删掉（`formatMillis` 那条更早一轮就随 `summarizeDocuments` 去了）。
  */
 import { describe, expect, it } from 'vitest'
 
@@ -11,7 +14,6 @@ import {
   formatBytes,
   formatCount,
   formatDate,
-  formatDuration,
   formatPercent,
   formatRelativeTime,
 } from '@/lib/format'
@@ -139,28 +141,3 @@ describe('formatCount', () => {
   })
 })
 
-describe('formatDuration', () => {
-  it('只给两级：再多的位数没人读', () => {
-    expect(formatDuration(134)).toBe('2 分 14 秒')
-    expect(formatDuration(3782)).toBe('1 小时 3 分')
-    expect(formatDuration(45)).toBe('45 秒')
-  })
-
-  it('整除时不留一个多余的 0', () => {
-    // "3 分 0 秒"读起来像缺了点什么；"3 分"就是 3 分
-    expect(formatDuration(180)).toBe('3 分')
-    expect(formatDuration(7200)).toBe('2 小时')
-  })
-
-  it('不足一秒说"不到 1 秒"而不是 0 秒', () => {
-    // 进度条上写 0 秒会让人以为这一步没跑
-    expect(formatDuration(0)).toBe('不到 1 秒')
-    expect(formatDuration(0.4)).toBe('不到 1 秒')
-  })
-
-  it('拿不到值时给占位符而不是 NaN 分', () => {
-    expect(formatDuration(null)).toBe('—')
-    expect(formatDuration(undefined)).toBe('—')
-    expect(formatDuration(Number.NaN)).toBe('—')
-  })
-})

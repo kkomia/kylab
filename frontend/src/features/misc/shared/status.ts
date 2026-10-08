@@ -84,20 +84,3 @@ export function documentStageView(stage: string): StatusView {
 export function taskKindLabel(kind: string): string {
   return TASK_KINDS[kind] ?? kind
 }
-
-/**
- * 占用率的语义色：**只有真的高才变色**（阈值 80/90，不是 50）。
- *
- * 摄入是 CPU 密集型任务，跑到 60~70% 完全正常；一过半就变黄会让人天天看到黄条，
- * 然后就再也不看它了。
- */
-export function loadTone(
-  percent: number | null,
-  warning = 80,
-  danger = 90,
-): 'accent' | 'warning' | 'danger' {
-  if (percent === null) return 'accent'
-  if (percent >= danger) return 'danger'
-  if (percent >= warning) return 'warning'
-  return 'accent'
-}

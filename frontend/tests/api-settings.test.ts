@@ -55,7 +55,7 @@ describe('updateSettings 的 wire 形状', () => {
 
     const result = await updateSettings([
       { key: 'chat.permission', value: 'workspace' },
-      { key: 'retrieval.top_k', value: '8' },
+      { key: 'chat.top_k', value: '8' },
     ])
 
     const [url, init] = fetchMock.mock.calls[0]
@@ -65,7 +65,7 @@ describe('updateSettings 的 wire 形状', () => {
     expect(JSON.parse(String(init?.body))).toEqual({
       values: [
         { key: 'chat.permission', value: 'workspace' },
-        { key: 'retrieval.top_k', value: '8' },
+        { key: 'chat.top_k', value: '8' },
       ],
     })
     expect((init?.headers as Record<string, string>)['Content-Type']).toBe('application/json')

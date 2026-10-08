@@ -583,109 +583,6 @@
     color: var(--text-secondary);
   }
 
-  /* ---------------------------------------------------------------- 仪表（负载面板） */
-
-  .m-load {
-    margin-bottom: var(--space-3);
-    padding: var(--space-3) var(--space-4) var(--space-4);
-    background: var(--bg-subtle);
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-panel);
-  }
-
-  .m-load-head {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
-    margin-bottom: var(--space-4);
-  }
-
-  .m-load-title {
-    margin: 0;
-    font-size: var(--text-micro-size);
-    font-weight: 600;
-    color: var(--text-secondary);
-  }
-
-  .m-load-live {
-    font-size: var(--text-micro-size);
-    color: var(--text-tertiary);
-  }
-
-  .m-gauges {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: var(--space-3);
-  }
-
-  .m-gauge {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-1);
-    min-width: 0;
-    text-align: center;
-  }
-
-  .m-gauge-glyph {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 48px;
-  }
-
-  .m-gauge-name {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    font-size: var(--text-micro-size);
-    color: var(--text-secondary);
-  }
-
-  /**
- * 次级读数（"16 核" / "0 / 1000 页" / "185.9 MB / 31.8 GB"）。
- *
- * 用 **secondary** 而不是 tertiary：评审 T7 实测这行 12px 灰字只有 3.4:1，
- * 而 tertiary 在浅色下就是 3.35:1（`themes/light.css` 文件头写明了这一点）。
- * 这一行是"这个数是多少"，属于要被读到内容，不是可以弱的脚注——
- * 提一档到 secondary（浅色 5.68:1 / 深色 4.7:1，都过 AA）。
- */
-  .m-gauge-detail {
-    min-width: 0;
-    font-size: var(--text-micro-size);
-    color: var(--text-secondary);
-  }
-
-  .m-gauge-detail strong {
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .m-load-note,
-  .m-load-hint,
-  .m-load-problem {
-    margin: var(--space-3) 0 0;
-    font-size: var(--text-micro-size);
-    line-height: var(--line-prose);
-  }
-
-  .m-load-note {
-    color: var(--text-tertiary);
-  }
-
-  .m-load-note strong {
-    color: var(--text-secondary);
-  }
-
-  .m-load-hint {
-    color: var(--status-warning);
-  }
-
-  .m-load-problem {
-    color: var(--status-danger);
-  }
-
   /* ---------------------------------------------------------------- 记忆页 */
 
   /**
@@ -2814,10 +2711,6 @@
   @media (max-width: 960px) {
     .m-figures {
       /* 桌面 3 列 → 窄屏 2 列（与旧前端一致：960 是它的断点） */
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .m-gauges {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 

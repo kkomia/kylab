@@ -13,16 +13,19 @@
  *
  * ## 「流水线任务」那一半按提供者状态分流
  *
- * 这一半（列表 + 负载）数的都是**知识库那边的家当**：`/tasks` 与 `/tasks/load`
- * 都**不挂本机档**（`backend/app/api/v1/router.py` 的"明确不挂"那一段），没接上时
- * 发它们只会得到一行 `Not Found` 加一片空白。判据与那一半自己的一套（原来概览页
+ * 这一半数的都是**知识库那边的家当**：`/tasks` **不挂本机档**
+ * （`backend/app/api/v1/router.py` 的"明确不挂"那一段），没接上时发它只会得到一行
+ * `Not Found` 加一片空白。判据与那一半自己的一套（原来概览页
  * 的文件头写着同一条口径的来路；那一页 2026-10-09 删了，这套判据只在这里）：
- * `kbReady` 为假时两个查询都不发，内容区换成一块说得清的空态
+ * `kbReady` 为假时那个查询不发，内容区换成一块说得清的空态
  * （原因与下一步用后端那句 `reason`）；还没问出结论时画一个占位（不猜）。
  *
  * **「定时任务」那一段不受它管**：那一族的数据在**本机**（`/scheduled-tasks`），
  * 显隐仍旧只看"有没有本机后端"（`localBackend.present`，见 `VIEWS` 的说明）——
  * 本机的数据不该因为知识库在别处而藏起来。
+ *
+ * 2026-10-09：「运行负载」那一块（`LoadPanel` + `/tasks/load`）按用户要求整块删了
+ * （"为啥要有运行负载，这个肯定不要了"）——这一页只剩任务列表与定时任务两段。
  */
 import { TASKS_QUERY_KEY } from '@/features/misc/queryKeys'
 
@@ -31,9 +34,8 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, FileText, RefreshCw } from 'lucide-react'
 import { useLocalBackend } from '@/api/local'
 import { useKnowledgeProviderStatus } from '@/api/provider'
-import { cancelTasks, getTaskLoad, listTasks, type TaskSummary } from '@/api/tasks'
+import { cancelTasks, listTasks, type TaskSummary } from '@/api/tasks'
 import { formatCount, formatDate } from '@/lib/format'
-import { useIsAdmin } from '@/lib/useIsAdmin'
 
 import { useKnowledgeBases } from '../shared/knowledgeBases'
 import { isTaskProblem, taskHealthTone, taskKindLabel, taskStateView } from '../shared/status'
@@ -52,14 +54,11 @@ import {
   StatusTag,
   type TagTone,
 } from '../shared/composites'
-import { LoadPanel } from './LoadPanel'
 import { SchedulePanel } from './SchedulePanel'
 
 const POLL_INTERVAL_MS = 2000
 /** 任务列表原先一次铺满（几百条时滚不到底），与文档列表同一套口径。 */
 const PAGE_SIZE = 20
-
-const TASK_LOAD_QUERY_KEY = ['tasks', 'load'] as const
 
 /** 分段控件的取值（Radix 的 `onValueChange` 给的是 `string`，在这里收窄一次）。 */
 type TaskView = 'tasks' | 'schedules'
@@ -142,22 +141,7 @@ export function TasksPage() {
   const [listAtEnd, setListAtEnd] = useState(true)
   const listRef = useRef<HTMLDivElement | null>(null)
 
-  /**
-   * **这一处原先刻意不用共享那条判据**（`lib/useIsAdmin`）：它管的是**「运行负载」**
-   * （`/tasks/load`）那一块——数的是知识库那边的家当（文档 / 解析批次 / 索引）。
-   * 那一族端点**只挂在服务器档**（`local_router` 那一张白名单里没有 `tasks.router`），
-   * 而这条判据当年是 `currentUser?.role === 'admin'`，本机档恒不成立，
-   * 于是那一档不会白打一趟必被拒的请求。
-   *
-   * **2026-10-09 改了**：`currentUser` 随名册 / 操作者链一起删掉（见 `lib/session.ts`
-   * 的文件头），"服务器档的管理员"已经没有第二种来源了——本机档的用户就是这台机器的
-   * 管理员，判据归 `lib/useIsAdmin`（与另外六处共用同一条）。**代价说清**：本机档 +
-   * 知识库接上时，运行负载面板现在会显示，也会发那条 `GET /tasks/load`
-   * （`enabled: isAdmin && kbReady`）；那条请求打的是服务器面（`request()`），
-   * 若对端不认（没有账号体系可带凭据），`LoadPanel` 会按"读不到"渲染骨架而不是报错
-   * （`retry: false`，这一页不渲染负载的错误态——见它下面那条注释）。
-   */
-  const isAdmin = useIsAdmin()
+  /** 知识库范围（"按知识库筛选"那一栏的候选）。 */
   const knowledgeBases = useKnowledgeBases()
   /**
    * 本机后端在不在（判据只有一处：`api/local.ts`）——它决定**「定时任务」那一段在不在**。
@@ -195,25 +179,6 @@ export function TasksPage() {
   })
 
   const running = hasActive(list.data?.items)
-
-  /**
-   * 运行负载（§12.115）——**只管理员拉**：这个端点对成员是 403
-   * （机器资源与运维参数不给成员看），明知会被拒还发请求只会让控制台多一串红字。
-   *
-   * 与列表**同一个节拍**（同一个轮询间隔，而不是另起一个计时器）：
-   * 两个计时器会让"列表说有 3 个在跑"和面板上"在跑 1"出现在同一帧里对不上，
-   * 而这两个数正是要合起来读的（"队列深 + 槽位满"才是结论）。
-   */
-  const load = useQuery({
-    queryKey: TASK_LOAD_QUERY_KEY,
-    queryFn: getTaskLoad,
-    // 管理员专属 × 知识库接上了（两个条件都必须成立才发）
-    enabled: isAdmin && kbReady,
-    refetchInterval: running ? POLL_INTERVAL_MS : false,
-    // 负载读不到不该影响任务列表：它是解释性的附加信息，而列表才是主体
-    // （旧版把这里的异常整个吞掉，这里靠"不渲染错误态"表达同一件事）
-    retry: false,
-  })
 
   const tasks = useMemo(() => list.data?.items ?? [], [list.data])
   const error = list.isError ? messageOf(list.error, '任务列表加载失败') : ''
@@ -316,7 +281,6 @@ export function TasksPage() {
 
   const refresh = () => {
     void list.refetch()
-    if (isAdmin) void load.refetch()
   }
 
   return (
@@ -379,12 +343,6 @@ export function TasksPage() {
             />
           ) : (
             <>
-              {/*
-            运行负载放在最上面：它解释的是"为什么后台慢"，而那正是用户打开这一页时
-            的问题——排在列表下方的话，他要先翻过几十行任务才看得到（管理员专属）。
-          */}
-              {isAdmin && <LoadPanel load={load.data ?? null} live={running} />}
-
               {error && <ErrorLine>{error}</ErrorLine>}
               {loading && <SkeletonBlock variant="list" rows={5} />}
 

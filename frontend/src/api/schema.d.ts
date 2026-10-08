@@ -960,7 +960,7 @@ export interface paths {
         };
         /**
          * 定时任务列表
-         * @description 成员只看自己的；管理员会话与 API Key 通道看全部（与工作区/能力同一口径）。
+         * @description 带账号那一档只看自己的；本机主人（管理员档）看全部（与工作区/能力同一口径）。
          */
         get: operations["list_scheduled_tasks_api_v1_scheduled_tasks_get"];
         put?: never;

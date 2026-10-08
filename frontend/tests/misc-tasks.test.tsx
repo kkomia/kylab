@@ -13,7 +13,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/tasks', () => ({
   listTasks: vi.fn(),
-  getTaskLoad: vi.fn(),
   cancelTasks: vi.fn(),
 }))
 
@@ -47,7 +46,7 @@ import {
 } from '@/api/schedules'
 import { getLocalStatus, resetLocalBackendForTest, setLocalBackendForTest } from '@/api/local'
 import { resetProviderStore, setProviderStatusForTest, type ProviderStatus } from '@/api/provider'
-import { cancelTasks, getTaskLoad, listTasks, type SystemLoad, type TaskSummary } from '@/api/tasks'
+import { cancelTasks, listTasks, type TaskSummary } from '@/api/tasks'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
 import { TasksPage, tasksRefetchInterval } from '@/features/misc/tasks/TasksPage'
@@ -57,7 +56,6 @@ import { useSessionStore } from '@/lib/session'
 const KB_READY: ProviderStatus = { state: 'ready', available: true }
 
 const listTasksMock = vi.mocked(listTasks)
-const getTaskLoadMock = vi.mocked(getTaskLoad)
 const cancelTasksMock = vi.mocked(cancelTasks)
 const listSchedulesMock = vi.mocked(listScheduledTasks)
 const runScheduleNowMock = vi.mocked(runScheduledTaskNow)
@@ -109,44 +107,7 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
   }
 }
 
-function systemLoad(overrides: Partial<SystemLoad> = {}): SystemLoad {
-  return {
-    hardware: {
-      cpu_percent: 12,
-      cpu_count: 8,
-      memory_used_bytes: 8 * 1024 ** 3,
-      memory_total_bytes: 16 * 1024 ** 3,
-      memory_percent: 50,
-      process_rss_bytes: 1024 ** 3,
-    },
-    queue: {
-      running: 0,
-      pending: 2,
-      slots: 1,
-      pending_by_kind: {},
-      oldest_pending_seconds: null,
-      stalled: 0,
-      overdue: 0,
-    },
-    quota: {
-      parser_name: 'mineru',
-      configured: true,
-      pages_used: 0,
-      calls: 0,
-      daily_quota: 1000,
-      remaining: 1000,
-      exhausted: false,
-    },
-    sampled_at: '2026-09-23T10:00:00Z',
-    ...overrides,
-  }
-}
 
-
-/** 某个环上画了几笔：只有轨道（1）还是有进度弧（2）。 */
-function ringStrokes(panel: HTMLElement, name: string): number {
-  return within(panel).getByRole('img', { name }).querySelectorAll('circle').length
-}
 
 /**
  * 页签当前态的抓手。
@@ -197,7 +158,6 @@ beforeEach(() => {
   }) as unknown as typeof fetch
   useSessionStore.setState({ token: '', reloginCount: 0 })
   listTasksMock.mockResolvedValue({ items: [task()] })
-  getTaskLoadMock.mockRejectedValue(new Error('403'))
   listSchedulesMock.mockResolvedValue({ items: [schedule()], timezone: 'CST UTC+08:00' })
   // 判据的默认档：**有本机后端**（桌面壳那一份）——这一份的大部分用例验的是那一档的形状。
   // 要摆"没有本机后端"的那两条用例自己再摆一次（`setLocalBackendForTest('absent')`）
@@ -520,97 +480,6 @@ describe('任务中心', () => {
     ).toBeInTheDocument()
   })
 
-  it('本机档（唯一的档）+ 知识库接上：运行负载面板就在', async () => {
-    // 这一份界面没有"成员"这一说：判据是 `lib/useIsAdmin`（本机档的用户就是这台机器的
-    // 管理员），所以面板在不在只由"知识库接没接上"（`kbReady`）决定——本文件默认摆的就是
-    // 本机档 + 握手成功。
-    getTaskLoadMock.mockResolvedValue(
-      systemLoad({
-        hardware: {
-          cpu_percent: null,
-          cpu_count: 8,
-          memory_used_bytes: 1024,
-          memory_total_bytes: 2048,
-          memory_percent: 50,
-          process_rss_bytes: null,
-        },
-        queue: {
-          running: 0,
-          pending: 0,
-          slots: 1,
-          pending_by_kind: {},
-          oldest_pending_seconds: null,
-          stalled: 0,
-          overdue: 0,
-        },
-        quota: {
-          parser_name: 'mineru',
-          configured: false,
-          pages_used: 0,
-          calls: 0,
-          daily_quota: 0,
-          remaining: 0,
-          exhausted: false,
-        },
-      }),
-    )
-
-    renderMisc(<TasksPage />)
-
-    expect(await screen.findByLabelText('运行负载')).toBeInTheDocument()
-    // CPU 的 null 显示"—"而不是 0%（后端首次采样没有差值可算）
-    expect(await screen.findByText('8 核 · 采样中')).toBeInTheDocument()
-  })
-
-  it('运行负载：五个读数是同一种控件，环里的读数进得了名字（评审 T4）', async () => {
-    getTaskLoadMock.mockResolvedValue(systemLoad())
-
-    renderMisc(<TasksPage />)
-    const panel = await screen.findByLabelText('运行负载')
-    // 面板先按骨架画出来，数据是异步到的：等一个"只有拿到数据才会有"的读数
-    expect(await within(panel).findByRole('img', { name: 'CPU 使用率 12%' })).toBeInTheDocument()
-
-    // 五个读数一种控件：都是环（此前 3 个环 + 一个空环替身 + 一个纯数字）
-    expect(within(panel).getAllByRole('img')).toHaveLength(5)
-    // `role="img"` 会把环里的 `<text>` 当装饰，读数必须写进名字里才算数
-    expect(within(panel).getByRole('img', { name: '并发槽位占用 0 / 1' })).toBeInTheDocument()
-    expect(within(panel).getByRole('img', { name: '云端解析今日页数 0%' })).toBeInTheDocument()
-    expect(
-      within(panel).getByRole('img', { name: '本进程常驻内存占机器内存 6.3%' }),
-    ).toBeInTheDocument()
-
-    // 环里写了「在跑 / 槽位」，下面那行就只剩队列深度：同一个数不写两遍
-    const details = [...panel.querySelectorAll('.m-gauge-detail')].map((cell) => cell.textContent)
-    expect(details[2]).toBe('排队 2 条')
-    // 本进程那格的原始值：分母写在明处，比例才读得出大小
-    expect(details[4]).toBe('1.0 GB / 16.0 GB')
-  })
-
-  it('0 值的环只留轨道，不画弧（评审 T5：0 / 1000 页 却有一段实心蓝弧）', async () => {
-    getTaskLoadMock.mockResolvedValue(
-      systemLoad({
-        hardware: {
-          cpu_percent: null,
-          cpu_count: 8,
-          memory_used_bytes: 8 * 1024 ** 3,
-          memory_total_bytes: 16 * 1024 ** 3,
-          memory_percent: 50,
-          process_rss_bytes: null,
-        },
-      }),
-    )
-
-    renderMisc(<TasksPage />)
-    const panel = await screen.findByLabelText('运行负载')
-    expect(await within(panel).findByRole('img', { name: '内存使用量 50%' })).toBeInTheDocument()
-
-    // 0 / 1000 页：一段弧都没有（`strokeDasharray="0 C"` 配圆头会画成一个圆点）
-    expect(ringStrokes(panel, '云端解析今日页数 0%')).toBe(1)
-    // CPU 首次采样没有差值：一样只有轨道，环里写"—"，名字里就不带读数了
-    expect(ringStrokes(panel, 'CPU 使用率')).toBe(1)
-    // 有进度的仍是"轨道 + 弧"两笔（内存 50%）
-    expect(ringStrokes(panel, '内存使用量 50%')).toBe(2)
-  })
 })
 
 describe('定时任务分段', () => {
@@ -685,7 +554,7 @@ describe('定时任务分段的显隐（按"有没有本机后端"）', () => {
 /*
  * 「流水线任务」那一半的知识库分流（见 `TasksPage.tsx` 的文件头）。
  *
- * `/tasks` 与 `/tasks/load` 数的都是知识库那边的家当（本机档**不挂**它们，
+ * `/tasks` 数的是知识库那边的家当（本机档**不挂**它，
  * `backend/app/api/v1/router.py` 的"明确不挂"那一段），没接上时发过去只会是一行 `Not Found`。
  * 判据是 `kbReady` / `kbPending` 两条（`TasksPage.tsx` 里那一套；原先概览页写着同一份口径，
  * 那一页 2026-10-09 删了，这条判据现在只在这一处）。**「定时任务」
@@ -698,16 +567,14 @@ describe('流水线任务：知识库接没接上的分流', () => {
     reason: '还没配知识库提供者的地址（到「设置 → 知识库连接」里填一下，或问管理员要）',
   }
 
-  it('本机档 + 提供者没接上：两个查询都不发、内容区换成空态，「定时任务」那一段照旧在', async () => {
-    // 本文件默认就是"本机档 + 握手成功"（也就是管理员那一档），把提供者摆成没接上：
-    // 这样"负载也不发"就只可能是 kbReady 这一条判据挡下来的。
+  it('本机档 + 提供者没接上：那条查询不发、内容区换成空态，「定时任务」那一段照旧在', async () => {
+    // 把提供者摆成没接上：这一条钉的是 kbReady 那一条判据把请求挡在门外
     setProviderStatusForTest(KB_UNCONFIGURED)
     renderMisc(<TasksPage />)
 
     expect(await screen.findByText('知识库还没接上')).toBeInTheDocument()
     expect(screen.getByText(KB_UNCONFIGURED.reason as string)).toBeInTheDocument()
     expect(listTasksMock).not.toHaveBeenCalled()
-    expect(getTaskLoadMock).not.toHaveBeenCalled()
     expect(fetchedUrls.filter((url) => url.includes('/api/v1/tasks'))).toEqual([])
     // 列表那一块一件都不画（也没有"加载失败"那条错误行）
     expect(screen.queryByText('还没有任务')).toBeNull()

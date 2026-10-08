@@ -6,8 +6,9 @@
  *
  * 2026-10-09：随账号死面与「概览」那一页，这一份里**只被旧页面用过的几条**删掉了
  * （`summarizeDocuments` / `DocStats` / `formatLatency` / `formatScore` / `formatAge` /
- * `formatMillis`）——它们的生产调用点随那两轮一起消失，只剩用例在钉。留下的都是
- * 界面上真在用的：体积 / 千分位 / 百分比 / 相对时间 / 绝对时间 / 时长。
+ * `formatMillis`）；同一天稍后「运行负载」面板下线，最后那条只被它调用的
+ * `formatDuration` 也删了。留下的都是界面上真在用的：体积 / 千分位 / 百分比 /
+ * 相对时间 / 绝对时间。
  */
 
 const MINUTE = 60_000
@@ -91,30 +92,4 @@ export function formatCount(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—'
   // `+ 0` 收掉 -0：`Math.round(-0.4)` 是 -0，直接分位会写出一个读不通的「-0」
   return (Math.round(value) + 0).toLocaleString('zh-CN')
-}
-
-/**
- * 时长：`2 分 14 秒` / `1 小时 3 分` / `不到 1 秒`。
- *
- * **只给两级**（最大单位 + 下一级）：再多的位数没人读，"1 小时 3 分 12 秒"里的后两位
- * 从来不影响判断。而进度条那一栏要同时看**多个**时长（总耗时 + 各环节耗时），
- * 每个都写全三位会立刻挤成一团。
- *
- * 入参是**秒**——调用点只有 `LoadPanel`，那边给的本来就是秒。
- * （原先还有一条 `formatMillis`（毫秒版，给旧知识库那几页用）：它随 `summarizeDocuments`
- * 一并 2026-10-09 删了，那条"ms 只在一处除以 1000"的口径也随之作废。）
- */
-export function formatDuration(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—'
-  const total = Math.max(0, Math.round(seconds))
-  if (total < 1) return '不到 1 秒'
-  if (total < 60) return `${total} 秒`
-  if (total < 3600) {
-    const minutes = Math.floor(total / 60)
-    const rest = total % 60
-    return rest === 0 ? `${minutes} 分` : `${minutes} 分 ${rest} 秒`
-  }
-  const hours = Math.floor(total / 3600)
-  const minutes = Math.floor((total % 3600) / 60)
-  return minutes === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes} 分`
 }
