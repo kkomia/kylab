@@ -476,7 +476,6 @@ def test_the_settings_group_matches_the_new_keys(client: TestClient, workspace) 
 
     assert keys == [
         "memory.enabled",
-        "memory.capture",
         "memory.infer",
         "memory.inject_limit_chars",
         "memory.search_top_k",
@@ -484,6 +483,9 @@ def test_the_settings_group_matches_the_new_keys(client: TestClient, workspace) 
         "memory.persona_files",
     ]
     assert all("base_url" not in key and "service_scope" not in key for key in keys)
-    # 旧的四项（定时捕获 / 整理 / 向量）连字段都不该在——留着会让设置页显示几个
-    # "改了没有任何效果"的开关
-    assert not any("capture_every" in key or "dream" in key or "vector" in key for key in keys)
+    # 旧的那几项（定时捕获 / 整理 / 向量 / 自动捕获）连字段都不该在——留着会让设置页
+    # 显示几个"改了没有任何效果"的开关
+    assert not any(
+        "capture_every" in key or "dream" in key or "vector" in key or key == "memory.capture"
+        for key in keys
+    )

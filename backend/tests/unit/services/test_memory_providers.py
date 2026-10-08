@@ -40,7 +40,6 @@ def _channel(tmp_path: Path, *, replies: list[str] | None = None) -> mp.Channel:
         key="kylab:test",
         chat=lambda messages: (said.append(list(messages)), "{}")[1],
         embedder=DeterministicEmbedder(dim=_DIM),
-        embedder_model="dev/deterministic-hash",
         dim=_DIM,
         development=True,
     )
@@ -101,7 +100,6 @@ def test_chat_goes_through_the_channel_and_forwards_messages() -> None:
         key="kylab:chat",
         chat=lambda messages: (said.append(list(messages)), "ok")[1],
         embedder=DeterministicEmbedder(dim=_DIM),
-        embedder_model="dev",
         dim=_DIM,
     )
     mp.register_channel(channel)

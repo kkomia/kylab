@@ -35,7 +35,9 @@ import { Textarea } from '@/ui/textarea'
 import { EmptyState, Modal } from '../shared/composites'
 import { notifyError, notifySuccess } from '../shared/toast'
 
-/** 来源 → 界面上那句话（事实，不解释它怎么发生的）。 */
+/** 来源 → 界面上那句话（事实，不解释它怎么发生的）。
+    `隐式` 已经不会再有新的（自动捕获那条链 2026-10-09 删了），
+    但库里可能还有按它写下的老行——映射留着，那是**历史数据**的读法。 */
 const SOURCE_LABELS: Record<string, string> = {
   显式: '来自会话',
   隐式: '来自会话',

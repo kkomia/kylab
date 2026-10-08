@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -59,7 +59,6 @@ from app.services.llm import ToolSpec
 from app.services.mcp_client import normalized_server_name, split_qualified
 from app.services.memory import render_items
 from app.services.skills import recombine_surrogates, text_problem
-from app.services.subagent import parse_tool_content as parse_subagent_content
 from app.services.tool_loop import ToolOutcome, ToolRunner
 from app.services.tools import ARTIFACT_KEY, MAX_UPLOAD_BYTES, call_tool, tool_definitions
 
@@ -108,29 +107,6 @@ _SKILL_TOOLS: tuple[dict[str, Any], ...] = (
                     ),
                 },
             },
-        },
-    },
-    {
-        "name": "spawn_subagent",
-        "description": (
-            "派一个子 Agent 去做一件**自包含**的事，把它的结论拿回来。"
-            "它看不到我们这段对话，所以任务描述要写全（问什么、依据什么）。"
-            "适合「需要啃一批资料才能得到一句话结论」的活；"
-            "**它没有派生能力、有轮次与时限**，简单的事自己做更快。"
-            "它交回的是**结论 + 六项结构化结果**（关键发现 / 证据或引用 / 已做的决策 / "
-            "更改的文件 / 风险与置信度 / 建议的下一步）：引用它的结论前先看**置信度与风险**，"
-            "下一步可以照它给的建议走；某一项是空的，就是**它这一项没交回来**，"
-            "不要当成「它没有这件事」。"
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "要它回答的问题，自包含、具体",
-                }
-            },
-            "required": ["task"],
         },
     },
     {
@@ -670,7 +646,7 @@ def _exposure_text(*, resident: int, peripheral: int, skills: int, skills_listed
         "【本环境的暴露情况】"
         f"当前工具共 **{total_tools}** 个：其中 **{resident}** 个已常驻在你的工具表里"
         "（记忆、技能、检索、联网、读文件与下面这两个入口），"
-        f"另有 **{peripheral}** 个**按需检索**（导出、建库、跑命令、派子 Agent、"
+        f"另有 **{peripheral}** 个**按需检索**（导出、建库、跑命令、"
         "定时任务、文件列举与搜索、外部 MCP 服务等）；"
         f"当前可用技能 **{skills}** 个，其中 **{skills_listed}** 个已列在系统提示词里，"
         f"另有 **{max(0, skills - skills_listed)}** 个可直接用 `list_skills` 查、"
@@ -945,21 +921,12 @@ def _mcp_specs(services: Any, owner_id: str | None) -> list[ToolSpec]:
     return specs
 
 
-#: 子 Agent 那一步的结论行里，任务摘要留几个字。
-#:
-#: 那一行是**给用户看的**（"它派去干什么了"），不是给模型的：子任务本身就是一句自足的话
-#: （见 `services/subagent.build_task_prompt` 的长度校验），开头那句最能说明它在查什么。
-#: 留太长会把过程面板那一行撑爆、也不利于扫读，60 字够看出主题。
-_SUMMARY_TASK_CHARS = 60
-
-
 def build_runner(
     services: Any,
     caller: Caller,
     *,
     kb_ids: Sequence[str] | None = None,
     conversation_id: str | None = None,
-    subagent: Callable[[str], tuple[str, list[Any]]] | None = None,
     exposure: Any = None,
 ) -> ToolRunner:
     """绑一个执行器。``kb_ids`` 是**这一轮允许查的库**（会话上选的那些）。
@@ -994,7 +961,7 @@ def build_runner(
     因此都在同一把锁里做完。
     """
     scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
-    # 有些调用点（子 Agent 的测试、脚本）没有凭据主体，那就是**共享桶**
+    # 有些调用点（测试、脚本）没有凭据主体，那就是**共享桶**
     # （``None``），与本机主人（管理员档）同一档——不是错误，不给它编一个身份。
     owner_id = caller.owner_id if caller is not None else None
     book: list[SourceRef] = []
@@ -1064,50 +1031,6 @@ def build_runner(
                     )
                 )
             return run(target, inner, approval=approval)
-        if name == "spawn_subagent":
-            task = str(args.get("task") or "").strip()
-            if not task:
-                return ToolOutcome(content="缺少参数：task")
-            if subagent is None:
-                # 明确说"这一轮没有"，而不是假装派了：模型据此才该自己去查
-                return ToolOutcome(content="子 Agent 在这一轮不可用，请自己查。")
-            try:
-                answer, sources = subagent(task)
-            except Exception as exc:
-                logger.info("子 Agent 失败：%s", exc)
-                return ToolOutcome(content=f"子 Agent 没跑成：{exc}")
-            refs = _record(list(sources))
-            # 结论行要说清"派去干什么了"：只写"回报了结论"对用户等于没说 ——
-            # 过程面板那一行与 `tool_loop._LABELS` 是同一条取舍：名字要说清"它替我做了什么"。
-            # 换行折成空格，免得把那一行撑成多行。
-            brief = " ".join(task.split())
-            if len(brief) > _SUMMARY_TASK_CHARS:
-                brief = f"{brief[:_SUMMARY_TASK_CHARS]}…"
-            # 交回的东西是**结构化的**（D15）：把六项里用户最该先知道的两项提到那一行上
-            # ——置信度（这段结论有多可靠）与建议下一步（接下来该干什么）。
-            # **只有真解析出那一块才加**：拿不到结构就照旧只说"回报了结论"，
-            # 不猜、也不给一行看起来像结构化结果的东西。
-            prefix = "子 Agent 回报了结论"
-            structured = parse_subagent_content(answer)
-            if structured:
-                extra: list[str] = []
-                confidence = structured.get("confidence")
-                if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
-                    extra.append(f"置信度 {confidence:g}")
-                risks = structured.get("risks")
-                if isinstance(risks, list) and risks:
-                    extra.append(f"风险 {len(risks)} 条")
-                steps = structured.get("next_steps")
-                if isinstance(steps, list) and steps:
-                    extra.append(f"建议下一步 {len(steps)} 条")
-                if extra:
-                    prefix = f"{prefix}（{'，'.join(extra)}）"
-            return ToolOutcome(
-                content=answer or "（子 Agent 没有给出结论）",
-                sources=_snapshot(),
-                summary=f"{prefix}：{brief}",
-                added=len(refs),
-            )
         if name == "list_skills":
             return ToolOutcome(content=_render_skills(services, args))
         if name == "read_skill":

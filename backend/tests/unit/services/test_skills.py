@@ -481,7 +481,8 @@ def test_repository_builtin_skills_declare_chinese_summaries() -> None:
 
     items = [item for item in service.list() if item.source == "builtin"]
 
-    assert len(items) == 5, [item.name for item in items]
+    # 四条（原先五条：`kylab-delegate` 随子 Agent 那条链在 2026-10-09 下线）
+    assert len(items) == 4, [item.name for item in items]
     assert all(item.summary for item in items), [(item.name, item.summary) for item in items]
 
 
@@ -656,7 +657,6 @@ def test_repo_skills_are_found_without_env_or_injection(
     }
 
     assert names == {
-        "kylab-delegate",
         "kylab-knowledge-base",
         "kylab-memory",
         "kylab-office-export",
@@ -993,13 +993,12 @@ def test_the_resident_list_stays_within_the_product_budget() -> None:
     """常驻名单是"每轮都进提示词"的固定税，产品口径是 **5–20 条**（v0.61）。
 
     上限存在的理由：常驻条数一涨，每个请求的固定成本就跟着涨，而库里几千条时
-    "再多塞几条"的诱惑永远存在。元能力那五条必须在（产品自带件），
+    "再多塞几条"的诱惑永远存在。元能力那四条必须在（产品自带件），
     名字不许重复（重复会让 `_pick_catalog` 的 `seen` 白挡一次）。
     """
     assert 5 <= len(RESIDENT_SKILLS) <= 20, "常驻名单必须落在 5–20 条"
     assert len(set(RESIDENT_SKILLS)) == len(RESIDENT_SKILLS)
     assert {
-        "kylab-delegate",
         "kylab-knowledge-base",
         "kylab-memory",
         "kylab-office-export",

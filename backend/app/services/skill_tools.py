@@ -5,7 +5,7 @@
 导进来的那批技能（258 份真实 ``SKILL.md``）**全按 Claude Code 的工具名写**：
 ``Skill`` 被提及 1226 次、``Read`` 763、``Bash`` 691 …… 而我们的工具叫
 ``read_skill`` / ``read_file`` / ``run_command``。照原样注入，模型会去调一个
-**不存在**的 ``Read`` / ``Bash`` / ``Task`` —— 技能看起来装上了，实际调不动。
+**不存在**的 ``Read`` / ``Bash`` —— 技能看起来装上了，实际调不动。
 
 ## 两件事（一处定义）
 
@@ -33,22 +33,25 @@ __all__ = [
 ]
 
 #: Claude Code 的工具名 → 我们这边对应的名字（**一处定义**：注入与改写都读它）。
+#: ``Task`` 不在表里：它对应的 ``spawn_subagent`` 2026-10-09 随子 Agent 那条链下线，
+#: 于是它挪进了下面的"没有对应物"那一档（改写时给的是替代做法）。
 TOOL_ALIASES: dict[str, str] = {
     "Skill": "read_skill / list_skills",
     "Read": "read_file",
     "Bash": "run_command",
     "Grep": "search_files",
-    "Task": "spawn_subagent",
     "WebFetch": "web_fetch",
     "WebSearch": "web_search",
 }
 
 #: **我们没有对应物**的那几个：给的是替代做法，不是一个工具名。
 #: `Write` / `Edit` 是 Lead 裁定过的立场（保持"没有写文件工具"这条约束）：
-#: 产出用导出、改动用命令行，**不新增工具**。
+#: 产出用导出、改动用命令行，**不新增工具**。`Task` 是 2026-10-09 加进来的
+#: （派子 Agent 的能力整条下线，见 ``services/agent_tools.py``）。
 TOOL_SUBSTITUTES: dict[str, str] = {
     "Write": "export_*（本环境没有写文件工具：产出请导出成文件）",
     "Edit": "run_command（本环境没有改文件工具：改动走命令行或重新导出）",
+    "Task": "自己做（本环境没有派子 Agent 的工具：自己多查几轮再下结论）",
     "Glob": "list_files + search_files",
     "AskUserQuestion": "直接在回答里问用户",
     "Computer": "暂不支持（没有桌面控制工具）",
@@ -93,7 +96,7 @@ def catalog_note() -> str:
     )
     return (
         "【工具名对照】上面这些技能多数是照 Claude Code 写的，正文里的工具名要按这张表换成我们的："
-        f"{pairs}。**本环境没有 `Write` / `Edit`**：{missing}。"
+        f"{pairs}。**本环境没有对应工具的那几个**：{missing}。"
         "读到旧名字时一律按这张表理解，**不要去调不存在的工具**——"
         "技能正文本体在被 `read_skill` 读出来时已经换过一遍。"
     )

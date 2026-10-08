@@ -1,12 +1,12 @@
 /**
- * 技能分类分组：**用真镜像 JSON** 钉"每类条数之和 = 178、每条只出现一次、兜底"。
+ * 技能分类分组：**用真镜像 JSON** 钉"每类条数之和 = 177、每条只出现一次、兜底"。
  *
  * 镜像同构：`src/features/misc/capabilities/skillCategories.ts` → 本文件。
  *
  * 为什么用**真**映射而不是手写桩：这一层的输入就是那份 JSON，
  * 手写一份假的等于把"映射里到底有几条"这件事测成自己的假设
  * （而且它还会与后端那份漂开）。所以这里读的就是页面读的那份文件，
- * 技能清单也从它的 `assignments` 的键取——**178 条是数据说的，不是用例编的**。
+ * 技能清单也从它的 `assignments` 的键取——**那 177 条是数据说的，不是用例编的**。
  */
 import { describe, expect, it } from 'vitest'
 
@@ -19,14 +19,14 @@ import {
   groupSkills,
 } from '@/features/misc/capabilities/skillCategories'
 
-/** 真映射里那一批技能（本机 178 + 产品自带 5）：只认名字，造一份最小技能对象。 */
+/** 真映射里那一批技能（本机配的 178 + 产品自带 4）：只认名字，造一份最小技能对象。 */
 const ALL_SKILLS = Object.keys(mapping.assignments).map((name) => ({ name }))
 const TOTAL = Object.keys(mapping.assignments).length
 
 describe('分类映射本身（真 JSON）', () => {
-  it('183 条（本机装的 178 + 产品自带的 5）、每类都有中文名、顺序登记齐且「其他」在最后', () => {
-    expect(TOTAL).toBe(183)
-    expect(ALL_SKILLS).toHaveLength(183)
+  it('182 条（本机装的 178 + 产品自带的 4）、每类都有中文名、顺序登记齐且「其他」在最后', () => {
+    expect(TOTAL).toBe(182)
+    expect(ALL_SKILLS).toHaveLength(182)
     expect(CATEGORY_ORDER.at(-1)).toBe(OTHER_CATEGORY)
     // 顺序表与中文名表覆盖同一批 key（漂一个就会红）
     expect([...CATEGORY_ORDER].sort()).toEqual(Object.keys(CATEGORY_LABELS).sort())
@@ -35,9 +35,8 @@ describe('分类映射本身（真 JSON）', () => {
     }
   })
 
-  it('产品自带的 5 条按名字钉死（不落「其他」）；「其他」很小且那条拿不准的还在', () => {
+  it('产品自带的 4 条按名字钉死（不落「其他」）；「其他」很小且那条拿不准的还在', () => {
     for (const [name, slug] of [
-      ['kylab-delegate', 'productivity'],
       ['kylab-knowledge-base', 'productivity'],
       ['kylab-memory', 'productivity'],
       ['kylab-web', 'productivity'],

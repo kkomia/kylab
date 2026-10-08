@@ -27,7 +27,6 @@ import inspect
 import json
 import logging
 import threading
-import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -246,24 +245,41 @@ def service(store: SqliteMetaStore, clock: _Time) -> KbMetaCacheService:
 
 
 def _reader_for(
-    store: SqliteMetaStore, nas: _Nas, clock: _Time, base: str
+    store: SqliteMetaStore,
+    nas: _Nas,
+    clock: _Time,
+    base: str,
+    *,
+    cache: KbMetaCacheService | None = None,
 ) -> CachedKnowledgeMetaReader:
-    """一台地址 = ``base`` 的 reader 面（真的客户端 + 真的假传输 + 真的快照服务）。"""
+    """一台地址 = ``base`` 的 reader 面（真的客户端 + 真的假传输 + 真的快照服务）。
+
+    ``cache`` 给了就用它（而不是另建一个）：后台队列在服务对象上，
+    用例要能等**那一个**队列空（见 ``_settle``）。
+    """
     client = KnowledgeProviderClient(
         settings=_settings(base),
         transport=httpx.MockTransport(nas.handler),
         clock=clock.clock,
         now=clock.now,
     )
-    service = KbMetaCacheService(
+    return CachedKnowledgeMetaReader(
+        inner=client.knowledge_meta(), cache=cache or _cache_for(store, clock, base)
+    )
+
+
+def _cache_for(store: SqliteMetaStore, clock: _Time, base: str) -> KbMetaCacheService:
+    return KbMetaCacheService(
         store, provider_key=lambda base=base: base, clock=clock.clock, now=clock.now
     )
-    return CachedKnowledgeMetaReader(inner=client.knowledge_meta(), cache=service)
 
 
 @pytest.fixture
-def reader(store: SqliteMetaStore, nas: _Nas, clock: _Time) -> CachedKnowledgeMetaReader:
-    return _reader_for(store, nas, clock, HOME)
+def reader(
+    store: SqliteMetaStore, nas: _Nas, clock: _Time, service: KbMetaCacheService
+) -> CachedKnowledgeMetaReader:
+    """地址 = HOME 的 reader 面，**与 `service` 共用同一个缓存服务**（同一个后台队列）。"""
+    return _reader_for(store, nas, clock, HOME, cache=service)
 
 
 def _row(
@@ -326,14 +342,15 @@ def _put_row(
     )
 
 
-def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> bool:
-    """等后台那一件事真的做完（真线程，不能靠 sleep 猜）。"""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return predicate()
+def _settle(service: KbMetaCacheService) -> None:
+    """等后台那几件再验证真的做完（**判据不是墙钟**，见 `wait_for_idle`）。
+
+    以前这里是"每 10ms 看一眼某个字段，5 秒还没变就判失败"——机器一忙，
+    一次正常完成的再验证也会被那 5 秒判成"没发生"（这条文件里那条偶发红的
+    退避用例就是这么来的）。现在等的是队列自己的完成计数：慢就被如实等到，
+    等到了才轮到下面那几条断言去判断发生了什么。
+    """
+    assert service.wait_for_idle(), "后台那几件再验证没在 30 秒内做完"
 
 
 # ------------------------------------------------------------------ ① 命中零网络
@@ -387,19 +404,18 @@ def test_an_expired_snapshot_comes_back_at_once_and_revalidates_exactly_once(
     assert hit.available is True
     assert hit.revalidating is True  # 这一读触发了刷新
     assert hit.fetched_at == first.fetched_at  # 回的是**旧的那份**，不是等一次网络
-    # 后台那一次：等它真的发出去（不能断言"此刻还没发"——那是后台线程的自由）
-    assert _wait_until(lambda: len(nas.requests) == 2)
+    # 后台那一次：等它真的做完（等的是队列的完成计数，不是墙钟）
+    _settle(service)
+    assert len(nas.requests) == 2
 
     # 15 秒内再读几次：一次都不再排（R3 的判据）
     for _ in range(3):
         assert service.snapshot(KB_DETAIL, "kb_a", fetch=detail).revalidating is False
     assert len(nas.requests) == 2
     # 后台那次跑完：内容没变 ⇒ version 与 fetched_at 都不动，只推 checked_at
-    assert _wait_until(
-        lambda: (_row(store, KB_DETAIL, "kb_a") or first).checked_at > first.checked_at
-    )
     row = _row(store, KB_DETAIL, "kb_a")
     assert row is not None
+    assert row.checked_at > first.checked_at, "确认过就要如实推 checked_at"
     assert row.version == first.version
     assert row.payload == canonical_json(hit.payload)
     assert row.fetched_at == first.fetched_at
@@ -407,7 +423,7 @@ def test_an_expired_snapshot_comes_back_at_once_and_revalidates_exactly_once(
 
 
 def test_the_reader_revalidates_in_the_background_when_the_snapshot_gets_old(
-    reader, nas: _Nas, clock: _Time
+    reader, service: KbMetaCacheService, nas: _Nas, clock: _Time
 ) -> None:
     """reader 面同款（§4.2 右边那一列）：过期 → 立即回旧快照，后台**用 ``inner``** 再取一次。
 
@@ -419,8 +435,9 @@ def test_the_reader_revalidates_in_the_background_when_the_snapshot_gets_old(
     clock.advance(REVALIDATE_AFTER_SECONDS + 1)
 
     assert reader.get_knowledge_base("kb_a")["name"] == "论文", "这一读回的是旧的那份"
-    assert _wait_until(lambda: len(nas.requests) == 2), "后台应当自己取了一次"
-    assert _wait_until(lambda: reader.get_knowledge_base("kb_a")["name"] == "论文（改过名）"), (
+    _settle(service)
+    assert len(nas.requests) == 2, "后台应当自己取了一次"
+    assert reader.get_knowledge_base("kb_a")["name"] == "论文（改过名）", (
         "再验证落地之后，下一次读如实更新（列表那句「后台再验证后如实更新」）"
     )
 
@@ -458,7 +475,8 @@ def test_one_daemon_thread_serves_every_key(
     started = [thread for thread in threading.enumerate() if thread not in before]
     assert len(started) == 1, "两个键也只有一个后台线程"
     assert started[0].daemon is True, "它得是守护线程（边车退出不被一次再验证吊住）"
-    assert _wait_until(lambda: len(nas.requests) == 4), "两件活都由那一个线程做完了"
+    _settle(service)
+    assert len(nas.requests) == 4, "两件活都由那一个线程做完了"
 
 
 def test_a_failed_revalidation_backs_off_for_sixty_seconds(
@@ -471,7 +489,8 @@ def test_a_failed_revalidation_backs_off_for_sixty_seconds(
     nas.fail = httpx.ConnectError("用例造的断连")
 
     assert service.snapshot(KB_DETAIL, "kb_a", fetch=detail).revalidating is True
-    assert _wait_until(lambda: _stale(store, KB_DETAIL, "kb_a"))
+    _settle(service)
+    assert _stale(store, KB_DETAIL, "kb_a")
     assert len(nas.requests) == 2  # 只有那一次失败的尝试
 
     # 过了 15 秒、但还在 60 秒退避里：不再排
@@ -483,7 +502,8 @@ def test_a_failed_revalidation_backs_off_for_sixty_seconds(
     clock.advance(RETRY_BACKOFF_SECONDS)
     assert service.snapshot(KB_DETAIL, "kb_a", fetch=detail).revalidating is True
     nas.fail = None
-    assert _wait_until(lambda: _fresh(store, KB_DETAIL, "kb_a"))
+    _settle(service)
+    assert _fresh(store, KB_DETAIL, "kb_a"), "成功一次就把 stale 清掉"
     assert len(nas.requests) == 3
 
 

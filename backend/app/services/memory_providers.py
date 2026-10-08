@@ -104,9 +104,12 @@ COLLECTION_NAME = "kylab_memory"
 class Channel:
     """一条解析好的模型通道：mem0 要的接口与我们的实现在这里对齐一次。
 
-    ``key`` 是**配置里的 ``model`` 字段**（见模块头）：它同时充当 ``Memory`` 单例
-    缓存键的一部分，所以"换了模型"= 换了 key = 换了一个实例。key 里带上模型身份，
-    是为了让"设置页换了嵌入模型"这件事在下一轮就生效，而不是继续用旧的那一个。
+    ``key`` 是**配置里的 ``model`` 字段**（见模块头），也是通道表的键。
+    调用方（``MemoryService._channel``）算出来的是 ``kylab:<存储落点>``——
+    **只认落点、不带模型身份**：mem0 的 ``Memory`` 只在构造那一刻取 llm / embedder，
+    而两个 provider 都是拿 key **现查**通道表的，所以"设置页换了模型"下一次访问
+    就自动生效。反过来让 key 带上模型身份会变成**每换一次模型就换一个实例**，
+    而 qdrant 的本地模式同一个 path 只允许有一个实例——那条路走不通。
     """
 
     key: str
@@ -115,8 +118,6 @@ class Channel:
     测试注入一个假的，于是"判定与抽取跑没跑、跑了几次"能钉住。"""
 
     embedder: EmbeddingProvider
-    embedder_model: str
-    """mem0 配置里那个 ``model`` 字段的**可读**部分，只用于报错与排查。"""
 
     dim: int
     development: bool = False

@@ -36,8 +36,9 @@ class KnowledgeClient(Protocol):
 
     签名与 `ChatService.retrieve_sources` **逐字一致** ✓（将来换实现时调用点不用改 ✗）：
 
-    - ``query`` 是**关键字参数** ✓（它已经是关键字专用 ✓ —— 别写成位置参数，
-      那正是子 Agent 那条链曾经踩过的坑，见 `tests/unit/services/test_subagent.py`）；
+    - ``query`` 是**关键字参数** ✓（它已经是关键字专用 ✓ —— 别写成位置参数：
+      那个坑当初是在子 Agent 那条链上踩出来的，2026-10-09 那条链已下线，
+      但"关键字专用"这条约束留在这里）；
     - ``kb_ids`` 为空 = 这一轮不查库 ✓（调用点在检索层直接返回空 ✓）；
     - 返回的是带编号的 ``SourceRef`` 列表 ✓（出处、引用卡片、过程面板三处共用它 ✓）。
     """

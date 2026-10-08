@@ -4,11 +4,12 @@
  * **两个概念别混**：记忆是"你说的"（无出处、可改、高频写），知识库是"文献说的"。
  * 所以这里没有任何字段指向文档、片段或向量——记忆页只碰记忆这一侧。
  *
- * **一条一条的记忆条目**：库里的本体是 mem0 记下的条目（每条有 id），
- * 写入只有三条路——加一条 `createMemoryItem`、改一条 `updateMemoryItem`（按 id）、
- * 删一条 `deleteMemoryItem`（按 id）。旧档案制那几个端点
- * （`/archive` `/changes` `/remember` `/forget` `/restore` `/group` `/migrate`）
- * 已经删除，别在这里把它们加回来。
+ * **一条一条的记忆条目**：库里的本体是 mem0 记下的条目（每条有 id）。
+ * 写只有这几条路：加一条 `createMemoryItem`、改一条 `updateMemoryItem`（按 id）、
+ * 删一条 `deleteMemoryItem`（按 id），外加把旧档案一次性搬进来的 `importLegacyMemory`。
+ * 旧档案制那几个端点（`/archive` `/changes` `/recall` `/remember` `/forget`
+ * `/restore` `/group` `/migrate` `/draft/organize`）已经删除，
+ * 别在这里把它们加回来。
  *
  * `content` 是**原文**（人设文件那一侧含 frontmatter）：只读展示要逐字还原，
  * 所以进出的是完整字符串，不解析、不结构化。

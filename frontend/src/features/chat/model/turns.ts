@@ -573,6 +573,9 @@ const LEGACY_TOOL_KINDS: Record<string, ToolKind> = {
   search_files: 'search',
   list_skills: 'skill',
   read_skill: 'skill',
+  // **这张表不收新工具**（见上面那段），但老快照里**真有**下面这一步：
+  // `spawn_subagent`（派子 Agent）2026-10-09 下线，可它落在旧会话里，
+  // 删掉这一行那些步骤会掉回中性图标。
   spawn_subagent: 'session',
   run_command: 'exec',
   delete_document: 'delete',

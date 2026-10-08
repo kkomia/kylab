@@ -1148,8 +1148,9 @@ def check_ps1_bom(root: Path) -> list[Violation]:
 
 # ---------------------------------------------------------------- 版本号一致性（V1）
 #
-# 版本号是**多处手写副本**：pyproject、package.json、Settings.app_version，
-# 加上 compose 的默认标签（backend / frontend 各一处）。MCP Server 原本也是手写副本，
+# 版本号是**多处手写副本**：pyproject、package.json、Settings.app_version。
+# （原先还有 `deploy/docker-compose.yml` 的两处默认标签——那份文件随服务器档下线删了，
+# 所以这条检查 2026-10-09 起只管上面三处。）MCP Server 原本也是手写副本，
 # v0.2.0 起改为读 Settings。
 #
 # 这条约定一直写在 CHANGELOG 的「附：版本号约定」里，但**没有任何检查**——
@@ -1171,10 +1172,13 @@ def _quoted_after(text: str, marker: str) -> str | None:
 
 
 def version_sources(root: Path) -> dict[str, set[str]]:
-    """各处手写版本号 → 读到的一个或多个值。
+    """各处手写版本号 → 读到的值。
 
-    一份文件里出现多次就有多个值（compose 有两处默认标签），**两个都要对**——
-    只取第一个的话，改一处漏一处照样绿。
+    **2026-10-09 起只剩三处**：``deploy/docker-compose.yml``（两处 ``${KYLAB_VERSION:-…}``
+    默认标签）随服务器档下线一起删了，读它的那段分支与那份文件同时消失。
+
+    一份文件里出现多次就有多个值，**每个都要对**——只取第一个的话，
+    改一处漏一处照样绿。
 
     文件不存在就跳过：这个脚本要能在只检出部分目录时跑，否则会误报。
     用 ``errors="replace"`` 读：被存成别的编码的文件不该让整条规则崩掉。
@@ -1199,23 +1203,6 @@ def version_sources(root: Path) -> dict[str, set[str]]:
         value = _quoted_after(text, marker)
         if value:
             found[relative] = {value}
-
-    compose = read("deploy/docker-compose.yml")
-    if compose is not None:
-        marker = "${KYLAB_VERSION:-"
-        values: set[str] = set()
-        cursor = 0
-        while True:
-            index = compose.find(marker, cursor)
-            if index < 0:
-                break
-            cursor = index + len(marker)
-            end = compose.find("}", cursor)
-            if end < 0:
-                break
-            values.add(compose[cursor:end])
-        if values:
-            found["deploy/docker-compose.yml"] = values
 
     return found
 

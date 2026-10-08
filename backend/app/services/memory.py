@@ -17,9 +17,11 @@
   ``status().development`` 据此让界面说清"检索质量是兜底"。
 - **写**（D3）：显式的 ``remember`` 用 ``infer=False``（零模型调用，原样入库），
   写前用 :func:`classify_action` 在 ``get_all(top_k=200)`` 上**机械查重**
-  （保留 added/replaced/existing 三种回执）；自动捕获
-  （:meth:`MemoryService.capture_implicit`，**默认关**）用 ``infer=True``，
-  由 mem0 自己判定该不该记——这是全链路上唯一会自动花钱的地方。
+  （保留 added/replaced/existing 三种回执）；打开 ``memory.infer`` 时改用
+  ``infer=True``，由 mem0 自己抽取——那是这条链上**唯一会花钱的开关**。
+  另一条自动写入路（`capture_implicit` / `memory.capture`）2026-10-09 **整族删除**：
+  它当时已经没有任何生产调用者（问模型的那一跳没人触发），留着一个永远不跑的
+  开关只会让人以为"记忆会自动记"。
 - **注入**（D4）：每轮 ``get_all(top_k=200)`` **全量渲染** + 硬顶（``memory.inject_limit_chars``，
   默认 6000 字），**不做每轮 search**——挑选会引入一个"这轮该看哪几条"的判定，
   它既费模型，又让用户无法预测助手到底知道什么。
@@ -62,7 +64,6 @@ from app.services.runtime_config import RuntimeConfigService
 
 __all__ = [
     "AGENTS_FILE",
-    "CAPTURE_SIGNALS",
     "DEFAULT_RECALL",
     "MAX_ENTRY_CHARS",
     "MAX_RECALL",
@@ -80,10 +81,8 @@ __all__ = [
     "SECTIONS",
     "SOUL_FILE",
     "SOURCE_EXPLICIT",
-    "SOURCE_IMPLICIT",
     "SOURCE_MIGRATION",
     "SOURCE_UI",
-    "CaptureOutcome",
     "ImportReport",
     "ItemHistory",
     "Match",
@@ -94,7 +93,6 @@ __all__ = [
     "classify_action",
     "classify_text",
     "is_sensitive",
-    "matched_signal",
     "normalize_entry",
     "render_items",
 ]
@@ -115,13 +113,17 @@ AGENTS_FILE = "AGENTS.md"
 PROFILE_FILE = "PROFILE.md"
 
 #: 每轮注入 system prompt 的人设文件与固定顺序。
+#:
+#: ``memory.persona_files`` 那个运行期默认值（``"SOUL.md,AGENTS.md"``）住在
+#: ``runtime_config.DEFAULTS`` 里，**两份都要改**：这里这份决定"没配时注入哪几份"
+#: （:meth:`MemoryService.persona_order` 认不出来就回落到它），那份只决定设置页上
+#: 输入框的初始文字。这里原先有一个 ``PERSONA_ORDER_DEFAULT`` 想把两者绑起来，
+#: 但 ``runtime_config`` 不能反向 import 这个模块（会成环），于是它谁也没接到
+#: ——2026-10-09 删掉。
 PERSONA_FILES: tuple[tuple[str, str], ...] = (
     (SOUL_FILE, "人格"),
     (AGENTS_FILE, "操作规程"),
 )
-
-#: ``memory.persona_files`` 没配时的默认值。
-PERSONA_ORDER_DEFAULT = ",".join(name for name, _label in PERSONA_FILES)
 
 #: 本机主人那个账号的字面名（D1、D5）。mem0 的 ``user_id`` 与存储目录名都用它。
 LOCAL_ACCOUNT = "local"
@@ -152,7 +154,6 @@ MAX_ENTRY_CHARS = 500
 
 #: 一条记忆的来源标注（进 metadata，界面上做来源小字）。
 SOURCE_EXPLICIT = "显式"
-SOURCE_IMPLICIT = "隐式"
 SOURCE_UI = "界面"
 SOURCE_MIGRATION = "迁移"
 
@@ -317,36 +318,6 @@ _BOOTSTRAP = (
     "做完**告诉对方你记下了什么**——那是他的记忆，他该知道。\n"
     "只要库里还是空的，这一段每轮都会出现；写进第一条之后它自己就没了。"
 )
-
-#: **隐式捕获的机械前置筛**（D3 之后仍在）：用户消息里出现这些词才发起那次 ``infer=True``。
-#:
-#: 这是全篇**唯一一处词表**，也是最该被真实使用推翻的一处——它必然脆，
-#: 但它的代价只是**漏**（下次用户说「记住」就补上了），方向与"宁可漏不可滥"一致。
-#: 它是"这一轮要不要花钱"的判据：真正的取舍由 mem0 的抽取提示词做。
-CAPTURE_SIGNALS: tuple[str, ...] = (
-    "记住",
-    "以后",
-    "下次都",
-    "每次都",
-    "别",
-    "不要",
-    "我们的项目",
-    "目标是",
-    "必须是",
-    "已决定",
-    "不用",
-)
-
-
-def matched_signal(text: str) -> str:
-    """用户消息命中了哪个信号词；一个都没命中就返回空串。
-
-    **只做字面包含**：不加分词、不做语义——这一步存在的意义是"零成本地挡掉绝大多数
-    无信号的轮次"，判据要能被一行读明白、被真实使用推翻。
-    """
-    flat = text or ""
-    return next((word for word in CAPTURE_SIGNALS if word in flat), "")
-
 
 # --------------------------------------------------------------------- 归区词表
 #
@@ -640,23 +611,6 @@ class WriteResult:
 
 
 @dataclass(frozen=True, slots=True)
-class CaptureOutcome:
-    """一次隐式捕获的结果：命中的信号词 + 写进去的那几条。
-
-    ``results`` 为空表示"mem0 判定这轮没有值得记的东西"——那是**正常结果**，
-    不是失败（与"模型调用失败"要分得开：后者由调用方吞掉并记日志）。
-    """
-
-    signal: str
-    results: tuple[WriteResult, ...] = ()
-
-    @property
-    def receipt(self) -> str:
-        """给对话过程面用的一句回执：**与显式那条路同一份文案来源**。"""
-        return "；".join(item.receipt for item in self.results)
-
-
-@dataclass(frozen=True, slots=True)
 class ImportReport:
     """一次 ``import-legacy`` 的计数。"""
 
@@ -851,7 +805,7 @@ class MemoryService:
         self._runtime = runtime
         self._data_dir = data_dir
         #: 问模型的能力（可选）：不给就用运行期配置里绑定的对话模型。
-        #: 用例注入它来跑隐式捕获，不必真连一个模型。
+        #: 用例注入它来跑 `memory.infer`（抽取那条路），不必真连一个模型。
         self._ask = ask
 
     # ------------------------------------------------------------------ 配置
@@ -859,16 +813,6 @@ class MemoryService:
     @property
     def enabled(self) -> bool:
         return self._runtime.get_bool("memory.enabled")
-
-    @property
-    def capture_enabled(self) -> bool:
-        """自动捕获的总开关（``memory.capture``，**默认 false**）。
-
-        **不看 ``memory.enabled``**：与 `remember` 同一条纪律——记忆的写入不看那道闸，
-        那道闸管的是"它进不进这一轮的上下文、`recall` 能不能用"。
-        """
-        return self._runtime.get_bool("memory.capture")
-
     @property
     def inject_limit(self) -> int:
         """注入硬顶（``memory.inject_limit_chars``，默认 6000 字）。"""
@@ -938,12 +882,10 @@ class MemoryService:
         """
         chat, _chat_model = self._chat()
         embedder, development = self._embedder()
-        embedder_model = getattr(embedder, "model_id", "") or "dev"
         return memory_providers.Channel(
             key=f"kylab:{root}",
             chat=chat,
             embedder=embedder,
-            embedder_model=embedder_model,
             dim=embedder.dim,
             development=development,
         )
@@ -1002,6 +944,13 @@ class MemoryService:
         → 后来配了一个 1024 维的模型"恰恰是最常见的一条演进路径，所以这里必须处理它，
         不能让记忆页在那一天变成一片报错。
 
+        判据只有一处：``store.dim != channel.dim``。而 ``store.dim`` 的来源有三种
+        （见 :func:`_disk_dim`）——**标记读得出来就用标记；全新库（磁盘上还没集合）
+        就等于本轮这条通道；标记读不出来而集合在，按"不知道"（0）算**，
+        于是下面那一判必然成立、会重嵌一次把维度对齐。最后一种是最容易写错的：
+        拿"本轮算出来的维"去顶替"不知道"，判等成立、重嵌被跳过，
+        而磁盘上那个集合还是旧维度——写第一条时就炸。
+
         每一次访问都**重新登记通道**：provider 是按通道 key 现查的，
         所以"用户在设置里换了模型"下一次访问就生效。
         """
@@ -1016,9 +965,7 @@ class MemoryService:
                 store = _Store(
                     root=root,
                     memory=_build(root, channel),
-                    # 磁盘上那个集合的真实维度优先于本轮算出来的：进程刚起来的时候
-                    # 我们还没读过它的 payload，但集合的形状是上一个模型定下的
-                    dim=recorded or channel.dim,
+                    dim=_disk_dim(root, recorded, channel.dim),
                 )
                 _INSTANCES[str(root)] = store
             if store.dim != channel.dim:
@@ -1026,6 +973,11 @@ class MemoryService:
                 _remember_dim(root, channel.dim)
             else:
                 memory_providers.register_channel(channel)
+                # **新建实例那次要把维度落盘**：标记是跨进程唯一能知道"这个集合按几维建的"
+                # 的地方，只在重嵌那条路上写的话，全新库永远没有标记——
+                # 下一次进程起来读回 0，上面那条判据就失去了它唯一的证据。
+                if not recorded:
+                    _remember_dim(root, store.dim)
             return _INSTANCES[str(root)].memory
 
     def _filters(self, user_id: str | None) -> dict[str, str]:
@@ -1112,32 +1064,53 @@ class MemoryService:
         列全部时**排序在我们这一侧做**：mem0 的 ``get_all`` 没有承诺顺序，
         而界面上"最近改的在前"是用户能预期的唯一一种顺序。
 
-        带 ``query`` 时走 :meth:`recall` **而不是直接 search**：那是"检索"这件事的
-        唯一入口，`memory.enabled` 那道闸与条数上限都在那里。绕过去的话，
-        关着记忆时搜索框照样能查——而它承诺的是"关着就不查"。
+        带 ``query`` 时与 :meth:`recall` 共用 :meth:`_recall_checked`（**那道闸不做第二份**：
+        关着记忆时搜索框照样能查，就等于"关着就不查"这句承诺是假的），**上限不同**：
+        这一条是**界面**要一屏，跟接口层对齐到 ``MAX_ITEMS``（`MAX_ITEMS_PAGE` 同值）；
+        ``recall`` 那一侧是**工具与模型**在用，收在 ``MAX_RECALL``。
+        以前这里借 ``recall`` 走，于是接口声明 ``limit≤200``、实际 20 就被悄悄夹住。
         """
         text = (query or "").strip()
         if text:
-            return self.recall(text, limit=limit or self.search_top_k, user_id=user_id)
+            return self._recall_checked(
+                text,
+                limit=_clamp(limit or self.search_top_k, 1, MAX_ITEMS),
+                user_id=user_id,
+            )
         items = self.all_items(user_id)
         return sorted(items, key=lambda item: item.updated_at or item.created_at, reverse=True)
 
     def recall(
         self, query: str, *, limit: int | None = None, user_id: str | None = None
     ) -> list[MemoryItem]:
-        """在记忆库里按意思检索（mem0 的 ``search``）。
+        """在记忆库里按意思检索（mem0 的 ``search``）——**工具那一侧的唯一入口**。
 
         **与知识库检索是两条路、永不合并**——连索引都不共用。
 
         **关着时明确报错，不返回空**：返回空会让模型（和用户）以为"没有相关记忆"，
         然后基于错误前提继续。开着而真的没有相关条目时，返回空列表才是诚实的答案
         （那时检索确实跑过了）。
+
+        条数上限 ``MAX_RECALL``（与 ``tools.py`` 那份 schema 的 ``maximum`` 同源）：
+        模型一次要几十条不是"检索"，是"把库搬进上下文"。
+        """
+        return self._recall_checked(
+            query, limit=_clamp(limit or DEFAULT_RECALL, 1, MAX_RECALL), user_id=user_id
+        )
+
+    def _recall_checked(
+        self, query: str, *, limit: int, user_id: str | None
+    ) -> list[MemoryItem]:
+        """检索的共用内核：**那道闸与"空查询"这条检查只写一份**（两个入口共用）。
+
+        ``limit`` 由调用方先夹好——两条路的上限本来就不同（见两个调用点的说明），
+        把上限也收进这里，就得再传一次"这一次是哪条路"。
         """
         self._require_enabled()
         text = (query or "").strip()
         if not text:
             raise InvalidRequestError("缺少参数：query")
-        return self._search(text, _clamp(limit or DEFAULT_RECALL, 1, MAX_RECALL), user_id)
+        return self._search(text, limit, user_id)
 
     def _search(self, query: str, count: int, user_id: str | None) -> list[MemoryItem]:
         """mem0 的 ``search``，外加**兜底嵌入下的一道字面过滤**（见下）。
@@ -1267,6 +1240,12 @@ class MemoryService:
         抽取回来一条都没有：mem0 判定"不用新增"（它自己的语义去重），按 ``existing``
         回执。文案**不说"已经有了"**——那是在替它断言一件我们并不知道的事
         （它也可能只是没抽出可用的内容），所以只说"没有新增"。
+
+        **"一条都没有"有两种成因，回执不能混**：mem0 判定不用记（上面那句），
+        与"抽出来的那些全被判成了凭据、我们没让它进库"。后者是**否决**，不是"没有新增"
+        ——说成后者等于把"我们拦下了一条密码"讲成"模型觉得不用记"，
+        用户既不知道丢了什么、也不知道该不该再试。所以那一种走 ``rejected`` +
+        既有那句 ``RECEIPT_SENSITIVE``（与 `remember` 同一条口径）。
         """
         with self._lock():
             raw = self._extract(
@@ -1276,24 +1255,37 @@ class MemoryService:
             )
         written: list[str] = []
         first_id = ""
+        blocked = 0
         for item in (raw or {}).get("results") or []:
             body = normalize_entry(str(_field(item, "memory") or ""))
             if not body or str(_field(item, "event") or "").upper() == "NONE":
                 continue
             if is_sensitive(body):
+                blocked += 1
                 continue
             written.append(body)
             first_id = first_id or str(_field(item, "id") or "")
         if not written:
+            if blocked:
+                return WriteResult(
+                    action="rejected",
+                    receipt=RECEIPT_SENSITIVE,
+                    text=text,
+                    section=section,
+                    reason="sensitive",
+                )
             return WriteResult(
                 action="existing",
                 receipt=RECEIPT_UNCHANGED.format(text=text),
                 text=text,
                 section=section,
             )
+        receipts = [RECEIPT_ADDED.format(text=body) for body in written]
+        if blocked:
+            receipts.append(RECEIPT_SENSITIVE)
         return WriteResult(
             action="added",
-            receipt="；".join(RECEIPT_ADDED.format(text=body) for body in written),
+            receipt="；".join(receipts),
             text="；".join(written),
             section=section,
             item_id=first_id,
@@ -1485,70 +1477,6 @@ class MemoryService:
             replaced=item.text,
             item_id=item_id,
         )
-
-    # ------------------------------------------------------------ 隐式捕获（D3）
-
-    def capture_implicit(
-        self, message: str, *, user_id: str | None = None
-    ) -> CaptureOutcome | None:
-        """**隐式**那条路：用户消息命中信号词时，让 mem0 自己判定并抽取（``infer=True``）。
-
-        三道闸，**先便宜的先过**：
-
-        1. ``memory.capture``（默认关）——关着时这个方法**一次模型都不调**，
-           连信号词都不看；
-        2. **机械前置筛**（:func:`matched_signal`）：没命中信号词就返回 ``None``，
-           这一轮零成本；
-        3. 都没有才把这一轮交给 mem0：它问一次模型做抽取，把结果直接写进库。
-
-        **自研的判定提示词已经退场**（D3）：那一整套"画像双问 + 三条否决"是档案制的
-        产物，现在由 mem0 的抽取提示词承担；我们保留的只有两侧的护栏——
-        **入口**是这个信号词表，**出口**是敏感信息否决（对抽取回来的每一条都过一遍，
-        而 mem0 自己也可能把密码抽出来）。
-
-        返回值两种"空"要分清：``None`` = 这条路没跑（关着 / 没信号）；
-        ``CaptureOutcome(results=())`` = 跑了，但判定"这轮没有值得写的"。
-
-        **抛出的异常由调用方处置**：判定调用失败不能影响一轮已经成功的问答，
-        但也不该被静默吞掉——调用方记日志。
-        """
-        if not self.capture_enabled:
-            return None
-        query = " ".join((message or "").split()).strip()
-        signal = matched_signal(query)
-        if not signal:
-            return None
-        with self._lock():
-            raw = self._extract(
-                [{"role": "user", "content": query}],
-                metadata={"source": SOURCE_IMPLICIT},
-                user_id=user_id,
-            )
-        results: list[WriteResult] = []
-        for item in (raw or {}).get("results") or []:
-            text = normalize_entry(str(_field(item, "memory") or ""))
-            event = str(_field(item, "event") or "")
-            item_id = str(_field(item, "id") or "")
-            if not text or event.upper() == "NONE":
-                continue
-            if is_sensitive(text):
-                # **出口这道闸**：mem0 的抽取提示词管不了"用户把密码贴过来了"
-                # 这一态，所以它写进去之后我们把它删掉（写进每轮注入的上下文里，
-                # 比"这一轮少一条"糟得多）。
-                with self._lock():
-                    self._memory(user_id).delete(item_id)
-                logger.info("隐式捕获到一条含凭据的内容，已删除：%s", item_id)
-                continue
-            results.append(
-                WriteResult(
-                    action="added",
-                    receipt=RECEIPT_ADDED.format(text=text),
-                    text=text,
-                    section=classify_text(text),
-                    item_id=item_id,
-                )
-            )
-        return CaptureOutcome(signal=signal, results=tuple(results))
 
     # ------------------------------------------------------------------ 迁移
 
@@ -1821,24 +1749,65 @@ class _Store:
                 "换了嵌入模型（维度变了），但把已有记忆按新模型重嵌时失败了："
                 f"{exc}。原来的记忆还在，改回原来的模型或修好嵌入服务之后会自动重试。"
             ) from exc
-        # 旧实例已经关掉、目录也换过了：下一句按新维度重新打开
-        _INSTANCES[str(self.root)] = _Store(
-            root=self.root, memory=_build(self.root, channel), dim=channel.dim
-        )
+        # 旧实例已经关掉、目录也换过了：下一句按新维度重新打开。
+        # **它也可能失败**（锁没放干净、磁盘满、权限）：那一步之前 `self.memory` 已经被
+        # `close()` 了，所以失败时必须把这一条**从实例表里摘掉**——留着它，之后每一次
+        # 访问都会撞上一个已经关掉的 qdrant 客户端（"用不了的库"这种错最难查），
+        # 而摘掉之后下一次访问按 `_memory` 正常开门（维度标记这时还没写，会再判一次
+        # 重嵌，那正是对的：磁盘上那个集合确实还没被确认按新维度建好）。
+        try:
+            reopened = _build(self.root, channel)
+        except Exception:
+            _INSTANCES.pop(str(self.root), None)
+            logger.error("重嵌之后重开失败：实例已摘掉，下一次访问会重建", exc_info=True)
+            raise
+        _INSTANCES[str(self.root)] = _Store(root=self.root, memory=reopened, dim=channel.dim)
         logger.info("记忆库已按新嵌入模型重嵌：%d 条，%d 维", len(items), channel.dim)
 
 
 def _build(root: Path, channel: memory_providers.Channel) -> Any:
-    """在既有落点上打开（或新建）一个 mem0 实例。"""
-    return memory_providers.build_memory(
-        path=root / "qdrant",
-        history_db_path=root / "history.db",
-        channel=channel,
-    )
+    """在既有落点上打开（或新建）一个 mem0 实例。
+
+    **打不开的那一类异常折成可读的那一种**（与 :meth:`MemoryService._extract` 同款口径）：
+    mem0 抛出来的东西（集合被另一个进程占着、库文件损坏、目录没有写权限）原样漏给上层，
+    等于让"记忆库打不开"这件事以一句 500 的面目出现在记忆页上——而这句话本该说清
+    它在哪、该怎么办。**原话保留**（``{exc}``），只换一层壳。
+    """
+    try:
+        return memory_providers.build_memory(
+            path=root / "qdrant",
+            history_db_path=root / "history.db",
+            channel=channel,
+        )
+    except InvalidRequestError:
+        raise
+    except Exception as exc:
+        raise InvalidRequestError(
+            f"记忆库打不开：{exc}。库在 {root}；"
+            "若提示已被占用，请先关掉另一个打开它的进程（本机主人与成员各有一份）。"
+        ) from exc
 
 
 def _store_path(root: Path) -> Path:
     return root / STORE_MARKER
+
+
+def _disk_dim(root: Path, recorded: int, channel_dim: int) -> int:
+    """**磁盘上那个集合是按几维建的**（新建实例时的那一判，见 ``MemoryService._memory``）。
+
+    三种情形，各有各的依据：
+
+    - ``recorded`` 有值 → 就是它（那是建集合时写下的**事实**）；
+    - 读不出来、而磁盘上**还没有集合**（全新库）→ 就是本轮这条通道的维
+      （下面紧接着就要按它建一个新的）；
+    - 读不出来、而集合**已经在**（旧版本建的库、或从别处搬来的目录）→ **0 = 不知道**。
+      不能拿本轮的维去顶替：判等会成立、重嵌被跳过，而那个集合还是旧形状——
+      用户下一次写入才炸，且报的是 qdrant 的维度错。按"不知道"处理会多走一次重嵌，
+      代价是重嵌那一次的开销，换来的是"换模型这件事每次都能落地"。
+    """
+    if recorded:
+        return recorded
+    return 0 if (root / "qdrant").exists() else channel_dim
 
 
 def _recorded_dim(root: Path) -> int:
@@ -1981,8 +1950,8 @@ read_when:
 - 值得长期记住的事实用 `remember` 记下来（一条一句）；
   更正旧条目就在同一次调用里带上 `replaces`，要忘掉某条用 `forget`。
   **记忆里已有的条目每轮都在你的提示词里**，不必先去读它。
-- 需要啃一批资料才能得到一句话结论时，用 `spawn_subagent` 派一个子 Agent，
-  而不是自己一轮轮翻。
+- 需要啃一批资料才能得到一句话结论时，**自己一轮轮翻**再下结论
+  （这条链 2026-10-09 收窄过：以前这里写的是派一个子 Agent 去做）。
 
 ## 让它成为你的
 

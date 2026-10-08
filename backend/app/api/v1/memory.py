@@ -48,7 +48,7 @@ from app.api.v1.schemas import (
 from app.core.caller import Caller
 from app.core.services import Services, get_services
 from app.services import tools as tools_service
-from app.services.memory import MemoryItem, WriteResult
+from app.services.memory import SOURCE_UI, MemoryItem, WriteResult
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -119,7 +119,7 @@ def _item_out(item: MemoryItem) -> MemoryItemOut:
 def _write_out(result: WriteResult) -> MemoryWriteOut:
     """一次写入的结果 → 响应（加 / 改 / 删共用）。
 
-    ``action`` 的三种"没写成"（``existing`` / ``rejected``）都**不是错误**：
+    ``action`` 的两种"没写成"（``existing`` / ``rejected``）都**不是错误**：
     一个是"本来就有"，一个是"越线了、回执里给了出路"，所以它们照样 200，
     调用方按 ``action`` 分派。
     """
@@ -192,6 +192,10 @@ def create_memory_item(
         payload.content,
         section=payload.section,
         replaces=payload.replaces or None,
+        # 来源标成"界面"（``SOURCE_UI``）：``remember`` 的默认值是"显式"
+        # （= 模型在会话里记的），而这一条是**人自己在记忆页写的**——
+        # 条目行上那行小字据此显示"界面直改"，不写它会显示成"来自会话"。
+        source=SOURCE_UI,
         user_id=_scope(caller),
     )
     return _write_out(result)

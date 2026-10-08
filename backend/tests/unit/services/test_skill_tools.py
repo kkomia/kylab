@@ -18,23 +18,25 @@ from app.services.skills import SkillService
 
 
 def test_aliases_cover_the_tools_written_in_the_skills() -> None:
-    """那张对照表就是契约：七个有对应物的、五个没有对应物的。
+    """那张对照表就是契约：六个有对应物的、六个没有对应物的。
 
     `Write` / `Edit` **不给对应工具**（本环境刻意没有写文件工具），
     给的是替代做法——这一条是立场，写在表里而不是散在正文里。
+    `Task` 2026-10-09 从"有对应物"挪到"没有对应物"（派子 Agent 的能力下线）。
     """
     assert TOOL_ALIASES == {
         "Skill": "read_skill / list_skills",
         "Read": "read_file",
         "Bash": "run_command",
         "Grep": "search_files",
-        "Task": "spawn_subagent",
         "WebFetch": "web_fetch",
         "WebSearch": "web_search",
     }
-    assert "Write" in TOOL_SUBSTITUTES and "Edit" in TOOL_SUBSTITUTES
+    for name in ("Write", "Edit", "Task"):
+        assert name in TOOL_SUBSTITUTES
     assert "export_*" in TOOL_SUBSTITUTES["Write"]
     assert "run_command" in TOOL_SUBSTITUTES["Edit"]
+    assert "自己" in TOOL_SUBSTITUTES["Task"]
 
 
 def test_backticked_names_are_rewritten() -> None:
@@ -96,7 +98,7 @@ def test_catalog_note_lists_every_legacy_name() -> None:
 
     for name in LEGACY_NAMES:
         assert f"`{name}`" in note
-    assert "没有 `Write` / `Edit`" in note
+    assert "没有对应工具的那几个" in note
     assert "不要去调不存在的工具" in note
 
 

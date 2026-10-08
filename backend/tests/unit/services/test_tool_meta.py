@@ -189,8 +189,7 @@ def test_the_kind_is_derived_from_the_policy_fields() -> None:
     assert meta_of("upload_document").read_only is False
     assert kind_of("read_file") == "read"
     assert meta_of("read_file").read_only is True
-    # 动的是这一轮的会话（子 Agent），不是工作区
-    assert kind_of("spawn_subagent") == "session"
+    assert kind_of("forget") == "delete"
 
 
 def test_an_unknown_tool_is_drawn_neutrally_not_as_exec() -> None:

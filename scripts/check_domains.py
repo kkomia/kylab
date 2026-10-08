@@ -81,7 +81,6 @@ DOMAIN_LABELS = {KB: "KB 域", AGENT: "Agent 域", SHARED: "共享底座", MIXED
 KB_MODULES: tuple[str, ...] = (
     # api（15 个）
     # services
-    "app.services.embedding",
     "app.services.office",
     # 账号体系（2026-10-08 口径）：库分享、库范围钥匙、管理员都是 KB 语义的资产
     "app.services.api_key",
@@ -117,7 +116,6 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.services.agent_tools",
     "app.services.agent_exec",
     "app.services.agent_files",
-    "app.services.subagent",
     "app.services.sandbox",
     "app.services.isolation",
     "app.services.command_policy",
@@ -142,7 +140,6 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.services.tool_meta",
     "app.services.deck",
     "app.services.memory*",
-    "app.services.archive*",
     # 2026-10-08 口径补齐：降级链、站点图标、网页抓取、历史导入
     "app.services.kb_cache",
     "app.services.site_icons",
@@ -176,6 +173,9 @@ SHARED_MODULES: tuple[str, ...] = (
     "app.services.model_registry",
     "app.api.v1.model_registry",
     "app.services.provider_presets",
+    # 嵌入实现：**2026-10-09 从 KB 域改判**（记忆那条链也要它建嵌入通道，
+    # 与 `llm` 同档；理由见 `CLAIM_NOTES`）。
+    "app.services.embedding",
     "app.services.runtime_config",
     "app.services.credentials",
     "app.services.secrets",
@@ -273,6 +273,15 @@ CLAIM_NOTES: dict[str, str] = {
     "（「备份的是本机数据，`BackupProvider` 本来就是与 KB 平行的第二个提供者」）。"
     "2026-10-08 口径取 §5.3 → Agent 域",
     "app.api.v1.backup": "同上：备份的出面在 Agent 侧",
+    "app.services.embedding": "**2026-10-09 从 KB 域改判共享底座**（原先按 `services/` 下"
+    "的嵌入实现整体归 KB）。改判的理由是它已经**不是某一侧的资产**：记忆那条链"
+    "（Agent 域的 `services/memory.py` 与 `services/memory_providers.py`）要它建嵌入通道"
+    "（`build_embedder` / `EmbeddingProvider` / 开发兜底 `DeterministicEmbedder`），"
+    "而 KB 侧的上传、分块、建库同样要它——两边各拷一份的成本高于共享。"
+    "**与 `app.services.llm` 同档**（那边也是「两边各读一份、物理共享期先进共享底座」）。"
+    "改判前它在 Agent→KB 的拦门项里占 4 处（92e9e93 接入 mem0 时新长出来的："
+    "memory.py 3 处 + memory_providers.py 1 处）；改判后这两类拦门项都为 0。"
+    "它是纯实现层——只 import `app.core.*` 与自己人，所以进共享底座不会新长 shared→domain",
     "app.services.skill*": "方案写的是 `skills*.py`，收不到 `skill_blurb` / `skill_categories` / "
     "`skill_market` / `skill_sources` / `skill_tools` 五件；"
     "2026-10-08 口径把这五件定在 Agent 侧，所以通配改成 `skill*`（一条收全）",
@@ -894,9 +903,9 @@ def build_report(root: Path, result: Scan) -> str:
         "- `core/` 按**整包**在册，方案括注只点了 8 个文件；`core/services.py`（§4 第 1 条点名的"
         "单一组合根）与 `core/storage.py`、`core/lazy_httpx.py` 都在这个前缀里。",
         "- 尾段通配按 2026-10-08 口径改成 `skill*`（方案原本写 `skills*.py`，收不到 `skill_blurb.py`）；其余通配"
-        "（`memory*` / `archive*` / `conversation*` / `backup_*`）按字面收。"
-        "（原先还有一条 `schedule*`：定时任务模块 2026-10-09 整块删掉，"
-        "它收的 `schedule_runner.py` 一并下线。）",
+        "（`memory*` / `conversation*` / `backup_*`）按字面收。"
+        "（原先还有两条已下线：`archive*` 随档案制整族删除（v0.57 换 mem0）、"
+        "`schedule*` 随定时任务模块删除（2026-10-09）。）",
         "",
         "### 2.1 有判断成分的归属（逐条写出处）",
         "",

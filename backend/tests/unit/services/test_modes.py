@@ -31,7 +31,7 @@ from app.services.tool_meta import TOOL_META, ToolMeta, meta_of
 
 #: 三类工具的代表。**取真实的工具名**：判定读的是它们真实的元数据。
 READ_TOOLS = ("search", "list_notes", "read_file", "web_fetch", "list_skills", "read_skill")
-WRITE_TOOLS = ("create_note", "upload_document", "export_document", "remember", "spawn_subagent")
+WRITE_TOOLS = ("create_note", "upload_document", "export_document", "remember")
 EXEC_TOOLS = ("run_command",)
 
 

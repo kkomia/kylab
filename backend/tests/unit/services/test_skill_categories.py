@@ -74,11 +74,11 @@ def test_the_builtin_skills_are_pinned_by_name() -> None:
     """**产品自带**的几条按名字钉死（2026-09-29 用户裁定），别落进「其他」。
 
     它们不在 `installed.json` 里（那份记的是"装进来的"），但接口一样会列出来：
-    `kylab-delegate` / `kylab-knowledge-base` / `kylab-memory` / `kylab-web` → 效率与自动化，
-    `kylab-office-export` → 文档与办公。
+    `kylab-knowledge-base` / `kylab-memory` / `kylab-web` → 效率与自动化，
+    `kylab-office-export` → 文档与办公。（`kylab-delegate` 2026-10-09 随子 Agent
+    那条链下线，已不在这张表里。）
     """
     assert sc.BUILTIN_SKILLS == {
-        "kylab-delegate": "productivity",
         "kylab-knowledge-base": "productivity",
         "kylab-memory": "productivity",
         "kylab-web": "productivity",

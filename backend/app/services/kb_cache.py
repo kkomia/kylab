@@ -693,6 +693,15 @@ class KbMetaCacheService:
 
     # ------------------------------------------------------------------ 内部：取与写
 
+    def now(self) -> datetime:
+        """这一层的**墙上钟**（快照的 ``fetched_at`` 就是它写进去的）。
+
+        它同时是「X 分钟前」那句日志的判据（``_log_stale_snapshot`` → ``_age_text``）：
+        **两处必须是同一把钟**——拿真实时间算一个由别的钟写下的时间戳，
+        差出来的那个数没有意义（用例注入假钟时，它会差出好几天）。
+        """
+        return self._now()
+
     def provider(self) -> str:
         """当前的提供者地址（归一化：去尾斜杠）。**键空间靠它隔离，所以只在这里归一化。**"""
         return self._provider_key().rstrip("/")
@@ -921,6 +930,28 @@ class KbMetaCacheService:
                 logger.exception("后台再验证异常退出：%s", job.key)
             finally:
                 self._end(job.key)
+                # 队列自己的**完成计数**（`:meth:`wait_for_idle` 等的就是它）：
+                # `get()` 取一件、`task_done()` 记一件，两者配对是 `queue.Queue` 的用法约定。
+                jobs.task_done()
+
+    def wait_for_idle(self, *, timeout: float = 30.0) -> bool:
+        """等**后台那几件再验证**真的做完；返回是否在 ``timeout`` 内等到。
+
+        **判据是队列自己的完成计数**（``Queue.join`` 等的是 ``task_done``），
+        不是墙钟轮询：机器忙的时候"慢"会被如实等到，而不是把一次正常完成的再验证
+        判成"没发生"（用例以前就是那样偶发红的）。没有排过队时立即返回 ``True``。
+
+        ``timeout`` 只做**死锁兜底**（那个后台线程按设计不会死：它的循环把异常都收在
+        一轮里）。调用方拿到的 ``False`` 说明"它就是没做完"，该照实报出去——
+        这一个是给用例与脚本用的，生产路径不等后台（SWR 的语义就是"不等"）。
+        """
+        jobs = self._jobs
+        if jobs is None:
+            return True
+        waiter = threading.Thread(target=jobs.join, daemon=True, name="kb-meta-idle-wait")
+        waiter.start()
+        waiter.join(timeout)
+        return not waiter.is_alive()
 
     def _state(self, key: tuple[str, str, str]) -> _KeyState:
         """取（必要时建）一个键的状态。**调用方必须已经拿着 ``self._lock``**。"""
@@ -996,7 +1027,7 @@ class CachedKnowledgeMetaReader:
             # 带 fetch 的那条路上，「不可用」只有一种成因：远端明确说没有这个库（404）。
             # 其余失败在取的那一刻就抛出去了（`_fetch_now`），与 M3 的 reader 契约逐字一致。
             return None
-        _log_stale_snapshot(KB_DETAIL, kb_id, snapshot)
+        _log_stale_snapshot(KB_DETAIL, kb_id, snapshot, now=self._cache.now)
         return snapshot.payload
 
     def list_knowledge_bases(self) -> list[dict[str, Any]]:
@@ -1007,7 +1038,7 @@ class CachedKnowledgeMetaReader:
         if not snapshot.available:
             # 到不了这一支：列表端点要么回一份 items、要么按「取不到」抛（上面的 fetch 从不回 None）
             return []
-        _log_stale_snapshot(KB_LIST, "", snapshot)
+        _log_stale_snapshot(KB_LIST, "", snapshot, now=self._cache.now)
         payload = snapshot.payload
         items = payload.get("items") if isinstance(payload, dict) else None
         return [item for item in items or [] if isinstance(item, dict)]
@@ -1055,24 +1086,36 @@ def _to_millis(moment: datetime) -> datetime:
     return moment.replace(microsecond=(moment.microsecond // 1000) * 1000)
 
 
-def _log_stale_snapshot(resource: str, scope_key: str, snapshot: KbMetaSnapshot) -> None:
-    """D-C：拿一份「上次看到的」当答案时记一条日志（现象要说清楚，别等人去猜）。"""
+def _log_stale_snapshot(
+    resource: str,
+    scope_key: str,
+    snapshot: KbMetaSnapshot,
+    *,
+    now: Callable[[], datetime],
+) -> None:
+    """D-C：拿一份「上次看到的」当答案时记一条日志（现象要说清楚，别等人去猜）。
+
+    ``now`` **必须由调用方给**（服务那个墙上钟，见 :meth:`KbMetaCacheService.now`）：
+    这个函数里没有另一个钟可用，而"用真实时间算一个由别的钟写下的时间戳"会得出一个
+    没有意义的数——用例注入假钟时它差出好几天，于是那句"X 分钟前"永远是假的，
+    钉它的用例也只能跟着变成一条时间炸弹。
+    """
     if not snapshot.stale:
         return
     logger.warning(
         "读知识库元数据失败，用的是%s的快照（%s/%s）：%s",
-        _age_text(snapshot.fetched_at),
+        _age_text(snapshot.fetched_at, now),
         resource,
         scope_key,
         snapshot.last_error,
     )
 
 
-def _age_text(moment: datetime | None) -> str:
+def _age_text(moment: datetime | None, now: Callable[[], datetime]) -> str:
     """那句「X 分钟前」（日志用；界面上那句在阶段 5 的 ``snapshot.ts``）。"""
     if moment is None:  # pragma: no cover - 每个可用快照都有 fetched_at
         return "一份没记时间戳"
-    seconds = max(0.0, (datetime.now(UTC) - moment).total_seconds())
+    seconds = max(0.0, (now() - moment).total_seconds())
     if seconds < 60:
         return f"{seconds:.0f} 秒前"
     return f"{seconds / 60:.0f} 分钟前"

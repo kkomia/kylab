@@ -366,8 +366,8 @@ class KnowledgeBaseRecord:
     可它实质是**库的属性**——"这份资料该怎么被使用"随资料走，不随界面走。
     "换个库看还留着上一个库的规矩"是那个设计解释不了的。
 
-    空串 = 用内置提示词（`services/chat.DEFAULT_SYSTEM_PROMPT`）；一轮里选了多个库时，
-    有提示词的按库名拼成一段（见 `ChatService._kb_prompt`）。"""
+    空串 = 这一份库没有自己的回答要求（那一轮就按工具循环那套基础提示词走）；
+    一轮里选了多个库时，有提示词的按库名拼成一段（见 ``ChatService._kb_prompt``）。"""
     owner_id: str | None = None
     """归属账号（v10）。``None`` = 账号体系启用前的老数据，
     由 setup 向导认领给首个管理员（`services/auth.py`）。"""

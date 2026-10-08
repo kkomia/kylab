@@ -105,7 +105,6 @@ OTHER = "other"
 #: （`kylab-web` / `kylab-memory`…）本来就没有足够独特的词——钉名字既明确又不会误伤。
 #: 将来产品又添自带技能时，**在这里加一行**（并跑 `--write`）。
 BUILTIN_SKILLS: dict[str, str] = {
-    "kylab-delegate": "productivity",
     "kylab-knowledge-base": "productivity",
     "kylab-memory": "productivity",
     "kylab-web": "productivity",

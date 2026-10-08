@@ -471,7 +471,7 @@ requires:
 | `kylab-knowledge-base` | 笔记 / 知识库（2/3） | `search` / `list_documents` / `create_note` … |
 | `kylab-web` | `web-search` + `web-fetch`（3/3） | `web_search` / `web_fetch` |
 | `kylab-memory` | `memory`（3/3） | `recall` / `remember` |
-| `kylab-delegate` | `delegate`（3/3） | `spawn_subagent` |
+| `kylab-delegate` | ~~`delegate`（3/3）~~ **⚠️ 已下线（2026-10-09）**：它整篇是"什么时候调 `spawn_subagent`"，而那个工具在删之前就永远拒绝（没有调用点会传 `subagent=`）。技能与那条链一起删了，这一行留档 | ~~`spawn_subagent`~~ |
 | `kylab-office-export` | `doc-*`（3/3） | `export_document` / `export_table` / `export_deck` |
 
 **还没能力做的**（每一项都写清卡在哪，而不是"以后再说"）：
@@ -612,7 +612,7 @@ requires:
 | --- | --- | --- |
 | **内核级沙箱** | `services/isolation.py`：bwrap（Linux）/ sandbox-exec（macOS）/ docker（任意平台）三后端 + 能力探测 | **探测而不是假设**：真去盘上找可执行文件，并问一次 docker daemon（装了 CLI 但 daemon 没起是最常见的假阳性）。**没有隔离时拒绝执行**，不回退成裸跑——回退会把"我们以为它在沙箱里"变成一个静默的假象。实测这台 Windows 机器上没有 docker，`detect()` 如实报 `none`，`exec` 返回可读的拒绝理由 |
 | **技能市场** | `services/skill_market.py`：索引 / 安装 / 卸载，三种源形态（目录、zip、catalog.json，本地或 URL） | **安装前扫描**（与扫描磁盘上已有技能同一套规则）：命中注入特征当场拒绝并清掉半成品——与"标注已有技能"不同，安装是主动引入。**zip slip 整包拒绝**（不是跳过那条）、符号链接拒绝、大小与条目数上限、非文本文件拒绝。**只写 `data/skills/`**：仓库自带的技能卸不掉 |
-| **子 Agent 派生** | `services/subagent.py` + `ChatService.run_subagent`，决策里多一个 `{"action":"spawn","task":"…"}` | **深度只能是 1**（子 Agent 的工具面里没有派生，不是"检查 depth 然后继续"）；轮次/时限/检索次数三道闸；**范围只继承不扩**（`kb_ids` 由父任务复制）；停下来的原因如实带回（`budget` / `timeout` / `error`），不把"没查完"说成"查完了" |
+| **子 Agent 派生** | ~~`services/subagent.py` + `ChatService.run_subagent`，决策里多一个 `{"action":"spawn","task":"…"}`~~ **⚠️ 已下线（2026-10-09）**：没有调用点会给执行器传 `subagent=`，`spawn_subagent` 工具永远拒绝——整族（`services/subagent.py`、`ChatService.run_subagent*`、工具、`kylab-delegate` 技能）已删除。下面的设计口径留档 | **深度只能是 1**（子 Agent 的工具面里没有派生，不是"检查 depth 然后继续"）；轮次/时限/检索次数三道闸；**范围只继承不扩**（`kb_ids` 由父任务复制）；停下来的原因如实带回（`budget` / `timeout` / `error`），不把"没查完"说成"查完了" |
 | **A2A / ACP** | **不做** | 它们是"Agent 之间互相发现与编排"的协议；单机单 Agent 的形态下没有对手方。等真有第二个 Agent 要对接时再说——先做等于给一个不存在的场景写代码 |
 
 四项都有单测（隔离 15 条、市场 31 条、子 Agent 14 条、沙箱端点 7 条），

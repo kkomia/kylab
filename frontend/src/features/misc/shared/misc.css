@@ -459,12 +459,35 @@
     border-top: 1px solid var(--border-hairline);
   }
 
+  /* 标签 + 值那一列（设置行、备份页那几行）。**它不是可点元素**：43 个调用点
+     全都是 `<div className="m-row-main">` 包一对 `.m-row-label` + `.m-row-value`，
+     动作按钮/开关是 `.m-row` 里的**兄弟**。所以 `cursor: pointer` 与 `:hover`
+     底色（2026-10-09 逐处核对）已去掉——它们唯一的来源是已下线的流水线任务行
+     （那一行整行可点），靠"后者覆盖前者"压到这些静态行上，让只读信息看着像能点。
+
+     其余几项留着，因为它们**有实际观感**：`flex-direction: row`（标签与值同一行）、
+     `min-height: var(--hit-target)`（行高）。`padding`/`margin` 那对是 8px 的
+     "出血"（净宽不变，只在有底色时看得出来），现在没有底色，留着无害；
+     `border: none` / `background: none` / `font: inherit` / `text-align: left`
+     是当时的按钮复位，对 div 是空操作——**但它们可能压着祖先的继承值**，
+     删掉会改观感，所以不在这次清扫里动。 */
   .m-row-main {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-0-5);
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-3);
+    align-self: stretch;
     flex: 1;
     min-width: 0;
+    min-height: var(--hit-target);
+    padding: 0 var(--space-2);
+    margin: 0 calc(-1 * var(--space-2));
+    border: none;
+    border-radius: var(--radius-control);
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
   }
 
   .m-row-label {
@@ -1853,40 +1876,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  /* ------------------------------------------------- 任务行（流水线任务已删，见 TasksPage 文件头） */
-  /* 下面这两条的选择器是 `.m-row-main`——**通用列表行也在用**（`.m-row-label` + `.m-row-value`
-     那几处设置行）。它们当初是为任务行写的（行内要横排 + 悬停底色），但选择器是全局的，
-     删掉会连带改掉别处的观感，所以**留着不动**：要收拢得连调用点一起排一次视觉核对。
-     这个文件里 `.m-row-main` 因此有两条规则，靠出现顺序后者覆盖前者（方向由
-     `flex-direction: row` 定死），见上面那段的注释。 */
-
-  .m-row-main {
-    display: flex;
-    /* **必须显式写 row**：这份文件里更早的一条 `.m-row-main`（通用列表行，见上面）
-     把方向定成了 column，两条同名规则只按出现顺序覆盖——不重置方向的话，
-     任务名会按"内容宽"在按钮里居中排、长文件名直接压到状态列上（实测踩到）。 */
-    flex-direction: row;
-    align-items: center;
-    gap: var(--space-3);
-    align-self: stretch;
-    flex: 1;
-    min-width: 0;
-    min-height: var(--hit-target);
-    padding: 0 var(--space-2);
-    margin: 0 calc(-1 * var(--space-2));
-    border: none;
-    border-radius: var(--radius-control);
-    background: none;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .m-row-main:hover {
-    background: var(--bg-hover);
   }
 
   /* ---------------------------------------------------------------- 窄屏 */

@@ -170,7 +170,9 @@ class Services:
 
     """长期记忆的门面（设计见 `docs/设计/记忆档案-设计-v0.1.md`）。
 
-    一份四区档案（`PROFILE.md`）+ 变更流；写入三条路，其中隐式捕获默认关。"""
+    一份四区档案（`PROFILE.md`）+ 变更流；今天的写入只有**显式**那一条路
+    （`remember` / 界面上的加改删 + 旧档案一次性迁移）——自动捕获那条链
+    2026-10-09 整族删除，见 `services/memory.py` 的模块头。"""
 
     runtime: RuntimeConfigService
     """运行期配置（凭据与模型）：设置页读写它，各 provider 每次调用现取快照。"""
@@ -530,10 +532,11 @@ def _build_graph(
     embedder = _RuntimeEmbedder(runtime, _record_embed_usage, dev_embedding=resolved.dev_embedding)
     reranker = _RuntimeReranker(runtime)
 
-    # 记忆服务：**内容全在本地**（`data/memory/` 下的 Markdown）。出网只有一个动作
-    # ——隐式捕获在信号出现的那一轮问一次对话模型（`memory.capture`，**默认关**），
-    # 而它用的是运行期绑定的那条模型通道（见 `MemoryService._ask_model`）。
-    # 所以这个服务不需要嵌入能力，也不需要存储：构造它是纯本地的。
+    # 记忆服务：**内容全在本地**（`data/memory/` 下的 Markdown + mem0 的本机库）。
+    # 它**没有任何出网动作**：写入（`remember`）默认原样入库、注入只是拼上下文、
+    # `recall` 是本机检索；唯一会问模型的是显式打开 `memory.infer` 时的抽取
+    # （那条路用运行期绑定的模型通道）。所以这个服务不需要嵌入能力，也不需要
+    # 存储：构造它是纯本地的。
     memory_service = MemoryService(runtime, resolved.data_dir)
 
     # 对话的 token 用量通过回调记（G7）：ChatService 不该依赖统计服务，

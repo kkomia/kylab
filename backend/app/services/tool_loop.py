@@ -127,8 +127,7 @@ logger = logging.getLogger(__name__)
 #: 需要更高就把 `ToolLoop(max_steps=...)` 传大——组合根在 `services/chat.py`。
 DEFAULT_MAX_STEPS = 30
 
-#: 一轮的**墙钟上限**（秒）。与步数上限是两道独立的闸（子 Agent 里那两道同源，见
-#: `services/subagent.py` 的 `MAX_SECONDS`）：
+#: 一轮的**墙钟上限**（秒）。与步数上限是两道独立的闸：
 #:
 #: - **步数**挡的是"来回很多次"——每一次都真实花钱；
 #: - **时间**挡的是"某一步卡很久"——一次工具调用慢下来（抓一个不响应的网页、
@@ -151,8 +150,7 @@ MAX_RESULT_CHARS = 12000
 #: 为什么要它：Kimi 对"超出上下文长度"的任务**直接计为失败**并如实说
 #: （`docs/归档/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 3 条，机制级），
 #: 而我们从前只说一句"按现有信息作答"——"没查完"与"查完了"于是分不出来。
-#: `subagent.py` 早有同形状的 `stopped_reason`（answered/budget/timeout/error），
-#: 这里把它推广到主循环：**结局是枚举**，一句话只是它的渲染。
+#: **结局是枚举**，一句话只是它的渲染。
 STOP_ANSWERED = "answered"
 """模型自己判断做完了（正常结局）。"""
 STOP_STEPS = "steps"
@@ -242,7 +240,6 @@ _LABELS = {
     "web_fetch": "抓取网页",
     "list_skills": "查看技能目录",
     "read_skill": "读技能",
-    "spawn_subagent": "派子 Agent",
     # 这台机器上的能力（v0.33）：文件、执行、表格、定时任务。
     # 名字要说清**它替我做了什么**（"读文件"而不是 "read_file"）：过程面板是给用户看的，
     # 而他对这几个动作的第一反应是"它在我电脑上干什么了"

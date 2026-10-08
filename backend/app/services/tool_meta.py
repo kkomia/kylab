@@ -99,7 +99,7 @@ CORE_ALWAYS: frozenset[str] = frozenset(
 #:    而它自己会出现在发现结果里——延迟的代价只是一次发现；
 #: 2. **管库的**（建库 / 传文档 / 删文档 / 数据源 / 入库 / 表格查询…）：
 #:    配置性动作，一轮里顶多用一次；
-#: 3. **重或危险的**（``run_command`` / ``spawn_subagent`` / 定时任务）：
+#: 3. **重或危险的**（``run_command`` / 定时任务）：
 #:    它们"sandbox/权限"成本最高，而"每轮都可能用到"这一条明显不成立。
 #:
 #: 反过来留在核心的是"看一眼就有用"的那些：读文件/读记忆/读技能/检索/联网/看会话文件。
@@ -114,9 +114,8 @@ PERIPHERAL_TOOLS: frozenset[str] = frozenset(
         "export_table",
         "export_deck",
         "export_file",
-        # 本机执行与派活
+        # 本机执行
         "run_command",
-        "spawn_subagent",
         # 文件列举/搜索（读单个文件是核心：``read_file``）
         "list_files",
         "search_files",
@@ -308,8 +307,6 @@ TOOL_META: dict[str, ToolMeta] = {
         risk_level="low",
         kind="tool",
     ),
-    # 子代理是一次完整的调研（贵、有副作用、要落消息），独占
-    "spawn_subagent": ToolMeta(side_effect_scope="session", risk_level="medium"),
     # ---- 这台机器上的能力（v0.33，见 agent_tools._LOCAL_TOOLS）----
     "list_files": _READ,
     "read_file": _READ,

@@ -10,16 +10,17 @@
    否则同一件事被记很多遍，而记忆每轮都要注入上下文，越记越长等于越记越贵；
 3. **注入块的形状**：每轮全量、带边界说明、超限**在提示词里说出来**；
 4. **零额外模型调用**：默认配置下注入、写入、检索、状态读数**一次模型都不问**
-   ——它们全是本地存储操作，唯一会花钱的隐式捕获默认关。
+   ——它们全是本地存储操作（会花钱的只有显式打开 `memory.infer`）。
 
 用假的 runtime 而不是真配置服务：这几条都是记忆自身的逻辑，不该依赖数据库。
 **嵌入模型一律"没配"**——于是走的是开发兜底嵌入（词面哈希，无语义），
 所以检索那一组用**同一个说法**查，不测"换个说法也能命中"（那不是这一层的事）。
-捕获那条链路注入一个假的"问模型"，不连任何真实模型（``ask`` 参数就是为它留的）。
+抽取那条链路注入一个假的"问模型"（``ask`` 参数就是为它留的），不连任何真实模型。
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -28,14 +29,12 @@ from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.llm import LLMConfig
 from app.services.memory import (
     AGENTS_FILE,
-    CAPTURE_SIGNALS,
     PROFILE_FILE,
     SOUL_FILE,
     MemoryService,
     classify_action,
     classify_text,
     is_sensitive,
-    matched_signal,
     normalize_entry,
     render_items,
 )
@@ -122,6 +121,56 @@ def test_disabled_recall_raises_instead_of_returning_empty(tmp_path: Path) -> No
 
     with pytest.raises(InvalidRequestError, match="未启用"):
         service.recall("随便问问")
+
+
+def test_the_page_limit_and_the_tool_limit_are_two_different_ceilings(
+    tmp_path: Path,
+) -> None:
+    """**界面那侧认到 ``MAX_ITEMS``（= 接口的 ``MAX_ITEMS_PAGE``），工具那侧收在 ``MAX_RECALL``。**
+
+    接口上 ``limit`` 声明的是 ``le=200``，而这条检索路以前借 ``recall`` 走、被悄悄夹到 20：
+    用户传 200 拿到 20 条，既没有报错也没有说明。两条路的上限本来就该不同
+    （界面要一屏；模型一次要几十条是把库搬进上下文），所以闸共用、上限各写各的。
+    """
+    from app.services.memory import MAX_ITEMS, MAX_RECALL
+
+    service = _service(tmp_path)
+    for index in range(MAX_RECALL + 5):
+        assert service.remember(f"用户偏好先给结论 {index}").action == "added"
+
+    page = service.list_items(query="用户偏好先给结论", limit=MAX_ITEMS)
+    assert len(page) == MAX_RECALL + 5, "界面那一侧要能拿到超过 20 条"
+
+    hits = service.recall("用户偏好先给结论", limit=MAX_ITEMS)
+    assert len(hits) <= MAX_RECALL, "工具那一侧仍然收在 MAX_RECALL"
+
+
+def test_a_store_that_cannot_be_opened_says_so_in_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """库打不开（被别的进程占着、文件坏了）**三条路都要给一句人话**，不是一句 500。
+
+    与 ``_extract`` 同款口径：折成 ``InvalidRequestError`` 并**保留原话**——
+    "记忆库打不开：already accessed by another instance" 比一句通用错误有用得多。
+    手法上钉的是 `_build` 那一层：它是三条路（状态 / 列表 / 写入）共同的开门动作。
+    """
+    from app.services import memory_providers
+
+    def boom(**_kwargs: object) -> object:
+        raise RuntimeError("already accessed by another instance of QdrantClient")
+
+    monkeypatch.setattr(memory_providers, "build_memory", boom)
+    service = _service(tmp_path)
+
+    for call in (
+        lambda: service.status(),
+        lambda: service.all_items(),
+        lambda: service.remember("用户偏好先给结论"),
+    ):
+        with pytest.raises(InvalidRequestError) as caught:
+            call()
+        assert "记忆库打不开" in str(caught.value)
+        assert "already accessed" in str(caught.value), "原话要留着"
 
 
 def test_remember_works_even_when_the_switch_is_off(tmp_path: Path) -> None:
@@ -288,6 +337,66 @@ def test_remember_asks_the_model_when_infer_is_on(tmp_path: Path) -> None:
     assert len(replies) == 1, "这一档的特点就是「写一条要问一次模型」"
     assert result.action == "existing"
     assert "没有新增" in result.receipt
+
+
+def _extracted(*items: tuple[str, str, str]) -> object:
+    """假装 mem0 抽回来这几条：``(正文, 事件, id)``。
+
+    钉的是**我们自己那一层**（``_infer`` 怎么处置抽回来的东西），
+    所以直接把 ``_extract`` 这一段换掉，不赌 mem0 内部那串提示词与解析
+    （真模型 + 真解析那条路另有别的用例钉着）。
+    """
+    return {
+        "results": [
+            {"memory": text, "event": event, "id": item_id} for text, event, item_id in items
+        ]
+    }
+
+
+def test_infer_says_the_credential_was_dropped_not_that_there_was_nothing_to_add(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """抽出来的全是凭据：回执是**否决**，不是"没有新增"。
+
+    两种"一条都没有"必须分得开：mem0 判定不用记（那句"没有新增"），
+    与"抽出来的全被我们当凭据拦下了"。说成后者，等于把"我们丢了一条密码"
+    讲成"模型觉得不用记"——用户既不知道丢了什么，也不会去想自己该不该换个说法。
+    """
+    monkeypatch.setattr(
+        MemoryService,
+        "_extract",
+        lambda self, messages, **kwargs: _extracted(("用户的密码是 hunter2-test", "ADD", "m1")),
+    )
+    service = _service(tmp_path, **{"memory.infer": "true"})
+
+    result = service.remember("密码这类东西要提醒我")
+
+    assert result.action == "rejected"
+    assert result.reason == "sensitive"
+    assert "不进记忆" in result.receipt
+    assert "没有新增" not in result.receipt
+    assert service.all_items() == [], "一条都没落库"
+
+
+def test_infer_mentions_a_dropped_credential_alongside_what_it_did_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一半写成、一半是凭据：回执里**两件事都要有**（写进去的 + 被丢掉的）。"""
+    monkeypatch.setattr(
+        MemoryService,
+        "_extract",
+        lambda self, messages, **kwargs: _extracted(
+            ("用户要求先给结论", "ADD", "m1"),
+            ("用户的银行卡号是 6222 0000", "ADD", "m2"),
+        ),
+    )
+    service = _service(tmp_path, **{"memory.infer": "true"})
+
+    result = service.remember("先给结论，另外记一下卡号")
+
+    assert result.action == "added"
+    assert "记下了：用户要求先给结论" in result.receipt
+    assert "不进记忆" in result.receipt, "被丢掉的那一条也要说出来"
 
 
 def test_remember_folds_a_pasted_bullet_marker(tmp_path: Path) -> None:
@@ -534,85 +643,17 @@ def test_each_account_gets_its_own_store(tmp_path: Path) -> None:
     assert service.memory_dir("u1").name == "u1"
 
 
-# --------------------------------------------------------------- 隐式捕获
-
-
-_SIGNAL_MESSAGE = "记住：我以后都要先给结论"
-
-
-def test_implicit_capture_off_by_default(tmp_path: Path) -> None:
-    """默认关：**一次模型都不调**，连信号词都不看（它是这条链路上唯一会花钱的地方）。"""
-    chat = _FakeChat('{"facts": ["用户要求先给结论"]}')
-    service = _service(tmp_path, ask=chat)
-
-    assert service.capture_implicit(_SIGNAL_MESSAGE) is None
-    assert chat.prompts == []
-
-
-def test_no_signal_word_means_no_followup(tmp_path: Path) -> None:
-    """开着，但这一轮没有信号词 → 零成本（不发起那一次抽取）。"""
-    chat = _FakeChat("[]")
-    service = _service(tmp_path, ask=chat, **{"memory.capture": "true"})
-
-    assert service.capture_implicit("帮我把这段改短一点") is None
-    assert chat.prompts == []
-
-
-def test_capture_signal_table_is_a_flat_literal_lookup() -> None:
-    """信号词只做字面包含：不加分词、不做语义，判据要能被一行读明白。"""
-    assert matched_signal("我以后都要这样") == "以后"
-    assert matched_signal("记住：别用 emoji") in {"记住", "别"}
-    assert matched_signal("帮我看一下这个文件") == ""
-    assert "记住" in CAPTURE_SIGNALS
-
-
-def test_implicit_capture_writes_with_a_receipt(tmp_path: Path) -> None:
-    """命中信号词时才把这一轮交给 mem0 抽取（``infer=True``），回执与显式那条路同一份文案。"""
-    chat = _FakeChat('{"facts": ["用户要求先给结论"]}')
-    service = _service(tmp_path, ask=chat, **{"memory.capture": "true"})
-
-    outcome = service.capture_implicit(_SIGNAL_MESSAGE)
-
-    assert outcome is not None
-    assert outcome.signal in {"记住", "以后"}
-    assert len(chat.prompts) == 1, "抽取恰恰要问一次模型——这是它唯一会花钱的地方"
-
-
-def test_implicit_capture_does_not_consult_the_memory_switch(tmp_path: Path) -> None:
-    """捕获不看 ``memory.enabled``（那道闸管的是注入与检索），只看自己那个开关。"""
-    chat = _FakeChat("[]")
-    service = _service(
-        tmp_path,
-        ask=chat,
-        **{"memory.enabled": "false", "memory.capture": "true"},
-    )
-
-    assert service.capture_implicit(_SIGNAL_MESSAGE) is not None
-    assert len(chat.prompts) == 1
-
-
-def test_capture_says_so_when_there_is_no_model(tmp_path: Path) -> None:
-    """真的要用模型而没有模型时**如实报错**（而不是静默当"这轮没有值得记的"）。
-
-    `ask` 没注入、runtime 也没配对话模型——报错就发生在这里，
-    而**别的路（读 / 写 / 注入 / 状态）照样一个错都不出**（见下一条）。
-    """
-    service = _service(tmp_path, **{"memory.capture": "true"})
-
-    with pytest.raises(InvalidRequestError, match="对话模型"):
-        service.capture_implicit(_SIGNAL_MESSAGE)
-
-    assert service.remember("用户要求回答先给结论").action == "added"
-
-
 # --------------------------------------------------- 默认配置下零额外调用
 
 
 def test_default_config_makes_zero_extra_model_calls_per_turn(tmp_path: Path) -> None:
-    """**默认配置下，一轮对话的模型调用次数与记忆无关**。
+    """**默认配置下，记忆这一层一次模型都不问**。
 
-    注入、显式写入（``remember``/``forget``）、检索、状态读数都不新增调用——
-    它们全是本地存储操作；唯一会自动花钱的隐式捕获**默认关**。
+    注入、写入（``remember``/``forget``）、检索、状态读数、人设播种全是本地操作，
+    一个模型调用都不产生；**唯一会花钱的是显式打开 `memory.infer` 时的抽取**
+    （`test_remember_asks_the_model_when_infer_is_on` 钉的就是它）。
+    （2026-10-09 之前这里还有一句"自动捕获默认关"：那条路整族删掉了，
+    见 `services/memory.py` 模块头。）
 
     这一条**按产品默认值构造**（从 ``DEFAULTS`` 取 ``memory.*`` 那几个键），
     而不是自己发明一份配置：默认值一改，这条跟着改口径。
@@ -621,7 +662,6 @@ def test_default_config_makes_zero_extra_model_calls_per_turn(tmp_path: Path) ->
 
     assert DEFAULTS["memory.enabled"] == "true"
     assert DEFAULTS["memory.persona_files"] == "SOUL.md,AGENTS.md"
-    assert DEFAULTS["memory.capture"] == "false"
     assert DEFAULTS["memory.infer"] == "false"
     assert DEFAULTS["memory.inject_limit_chars"] == "6000"
     assert DEFAULTS["memory.search_top_k"] == "8"
@@ -641,9 +681,6 @@ def test_default_config_makes_zero_extra_model_calls_per_turn(tmp_path: Path) ->
     service.status()
 
     assert chat.prompts == [], "这几件事一件都不该问模型"
-
-    assert service.capture_implicit(_SIGNAL_MESSAGE) is None
-    assert chat.prompts == []
 
 
 # --------------------------------------------------------------------- 注入
@@ -805,6 +842,146 @@ def test_changing_the_embedding_dim_reembeds_instead_of_breaking(
     # 换完之后照旧能写（新维度已经生效）
     assert service.remember("用户要求回答简短").action == "added"
     assert len(service.all_items()) == 3
+
+
+# ------------------------------------------------- 维度标记（跨进程那一条判据）
+
+
+def _marker_of(service: MemoryService) -> Path:
+    """这个账号的维度标记（``<数据>/memory/<账号>/mem0/store.json``）。"""
+    return service.memory_dir() / "mem0" / "store.json"
+
+
+def _marker_dim(service: MemoryService) -> int:
+    return int(json.loads(_marker_of(service).read_text(encoding="utf-8"))["dim"])
+
+
+def _switch_embedder(monkeypatch: pytest.MonkeyPatch, dim: int) -> None:
+    """把这一轮的嵌入通道换成另一个维度（真实现里是用户在设置页换了模型）。"""
+    from app.services.embedding.deterministic import DeterministicEmbedder
+
+    monkeypatch.setattr(
+        MemoryService, "_embedder", lambda self: (DeterministicEmbedder(dim=dim), True)
+    )
+
+
+def test_a_fresh_store_records_its_dimension_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**新建库那一次就要把维度落盘**，不能只在重嵌那条路上写。
+
+    标记是跨进程唯一能知道"这个集合按几维建的"的地方（qdrant 的维度是建集合时定死的）：
+    全新库不写它，下一次进程起来读回 0，那条"维度变了要重嵌"的判据就没了证据——
+    而这一态（换模型 / 换回兜底）恰恰是最常见的演进路径。
+    """
+    from app.services.embedding.deterministic import DEFAULT_DEV_DIM
+
+    service = _service(tmp_path)
+    assert not _marker_of(service).exists(), "前提：一开始没有标记"
+
+    service.remember("用户要求回答先给结论")
+
+    assert _marker_dim(service) == DEFAULT_DEV_DIM
+
+
+def test_a_restart_with_a_new_dimension_reembeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**进程之间**换了维度也要重嵌：清掉内存单例（= 重启），标记留着，维度 256→64。
+
+    条目一条不丢，标记跟着换成新维——这是那条"维度变了要重嵌"的正常路径，
+    与上面那条（同进程内换）不同：这里判据只能靠磁盘上的标记。
+    """
+    from app.services.embedding.deterministic import DEFAULT_DEV_DIM
+    from app.services.memory import reset_instances
+
+    service = _service(tmp_path)
+    service.remember("用户要求回答先给结论")
+    service.remember("用户的内网有一台 L20")
+    assert _marker_dim(service) == DEFAULT_DEV_DIM
+
+    reset_instances()  # = 进程重启：内存里那个 store（以及它记着的维度）没了
+    _switch_embedder(monkeypatch, 64)
+
+    assert {item.text for item in service.all_items()} == {
+        "用户要求回答先给结论",
+        "用户的内网有一台 L20",
+    }, "重嵌之后条目一条不丢"
+    assert _marker_dim(service) == 64, "标记要跟着换成新维"
+    assert service.remember("用户要求回答简短").action == "added", "新维度上照旧能写"
+
+
+def test_a_restart_without_a_marker_treats_the_dimension_as_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**标记读不出来（旧版本建的库）而集合已经在 → 按"不知道"处理，走一次重嵌。**
+
+    直接拿"本轮算出来的维"去顶替"不知道"，判等会成立、重嵌被跳过，
+    而磁盘上那个集合还是旧形状——用户下一次写入才炸，报的还是 qdrant 的维度错。
+    这一条钉的就是那个分支：删掉标记 + 换维度 + 重启之后，**必须重嵌**。
+    """
+    from app.services.memory import reset_instances
+
+    service = _service(tmp_path)
+    service.remember("用户要求回答先给结论")
+    service.remember("用户的内网有一台 L20")
+
+    reset_instances()
+    _marker_of(service).unlink()  # 旧版本建的库：没留下标记
+    _switch_embedder(monkeypatch, 64)
+
+    assert {item.text for item in service.all_items()} == {
+        "用户要求回答先给结论",
+        "用户的内网有一台 L20",
+    }, "不知道维度时重嵌一次，条目照旧都在"
+    assert _marker_dim(service) == 64, "重嵌完把真实维度补上"
+    assert service.remember("用户要求回答简短").action == "added"
+
+
+def test_a_failed_reopen_after_a_reembed_does_not_leave_a_dead_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重嵌之后**重开那一步失败**：那一条要从实例表里摘掉，下一次访问能干净重建。
+
+    重嵌的过程是"先关旧实例 → 换目录 → 再开一个新的"，所以**重开失败**时表里留着的是
+    一个已经被 `close()` 的 qdrant 客户端：不摘掉的话，之后每一次访问都撞它
+    （"库打不开"里最难查的那一类），一直到进程重启。这一条让 `build_memory` 只在
+    **重开那一次**（第 2 次调用）抛错，然后验证"下一次访问是重建出来的"。
+    """
+    from app.services import memory_providers
+    from app.services.memory import _INSTANCES
+
+    service = _service(tmp_path)
+    service.remember("用户要求回答先给结论")
+    service.remember("用户的内网有一台 L20")
+    root = str(service.memory_dir() / "mem0")
+    first = _INSTANCES[root]
+
+    real = memory_providers.build_memory
+    calls = {"n": 0}
+
+    def flaky(**kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] >= 2:  # 第 1 次是重嵌的临时库，第 2 次才是重开
+            raise RuntimeError("qdrant 的锁还没放干净")
+        return real(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(memory_providers, "build_memory", flaky)
+    _switch_embedder(monkeypatch, 64)
+
+    with pytest.raises(InvalidRequestError, match="记忆库打不开"):
+        service.all_items()
+
+    assert root not in _INSTANCES, "失败那一次不许把已经关掉的实例留在表里"
+
+    # 恢复之后：下一次访问干净重建，条目一条不丢
+    monkeypatch.setattr(memory_providers, "build_memory", real)
+    assert {item.text for item in service.all_items()} == {
+        "用户要求回答先给结论",
+        "用户的内网有一台 L20",
+    }
+    assert _INSTANCES[root] is not first, "表里那一条必须是新开的实例"
+    assert _marker_dim(service) == 64, "重建那次把维度对齐到新通道"
 
 
 # --------------------------------------------------------------------- 通道
