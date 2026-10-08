@@ -328,7 +328,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **130** 条端点。
+共 **125** 条端点。
 
 ### `conversations`
 
@@ -470,16 +470,6 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `GET` | `/api/v1/sandbox` | 这台机器上的隔离能力 |
 | `POST` | `/api/v1/sandbox/plan` | 看这条命令会被怎么隔离 |
-
-### `scheduled-tasks`
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/scheduled-tasks` | 定时任务列表 |
-| `POST` | `/api/v1/scheduled-tasks` | 新建定时任务 |
-| `DELETE` | `/api/v1/scheduled-tasks/{scheduled_id}` | 删定时任务 |
-| `PATCH` | `/api/v1/scheduled-tasks/{scheduled_id}` | 改定时任务 |
-| `POST` | `/api/v1/scheduled-tasks/{scheduled_id}/run` | 立即跑一次 |
 
 ### `settings`
 

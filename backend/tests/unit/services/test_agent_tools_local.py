@@ -1,8 +1,7 @@
 """新工具的接线（v0.33）：工具表里出现什么、结果怎么渲染给模型。
 
 镜像同构：``app/services/agent_tools.py`` 的 ``_LOCAL_TOOLS`` / ``_LOCAL_KB_TOOLS`` /
-``_run_file_tool`` / ``_list_tables`` / ``_query_table`` / ``_schedule_task`` /
-``_read_memory`` / ``_write_memory`` → 本文件。
+``_query_table`` / ``_read_memory`` / ``_write_memory`` → 本文件。
 
 四件事：
 
@@ -17,19 +16,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from app.core.exceptions import InvalidRequestError, NotFoundError
+from app.core.exceptions import NotFoundError
 from app.services import agent_tools
 from app.services.agent_files import Roots
 from app.services.api_key import Caller
 from app.services.memory import MemoryService
-from app.storage.base import ScheduledTaskRecord
 from tests.conftest import install_fake_chat  # noqa: F401  （保持与其它用例一致的导入面）
 
 
@@ -83,18 +80,15 @@ def _names_with_memory(enabled: bool, kb_ids: list[str] | None = None) -> set[st
 
 
 def test_machine_tools_are_always_there() -> None:
-    """文件、执行、定时任务**不依赖知识库**：关掉知识库它们照样在。"""
+    """文件与执行**不依赖知识库**：关掉知识库它们照样在。"""
     names = _names(None)
     assert {"list_files", "read_file", "search_files", "run_command"} <= names
-    assert {"schedule_task", "list_scheduled_tasks"} <= names
-
-
 
 
 def test_local_tools_come_before_external_ones() -> None:
     """内置 → 技能 → 这台机器上的能力 → 外部服务（我们对前三段负责，外部排最后）。"""
     names = [spec.name for spec in agent_tools.tool_specs(kb_ids=["kb_x"])]
-    assert names.index("read_skill") < names.index("list_files") < names.index("schedule_task")
+    assert names.index("read_skill") < names.index("list_files")
 
 
 # ------------------------------------------------------------------ 文件渲染
@@ -138,95 +132,9 @@ def test_search_without_hits_says_so(roots: Roots) -> None:
     assert "（没有命中）" in outcome.content
 
 
-
-
-
-
 class _FakeServices:
     def __init__(self, **parts: object) -> None:
         self.__dict__.update(parts)
-
-
-
-
-
-
-
-
-
-
-# ------------------------------------------------------------------ 定时任务工具
-
-
-class _FakeSchedules:
-    def __init__(self) -> None:
-        self.created: dict[str, Any] = {}
-        self.records: list[ScheduledTaskRecord] = []
-
-    def create(self, **kwargs: object) -> ScheduledTaskRecord:
-        self.created = dict(kwargs)
-        record = ScheduledTaskRecord(
-            id="sched_1",
-            name=str(kwargs.get("name")),
-            prompt=str(kwargs.get("prompt")),
-            kind=str(kwargs.get("kind")),
-            cron=str(kwargs.get("cron") or ""),
-            run_at=kwargs.get("run_at"),  # type: ignore[arg-type]
-            next_run_at=datetime.now().astimezone() + timedelta(hours=1),
-            kb_ids=tuple(kwargs.get("kb_ids") or ()),  # type: ignore[arg-type]
-            owner_id=kwargs.get("owner_id"),  # type: ignore[arg-type]
-        )
-        self.records.append(record)
-        return record
-
-    def next_run_text(self, record: ScheduledTaskRecord) -> str:
-        return "每天 09:00"
-
-    def list(self, *, owner_id: str | None) -> list[ScheduledTaskRecord]:
-        return self.records
-
-
-def test_schedule_task_defaults_the_scope_to_this_conversation() -> None:
-    """库范围默认跟随这一轮：留给模型一个空白字段，它要么编一个、要么把库全勾上。"""
-    fake = _FakeSchedules()
-    outcome = agent_tools._schedule_task(
-        _FakeServices(schedules=fake),
-        Caller(is_admin=True),
-        ["kb_1"],
-        {"name": "早报", "prompt": "汇总昨天", "cron": "0 9 * * *"},
-    )
-    assert fake.created["kb_ids"] == ["kb_1"]
-    assert fake.created["kind"] == "cron"
-    assert "每天 09:00" in outcome.content
-
-
-def test_schedule_task_with_a_time_is_a_one_shot() -> None:
-    fake = _FakeSchedules()
-    agent_tools._schedule_task(
-        _FakeServices(schedules=fake),
-        Caller(is_admin=True),
-        [],
-        {"name": "一次", "prompt": "跑", "run_at": "2027-01-01T09:00"},
-    )
-    assert fake.created["kind"] == "once"
-    assert fake.created["run_at"] == datetime(2027, 1, 1, 9, 0)
-
-
-def test_schedule_task_with_a_broken_time_says_what_to_write() -> None:
-    with pytest.raises(InvalidRequestError, match="ISO 8601"):
-        agent_tools._schedule_task(
-            _FakeServices(schedules=_FakeSchedules()),
-            Caller(is_admin=True),
-            [],
-            {"name": "坏的", "prompt": "跑", "run_at": "明天早上"},
-        )
-
-
-def test_list_scheduled_tasks_says_when_nothing_is_scheduled() -> None:
-    outcome = agent_tools._list_scheduled(
-        _FakeServices(schedules=_FakeSchedules()), Caller(is_admin=True)
-    )
-    assert outcome.content == "还没有挂过定时任务。"
 
 
 def test_the_machine_tools_are_wired_into_the_runner(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

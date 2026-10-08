@@ -6,7 +6,7 @@
  *
  * 三件事：
  * 1. **每个用例一份新的 QueryClient**：缓存串味是这类测试最常见的假绿——
- *    上一个用例的 `listScheduledTasks` 结果会让下一个用例根本不打请求；
+ *    上一个用例的 `listNotes` 结果会让下一个用例根本不打请求；
  * 2. `retry: false`：默认的重试会让"错误态"用例多等两轮才断言；
  * 3. **路由用 MemoryRouter**：这些页面都会 `useNavigate` / 读 `?focus=`。
  */

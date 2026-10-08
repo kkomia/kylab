@@ -49,7 +49,6 @@ from app.storage.repositories import (
     MCPServerRepo,
     ModelRegistryRepo,
     NoteRepo,
-    ScheduleRepo,
     SettingsRepo,
     UsageRepo,
     WorkspaceRepo,
@@ -68,14 +67,14 @@ __all__ = [
 ]
 
 
-#: 归本机的**协议**（实施方案 §2.1）：这 8 个域的数据都在本机库里，
+#: 归本机的**协议**（实施方案 §2.1）：这 7 个域的数据都在本机库里，
+#: （2026-10-09 定时任务模块整块删掉，``ScheduleRepo`` 从这里去掉、协议本身也删了。）
 #: 它们的每个方法都由 ``SqliteMetaStore`` 实现。
 LOCAL_PROTOCOLS: tuple[type, ...] = (
     ConversationRepo,
     NoteRepo,
     SettingsRepo,
     WorkspaceRepo,
-    ScheduleRepo,
     MCPServerRepo,
     ModelRegistryRepo,
     UsageRepo,
@@ -246,7 +245,7 @@ def _protocol_methods(protocol: type) -> frozenset[str]:
 
 
 def local_methods() -> frozenset[str]:
-    """本机域方法集：8 个协议的公开方法 ∪ ``LOCAL_EXTRA``。
+    """本机域方法集：7 个协议的公开方法 ∪ ``LOCAL_EXTRA``。
 
     做成函数而不是模块级常量，是为了让调用方每次拿到的是**当前**协议的样子
     （阶段 2 的 ``RouterMetaStore`` 要用它算"剩下的归 KB 域"）。

@@ -26,12 +26,11 @@ import logging
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from app.core.caller import WRITE, Caller
-from app.core.exceptions import InvalidRequestError, KylabError
+from app.core.exceptions import KylabError
 from app.core.logging import sanitize_log_value
 from app.services import isolation as isolation_service
 from app.services import tool_meta
@@ -58,7 +57,6 @@ from app.services.command_policy import (
 )
 from app.services.llm import ToolSpec
 from app.services.mcp_client import normalized_server_name, split_qualified
-from app.services.schedules import timezone_name
 from app.services.skills import recombine_surrogates, text_problem
 from app.services.subagent import parse_tool_content as parse_subagent_content
 from app.services.tool_loop import ToolOutcome, ToolRunner
@@ -269,55 +267,6 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
                 },
             },
         },
-    },
-    {
-        "name": "schedule_task",
-        "description": (
-            "**挂一条定时任务**：到点自动替对方跑这句话，结果落在一条会话里。"
-            "只在对方明确说「以后每天/每周…帮我做这件事」时才调——"
-            "**不要替他决定要不要定时**。时间按**服务器时区**解释（工具结果里会说明是哪个时区）；"
-            "一次性的事用 once + 具体时间，周期性的事用 cron（5 字段：分 时 日 月 周）。"
-            "建完请把「什么时候跑、跑什么、结果在哪看」告诉对方。"
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "任务名（会用它当那条会话的标题）"},
-                "prompt": {
-                    "type": "string",
-                    "description": (
-                        "到点要问的那句话，写具体（如「把昨天的构建日志汇总成三条结论」）"
-                    ),
-                },
-                "cron": {
-                    "type": "string",
-                    "description": (
-                        "5 字段表达式：分 时 日 月 周。"
-                        "例：`0 9 * * *` = 每天 9:00；`30 8 * * 1` = 每周一 8:30"
-                    ),
-                },
-                "run_at": {
-                    "type": "string",
-                    "description": (
-                        "一次性的时刻（ISO 8601，如 2026-09-21T09:00）。给了它就是一次性任务"
-                    ),
-                },
-                "knowledge_base_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "到点查哪些库；留空 = 跟随这条对话的库范围",
-                },
-            },
-            "required": ["name", "prompt"],
-        },
-    },
-    {
-        "name": "list_scheduled_tasks",
-        "description": (
-            "列出已经挂上的定时任务（下次什么时候跑、上次跑成没跑成）。"
-            "**对方问「我之前让你定时做的事呢」时用它**，别凭记忆答。"
-        ),
-        "inputSchema": {"type": "object", "properties": {}},
     },
     # ---- 会话文件区（v0.55，用户报的"上传的图片文件不是应该能用来交互吗"）----
     #
@@ -1198,10 +1147,6 @@ def build_runner(
                 approval=outcome.approval,
                 outcome=blocked_kind,
             )
-        if name == "schedule_task":
-            return _schedule_task(services, caller, scope, args)
-        if name == "list_scheduled_tasks":
-            return _list_scheduled(services, caller)
         if name == "search":
             scoped = _scope_search(args, scope)
             if scoped is None:
@@ -1752,99 +1697,6 @@ def _table_text(columns: list[str], rows: list[list[str]]) -> str:
 
 def _join_blocks(*blocks: str) -> str:
     return "\n\n".join(item for item in blocks if item and item.strip())
-
-
-# ------------------------------------------------------------------ 定时任务
-
-
-def _schedule_task(
-    services: Any, caller: Caller, scope: list[str], args: dict[str, Any]
-) -> ToolOutcome:
-    """挂一条定时任务（v0.33）。
-
-    **库范围默认跟随这条对话**（而不是空）：模型在对话里被要求"以后每天帮我盯这件事"，
-    它手里最合理的资料范围就是此刻这一轮的库——留给它一个空白字段，
-    它要么编一个、要么把库全勾上，两种都不如"跟现在一样"。
-
-    时间的解释权在服务层（cron 的解析只有一份），报错原文回给模型：
-    那里的措辞是照着"怎么改对"写的。
-    """
-    sessions = getattr(services, "schedules", None)
-    if sessions is None:  # pragma: no cover - 只在手工拼 Services 的测试里出现
-        return ToolOutcome(content="这台服务没有启用定时任务。", summary="定时任务不可用")
-    name = str(args.get("name") or "").strip()
-    prompt = str(args.get("prompt") or "").strip()
-    run_at_text = str(args.get("run_at") or "").strip()
-    cron_text = str(args.get("cron") or "").strip()
-    asked = [str(item) for item in (args.get("knowledge_base_ids") or []) if str(item)]
-    # 先解析时间（**在 try 之外**）：格式不对是"参数给错了"，该作为工具错误抛出去，
-    # 而不是被下面那段"建失败"的兜底吞成一句内容（那样模型看不出自己写错了格式）
-    when = _parse_when(run_at_text) if run_at_text and not cron_text else None
-    try:
-        record = sessions.create(
-            name=name,
-            prompt=prompt,
-            # 给了具体时间就是一次性的；两个都没给时按"每天"处理并让 cron 校验去报错
-            kind="once" if when is not None else "cron",
-            cron=cron_text,
-            run_at=when,
-            kb_ids=asked or scope,
-            owner_id=caller.owner_id,
-        )
-    except Exception as exc:
-        logger.info("定时任务建失败：%s", sanitize_log_value(exc))
-        return ToolOutcome(content=str(exc), summary="定时任务没建成")
-    return ToolOutcome(
-        content=_join_blocks(
-            f"已挂上定时任务「{record.name}」（{sessions.next_run_text(record)}，"
-            f"按 {timezone_name()} 计算）。",
-            "到点它会自己跑一遍，结果落在一条同名会话里——对方可以在「任务中心 → 定时任务」"
-            "看到它，也可以点「立即跑一次」当场试验。",
-        ),
-        summary=f"已挂上定时任务：{sessions.next_run_text(record)}",
-    )
-
-
-def _list_scheduled(services: Any, caller: Caller) -> ToolOutcome:
-    sessions = getattr(services, "schedules", None)
-    if sessions is None:  # pragma: no cover
-        return ToolOutcome(content="这台服务没有启用定时任务。", summary="定时任务不可用")
-    records = sessions.list(owner_id=caller.owner_id)
-    if not records:
-        return ToolOutcome(content="还没有挂过定时任务。", summary="没有定时任务")
-    lines = []
-    for item in records:
-        state = "启用" if item.enabled else "已停用"
-        last = {
-            "ok": "上次跑成了",
-            "degraded": "上次没跑完（撞上步数或时间闸）",
-            "failed": f"上次失败：{item.last_error[:80]}",
-        }.get(item.last_status, "还没跑过")
-        lines.append(
-            f"- {item.name}（{state}，{sessions.next_run_text(item)}）：{item.prompt[:60]}"
-            f"\n  下次：{_local_text(item.next_run_at)}；{last}"
-        )
-    return ToolOutcome(
-        content="已挂的定时任务：\n" + "\n".join(lines), summary=f"{len(records)} 条定时任务"
-    )
-
-
-def _parse_when(text: str) -> datetime:
-    """把 ``run_at`` 解析成时间。**不带时区的按服务器本地时间解释**——
-    与界面上的 datetime-local 同一口径（用户填的是他看到的钟点）。"""
-    cleaned = text.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(cleaned)
-    except ValueError as exc:
-        raise InvalidRequestError(
-            f"run_at 不是合法的时间：{text!r}（用 ISO 8601，如 2026-09-21T09:00）"
-        ) from exc
-
-
-def _local_text(moment: datetime | None) -> str:
-    if moment is None:
-        return "不会再跑"
-    return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def _size_text(value: object) -> str:

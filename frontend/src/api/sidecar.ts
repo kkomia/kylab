@@ -126,10 +126,10 @@ export const MAX_HISTORY_MESSAGES = 20
  * （`/notes` 认 `/notes/folders/x`，但不认 `/notes-old` ✗），所以多加一个域＝往这张表
  * 里加一行，而不是去各模块里改字符串 ✓。
  *
- * ⚠️ 与方案原文的一处**实差别**：方案那张表写的是 `/schedules`，实际端点前缀是
- * `/scheduled-tasks`（`api/v1/router.py` 里 `schedules.router` 的 prefix ✓，
- * 界面这边 `api/schedules.ts` 也逐条用它 ✓）。照方案写会让**定时任务继续绕道 NAS** ✗，
- * 而 NAS 上那份库里根本没有本机的这些行 ✓ —— 写实的那一个。
+ * ⚠️ 与方案原文的一处**实差别**（历史）：方案那张表写过 `/schedules`，而当时的实际
+ * 端点前缀是 `/scheduled-tasks`（`schedules.router` 的 prefix）——写实的那一个才对，
+ * 照方案写会让定时任务绕道 NAS。**定时任务模块 2026-10-09 已整块删掉**，这条与表里
+ * 那一行都随之消失，留着这句只为说明"表里的路径按实际的写"。
  *
  * 两条只读端点（`/chat/context-usage` / `/conversations/{id}/events`）也在表里：
  * 本机档在 `local.chat_reads` 上**薄重声明**了它们（只读本机数据）✓。
@@ -145,7 +145,7 @@ export const MAX_HISTORY_MESSAGES = 20
  * 再照常落到本机（`resolveLocalBase` 对表外路径只警告不拦）。补上是让这张表
  * 重新等于"本机档到底服务什么"。
  *
- * ⚠️ 第二处**实差别**（与上面 `/scheduled-tasks` 那条同一类，也是"写实的那一个"）：
+ * ⚠️ 另一处**实差别**（与上面那条同一类，也是"写实的那一个"）：
  * 用量那一条写的是 `/stats/usage` 而**不是** `/stats`（施工单原文写的是 `/stats`）。
  * 理由是同一条——本机档只**薄重声明**了 `/stats/usage` 这一条（`local.stats_reads`），
  * 而 `/stats/dashboard` 数的是知识库的文档与任务、**不挂本机档**（见
@@ -159,7 +159,6 @@ export const LOCAL_PATHS = [
   '/settings',
   '/model-registry',
   '/workspaces',
-  '/scheduled-tasks',
   '/mcp-servers',
   '/memory',
   '/chat/context-usage',

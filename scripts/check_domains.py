@@ -64,7 +64,7 @@ from pathlib import Path
 # - `health` / `frontend` / `router` / `main` → 共享底座（两档都要用，阶段 1 才分家）；
 # - `app.services.chat` / `app.services.tools` / `app.api.v1.schemas` 是**混合体**
 #   （§4 第 2/3/5 条）：不许整模块归入一侧，单列第三类（越界只记录、不拦门）；
-# - `kb_cache`（M4 降级链）、`schedule_runner`、`skill*`、`site_icons` / `web` /
+# - `kb_cache`（M4 降级链）、`skill*`、`site_icons` / `web` / `legacy_import` 按语义补齐；
 #   `legacy_import` 按语义补齐；
 # - 逐条判断的理由写在 `CLAIM_NOTES`（报告第 2 节会打出来），**有争议的都在那里**。
 
@@ -101,7 +101,6 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.api.v1.mcp_servers",
     "app.api.v1.sandbox",
     "app.api.v1.workspaces",
-    "app.api.v1.schedules",
     "app.api.v1.web",
     "app.api.v1.site_icons",
     "app.api.v1.local",
@@ -133,8 +132,6 @@ AGENT_MODULES: tuple[str, ...] = (
     "app.services.notes",
     "app.services.note_ai",
     "app.services.artifacts",
-    # 同理：`schedule*` 收 schedule_runner（定时任务执行器），方案写的 `schedules*` 收不到。
-    "app.services.schedule*",
     "app.services.cron",
     "app.services.conversation*",
     "app.services.session_events",
@@ -279,9 +276,6 @@ CLAIM_NOTES: dict[str, str] = {
     "app.services.skill*": "方案写的是 `skills*.py`，收不到 `skill_blurb` / `skill_categories` / "
     "`skill_market` / `skill_sources` / `skill_tools` 五件；"
     "2026-10-08 口径把这五件定在 Agent 侧，所以通配改成 `skill*`（一条收全）",
-    "app.services.schedule*": "同理：方案写的 `schedules*.py` 收不到 `schedule_runner.py`"
-    "（定时任务执行器，Agent 域）。通配改成 `schedule*`；它调 `retrieve_sources` 那一处"
-    "就是方案漏报的第 4 个跨域调用点",
     "app.services.kb_cache": "M4 降级链（KB 元数据缓存）——"
     "方案 §6 第 13 条明确留在 kylab 侧 → Agent 域",
     "app.services.site_icons": "api 侧的 `app.api.v1.site_icons` 本来就在 Agent 名单里，"
@@ -899,9 +893,10 @@ def build_report(root: Path, result: Scan) -> str:
         "",
         "- `core/` 按**整包**在册，方案括注只点了 8 个文件；`core/services.py`（§4 第 1 条点名的"
         "单一组合根）与 `core/storage.py`、`core/lazy_httpx.py` 都在这个前缀里。",
-        "- 尾段通配按 2026-10-08 口径改成 `skill*` / `schedule*`（方案原本写 `skills*.py` / "
-        "`schedules*.py`，收不到 `skill_blurb.py` 与 `schedule_runner.py`）；其余通配"
-        "（`memory*` / `archive*` / `conversation*` / `backup_*`）按字面收。",
+        "- 尾段通配按 2026-10-08 口径改成 `skill*`（方案原本写 `skills*.py`，收不到 `skill_blurb.py`）；其余通配"
+        "（`memory*` / `archive*` / `conversation*` / `backup_*`）按字面收。"
+        "（原先还有一条 `schedule*`：定时任务模块 2026-10-09 整块删掉，"
+        "它收的 `schedule_runner.py` 一并下线。）",
         "",
         "### 2.1 有判断成分的归属（逐条写出处）",
         "",
@@ -1099,7 +1094,7 @@ def build_report(root: Path, result: Scan) -> str:
             "`services.ingest.submit` / `services.documents.enqueue_ingest` / "
             "`services.tabular.*`），「全仓只有一处」这个量级与现状差一个数量级。"
             "它作为「**工具循环里只有一处**」是成立的。"
-            "（2026-10-08 口径把 `schedule_runner.py` 定在 Agent 侧之后，"
+            "（`schedule_runner.py` 那一处随定时任务模块 2026-10-09 整块删掉，不再计入。）",
             "它那一处也从「未认领」变成了名正言顺的第 4 个越界调用点。）",
         ]
 

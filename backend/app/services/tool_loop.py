@@ -252,8 +252,6 @@ _LABELS = {
     "run_command": "执行命令",
     "list_tables": "查看表格",
     "query_table": "查表格",
-    "schedule_task": "挂定时任务",
-    "list_scheduled_tasks": "查看定时任务",
     # 会话文件区（v0.55）：名字照旧说清"它替我做了什么"——"上传的文件"是用户此刻
     # 脑子里那个说法（他说"我传的那个文件"），比"会话文件区"更直接
     "list_conversation_files": "查看上传的文件",
@@ -1059,7 +1057,7 @@ class ToolLoop:
                 yield text_marker_step(marker.names, had_tools=bool(tools))
                 if not text:
                     # **剥空**的（不是"模型本来一个字都没吐"——那种要原样留空，
-                    # 由上层判成失败，见 ``schedule_runner`` 里"没有产出正文"那条）：
+                    # 由上层判成失败，见 `api/v1/chat.py` 里"没有产出正文"那条）：
                     # 不能交空回答——界面上是个空气泡，落库那条判断还会让整轮消失。
                     # 顶上的这句人话**也要发成增量**：收尾那条的全文与落库用的字符串
                     # 必须是同一个（Agent 关掉那条链路就是按增量拼回答的）

@@ -623,7 +623,7 @@ class ChatService:
         注入是记忆里最容易"串号"的一环，因为它是每轮都静默发生的。
 
         拼装交给 `prompt.setting_blocks`（与工具循环那条**同一批贡献者、同一个顺序**）：
-        同一次对话换个链路（`chat.agent_enabled` 一关），模型对"我是谁、对方是谁"
+        同一次对话换个链路（历史上那条"单轮检索"旧链路），模型对"我是谁、对方是谁"
         的认知不该跟着变。
 
         三块的归属与开关各不相同（§7.3）：
@@ -635,8 +635,8 @@ class ChatService:
         if self._memory is None:
             return ""
         # 记忆指导**两条链路都给**：它是"档案怎么用"，与这一轮注入了哪几份人设文件无关。
-        # 只给工具循环那条而漏掉这条，会在 `chat.agent_enabled=false` 时表现成
-        # "记忆又消失了"。
+        # 只给工具循环那条而漏掉这条，换到另一条链路（`answer_stream`，现已无入口）时会
+        # 表现成"记忆又消失了"。
         return setting_blocks(
             PromptContext(
                 persona=self._persona_texts(owner_id),

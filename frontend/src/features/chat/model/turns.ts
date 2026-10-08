@@ -584,7 +584,6 @@ const LEGACY_TOOL_KINDS: Record<string, ToolKind> = {
   read_file: 'read',
   list_tables: 'read',
   query_table: 'read',
-  list_scheduled_tasks: 'read',
   // 写入 / 产出那批（与后端 `_KIND_OVERRIDES` 同口径：导出的产物算"做出来一份东西"）
   create_knowledge_base: 'write',
   upload_document: 'write',
@@ -596,7 +595,6 @@ const LEGACY_TOOL_KINDS: Record<string, ToolKind> = {
   export_table: 'write',
   export_deck: 'write',
   ingest_artifact: 'write',
-  schedule_task: 'write',
 }
 
 /**

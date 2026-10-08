@@ -21,7 +21,7 @@ from app.core.logging import add_file_handler, log_file_for, setup_logging
 from app.core.services import get_services
 from app.core.storage import close_stores
 from app.storage.base import IMPORT_UNFINISHED_STATES
-from app.workers.local_worker import bind_local_scheduler, run_local_scheduler
+from app.workers.local_worker import bind_local_maintainer, run_local_maintainer
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +59,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     stop = asyncio.Event()
     worker_tasks: list[asyncio.Task[None]] = []
-    # **消费者只有一个**：定时任务的记录与"到点"判定都在本机库里，而"入库/回收站"
-    # 那几件收尾是知识库（NAS）自己的事，本机没有那些表。起了摄取那个消费者，表现是
-    # "进程里有个协程每隔几秒去撞一次不可用的库"，日志天天刷错却什么也做不成。
+    # **消费者只有一个**：它做的是本机库那几件只增不减的收尾（现在只有过期的用量行），
+    # 而"入库/回收站"那几件收尾是知识库（NAS）自己的事，本机没有那些表。起了摄取那个
+    # 消费者，表现是"进程里有个协程每隔几秒去撞一次不可用的库"，日志天天刷错却什么也做不成。
     # 落点与边界写在 `workers/local_worker.py` 的模块头。
     if settings.run_worker:
-        scheduler = bind_local_scheduler(services)
-        worker_tasks = [asyncio.create_task(run_local_scheduler(scheduler, stop))]
-        logger.info("已启动本机消费者（定时任务到点跑 + 本机库空闲维护）")
+        maintainer = bind_local_maintainer(services)
+        worker_tasks = [asyncio.create_task(run_local_maintainer(maintainer, stop))]
+        logger.info("已启动本机消费者（本机库空闲维护）")
     else:
-        logger.warning("KYLAB_RUN_WORKER=false：未起消费者，定时任务到点不会跑")
+        logger.warning("KYLAB_RUN_WORKER=false：未起消费者，本机库不会自动收尾")
     # R1 的"启动时看一眼"：上次旧会话导入要是被杀在半路，账在库里（状态是
     # planned/running）。**只报不重试**——重跑是用户的决定（来源可能都不在了），
     # 而"重跑同一个来源就接着往下走"这条承诺由会话级幂等兜着（见 services/legacy_import.py）。

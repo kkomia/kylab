@@ -43,7 +43,6 @@
  *
  * 由 `BrowserRouter` 之内渲染（`useLocation` / `Link` / `Outlet` 都依赖路由上下文）。
  */
-import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Outlet, useLocation } from 'react-router'
 
@@ -51,22 +50,10 @@ import { initTheme } from '@/features/misc/settings/useTheme'
 import { clearSessionToken, useSessionStore } from '@/lib/session'
 
 import { ConversationHistoryPanel } from './ConversationHistoryPanel'
-import { onIdle, prewarmMisc } from '@/features/misc/prewarm'
 import { SideNav } from './SideNav'
 import { resolveSidebarWidth, useSidebar } from './useSidebar'
 
 export function AppShell({ children }: { children?: React.ReactNode }) {
-  const queryClient = useQueryClient()
-
-  // 启动后**空闲预热**：任务列表（旧 `SideNav.vue` 的 idle 预热口径）。
-  // 每个 client 只做一次（`useRef` 挡 StrictMode 的二次挂载）。
-  const prewarmed = useRef(false)
-  useEffect(() => {
-    if (prewarmed.current) return
-    prewarmed.current = true
-    onIdle(() => prewarmMisc(queryClient))
-  }, [queryClient])
-
   const location = useLocation()
   const { collapsed } = useSidebar()
   const reloginCount = useSessionStore((state) => state.reloginCount)

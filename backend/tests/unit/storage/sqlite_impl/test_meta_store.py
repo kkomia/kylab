@@ -49,7 +49,6 @@ from app.storage.base import (
     NoteFolderRecord,
     NoteRecord,
     RegisteredModelRecord,
-    ScheduledTaskRecord,
     SessionEventRecord,
     SnapshotSource,
     UsageEventRecord,
@@ -142,7 +141,9 @@ def test_store_covers_exactly_the_local_method_set() -> None:
         | set(LOCAL_BACKUP_METHODS)
         | set(LOCAL_ERASER_METHODS)
     )
-    assert len(LOCAL_METHODS) == 81
+    # 2026-10-09：定时任务模块整块删掉，``LOCAL_METHODS`` 从 81 降到 73
+    # ——那 8 个 schedule 方法随 ``ScheduleRepo`` 协议一起删了（表还留着，见 `test_schema`）。
+    assert len(LOCAL_METHODS) == 73
     assert len(LOCAL_LEDGER_METHODS) == 8
     assert len(LOCAL_CACHE_METHODS) == 6
     assert len(LOCAL_SNAPSHOT_METHODS) == 4
@@ -310,7 +311,6 @@ RECORD_TABLES: tuple[tuple[type, str, frozenset[str], frozenset[str]], ...] = (
     (NoteRecord, "notes", frozenset(), frozenset({"tags"})),
     (NoteFolderRecord, "note_folders", frozenset(), frozenset()),
     (WorkspaceRecord, "workspaces", frozenset(), frozenset()),
-    (ScheduledTaskRecord, "scheduled_tasks", frozenset(), frozenset()),
     (MCPServerRecord, "mcp_servers", frozenset(), frozenset()),
     (ModelProviderRecord, "model_providers", frozenset(), frozenset()),
     (RegisteredModelRecord, "model_registry", frozenset(), frozenset()),
@@ -830,93 +830,6 @@ def test_workspace_archive_and_update(store: SqliteMetaStore) -> None:
     store.update_workspace(before)
     renamed = store.get_workspace("w1")
     assert renamed is not None and renamed.name == "改名后的项目"
-
-
-# ------------------------------------------------------------------ 定时任务
-
-
-def _task(**overrides: object) -> ScheduledTaskRecord:
-    base: dict[str, object] = {
-        "id": "s1",
-        "name": "每天汇总",
-        "prompt": "把昨天的日志汇总一下",
-        "kind": "cron",
-        "cron": "0 9 * * *",
-    }
-    base.update(overrides)
-    return ScheduledTaskRecord(**base)  # type: ignore[arg-type]
-
-
-def test_scheduled_task_lifecycle_and_cas(store: SqliteMetaStore) -> None:
-    due_at = datetime(2026, 4, 1, 9, 0, tzinfo=UTC)
-    store.create_conversation(ConversationRecord(id="c1", title="任务跑出来的会话"))
-    store.create_scheduled_task(_task(next_run_at=due_at))
-    assert [item.id for item in store.due_scheduled_tasks(now=due_at, limit=5)] == ["s1"]
-    assert store.due_scheduled_tasks(now=due_at - timedelta(seconds=1)) == []
-
-    # CAS 认领：第一次改得到行，第二次（游标已经变了）改不到
-    assert (
-        store.arm_scheduled_task(
-            "s1",
-            expected_next_run_at=due_at,
-            next_run_at=due_at + timedelta(days=1),
-            enabled=True,
-        )
-        is True
-    )
-    assert (
-        store.arm_scheduled_task(
-            "s1",
-            expected_next_run_at=due_at,
-            next_run_at=due_at + timedelta(days=2),
-            enabled=True,
-        )
-        is False
-    )
-
-    store.finish_scheduled_run(
-        "s1", status="ok", error=None, last_run_at=due_at, conversation_id="c1"
-    )
-    record = store.get_scheduled_task("s1")
-    assert record is not None and record.run_count == 1 and record.last_status == "ok"
-    assert record.conversation_id == "c1"
-    # COALESCE：之后忘了带 conversation_id 也不会把这条边抹掉
-    store.finish_scheduled_run("s1", status="failed", error="超时", last_run_at=due_at)
-    again = store.get_scheduled_task("s1")
-    assert again is not None and again.conversation_id == "c1"
-    assert again.run_count == 2 and again.last_error == "超时"
-
-
-def test_arm_scheduled_task_can_claim_from_null(store: SqliteMetaStore) -> None:
-    """一次性任务是从 ``next_run_at = NULL`` 认领的——``=`` 会永远改不到行。"""
-    store.create_scheduled_task(_task(id="s2", kind="once", cron="", run_at=None))
-    assert (
-        store.arm_scheduled_task(
-            "s2",
-            expected_next_run_at=None,
-            next_run_at=datetime(2026, 4, 2, 9, 0, tzinfo=UTC),
-            enabled=True,
-        )
-        is True
-    )
-
-
-def test_list_scheduled_tasks_puts_finished_ones_last(store: SqliteMetaStore) -> None:
-    store.create_scheduled_task(_task(id="s_done", next_run_at=None))
-    store.create_scheduled_task(_task(id="s_soon", next_run_at=datetime(2026, 4, 1, tzinfo=UTC)))
-    store.create_scheduled_task(_task(id="s_later", next_run_at=datetime(2026, 5, 1, tzinfo=UTC)))
-    assert [item.id for item in store.list_scheduled_tasks()] == ["s_soon", "s_later", "s_done"]
-
-
-def test_update_and_delete_scheduled_task(store: SqliteMetaStore) -> None:
-    record = store.create_scheduled_task(_task())
-    record.name = "改名后的任务"
-    record.enabled = False
-    store.update_scheduled_task(record)
-    loaded = store.get_scheduled_task("s1")
-    assert loaded is not None and loaded.name == "改名后的任务" and loaded.enabled is False
-    store.delete_scheduled_task("s1")
-    assert store.get_scheduled_task("s1") is None
 
 
 # ------------------------------------------------------------------ MCP 服务

@@ -117,8 +117,6 @@ PERIPHERAL_TOOLS: frozenset[str] = frozenset(
         # 本机执行与派活
         "run_command",
         "spawn_subagent",
-        "schedule_task",
-        "list_scheduled_tasks",
         # 文件列举/搜索（读单个文件是核心：``read_file``）
         "list_files",
         "search_files",
@@ -320,9 +318,6 @@ TOOL_META: dict[str, ToolMeta] = {
     "run_command": ToolMeta(
         destructive=True, side_effect_scope="system", risk_level="high", needs_approval=True
     ),
-    # 挂定时任务：它自己不动文件，但会**在未来动手**——不并发，改天再说
-    "schedule_task": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
-    "list_scheduled_tasks": _READ,
     # ---- 会话文件区（v0.55，见 agent_tools._CONVERSATION_FILE_TOOLS）----
     # 列/读文件区是**只读**：它与 read_file 同一档（读一眼，最该和同批里别的读并发）
     "list_conversation_files": _READ,

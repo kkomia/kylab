@@ -33,7 +33,6 @@ from app.api.v1 import (
     notes,
     plugins,
     sandbox,
-    schedules,
     settings,
     site_icons,
     skills,
@@ -54,8 +53,6 @@ local_router.include_router(settings.router)
 local_router.include_router(model_registry.router)
 # 工作区是机器本地的路径
 local_router.include_router(workspaces.router)
-# 定时任务的产物是会话（会话在本机）
-local_router.include_router(schedules.router)
 # 外部 MCP 服务配置属于这台机器
 local_router.include_router(mcp_servers.router)
 # 记忆本体本来就在 `data_dir/memory`

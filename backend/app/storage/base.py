@@ -24,9 +24,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     # **只在类型检查时导入**：窄协议模块反过来要在运行时导入本模块的记录类型，
     # 真导入就成环。注解有 `from __future__ import annotations` 兜底，运行时不需要它。
-    # 只有下面这两个还被窄视图引用（其余协议照样住在 repositories.py，只是这里不点名）。
+    # 只有下面这一个还被窄视图引用（其余协议照样住在 repositories.py，只是这里不点名）。
     from app.storage.repositories import (
-        ScheduleRepo,
         SettingsRepo,
     )
 
@@ -71,7 +70,6 @@ __all__ = [
     "NoteFolderRecord",
     "ObjectStore",
     "ParseResultRecord",
-    "ScheduledTaskRecord",
     "SearchHit",
     "SessionEventRecord",
     "SnapshotArtifactRef",
@@ -206,18 +204,14 @@ class StoreBundle:
     # 它们**返回的是同一个 ``meta`` 实例**，只是按域收窄了类型：调用点依赖窄接口，
     # "这个模块需要什么"在签名里读得出来。
     #
-    # **只留真被读的那两个**（2026-10-08 清死面）：原先 22 个视图一次配齐，而生产代码
-    # 真正读过的只有下面这两个（``schedules`` 16 处、``app_settings`` 3 处）——其余二十个
-    # （knowledge_bases / documents / folders / notes / chunks / images / parse_results /
+    # **只剩这一个**（2026-10-08 清死面，2026-10-09 再减一个）：原先 22 个视图一次配齐，
+    # 而生产代码真正读过的只有 ``schedules``（16 处）与 ``app_settings``（3 处）——
+    # 定时任务模块 2026-10-09 整块删掉之后，``schedules`` 那一份也跟着没了。
+    # 要用哪个再按同一形状加回来即可：一个 ``@property`` + ``return self.meta``，
+    # 零行为、零测试改动。（另外二十个视图的名字与当时删它们的理由：
+    # knowledge_bases / documents / folders / notes / chunks / images / parse_results /
     # tasks / data_sources / webhooks / idempotency / conversations / workspaces / identity /
-    # usage / models / mcp_servers / trash / wiki / maintenance）一个生产调用点都没有，
-    # 配了就是"看着像接口，其实没人用"。要用哪个再按同一形状加回来即可：
-    # 一个 ``@property`` + ``return self.meta``，零行为、零测试改动。
-
-    @property
-    def schedules(self) -> ScheduleRepo:
-        """定时任务域视图（`meta` 的窄类型）。"""
-        return self.meta  # type: ignore[return-value]
+    # usage / models / mcp_servers / trash / wiki / maintenance——一个生产调用点都没有。）
 
     @property
     def app_settings(self) -> SettingsRepo:
@@ -779,67 +773,6 @@ class MCPServerRecord:
     """``allow`` / ``ask`` / ``deny``。默认 ``ask``：外部工具会以用户的名义执行动作。"""
     enabled: bool = True
     owner_id: str | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-@dataclass(slots=True)
-class ScheduledTaskRecord:
-    """定时任务（v0.33）：到点替用户做一件事。
-
-    见 ``docs/设计/Agent-工作区与能力层设计-v0.1.md`` §6.6。它回答的是
-    "有没有哪件事是**到点就该做**、而我不想每次自己去问一遍"——
-    每天早晨把昨天的日志汇总、每周一把上周的周报底稿准备好。
-
-    三处刻意的形状：
-
-    - **两种时间**（``kind``）：``cron`` = 反复发生（5 字段表达式，按**服务器本地时间**
-      解释），``once`` = 就跑一次（``run_at``）。不做"每 N 分钟"这种第三种形态——
-      那用 ``*/N * * * *`` 表达得出来，多一种形态只会多一处要维护的语义；
-    - **结果落进一条会话**（``conversation_id``）：每次运行都是那个会话里的一轮问答，
-      所以"上周它都跑了些什么、结论是什么"就是翻会话记录——不另造一套"运行历史"
-      的存储与界面。首次运行时才建这条会话（没跑过的任务不该先占一个会话）；
-    - ``next_run_at`` 是**调度侧唯一的游标**：它同时承担"下次什么时候跑"与
-      "这一次有没有人认领"（见 ``MetaStore.arm_scheduled_task`` 的 CAS）。
-    """
-
-    id: str
-    """``sched_<hex>``。"""
-
-    name: str
-    """给人看的名字，同时会成为那条会话的标题。"""
-
-    prompt: str
-    """到点要问的那句话（它就是每次运行的用户消息）。"""
-
-    kind: str
-    """``cron`` 或 ``once``。"""
-
-    cron: str = ""
-    """5 字段 cron 表达式（``kind='cron'`` 时有效）：分 时 日 月 周。"""
-
-    run_at: datetime | None = None
-    """一次性任务的执行时刻（``kind='once'``）。"""
-
-    next_run_at: datetime | None = None
-    """下次该跑的时刻（`timestamptz`）。``None`` = 不会再跑（已停用或一次性已跑完）。"""
-
-    enabled: bool = True
-    kb_ids: Sequence[str] = field(default_factory=tuple)
-    """运行时的检索范围。**独立于用户当时的会话**：这一步决定"它去哪儿找资料"，
-    不勾库就是一次不查资料的运行。"""
-
-    model_pk: str | None = None
-    thinking: bool | None = None
-    thinking_effort: str | None = None
-    conversation_id: str | None = None
-    owner_id: str | None = None
-    last_run_at: datetime | None = None
-    last_status: str = ""
-    """``ok`` / ``failed``，或空串（还没跑过）。"""
-
-    last_error: str = ""
-    run_count: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -2009,70 +1942,6 @@ class MetaStore(ABC):
     def delete_workspace(self, workspace_id: str) -> None:
         """删工作区。**里面的会话退回未归档**（外键是 ON DELETE SET NULL），
         不是跟着一起删——会话里有用户问过的内容，误删不可恢复。"""
-        ...
-
-    # ---- 定时任务（v0.33；见 docs/设计/Agent-工作区与能力层设计-v0.1.md §6.6）----
-    @abstractmethod
-    def create_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord: ...
-
-    @abstractmethod
-    def get_scheduled_task(self, scheduled_id: str) -> ScheduledTaskRecord | None: ...
-
-    @abstractmethod
-    def list_scheduled_tasks(self) -> list[ScheduledTaskRecord]:
-        """按"下次该跑的时间"排序（``None`` 排最后），其次按创建时间倒序。
-
-        归属过滤在服务层做（存储层不认识调用者身份），与工作区 / MCP 服务同一口径。
-        """
-        ...
-
-    @abstractmethod
-    def update_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord: ...
-
-    @abstractmethod
-    def delete_scheduled_task(self, scheduled_id: str) -> None: ...
-
-    @abstractmethod
-    def due_scheduled_tasks(self, *, now: datetime, limit: int = 10) -> list[ScheduledTaskRecord]:
-        """到点该跑的那些（``enabled`` 且 ``next_run_at <= now``），按时间正序。
-
-        **只查不算**：真正"认领"要过 :meth:`arm_scheduled_task`——
-        查与认领分成两步是有意的，认领那一步是带条件的 UPDATE（见它的说明）。
-        """
-        ...
-
-    @abstractmethod
-    def arm_scheduled_task(
-        self,
-        scheduled_id: str,
-        *,
-        expected_next_run_at: datetime | None,
-        next_run_at: datetime | None,
-        enabled: bool,
-    ) -> bool:
-        """认领一次运行：**把下次时间推到下一回**，条件是目前还停在 ``expected_next_run_at``。
-
-        返回 ``False`` = 有人先认领了（另一个 worker 或另一次扫描），这次别再跑。
-
-        为什么要 CAS 而不是"先查后写"：多个 worker 会同时扫到同一条到点的任务，
-        而"跑两次"的代价不是重复一次查询——它会重复**一次完整的问答与工具调用**
-        （真花钱），并在会话里留下两条一模一样的记录。判据只能落在一条
-        ``UPDATE ... WHERE next_run_at = 期望值`` 上（与任务队列的
-        ``FOR UPDATE SKIP LOCKED`` 同一个思路：让数据库来裁决谁先）。
-        """
-        ...
-
-    @abstractmethod
-    def finish_scheduled_run(
-        self,
-        scheduled_id: str,
-        *,
-        status: str,
-        error: str | None,
-        last_run_at: datetime,
-        conversation_id: str | None = None,
-    ) -> None:
-        """记一次运行的结果（状态 / 错误 / 时间，首次运行时把会话 id 落下来）。"""
         ...
 
     # ---- MCP 服务（v0.15）----

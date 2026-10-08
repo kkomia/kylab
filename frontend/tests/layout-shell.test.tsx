@@ -92,7 +92,6 @@ function renderShell(initialPath = '/notes') {
             <Route path="/notes" element={<div>笔记页</div>} />
             <Route path="/memory" element={<div>记忆页</div>} />
             <Route path="/capabilities" element={<div>能力页</div>} />
-            <Route path="/tasks" element={<div>定时任务页</div>} />
             <Route path="/workspaces" element={<LocationProbe />} />
             <Route path="/chat/:conversationId?" element={<LocationProbe />} />
           </Route>
@@ -123,7 +122,7 @@ describe('侧栏导航', () => {
     renderShell('/notes')
 
     const nav = await screen.findByRole('navigation', { name: '主导航' })
-    for (const label of ['笔记', '记忆', '能力', '定时任务']) {
+    for (const label of ['笔记', '记忆', '能力']) {
       expect(within(nav).getByText(label)).toBeInTheDocument()
     }
     // 当前页那一项标了 aria-current（旧版只有一个 CSS class）
@@ -134,17 +133,6 @@ describe('侧栏导航', () => {
     // 知识库那一组与它的子项都不在了（2026-10-08，见文件头）
     expect(within(nav).queryByText('知识库')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '所有知识库' })).not.toBeInTheDocument()
-  })
-
-  it('「定时任务」在主导航里指向 `/tasks`，站在那儿时点亮', async () => {
-    renderShell('/tasks')
-
-    const nav = await screen.findByRole('navigation', { name: '主导航' })
-    const tasks = within(nav).getByRole('link', { name: '定时任务' })
-    expect(tasks).toHaveAttribute('href', '/tasks')
-    expect(tasks).toHaveAttribute('aria-current', 'page')
-    // 其余几项都不点亮（当前项整栏只有一种样子）
-    expect(within(nav).getByRole('link', { name: '笔记' })).not.toHaveAttribute('aria-current')
   })
 
   it('能力页在主导航里有归属：当前项标 aria-current 并带选中底', async () => {
@@ -430,17 +418,5 @@ describe('历史会话面板的开合', () => {
     await user.click(screen.getByRole('link', { name: '记忆' }))
     await waitFor(() => expect(screen.getByText('记忆页')).toBeInTheDocument())
     expect(screen.queryByRole('dialog', { name: '历史会话' })).not.toBeInTheDocument()
-  })
-})
-
-describe('启动后空闲预热（旧 SideNav 的 idle 预热口径）', () => {
-  it('挂载后在空闲时预热任务列表', async () => {
-    const prewarm = vi.spyOn(await import('@/features/misc/prewarm'), 'prewarmMisc')
-    renderShell('/notes')
-
-    // `onIdle` 在 jsdom 里退化成 `setTimeout(0)`：等它跑
-    await waitFor(() => expect(prewarm).toHaveBeenCalledTimes(1))
-
-    prewarm.mockRestore()
   })
 })

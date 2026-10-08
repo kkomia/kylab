@@ -68,7 +68,6 @@ import { AppShell } from '@/features/layout'
 const ChatPage = lazy(PAGES.chat)
 const NotesView = lazy(PAGES.notes)
 const BackupPage = lazy(PAGES.backup)
-const TasksPage = lazy(PAGES.tasks)
 const MemoryPage = lazy(PAGES.memory)
 const CapabilitiesPage = lazy(PAGES.capabilities)
 const NotFoundPage = lazy(PAGES.notFound)
@@ -113,7 +112,6 @@ const TITLES: Array<[RegExp, string]> = [
   // 落地之后匹配到的就是下面这条「对话」。
   [/^\/chat/, '对话'],
   [/^\/notes/, '笔记'],
-  [/^\/tasks/, '定时任务'],
   [/^\/memory/, '记忆'],
   [/^\/capabilities/, '能力'],
   [/^\/backup/, '备份'],
@@ -239,7 +237,6 @@ export function App() {
               <Route element={<AppShell />}>
                 <Route path="/chat/:conversationId?" element={<ChatPage />} />
                 <Route path="/notes/:noteId?" element={<NotesView />} />
-                <Route path="/tasks" element={<TasksPage />} />
                 <Route path="/memory" element={<MemoryPage />} />
                 <Route path="/capabilities" element={<CapabilitiesPage />} />
                 {/*

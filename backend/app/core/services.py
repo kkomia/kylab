@@ -70,8 +70,6 @@ from app.services.notes import NotesService
 from app.services.plugins import PluginService
 from app.services.rerank import RerankProvider, build_reranker
 from app.services.runtime_config import RuntimeConfigService
-from app.services.schedule_runner import run_scheduled_task
-from app.services.schedules import ScheduleService
 from app.services.secrets import SecretStore, platform_store
 from app.services.skill_blurb import SkillBlurbService
 from app.services.skill_market import SkillMarketService
@@ -170,10 +168,6 @@ class Services:
 
     mcp: MCPClientService
 
-    schedules: ScheduleService
-    """定时任务（v0.33）：到点替用户跑一轮问答。
-
-    执行体见 ``services/schedule_runner.py``。"""
     """长期记忆的门面（设计见 `docs/设计/记忆档案-设计-v0.1.md`）。
 
     一份四区档案（`PROFILE.md`）+ 变更流；写入三条路，其中隐式捕获默认关。"""
@@ -527,9 +521,6 @@ def _build_graph(
     plugins_service = PluginService(resolved.data_dir, bundle)
     # MCP 客户端（v0.15）：连外部 MCP 服务，是「插件能力」的落点
     mcp_service = MCPClientService(bundle)
-    # 定时任务（v0.33）：只做"到点入队"，跑问答的那一步在 schedule_runner 里
-    # （它要一整套 Services，而这里还没有那个对象——见下面那个"槽"）
-    schedule_service = ScheduleService(bundle)
     # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
     usage = UsageService(bundle)
 
@@ -733,14 +724,6 @@ def _build_graph(
         token=resolved.token or "",
     )
 
-    # 定时任务的执行体需要一个**装配好的 Services**（工具表、执行器、会话……都从它上面取），
-    # 而 Services 要到这一行之下才存在。用一格可变的"槽"接住它：回调在应用起来之后
-    # 才会被调用，那时槽里一定有值（不是懒加载的托词——这条链路上没有第二个时机）。
-    runner_slot: list[Services] = []
-
-    def _run_scheduled(scheduled_id: str) -> str:
-        return run_scheduled_task(runner_slot[0], scheduled_id)
-
     kb = KbServices(
         api_keys=ApiKeyService(),
         ingest=ingest_gateway,
@@ -776,7 +759,6 @@ def _build_graph(
         plugins=plugins_service,
         commands=commands_service,
         mcp=mcp_service,
-        schedules=schedule_service,
         # **进程级那一个提供者实例**：上面建的 `provider` 直接挂在这里。
         # 挂它的理由与用途见字段说明——一句话是"让全进程只有一份握手缓存"，
         # 而 `/local/provider`（判定源）与边车的工具表门控都从它取。
@@ -794,9 +776,6 @@ def _build_graph(
         credentials=credentials,
         kb=kb,
     )
-    # 槽里放进刚装好的这一份：定时任务的执行体从这一刻起可用
-    # （`_run_scheduled` 在调度器领到到点的任务时被调用，那时这里早已填上）
-    runner_slot.append(services)
     # 登记它那一个**守护线程**（见 `_BACKUP_QUEUES` 的说明）：`reset_services`
     # 要把"这份服务图被扔掉了"这件事对线程也说到，否则它会继续碰旧的数据目录。
     _BACKUP_QUEUES.append(backup_queue)

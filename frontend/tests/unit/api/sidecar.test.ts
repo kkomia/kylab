@@ -97,9 +97,8 @@ describe('① 前缀表：判定只有一处', () => {
       '/settings',
       '/model-registry',
       '/workspaces',
-      // 方案原文写的是 `/schedules`，实际端点前缀是 `/scheduled-tasks`
-      // （`api/v1/router.py` 里 `schedules.router` 的 prefix）——写实的那一个
-      '/scheduled-tasks',
+      // 2026-10-09：原先这里还有一条 `/scheduled-tasks`（定时任务那一族）——
+      // 那个模块整块删掉了，表里也随之去掉（见 `api/sidecar.ts` 的说明）
       '/mcp-servers',
       '/memory',
       '/chat/context-usage',

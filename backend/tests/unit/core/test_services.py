@@ -24,7 +24,6 @@ _EXPECTED = (
     "skill_sources",
     "plugins",
     "mcp",
-    "schedules",
     "runtime",
     "models",
     "usage",
@@ -96,8 +95,8 @@ def test_build_services_is_pure_wiring_when_stores_are_given(bundle) -> None:  #
 def test_the_worker_is_not_a_task_worker(bundle) -> None:  # type: ignore[no-untyped-def]
     """**组合根不再造队列消费者**：摄取那条流水线是知识库那边的家当。
 
-    本机消费者是 `workers/local_worker.py` 的调度器（由 `main.py` 的 lifespan 拉起
-    并 bind 到 `services.schedules`），它不进 `Services`——它没有"认领任务"这件事。
+    本机消费者是 `workers/local_worker.py` 的维护器（由 `main.py` 的 lifespan 拉起，
+    定时任务那一半 2026-10-09 已删），它不进 `Services`——它没有"认领任务"这件事。
     """
     services = build_services(stores=bundle)
 

@@ -1,17 +1,17 @@
-"""按域切开的仓储**窄协议**（strangler 的第二步：183 个方法全部切开）。
+"""按域切开的仓储**窄协议**（strangler 的第二步：175 个方法全部切开）。
 
-`MetaStore` 有 183 个方法、实现三千多行。问题不在行数，而在**接口本身**：
+`MetaStore` 有 175 个方法、实现三千多行。问题不在行数，而在**接口本身**：
 ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那个接口"——
 "这个模块到底需要什么"在签名里读不出来，拆分也被接口锁死。
 
 `StoreBundle` 把**同一个实例**按域再暴露一次：
 
-    stores.schedules.list_scheduled_tasks()   # 只依赖定时任务域
     stores.meta.get_setting(...)              # 老路径照旧，零改动
 
 于是新代码可以依赖窄接口，老代码不动；等各域的调用点都迁过去，再谈拆实现。
-（**视图形状照旧，但只留真被读的那两个**——2026-10-08 清死面时把二十个零读者的
-视图删了，见 ``base.py::StoreBundle`` 那段说明。）
+（**视图形状照旧，但只留真被读的那个**——2026-10-08 清死面时把二十个零读者的
+视图删了，2026-10-09 定时任务下线又减掉 ``schedules``，现在只剩 ``app_settings``；
+见 ``base.py::StoreBundle`` 那段说明。）
 
 **协议是结构化的**（``typing.Protocol``）：``SqliteMetaStore`` 天然满足本机域那几个，
 不需要显式继承——这正是"渐进替换"能成立的前提。
@@ -23,10 +23,14 @@ ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那
 （拆到 `ConversationRepo`）、存储维护混在知识库节里（拆出 `MaintenanceRepo`）、
 阶段事件的读与清理分归两个域（读在文档、清理在维护）。
 
-**21 个协议、183 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
+**20 个协议、175 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
 某处切漏了）。签名逐字取自 ABC。**注意**：这三个数字是**手工维护**的——原先有一份
 ``tests/unit/storage/test_repositories.py`` 机械核对它们，那份文件已不在仓库里，
 动接口时记得自己再过一遍。
+
+（2026-10-09 定时任务下线时就是按上面那句重数的：删 ``ScheduleRepo`` 前后各量一次，
+``MetaStore.__abstractmethods__`` 183 → 175、本文件 21 → 20 个协议、``len(LOCAL_METHODS)``
+81 → 73。差的正是那 8 个方法、1 个协议。）
 """
 
 from __future__ import annotations
@@ -56,7 +60,6 @@ from app.storage.base import (
     NoteRecord,
     ParseResultRecord,
     RegisteredModelRecord,
-    ScheduledTaskRecord,
     SessionEventRecord,
     TaskCounts,
     TaskRecord,
@@ -83,7 +86,6 @@ __all__ = [
     "ModelRegistryRepo",
     "NoteRepo",
     "ParseResultRepo",
-    "ScheduleRepo",
     "SettingsRepo",
     "TaskQueueRepo",
     "TrashRepo",
@@ -601,48 +603,6 @@ class WorkspaceRepo(Protocol):
     def set_workspace_archived(self, workspace_id: str, archived: bool) -> None: ...
 
     def delete_workspace(self, workspace_id: str) -> None: ...
-
-
-@runtime_checkable
-class ScheduleRepo(Protocol):
-    """定时任务域（v0.33）：到点自动跑一轮问答的那些事。
-
-    调度状态（``next_run_at`` / ``enabled`` / ``last_*``）与任务本体放在同一个域：
-    它们由同一个动作改写（"认领一次运行"），拆成两个域会让那次 CAS 变成跨域的两步。
-    """
-
-    def create_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord: ...
-
-    def get_scheduled_task(self, scheduled_id: str) -> ScheduledTaskRecord | None: ...
-
-    def list_scheduled_tasks(self) -> list[ScheduledTaskRecord]: ...
-
-    def update_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord: ...
-
-    def delete_scheduled_task(self, scheduled_id: str) -> None: ...
-
-    def due_scheduled_tasks(
-        self, *, now: datetime, limit: int = 10
-    ) -> list[ScheduledTaskRecord]: ...
-
-    def arm_scheduled_task(
-        self,
-        scheduled_id: str,
-        *,
-        expected_next_run_at: datetime | None,
-        next_run_at: datetime | None,
-        enabled: bool,
-    ) -> bool: ...
-
-    def finish_scheduled_run(
-        self,
-        scheduled_id: str,
-        *,
-        status: str,
-        error: str | None,
-        last_run_at: datetime,
-        conversation_id: str | None = None,
-    ) -> None: ...
 
 
 @runtime_checkable

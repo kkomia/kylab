@@ -140,11 +140,6 @@ SETTING_GROUPS: dict[str, Any] = {
         "fields": [
             {"key": "chat.top_k", "label": "带入资料的条数", "type": "int"},
             {
-                "key": "chat.agent_enabled",
-                "label": "启用工具循环",
-                "type": "bool",
-            },
-            {
                 "key": "chat.mode",
                 "label": "任务模式（目标 / 计划）",
                 "type": "select",
@@ -341,10 +336,12 @@ DEFAULTS: dict[str, str] = {
     "llm.enable_thinking": "true",
     "llm.thinking_effort": "medium",
     "chat.top_k": "6",
-    # 对话主流程（见 services/tool_loop.py）：默认走工具循环，知识库检索、联网、
-    # Office 导出、子 Agent 都是其中的工具。关掉就退回"原问题单轮检索"的旧路径
-    # （services/chat.py::answer_stream）——那条路径还在，用于排查与省钱。
-    "chat.agent_enabled": "true",
+    # 对话主流程**只有工具循环一条**（见 services/tool_loop.py）：知识库检索、联网、
+    # Office 导出、子 Agent 都是其中的工具。
+    # 2026-10-09：原先这里还有一条 `chat.agent_enabled`（关掉退回"原问题单轮检索"那条
+    # 旧路径）——它**唯一的读者**是 `services/schedule_runner.py`（定时任务跑一轮之前先
+    # 看它开没开），而定时任务模块这一轮整块删掉了，于是这个旋钮零读者、被删掉。
+    # `services/chat.py::answer_stream` 那条旧链路因此**没有入口**了（见那份文件里的说明）。
     # 任务模式两档（2026-09-27 由四档收敛而来，见 services/modes.py 的模块头）。
     # **默认 goal**：直接干活；"要不要先给计划"是用户的活法偏好，而默认该是能干活的那个。
     "chat.mode": modes.DEFAULT_MODE,

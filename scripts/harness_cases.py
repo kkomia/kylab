@@ -160,12 +160,6 @@ CASES: tuple[Case, ...] = (
         ),
     ),
     Case(
-        id="A-01",
-        why="定时任务（应当唤起定时/计划类工具而不是只嘴上答应）",
-        prompts=("每天早上 8 点给我生成一份 AI 资讯简报。",),
-        checks=(("调过计划类工具", _has_tool("schedule_task")), ("无错误", _no_error)),
-    ),
-    Case(
         id="Q-01",
         why="显式记忆写入（应当有记忆类工具调用）",
         prompts=("记住我喜欢简洁的回答风格。",),

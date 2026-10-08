@@ -125,7 +125,7 @@ from app.services.mcp_client import split_qualified
 from app.services.remote_clients import RemoteClientError
 from app.services.runtime_config import RuntimeConfigService
 from app.services.tool_loop import ToolLoop
-from app.workers.local_worker import bind_local_scheduler, run_local_scheduler
+from app.workers.local_worker import bind_local_maintainer, run_local_maintainer
 
 logger = logging.getLogger(__name__)
 
@@ -1227,17 +1227,15 @@ def _lifespan(clients: Clients) -> Any:
     """边车进程的生命周期（2026-10-04 起有内容：**本机消费者**）。
 
     与 `app/main.py` 的 lifespan 同一件事、同一把开关（`KYLAB_RUN_WORKER`）：
-    起那个消费者——定时任务到点跑 + 本机库空闲维护，落点与安全边界写在
+    起那个消费者——本机库的空闲维护（唯一一件是过期的用量行），落点与安全边界写在
     `workers/local_worker.py` 的模块头。
 
     **为什么这里也要起一份**：桌面壳起的是**这个进程**
-    （`python -m app.sidecar`，见 `desktop/src-tauri/src/sidecar.rs`），而界面打的
-    `/api/v1/scheduled-tasks*` 就是打在它上面的。不在这儿起，"到点跑"在本机永远不会
-    发生，而 `POST /scheduled-tasks/{id}/run` 会撞上 NAS 的队列表（本机档没有那张表）
-    ——那正是"摆出来的端点点不通"那条老毛病。
+    （`python -m app.sidecar`，见 `desktop/src-tauri/src/sidecar.rs`）——
+    不在这儿起，本机库那些只增不减的表就没人收。
 
-    两个进程同时起来也只会跑一遍：认领是一次 CAS（`MetaStore.arm_scheduled_task`），
-    第二个人要么认领失败，要么在下一轮看到 `next_run_at` 已经推到下一个周期。
+    2026-10-09：定时任务那一半（到点判定 + 就地跑一轮）随定时任务模块整块删掉，
+    这一份现在只剩维护循环（见 `local_worker.py` 的文件头）。
 
     **摄取那条消费者不在这里**：它领的活全在 NAS 上（队列表 / 文档 / 切块 / 向量），
     本机起了只会每隔几秒撞一次不可用的库（M2 §4.1 那条结论对**它**仍然成立）。
@@ -1248,11 +1246,11 @@ def _lifespan(clients: Clients) -> Any:
         stop = asyncio.Event()
         tasks: list[asyncio.Task[None]] = []
         if get_settings().run_worker:
-            scheduler = bind_local_scheduler(clients.services)
-            tasks = [asyncio.create_task(run_local_scheduler(scheduler, stop))]
-            logger.info("边车：已启动本机消费者（定时任务到点跑 + 本机库空闲维护）")
+            maintainer = bind_local_maintainer(clients.services)
+            tasks = [asyncio.create_task(run_local_maintainer(maintainer, stop))]
+            logger.info("边车：已启动本机消费者（本机库空闲维护）")
         else:
-            logger.warning("KYLAB_RUN_WORKER=false：边车未起消费者，定时任务到点不会跑")
+            logger.warning("KYLAB_RUN_WORKER=false：边车未起消费者，本机库不会自动收尾")
         try:
             yield
         finally:
