@@ -116,9 +116,6 @@ class ChatSourceOut(BaseModel):
     page: int | None = None
     score: float = 0.0
     preview: str = ""
-    #: 出处所属知识库，界面用它把引用直连到库页抽屉。
-    #: 默认空串：历史会话里存的快照没有这个字段，读出来要能兼容。
-    knowledge_base_id: str = ""
     #: 这篇文档的摘要（v25）。**它进了提示词**（每条资料后面跟一行"文档背景"，
     #: 同一篇只带一次），在这里回给前端是为了**可核对**：用户能看见模型
     #: 到底拿到了什么背景，而不是只能猜"它为什么这么答"。
@@ -136,12 +133,8 @@ class ChatSourceOut(BaseModel):
 
 class ConversationCreateIn(BaseModel):
     title: str = Field(default="", max_length=64)
-    kb_ids: list[str] = Field(default_factory=list)
     workspace_id: str | None = None
-    """挂到哪个工作区（v0.15）。``None`` = 未归档。
-
-    传了工作区而 ``kb_ids`` 留空时，**知识库范围继承工作区的**（见设计文档 §5）：
-    "进入项目，资料范围就定了"——用户不必每次重勾一遍。"""
+    """挂到哪个工作区（v0.15）。``None`` = 未归档。"""
     model_pk: str | None = None
     """本条会话选用的对话模型（v12）。``None`` = 跟随全局默认。"""
     thinking: bool | None = None
@@ -203,7 +196,6 @@ class ConversationOut(BaseModel):
 
     id: str
     title: str
-    kb_ids: list[str] = Field(default_factory=list)
     model_pk: str | None = None
     """本条会话选用的对话模型（v12）；``None`` = 全局默认。界面据此回填模型选择器。"""
     thinking: bool | None = None
@@ -763,10 +755,6 @@ class NoteFolderListOut(BaseModel):
     total_count: int = 0
 
 
-class NoteAttachIn(BaseModel):
-    kb_id: str = Field(min_length=1)
-
-
 class NoteOut(BaseModel):
     model_config = _RECORD_CONFIG
 
@@ -903,9 +891,6 @@ class WorkspaceCreateIn(BaseModel):
     """根目录的绝对路径（或带 ``~``）。服务端校验：存在、是目录、
     不是文件系统根、不指向数据目录。"""
     description: str = Field(default="", max_length=500)
-    kb_ids: list[str] = Field(default_factory=list)
-    """这个工作区绑定的知识库（"知识库与 Agent 天生融合"的落点）。
-    新会话默认继承它们，所以用户不必每开一次会话重勾一遍。"""
 
 
 class WorkspaceUpdateIn(BaseModel):
@@ -914,7 +899,6 @@ class WorkspaceUpdateIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     root_path: str | None = Field(default=None, min_length=1, max_length=1000)
     description: str | None = Field(default=None, max_length=500)
-    kb_ids: list[str] | None = None
     archived: bool | None = None
     """归档 / 取消归档（v0.55）。**不是删除**：里面的会话与内容都还在。
     与会话那条同一口径（`ConversationUpdateIn.archived`）。"""
@@ -927,7 +911,6 @@ class WorkspaceOut(BaseModel):
     name: str
     root_path: str
     description: str = ""
-    kb_ids: list[str] = Field(default_factory=list)
     conversation_count: int = 0
     """这个工作区下的会话数。侧栏每个工作区后面那个数字。"""
     created_at: datetime | None = None

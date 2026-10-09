@@ -571,7 +571,8 @@ def test_rename_refuses_a_workspace_root(client: TestClient) -> None:
 # 后者（`api/auth.py::check_access`）由 `tests/integration/api/test_auth_api.py` 覆盖。
 
 
-def test_workspace_binds_knowledge_bases(client: TestClient, tmp_path: Path) -> None:
+def test_workspace_does_not_carry_a_library_scope(client: TestClient, tmp_path: Path) -> None:
+    """工作区不再绑知识库：`kb_ids` 这一位随产品退场，请求里带它也只被忽略。"""
     folder = tmp_path / "proj2"
     folder.mkdir()
 
@@ -580,19 +581,12 @@ def test_workspace_binds_knowledge_bases(client: TestClient, tmp_path: Path) -> 
         json={"name": "带库的", "root_path": str(folder), "kb_ids": [KB_ID]},
     ).json()
 
-    assert workspace["kb_ids"] == [KB_ID]
+    assert "kb_ids" not in workspace
+    assert workspace["name"] == "带库的"
 
 
-def test_conversation_inherits_the_workspace_knowledge_bases(
-    client: TestClient, tmp_path: Path
-) -> None:
-    """**"知识库与 Agent 天生融合"落到行为上的样子**：进入项目，资料范围就定了。
-
-    ``kb_ids`` 留空时继承工作区的库——这是用户不必每开一次会话重勾一遍的原因。
-
-    库 id 用占位值（`KB_ID`）：本机档没有知识库（KB 在 NAS 上），而两处都只把它当
-    **一串 id**——这一条要验的是"继承"，不是"这个库在不在"。
-    """
+def test_conversation_can_be_created_inside_a_workspace(client: TestClient, tmp_path: Path) -> None:
+    """进入项目建会话：会话挂在这条工作区上（资料范围那一维已随产品退场）。"""
     folder = tmp_path / "proj3"
     folder.mkdir()
     workspace = client.post(
@@ -605,7 +599,7 @@ def test_conversation_inherits_the_workspace_knowledge_bases(
     ).json()
 
     assert conversation["workspace_id"] == workspace["id"]
-    assert conversation["kb_ids"] == [KB_ID]
+    assert "kb_ids" not in conversation
 
 
 def test_deleting_a_workspace_keeps_its_conversations(client: TestClient, tmp_path: Path) -> None:

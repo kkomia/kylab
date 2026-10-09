@@ -1,16 +1,13 @@
 """Agent 的工具集：给模型看的规格 + 执行器（P0）。
 
 与 `app/services/tools.py` 的关系是**同一份实现、两个门**：对外 MCP 客户端调
-`call_tool`，对内由 `services/tool_loop.py` 调这里的 runner。所以"知识库降级成一个工具"
-几乎是免费的——`search` 早就是那 13 个工具之一，只是以前的对话循环没走它。
+`call_tool`，对内由 `services/tool_loop.py` 调这里的 runner。
 
 这个模块里只有三类是内部门特有的：
 
 1. **技能工具**（`list_skills` / `read_skill`）：它们是"读自己身上的说明书"，
    对外部 MCP 客户端没有意义（那个客户端自己就是 agent）。
-2. **检索要收在会话选定的库范围内**（见 `build_runner`）：知识库不再是回答的框架，
-   但"这一轮允许查哪些库"仍然要说清楚——否则关掉开关之后，模型一句
-   `search` 就能把库全查了，那个开关就成了摆设。
+2. **本机能力工具**（文件 / 执行 / 会话文件区，见 ``_LOCAL_TOOLS``）。
 3. **外部 MCP 服务暴露的工具**（v0.20）：用户在能力页接进来的服务，它们的工具
    一并进这张表（名字带 `mcp__<服务>__<工具>` 前缀），所以模型能像用内置工具
    一样用它们。**准入策略在调用那一刻判**，见 ``_call_mcp``。
@@ -23,13 +20,11 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from app.core.caller import WRITE, Caller
+from app.core.caller import Caller
 from app.core.exceptions import KylabError
 from app.core.logging import sanitize_log_value
 from app.services import isolation as isolation_service
@@ -43,12 +38,10 @@ from app.services.agent_files import (
     list_files,
     looks_binary_bytes,
     looks_binary_name,
-    read_bytes,
     read_file,
     resolve_roots,
     search_files,
 )
-from app.services.chat import SourceRef
 from app.services.command_policy import (
     ACTION_ALLOW,
     ACTION_DENY,
@@ -60,7 +53,7 @@ from app.services.mcp_client import normalized_server_name, split_qualified
 from app.services.memory import render_items
 from app.services.skills import recombine_surrogates, text_problem
 from app.services.tool_loop import ToolOutcome, ToolRunner
-from app.services.tools import ARTIFACT_KEY, MAX_UPLOAD_BYTES, call_tool, tool_definitions
+from app.services.tools import ARTIFACT_KEY, call_tool, tool_definitions
 
 __all__ = ["build_runner", "tool_specs"]
 
@@ -169,9 +162,7 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
             "接着读用 offset。压缩包 / 图片 / Office 读不出文本，出路按这个顺序："
             "**① 压缩包先用 `run_command` 解开**（`unzip -o 包 -d 临时目录`）"
             "**再读解压出来的文件**；"
-            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l` 看元信息；"
-            "**③ 只有在用户明确要求把这份材料收进知识库时**才用 `ingest_file` —— "
-            "别把知识库当「读不了时的迂回手段」，那是替用户做决定。"
+            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l` 看元信息。"
         ),
         "inputSchema": {
             "type": "object",
@@ -266,9 +257,7 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
             "图片 / PDF / Office 这类二进制读不出文本，出路按这个顺序："
             "**① 压缩包先用 `run_command` 解开**（`unzip -o 包 -d 临时目录`）"
             "**再读里面的文件**；"
-            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l`；"
-            "**③ 只有在用户明确要求时**才用 `ingest_file` 加进知识库，"
-            "切块完成后再 `search` 检索它。"
+            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l`。"
         ),
         "inputSchema": {
             "type": "object",
@@ -294,41 +283,7 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["key"],
         },
     },
-    {
-        "name": "ingest_file",
-        "description": (
-            "把**会话里已经有的一份文件**加进知识库（对方上传的、或你自己产出的都算）。"
-            "`path` 给 `list_conversation_files` 的 key，或工作区/沙箱里的相对路径"
-            "（后者可用 `where` 指定哪个根）。入库是异步的：返回 document_id 之后"
-            "还要等那边处理完才能被 `search` 检索到。"
-            "**图片 / PDF / Office 这类读不出文本的文件，看内容就只有这一条路。**"
-            "大文件也走这个（`upload_document` 要把内容写成 base64 放进参数，只适合很小的文本）。"
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "knowledge_base_id": {"type": "string"},
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "文件区的 key（list_conversation_files），或工作区/沙箱里的相对路径"
-                    ),
-                },
-                "where": {
-                    "type": "string",
-                    "enum": ["workspace", "sandbox"],
-                    "description": "按本机路径找时用哪个根；留空 = 有工作区就用工作区",
-                },
-            },
-            "required": ["knowledge_base_id", "path"],
-        },
-    },
 )
-
-#: 这些工具**同样属于知识库那一侧**：关掉知识库开关时它们一起消失。
-#: 判据是"数据从哪来"——表格副本就是入库文档的产物，用户关掉知识库时
-#: 不该还留一条按 SQL 读库里内容的近路（与 ``_KB_TOOLS`` 同一条纪律）。
-_LOCAL_KB_TOOLS = frozenset({"ingest_file"})
 
 #: 文件三件事：一趟走 ``agent_files`` 的那三个函数（它们共用"两个根"的解析）。
 _FILE_TOOLS = frozenset({"list_files", "read_file", "search_files"})
@@ -343,8 +298,7 @@ _CONVERSATION_FILE_TOOLS = frozenset({"list_conversation_files", "read_conversat
 #: 记忆**关着时不该出现在工具表里**的工具。
 #:
 #: - ``recall``：关着时它会明确报"未启用长期记忆"（关的正是注入与 recall 这一对），
-#:   而"给了又拒"正是知识库那一侧已经修过的坑（见 ``_KB_TOOLS``——模型会先试一次、
-#:   再拿一句错误，白花一个来回）。
+#:   而"给了又拒"只会让模型先试一次、再拿一句错误，白花一个来回。
 #:
 #: **其余三件都不看这个开关**：``remember`` / ``forget`` 写的是记忆库（"关了也能改
 #: 自己的东西"），``read_memory`` 读的也是它。
@@ -391,29 +345,13 @@ def _memory_on(services: Any) -> bool:
     return bool(memory.enabled)
 
 
-#: **知识库这一侧**的工具（v0.27）。
-#:
-#: 用户把会话上的知识库开关关掉时（这一轮的 ``kb_ids`` 为空），这些工具
-#: **一个都不出现在工具表里**。改之前只是"检索会被拒绝"——工具照给，
-#: 于是模型每轮都先问一句"有哪些库"、再 `search` 一次，拿到一句
-#: "这一轮没有可查的知识库"，两个来回就这么花掉了
-#: （用户报的现象："没开知识库，但每轮都去知识库检索"）。
+#: **知识库这一侧**的工具（v0.27）——**整族已随知识库产品退场**，这里不再有名字。
 #:
 #: 边界**只画在知识库上**：记忆（`recall` / `remember`）与笔记（`create_note` /
 #: `list_notes`）不属于这一侧——用户点名说过"这里的知识库不包括 agent 记忆"。
-#: 而"把笔记加入知识库"（`attach_note_to_kb`）**算**这一侧：它动的是知识库。
-_KB_TOOLS = frozenset(
-    {
-        "search",
-        "upload_document",
-        "attach_note_to_kb",
-    }
-)
 
 
-def tool_specs(
-    services: Any = None, *, owner_id: str | None = None, kb_ids: Sequence[str] | None = None
-) -> list[ToolSpec]:
+def tool_specs(services: Any = None, *, owner_id: str | None = None) -> list[ToolSpec]:
     """**完整**工具表（核心 + 外围 + 发现通道）。
 
     ⚠️ 对话那条链路**不要直接用它**：完整表意味着外围工具也每轮常驻，等于没做暴露分层。
@@ -421,7 +359,7 @@ def tool_specs(
     保留这一个的原因：外部 MCP 客户端、定时任务、脚本与用例那条路上**没有发现通道**，
     给它们一张"看得见就能调"的完整表才不是把工具藏起来。
     """
-    specs = _all_specs(services, owner_id=owner_id, kb_ids=kb_ids)
+    specs = _all_specs(services, owner_id=owner_id)
     skills, skills_listed = _skill_counts(services)
     specs.extend(
         _exposure_specs(
@@ -436,9 +374,7 @@ def tool_specs(
     return specs
 
 
-def _all_specs(
-    services: Any = None, *, owner_id: str | None = None, kb_ids: Sequence[str] | None = None
-) -> list[ToolSpec]:
+def _all_specs(services: Any = None, *, owner_id: str | None = None) -> list[ToolSpec]:
     """不分暴露档的完整清单（除发现通道本身）。**装配点只有这一处**（见模块头六段顺序）。
 
     顺序：内置 → 技能 → 本机能力 → 记忆 → 外部 MCP。
@@ -451,26 +387,18 @@ def _all_specs(
       "别人登记的 MCP 服务在我的对话里被调起来"。
       外部那一段走**缓存**（见 ``MCPClientService.cached_tools``），
       所以这句话不便宜但也不贵：它是每轮一次的内存查找，不是每轮一次握手。
-
-    ``kb_ids`` 是**这一轮允许查的库**（会话上选的那些）。为空 = 用户关掉了
-    知识库开关，那就**别把知识库那一侧的工具摆给它**（见 ``_KB_TOOLS``）——
-    给了又拒，只会白花两个来回（模型先看一眼有哪些库，再检索一次被拒）。
-    **不传**（None）按"没有知识库"处理：与 ``build_runner`` 同一口径——
-    没有范围就是查不了，那么工具表里也不该有它。
     """
-    scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
     memory_on = _memory_on(services)
     specs = [
         ToolSpec(
             name=item["name"],
             description=str(item.get("description") or ""),
             # MCP 叫 inputSchema，OpenAI 叫 parameters——同一个东西，这里翻一次名
-            parameters=_dialogue_parameters(item),
+            parameters=item.get("inputSchema") or {"type": "object", "properties": {}},
         )
         for item in tool_definitions()
-        if (scope or item["name"] not in _KB_TOOLS)
         # 记忆关着时 `recall` 会明确报错，那就别摆给它（理由见 `_MEMORY_SWITCH_TOOLS`）
-        and (memory_on or item["name"] not in _MEMORY_SWITCH_TOOLS)
+        if memory_on or item["name"] not in _MEMORY_SWITCH_TOOLS
     ]
     specs.extend(
         ToolSpec(
@@ -489,7 +417,6 @@ def _all_specs(
             parameters=item["inputSchema"],
         )
         for item in _LOCAL_TOOLS
-        if scope or item["name"] not in _LOCAL_KB_TOOLS
     )
     # 记忆这一侧的内部工具：`read_memory`（列全部记忆条目，供模型指出是哪一条）。
     # 它**不跟着开关走**（开关管的是注入与 recall），所以这里那道过滤对它其实不起作用
@@ -836,14 +763,14 @@ class ToolTable:
 
 
 def build_tool_table(
-    services: Any = None, *, owner_id: str | None = None, kb_ids: Sequence[str] | None = None
+    services: Any = None, *, owner_id: str | None = None
 ) -> ToolTable:
     """对话那条链路的工具表：**核心 + 网关常驻，外围可发现**。
 
     划分只看 ``tool_meta.is_peripheral``（一处定义）。``CORE_ALWAYS`` 那几个
     永远在常驻那一侧——哪怕有人把它们写进外围名单（那是硬约束，不是偏好）。
     """
-    specs = _all_specs(services, owner_id=owner_id, kb_ids=kb_ids)
+    specs = _all_specs(services, owner_id=owner_id)
     resident = [spec for spec in specs if not tool_meta.is_peripheral(spec.name)]
     peripheral = [spec for spec in specs if tool_meta.is_peripheral(spec.name)]
     skills, skills_listed = _skill_counts(services)
@@ -859,31 +786,6 @@ def build_tool_table(
         )
     )
     return ToolTable(resident, peripheral)
-
-
-#: 在**对话这条门**上不收 ``knowledge_base_id`` 的工具（v0.26）。#:
-#: 外部门（MCP）保持原契约：那条通道没有会话，产物唯一的落点就是知识库，
-#: 而且"外部客户端点名叫了哪个库"这件事本身就是显式的。
-#: 对话这条门不一样：产物先落盘，入库是另一个动作。**参数留在这里过不了日子**——
-#: 它是可选的，模型就会在某些时候顺手填上；而它一旦被填上，
-#: 它就会重新开始替用户挑库（这正是"把 docx 塞进「笔记」"的成因）。
-_DIALOGUE_DROPS_KB = frozenset({"export_document", "export_table", "export_deck"})
-
-
-def _dialogue_parameters(item: dict[str, Any]) -> dict[str, Any]:
-    """把内置工具的 schema 调成**对话这条门**该有的样子。
-
-    目前只有一件事：导出类工具不再向模型暴露 ``knowledge_base_id``。
-    """
-    schema = item.get("inputSchema") or {"type": "object", "properties": {}}
-    if item["name"] not in _DIALOGUE_DROPS_KB:
-        return schema
-    properties = {
-        key: value
-        for key, value in (schema.get("properties") or {}).items()
-        if key != "knowledge_base_id"
-    }
-    return {**schema, "properties": properties}
 
 
 def _mcp_specs(services: Any, owner_id: str | None) -> list[ToolSpec]:
@@ -923,57 +825,21 @@ def build_runner(
     services: Any,
     caller: Caller,
     *,
-    kb_ids: Sequence[str] | None = None,
     conversation_id: str | None = None,
     exposure: Any = None,
 ) -> ToolRunner:
-    """绑一个执行器。``kb_ids`` 是**这一轮允许查的库**（会话上选的那些）。
+    """绑一个执行器。
 
     ``conversation_id`` 决定**产物落在哪儿**（v0.26，见 ``services/artifacts.py``）：
     挂在工作的会话落进工作区目录，没挂的落进对象存储里按会话分的临时前缀。
-    没有它（外部 MCP 客户端、一次性脚本）时导出类工具只剩"直接入库"那一条路。
-
-    范围规则（三条，都与"关掉知识库开关就该真的查不到"一致）：
-
-    - 有范围、模型没指定库 → 用这个范围（它通常压根不知道有哪些库，逼它先列一遍
-      是多余的一步）；
-    - 有范围、模型指定了库 → **取交集**；交集为空就报错，并把它能查的库告诉它；
-    - 没范围（用户关掉了知识库开关）→ 检索直接拒绝，并说明"要查资料得让对方打开"。
-      这一条是那个开关的意义所在：它不该只挡界面。
+    没有它（外部 MCP 客户端、一次性脚本）时导出类工具没有落点，如实拒绝。
 
     **外部工具也走这里**：``mcp__<服务>__<工具>`` 交给 ``_call_mcp``，
     它在真正调用之前过一遍准入策略（见那个函数的说明）。
-
-    **执行器持有这一轮的"来源账本"**（``book``）。它是每轮新建的，所以账本正好
-    等于"这一轮用到的资料"。为什么要它：模型可以在一轮里查好几次，而每次检索
-    都从 [1] 开始编号——不累计的话，第二次检索的编号与第一次撞车，
-    界面上（只认最后一批）会把先查到的那些资料**整批丢掉**，
-    于是答案里的 [1][2] 指向的东西与用户看到的对不上。
-    累计并**重新编号**必须在渲染资料之前做（内容与界面必须是同一套号），
-    所以它在这里而不是在工具循环里。
-
-    **账本是共享可变状态，所以要加锁**（v0.27）：工具循环会把同一批里的几次调用
-    并发跑（见 ``tool_loop._execute_batch``），而两个检索线程同时进 ``_absorb``
-    会抢同一个编号——两边都读到"账本里有 3 条"，各自从 4 开始编，于是同一段资料
-    拿到同一个号、或者一条编号谁也没占。去重、顺延编号、取快照这三件事
-    因此都在同一把锁里做完。
     """
-    scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
     # 有些调用点（测试、脚本）没有凭据主体，那就是**共享桶**
     # （``None``），与本机主人（管理员档）同一档——不是错误，不给它编一个身份。
     owner_id = caller.owner_id if caller is not None else None
-    book: list[SourceRef] = []
-    book_lock = threading.Lock()
-
-    def _record(incoming: Sequence[SourceRef]) -> list[SourceRef]:
-        """把一批新资料并进账本，返回**真正新增**的那些（编号已排好）。"""
-        with book_lock:
-            return _absorb(book, list(incoming))
-
-    def _snapshot() -> list[SourceRef]:
-        """当前账本的副本。**与 ``_record`` 同一把锁**：读的时候可能正有人在写。"""
-        with book_lock:
-            return list(book)
 
     #: 两个根（工作区 / 沙箱）**按需解析、一轮里只解析一次**：多数回合压根不碰文件，
     #: 而解析要查一次会话与工作区（两次查询）。用列表当格子是为了在闭包里赋值。
@@ -1037,8 +903,6 @@ def build_runner(
             return _run_file_tool(name, _roots(), args)
         if name in _CONVERSATION_FILE_TOOLS:
             return _run_conversation_file_tool(name, services, conversation_id, args)
-        if name == "ingest_file":
-            return _ingest_file(services, caller, conversation_id, _roots(), args)
         if name == "read_memory":
             return _read_memory(services, caller, args)
         if name == "write_memory":
@@ -1064,48 +928,6 @@ def build_runner(
                 summary=outcome.summary,
                 approval=outcome.approval,
                 outcome=blocked_kind,
-            )
-        if name == "search":
-            scoped = _scope_search(args, scope)
-            if scoped is None:
-                return ToolOutcome(content=_NO_KB_SCOPE)
-            # **走 `retrieve_sources`，不走 MCP 那个 `search` 工具。** 两者的区别不是
-            # 检索本身（都是同一套混合检索），而是**取回来的是哪一段文本**：
-            # 那个工具回的是命中的**那一块**（chunk），这里回的是它所在的**整段小节**
-            # 加上文档摘要、并按条数均摊字数预算（v17/v25 做的"小块检索、大块阅读"）。
-            #
-            # 这正是 P0 换框架时丢过的东西：模型拿到的是被切碎的块，读起来缺上下文，
-            # 但它**看起来完全正常**——只是答得更浅。所以内部这条门要用这一份；
-            # 外部门保持 chunk 级返回不变（那是已发布的 MCP 契约，外部客户端
-            # 靠 chunk_id 做二次读取）。
-            kb_ids = [str(item) for item in (scoped.get("knowledge_base_ids") or [])]
-            services.kb.api_keys.check_access(caller, kb_ids=kb_ids)
-            refs = _record(
-                services.chat.retrieve_sources(
-                    query=str(scoped.get("query") or ""),
-                    kb_ids=kb_ids,
-                    top_k=_int_or_none(scoped.get("top_k")),
-                )
-            )
-            if refs:
-                content = _render_sources(refs)
-                summary = f"命中 {len(refs)} 段原文"
-            else:
-                # 两种情况要分开说：库里真没有，与"命中的前面都给过了"。
-                # 都回 `_render_sources([])` 那句"没有命中任何片段"，模型会把后者
-                # 读成前者，于是放弃换角度的尝试——而它其实只是重复查了同一处。
-                content = (
-                    "这一次没有新增片段：命中的内容前面已经给过（或这个库里没有相关的）。"
-                    "请基于已有资料作答；还要查就换一个角度或关键词。"
-                )
-                summary = "没有新的片段"
-            return ToolOutcome(
-                content=content,
-                # **累计列表**（协议约定：多轮检索多次发出，始终是累计的）：
-                # 只发这一批的话，先查到的那些资料会在界面上消失
-                sources=_snapshot(),
-                summary=summary,
-                added=len(refs),
             )
         payload = call_tool(services, name, args, caller=caller, conversation_id=conversation_id)
         # 产出物**先摘走、再渲染**：那个键是给界面用的，模型不该看到一份
@@ -1210,85 +1032,8 @@ def _find_server(services: Any, server_part: str, owner_id: str | None) -> Any |
     return None
 
 
-# ------------------------------------------------------------------ 检索的范围与形状
-
-
-def _scope_search(args: dict[str, Any], scope: list[str]) -> dict[str, Any] | None:
-    """把检索参数收进范围；无可查返回 ``None``。"""
-    if not scope:
-        return None
-    asked = [str(item) for item in (args.get("knowledge_base_ids") or []) if str(item)]
-    if not asked:
-        return {**args, "knowledge_base_ids": scope}
-    allowed = [item for item in asked if item in scope]
-    if not allowed:
-        # 明确拒绝而不是"悄悄换成允许的库"：换了它就会以为查的是自己指定的那个，
-        # 于是把别处的结论按在这个库上说
-        return None
-    return {**args, "knowledge_base_ids": allowed}
-
-
-def _render_sources(refs: Sequence[SourceRef]) -> str:
-    """把资料渲染成**带编号的文本块**。
-
-    不直接 `json.dumps`：模型接下来要给这些片段编引用号，而 JSON 里的字段名
-    会把"编号"这件事弄糊（它分不清哪个是该引的数字）。这里的编号就是
-    `SourceRef.index`——界面上的 [1][2] 与它一一对应。
-
-    没命中时**明说没命中**：回一个空串会让模型把"没有资料"读成"资料是空的"，
-    然后照样往下写。
-    """
-    if not refs:
-        return "没有命中任何片段。"
-    lines: list[str] = []
-    for ref in refs:
-        where = ref.document_name
-        if ref.heading_path:
-            where += f" › {ref.heading_path}"
-        if ref.page is not None:
-            where += f"（第 {ref.page} 页）"
-        lines.append(f"[{ref.index}] {where}\n{ref.preview}")
-    return "\n\n".join(lines)
-
-
-def _renumber(refs: Sequence[SourceRef], *, offset: int) -> list[SourceRef]:
-    """把一批资料接着**已有的编号**往下排（``offset`` = 这轮已经给出去几段）。
-
-    引用号是模型与用户之间唯一的对接方式：模型写 [2]，用户点 [2] 要看的就是
-    **那段**原文。所以编号一旦重排，渲染给模型的文本与发给界面的出处必须是
-    同一次重排的结果——这也是它只能发生在渲染之前的原因。
-    """
-    return [replace(ref, index=offset + position) for position, ref in enumerate(refs, start=1)]
-
-
-def _absorb(book: list[SourceRef], incoming: Sequence[SourceRef]) -> list[SourceRef]:
-    """把一批新资料并进这一轮的账本，返回**真正新增**的那些（已接着现有编号排好）。
-
-    去重按 ``chunk_id``：一轮里可以查好几次，换了检索词但落点相同是常事。
-    不去重的话同一段会占两个引用号——界面上两条一模一样的出处，
-    而模型可能各引一次，读者会以为那是两份不同的资料。
-
-    **先到的那条保留原编号，不因为"这次分数更高"替换**：编号在第一次检索时就已经
-    渲染给模型了（``[n]`` 写在工具结果里），重排会让它先前写下的引用指向别处。
-    代价是同一段保留的分数未必是最高那次——分数只用于排序与阈值过滤，
-    不影响引用关系，所以这个取舍是划算的。
-
-    返回值同时也是"这一步新增了几段"的口径（`ToolOutcome.added`）。
-    """
-    known = {item.chunk_id for item in book}
-    fresh: list[SourceRef] = []
-    for ref in incoming:
-        if ref.chunk_id in known:
-            continue
-        known.add(ref.chunk_id)
-        fresh.append(ref)
-    refs = _renumber(fresh, offset=len(book))
-    book.extend(refs)
-    return refs
-
-
 def _int_or_none(value: Any) -> int | None:
-    """``top_k`` 可能是模型给的字符串（有些模型把数字包成 ``"6"``）或缺失。"""
+    """一个可能是字符串（有些模型把数字包成 ``"6"``）或缺失的整数参数。"""
     if isinstance(value, bool):  # bool 是 int 的子类，这里必须先排掉
         return None
     if isinstance(value, int):
@@ -1421,10 +1166,10 @@ def _run_conversation_file_tool(
     # **先按名字判一次**（D36）：PDF 这类文件头里没有 NUL、还能按 UTF-8 解出来，
     # 只看字节会把它当文本交给模型（实测读到 `1: %PDF-1.4 …` 那种原始字节）
     if looks_binary_name(filename):
-        return _binary_file_outcome(filename, key)
+        return _binary_file_outcome(filename)
     text = _text_or_none(content)
     if text is None:
-        return _binary_file_outcome(filename, key)
+        return _binary_file_outcome(filename)
     lines = text.splitlines()
     start = max(1, _int_or_none(args.get("offset")) or 1)
     limit = max(1, min(MAX_READ_LINES, _int_or_none(args.get("limit")) or DEFAULT_READ_LINES))
@@ -1456,17 +1201,13 @@ def _text_or_none(content: bytes) -> str | None:
         return None
 
 
-def _binary_file_outcome(filename: str, key: str) -> ToolOutcome:
-    """二进制读不了——**如实说，并给出下一步**（按"代价最小、最不越权"排序）。
+def _binary_file_outcome(filename: str) -> ToolOutcome:
+    """二进制读不了——**如实说，并给出下一步**（按"代价最小"排序）。
 
     顺序是刻意的（用户点名的 2026-09-29 走查）：
 
-    1. **压缩包先解压再读**：`unzip` 就能读，绕去知识库是**缘木求鱼**（用户原话）；
-    2. 再是"看元信息"（`file` / `ls -l`），用来判断它到底是什么；
-    3. **最后**才是入库（`ingest_file`）——而且**只在用户明确要求时**：
-       知识库是用户的资产，**模型不该替用户往里塞东西**（同一批走查的机制那一条）。
-
-    以前这里把"加进知识库"写成**首选** ✗，于是读文件失败就变成一次入库动作。
+    1. **压缩包先解压再读**：`unzip` 就能读；
+    2. 再是"看元信息"（`file` / `ls -l`），用来判断它到底是什么。
     """
     return ToolOutcome(
         content=(
@@ -1474,79 +1215,9 @@ def _binary_file_outcome(filename: str, key: str) -> ToolOutcome:
             "下一步按这个顺序试："
             "① **是压缩包就用 `run_command` 解开再读**"
             "（例如 `unzip -o 包 -d /tmp/解压处`，然后 read_file 读解压出来的文件）；"
-            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l`；"
-            "③ **只有在用户明确要求把这份材料收进知识库时**，才用 `ingest_file`"
-            f"（path 给同一个 key：{key}），处理完再用 `search` 检索。"
-            "**不要替用户决定往知识库里塞东西。**"
+            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l`。"
         ),
         summary="二进制文件，读不出文本",
-    )
-
-
-def _ingest_file(
-    services: Any,
-    caller: Caller,
-    conversation_id: str | None,
-    roots: Any,
-    args: dict[str, Any],
-) -> ToolOutcome:
-    """把**会话里已经有的文件**加进知识库（v0.55）。
-
-    两条来源，按顺序找（顺序是刻意的：文件区是"用户给的东西"，文件面是"模型自己造的东西"）：
-
-    1. **会话文件区**（``artifacts.read_file``）——用户上传的、以及产出的文件。
-       工作区模式按相对路径落到磁盘，对象模式按产物 id 取对象存储里那份；
-    2. **文件面**（``agent_files.read_bytes``）——工作区 / 沙箱里的相对路径，
-       可以给 ``where`` 指定哪个根。
-
-    入库那一半**与 ``upload_document`` 共用同一份实现**（``ingest.submit`` +
-    ``documents.enqueue_ingest``）：两条路只是"字节从哪儿来"不同，落库之后一模一样。
-    """
-    kb_id = str(args.get("knowledge_base_id") or "").strip()
-    path = str(args.get("path") or "").strip()
-    if not kb_id or not path:
-        return ToolOutcome(content="缺少参数：knowledge_base_id 与 path")
-    # 写操作先过作用域：越界时指出是哪个库（模型据此能告诉对方"这把 Key 没那个库的写权限"）
-    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
-
-    content: bytes | None = None
-    filename = path.rsplit("/", 1)[-1] or "文件"
-    if conversation_id:
-        try:
-            content, filename = services.artifacts.read_file(conversation_id, path)
-        except KylabError:
-            # 不在文件区里就往下走文件面——**不是错误**，两条来源本来就都常见
-            content = None
-    if content is None:
-        try:
-            content, filename = read_bytes(
-                roots, where=args.get("where"), path=path, max_bytes=MAX_UPLOAD_BYTES
-            )
-        except KylabError as exc:
-            return ToolOutcome(
-                content=(
-                    f"找不到这份文件：{path}（{exc}）。"
-                    "文件区的 key 用 list_conversation_files 拿；本机的相对路径用 list_files 拿。"
-                )
-            )
-
-    outcome = services.kb.ingest.submit(
-        knowledge_base_id=kb_id,
-        filename=filename,
-        content=content,
-        # 记上"是谁传的"（与 upload_document 同一口径）
-        uploaded_by=caller.user.id if caller.user is not None else None,
-    )
-    if not outcome.is_duplicate:
-        services.kb.documents.enqueue_ingest(outcome.document.id)
-    return ToolOutcome(
-        content=_join_blocks(
-            f"{outcome.document.name} → {outcome.document.id}",
-            "内容与库里已有文档相同，没有重复入库"
-            if outcome.is_duplicate
-            else "已入队处理，处理完就能被 search 检索到",
-        ),
-        summary="已放进知识库" if not outcome.is_duplicate else "库里已有同一份",
     )
 
 
@@ -1624,13 +1295,6 @@ def _size_text(value: object) -> str:
     if value < 1024 * 1024:
         return f"{value / 1024:.1f} KB"
     return f"{value / (1024 * 1024):.1f} MB"
-
-
-#: 关掉知识库开关时那三个知识库工具统一用这句话（避免三处各写一份措辞）。
-_NO_KB_SCOPE = (
-    "这一轮没有可查的知识库（对方关掉了知识库，或本会话没选库）。"
-    "需要资料的话，先把这个问题告知对方，不要凭常识补。"
-)
 
 
 # ------------------------------------------------------------------ 技能
@@ -1804,15 +1468,6 @@ def _summary(name: str, payload: Any) -> str:
         return "档案里没有这一条"
     if name == "create_note" and isinstance(payload, dict):
         return f"已存为笔记「{payload.get('title') or ''}」"
-    if name == "attach_note_to_kb" and isinstance(payload, dict):
-        return "已把笔记加入知识库"
-    if name == "upload_document" and isinstance(payload, dict):
-        suffix = "（库里已有同样的内容）" if payload.get("is_duplicate") else ""
-        return f"已上传「{payload.get('name') or ''}」{suffix}"
-    if name == "search" and isinstance(payload, dict):
-        hits = payload.get("hits")
-        if isinstance(hits, list):
-            return f"命中 {len(hits)} 段原文" if hits else "没有命中任何片段"
     if isinstance(items, list):
         return f"共 {len(items)} 条"
     return ""

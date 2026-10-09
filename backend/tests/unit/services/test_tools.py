@@ -18,9 +18,7 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,83 +29,19 @@ from app.services import tools
 from app.services.api_key import Caller
 from app.services.deck import Archetype, find_node, load_deck_spec, map_deck, verify_pptx
 from app.services.tools import (
-    MAX_TOP_K,
-    MAX_UPLOAD_BYTES,
     NOTE_EXCERPT_CHARS,
     TOOL_NAMES,
     call_tool,
     tool_definitions,
 )
 
-#: 用例里那个知识库 id（本机不建库，见 `kb` 夹具）。
-KB_ID = "kb_测试库"
-
-
-class _FakeIngestGateway:
-    """假的"提交一份字节进知识库"那条接缝。"""
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-        self._by_hash: dict[bytes, str] = {}
-        self._count = 0
-
-    def submit(self, *, knowledge_base_id, filename, content, uploaded_by=None, **rest):  # type: ignore[no-untyped-def]
-        self.calls.append(
-            {
-                "knowledge_base_id": knowledge_base_id,
-                "filename": filename,
-                "content": content,
-                "uploaded_by": uploaded_by,
-            }
-        )
-        known = self._by_hash.get(content)
-        if known is not None:
-            return SimpleNamespace(
-                document=SimpleNamespace(id=known, name=filename), is_duplicate=True
-            )
-        self._count += 1
-        document_id = f"doc_{self._count}"
-        self._by_hash[content] = document_id
-        return SimpleNamespace(
-            document=SimpleNamespace(id=document_id, name=filename), is_duplicate=False
-        )
-
-
-class _FakeEnqueueGateway:
-    """假的"入队"那条接缝：本机是空操作（远端收到上传时自己已经排上了）。"""
-
-    def __init__(self) -> None:
-        self.enqueued: list[str] = []
-
-    def enqueue_ingest(self, document_id: str) -> None:
-        self.enqueued.append(document_id)
-
 
 @pytest.fixture
 def services() -> Services:
-    """真实服务图 + **假的入库两条接缝**（真身是提供者客户端的网关）。
-
-    本机这一档知识库在别处：`Services.kb` 上那两条（`ingest` / `documents`）是打远端的
-    网关，而"库里有没有这份文档"由那一侧记着。用例里没有远端，所以换成假网关——
-    形状与真网关逐字相同（`submit` / `enqueue_ingest`），断言也就能对着调用参数写。
-
-    换的位置有三处而不是一处：产物服务与笔记服务**各自持有**一份入库接缝
-    （组合根给的是同一个网关对象，见 `core/services.py` 那一段），所以三处都要换到
-    同一对假对象上——只换 `Services.kb` 的话，从笔记那条路入库仍然会打真网关。
-    """
-    import dataclasses
-
+    """本机那份真实服务图（组合根的 `get_services()`）。"""
     from app.core.services import get_services
 
-    base = get_services()
-    ingest, enqueue = _FakeIngestGateway(), _FakeEnqueueGateway()
-    base.artifacts._ingest = ingest  # type: ignore[attr-defined]
-    base.artifacts._documents = enqueue  # type: ignore[attr-defined]
-    base.notes._ingest = ingest  # type: ignore[attr-defined]
-    base.notes._documents = enqueue  # type: ignore[attr-defined]
-    return dataclasses.replace(
-        base, kb=dataclasses.replace(base.kb, ingest=ingest, documents=enqueue)
-    )
+    return get_services()
 
 
 @pytest.fixture
@@ -119,18 +53,6 @@ def admin() -> Caller:
     """
     return Caller(is_admin=True)
 
-
-@pytest.fixture
-def kb() -> str:
-    """一个知识库 id。
-
-    **本机不建库**（那几件事在知识库那一侧），而工具签名里要一个 id 才能把参数
-    拼齐——所以这里给一个常量。真去建库的地方在提供者那一侧的用例里。
-    """
-    return KB_ID
-
-
-MARKDOWN = "# 眼轴\n\n眼轴长度是衡量儿童青少年眼球发育情况的主要参数之一，不受调节能力影响。\n"
 
 #: 幻灯那条口真要写盘（Node 跑 `scripts/deck/render.mjs`）。缺 Node 时**跳过而不是变红**，
 #: 但要把"什么没被验证"说清楚——不说原因的 skip 会变成"以为验过了，其实没跑"
@@ -188,80 +110,6 @@ def test_create_knowledge_base_requires_a_name(services: Services, admin: Caller
         call_tool(services, "create_knowledge_base", {"name": "  "}, caller=admin)
 
 
-# --------------------------------------------------------------------- 上传
-
-
-def test_upload_document(services: Services, kb: str, admin: Caller) -> None:
-    result = call_tool(
-        services,
-        "upload_document",
-        {
-            "knowledge_base_id": kb,
-            "filename": "眼轴.md",
-            "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
-        },
-        caller=admin,
-    )
-
-    assert result["is_duplicate"] is False
-    assert result["document_id"].startswith("doc_")
-    # 入库是异步的，返回值必须告诉模型"接下来怎么查"
-    assert "get_document_status" in result["note"]
-
-
-def test_upload_detects_duplicates(services: Services, kb: str, admin: Caller) -> None:
-    """同一份内容传两次，第二次要说清是重复——否则模型会以为库里有两份。"""
-    payload = {
-        "knowledge_base_id": kb,
-        "filename": "眼轴.md",
-        "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
-    }
-    call_tool(services, "upload_document", payload, caller=admin)
-
-    second = call_tool(services, "upload_document", payload, caller=admin)
-
-    assert second["is_duplicate"] is True
-    assert "相同" in second["note"]
-
-
-def test_upload_rejects_bad_base64(services: Services, kb: str, admin: Caller) -> None:
-    """**说清是 base64 不合法**，模型据此能自己改对，而不是放弃这个工具。"""
-    with pytest.raises(InvalidRequestError) as excinfo:
-        call_tool(
-            services,
-            "upload_document",
-            {"knowledge_base_id": kb, "filename": "a.md", "content_base64": "这不是 base64!!"},
-            caller=admin,
-        )
-    assert "base64" in str(excinfo.value)
-
-
-def test_upload_rejects_oversized_content(services: Services, kb: str, admin: Caller) -> None:
-    """MCP 走进程间消息，塞一个巨大的 base64 会把两端一起拖住。"""
-    blob = base64.b64encode(b"x" * (MAX_UPLOAD_BYTES + 1)).decode()
-
-    with pytest.raises(InvalidRequestError) as excinfo:
-        call_tool(
-            services,
-            "upload_document",
-            {"knowledge_base_id": kb, "filename": "big.md", "content_base64": blob},
-            caller=admin,
-        )
-    assert "上限" in str(excinfo.value)
-
-
-# --------------------------------------------------------------------- 数据源
-
-
-# --------------------------------------------------------------------- 检索
-
-
-# --------------------------------------------------------------------- 文档状态
-
-
-# --------------------------------------------------------------------- 删除
-
-
 # --------------------------------------------------------------------- 参数校验
 
 
@@ -286,72 +134,10 @@ def test_missing_required_arguments_raise(
 
 def test_none_arguments_are_treated_as_empty(services: Services, admin: Caller) -> None:
     """MCP 客户端对无参工具可能传 ``None``——那不该炸。"""
-    # `search` 那条路由 Agent 工具面直接执行（见 services/tools.py 模块头），
-    # 所以这里用一个参数真的在 call_tool 上执行的工具
     assert isinstance(call_tool(services, "list_notes", None, caller=admin), dict)
 
 
-def test_max_top_k_is_documented_in_the_schema() -> None:
-    """schema 里的上限要与实现一致，否则模型会按错的上限要条数。"""
-    search = next(item for item in tool_definitions() if item["name"] == "search")
-    assert search["inputSchema"]["properties"]["top_k"]["maximum"] == MAX_TOP_K
-
-
 # --------------------------------------------------------------------- 笔记
-
-
-def test_create_note_then_attach_makes_it_searchable(
-    services: Services, kb: str, admin: Caller
-) -> None:
-    """**这是"把对话成果放进知识库"的完整两步**，也是本轮补这两个工具的理由。
-
-    在此之前知识库只有"上传文件"一个入口，agent 干完活无处安放。
-    """
-    created = call_tool(
-        services,
-        "create_note",
-        {
-            "content_md": "# 锂价结论\n\n锂价下跌通常缓解材料成本，但净影响取决于售价联动与库存。",
-            "title": "锂价敏感性",
-            "tags": ["锂价", "结论"],
-            "source_kind": "chat",
-            "source_ref": "conv_abc",
-        },
-        caller=admin,
-    )
-    assert created["note_id"].startswith("note_")
-    # 返回值必须说清"这一步之后还检索不到"，否则模型会以为已经入库了
-    assert "attach_note_to_kb" in created["note"]
-
-    attached = call_tool(
-        services,
-        "attach_note_to_kb",
-        {"note_id": created["note_id"], "knowledge_base_id": kb},
-        caller=admin,
-    )
-    assert attached["document_id"].startswith("doc_")
-    assert attached["knowledge_base_id"] == kb
-
-    listed = call_tool(services, "list_notes", {}, caller=admin)
-    target = next(item for item in listed["notes"] if item["note_id"] == created["note_id"])
-    assert target["in_knowledge_base"] is True
-    # 标签顺序按服务层的规范化结果比（它会对标签去重排序），所以用集合
-    assert set(target["tags"]) == {"锂价", "结论"}
-    assert target["source_kind"] == "chat"
-
-
-def test_list_notes_marks_notes_that_are_not_in_a_knowledge_base(
-    services: Services, admin: Caller
-) -> None:
-    """没进库的笔记必须**明确标出来**：否则模型会以为存了就能检索到。"""
-    created = call_tool(
-        services, "create_note", {"content_md": "# 还没入库的"}, caller=admin
-    )
-
-    listed = call_tool(services, "list_notes", {}, caller=admin)
-
-    target = next(item for item in listed["notes"] if item["note_id"] == created["note_id"])
-    assert target["in_knowledge_base"] is False
 
 
 def test_note_excerpt_is_bounded(services: Services, admin: Caller) -> None:
@@ -393,16 +179,6 @@ def test_note_and_export_descriptions_split_the_work() -> None:
 
     assert "export_document" in definitions["create_note"]
     assert "create_note" in definitions["export_document"]
-
-
-def test_attach_unknown_note_raises(services: Services, kb: str, admin: Caller) -> None:
-    with pytest.raises(NotFoundError):
-        call_tool(
-            services,
-            "attach_note_to_kb",
-            {"note_id": "note_不存在", "knowledge_base_id": kb},
-            caller=admin,
-        )
 
 
 def test_create_note_requires_content(services: Services, admin: Caller) -> None:
@@ -488,8 +264,8 @@ def test_forget_removes_the_entry_and_keeps_its_history(
 # ------------------------------------------------------- Office 产出（v0.21）
 
 
-def test_export_document_writes_a_real_docx(services: Services, kb: str, admin: Caller) -> None:
-    """导出的是**真文件**：入库之后能被我们自己的解析器读回来。
+def test_export_document_writes_a_real_docx(services: Services, admin: Caller) -> None:
+    """导出的是**真文件**：落进会话产物区之后能被我们自己的解析器读回来。
 
     这条是这一组里最要紧的：如果产出只是个"看起来像 docx 的字节串"，
     用户拿它打不开——而那要等到他把文件发给别人才会发现。
@@ -497,21 +273,22 @@ def test_export_document_writes_a_real_docx(services: Services, kb: str, admin: 
     from app.parsers.base import ProbeResult
     from app.parsers.local_office import LocalOfficeParser
 
+    conversation_id = services.conversations.create(title="随访方案").id
     result = call_tool(
         services,
         "export_document",
         {
-            "knowledge_base_id": kb,
             "filename": "随访方案.docx",
             "markdown": "# 一、监测频率\n\n每三个月测一次。\n\n- 首次建档全套\n",
             "title": "近视防控随访",
         },
         caller=admin,
+        conversation_id=conversation_id,
     )
 
     assert result["format"] == "docx" and result["size_bytes"] > 1000
-    assert services.kb.ingest.calls[-1]["filename"] == "随访方案.docx"
-    raw = services.kb.ingest.calls[-1]["content"]
+    assert result["name"] == "随访方案.docx"
+    raw, _ = services.artifacts.read_file(conversation_id, result["artifact_id"])
     parsed = LocalOfficeParser().parse(
         filename="随访方案.docx",
         mime_type=None,
@@ -522,7 +299,7 @@ def test_export_document_writes_a_real_docx(services: Services, kb: str, admin: 
     assert "首次建档全套" in parsed.markdown
 
 
-def test_export_table_keeps_numbers_as_numbers(services: Services, kb: str, admin: Caller) -> None:
+def test_export_table_keeps_numbers_as_numbers(services: Services, admin: Caller) -> None:
     """表格里的数字要写成**数值**。
 
     全写成文本的话，Excel 里的求和、排序、图表全部失效——而用户会以为是我们算错了。
@@ -531,20 +308,21 @@ def test_export_table_keeps_numbers_as_numbers(services: Services, kb: str, admi
 
     import openpyxl
 
+    conversation_id = services.conversations.create(title="随访记录").id
     result = call_tool(
         services,
         "export_table",
         {
-            "knowledge_base_id": kb,
             "filename": "随访记录.xlsx",
             "rows": [["项目", "频率(月)", "次数"], ["眼轴", "3", 4]],
             "sheet_name": "随访",
         },
         caller=admin,
+        conversation_id=conversation_id,
     )
 
     assert result["format"] == "xlsx"
-    raw = services.kb.ingest.calls[-1]["content"]
+    raw, _ = services.artifacts.read_file(conversation_id, result["artifact_id"])
     sheet = openpyxl.load_workbook(io.BytesIO(raw))["随访"]
     assert [cell.value for cell in sheet[1]] == ["项目", "频率(月)", "次数"]
     assert sheet.cell(row=2, column=2).value == 3, "纯数字的字符串要落成数值"
@@ -575,7 +353,7 @@ def test_suffix_of_treats_a_dotless_name_as_no_extension() -> None:
 
 
 def test_export_document_refuses_a_name_without_an_extension(
-    services: Services, kb: str, admin: Caller
+    services: Services, admin: Caller
 ) -> None:
     """文件名没有扩展名时**当场说清**，而不是按"扩展名 = 整个名字"落一份打不开的文件。
 
@@ -584,18 +362,20 @@ def test_export_document_refuses_a_name_without_an_extension(
     ——听起来也像报错，其实**判据是错的**（正确的那句是"只做 .docx / .pdf / …"）。
     所以这里断言的**不是"抛了异常"，而是抛的是哪一句**。
     """
+    conversation_id = services.conversations.create(title="无扩展名").id
     with pytest.raises(InvalidRequestError, match=r"export_document 只做"):
         call_tool(
             services,
             "export_document",
-            {"knowledge_base_id": kb, "filename": "没有扩展名", "markdown": "正文"},
+            {"filename": "没有扩展名", "markdown": "正文"},
             caller=admin,
+            conversation_id=conversation_id,
         )
 
 
 @pytest.mark.skipif(find_node() is None, reason=_NO_NODE)
 def test_export_deck_builds_slides_from_the_old_shape(
-    services: Services, kb: str, admin: Caller
+    services: Services, admin: Caller
 ) -> None:
     """老入参（每页只有 title + bullets）**必须仍然出片**——这条钉的是"切链没把老调用切坏"。
 
@@ -607,11 +387,11 @@ def test_export_deck_builds_slides_from_the_old_shape(
     from app.parsers.base import ProbeResult
     from app.parsers.local_office import LocalOfficeParser
 
-    call_tool(
+    conversation_id = services.conversations.create(title="老形状幻灯").id
+    result = call_tool(
         services,
         "export_deck",
         {
-            "knowledge_base_id": kb,
             "filename": "方案.pptx",
             "title": "随访方案",
             "slides": [
@@ -620,9 +400,10 @@ def test_export_deck_builds_slides_from_the_old_shape(
             ],
         },
         caller=admin,
+        conversation_id=conversation_id,
     )
 
-    raw = services.kb.ingest.calls[-1]["content"]
+    raw, _ = services.artifacts.read_file(conversation_id, result["artifact_id"])
     parsed = LocalOfficeParser().parse(
         filename="方案.pptx",
         mime_type=None,
@@ -688,7 +469,7 @@ def test_a_page_with_a_chart_but_no_archetype_becomes_a_data_page() -> None:
 
 @pytest.mark.skipif(find_node() is None, reason=_NO_NODE)
 def test_export_deck_new_shape_renders_and_passes_structure_checks(
-    services: Services, kb: str, admin: Caller, tmp_path: Path
+    services: Services, admin: Caller, tmp_path: Path
 ) -> None:
     """新形状（页型 / 原生图表 / 指标卡）出片，并**用计划把产物解包核对一遍**。
 
@@ -697,7 +478,6 @@ def test_export_deck_new_shape_renders_and_passes_structure_checks(
     只会静默难看。只断言"渲染没报错"等于没验。
     """
     args: dict[str, Any] = {
-        "knowledge_base_id": kb,
         "filename": "季度复盘.pptx",
         "title": "季度复盘",
         "subtitle": "2026 Q3",
@@ -724,13 +504,18 @@ def test_export_deck_new_shape_renders_and_passes_structure_checks(
         ],
     }
 
-    call_tool(services, "export_deck", args, caller=admin)
-    raw = services.kb.ingest.calls[-1]["content"]
+    conversation_id = services.conversations.create(title="季度复盘").id
+    result = call_tool(
+        services, "export_deck", args, caller=admin, conversation_id=conversation_id
+    )
+    raw, _ = services.artifacts.read_file(conversation_id, result["artifact_id"])
     written = tmp_path / "季度复盘.pptx"
     written.write_bytes(raw)
 
     plan = map_deck(
-        load_deck_spec(tools._deck_payload(args, services=services, conversation_id=None))
+        load_deck_spec(
+            tools._deck_payload(args, services=services, conversation_id=conversation_id)
+        )
     )
     check = verify_pptx(written, plan)
 
@@ -747,7 +532,7 @@ def test_export_deck_new_shape_renders_and_passes_structure_checks(
 
 
 def test_export_deck_without_node_says_what_to_install(
-    services: Services, kb: str, admin: Caller, monkeypatch: pytest.MonkeyPatch
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """没有 Node 时**单独报"装什么"**，而不是一句"生成 pptx 失败"。
 
@@ -766,7 +551,6 @@ def test_export_deck_without_node_says_what_to_install(
             services,
             "export_deck",
             {
-                "knowledge_base_id": kb,
                 "filename": "方案.pptx",
                 "slides": [{"title": "监测频率", "bullets": ["三个月一次"]}],
             },
@@ -802,7 +586,7 @@ def test_legacy_slides_spill_over_the_bullet_cap_instead_of_losing_content() -> 
 
 
 def test_a_page_that_cannot_hold_its_payload_comes_back_as_a_sentence(
-    services: Services, kb: str, admin: Caller
+    services: Services, admin: Caller
 ) -> None:
     """页型收不了的载荷要**指到第几页哪一处**，而不是一句"服务内部错误"。
 
@@ -815,7 +599,6 @@ def test_a_page_that_cannot_hold_its_payload_comes_back_as_a_sentence(
             services,
             "export_deck",
             {
-                "knowledge_base_id": kb,
                 "filename": "放错的图.pptx",
                 "slides": [
                     {
@@ -839,7 +622,7 @@ def test_a_page_that_cannot_hold_its_payload_comes_back_as_a_sentence(
 
 
 def test_export_deck_only_takes_images_that_already_exist_in_the_sandbox(
-    services: Services, kb: str, admin: Caller
+    services: Services, admin: Caller
 ) -> None:
     """图片只收**沙箱里已有的文件**：现生 / 检索那两种，写盘层画的是一个说明框。
 
@@ -857,7 +640,6 @@ def test_export_deck_only_takes_images_that_already_exist_in_the_sandbox(
             services,
             "export_deck",
             {
-                "knowledge_base_id": kb,
                 "filename": "带图.pptx",
                 "slides": [
                     {
@@ -889,7 +671,7 @@ def test_export_deck_only_takes_images_that_already_exist_in_the_sandbox(
 
 @pytest.mark.skipif(find_node() is None, reason=_NO_NODE)
 def test_export_deck_takes_a_local_image_out_of_the_sandbox(
-    services: Services, kb: str, admin: Caller, tmp_path: Path
+    services: Services, admin: Caller, tmp_path: Path
 ) -> None:
     """沙箱里那张图**真的被贴进包里**（上面那条只钉了反面）。
 
@@ -937,44 +719,43 @@ def test_export_deck_takes_a_local_image_out_of_the_sandbox(
     assert any("长宽比一致" in note for note in raster.notes), raster.notes
 
 
-def test_export_pdf_is_a_readable_pdf(services: Services, kb: str, admin: Caller) -> None:
+def test_export_pdf_is_a_readable_pdf(services: Services, admin: Caller) -> None:
     """PDF 要能抽出中文——报告lab 的默认字体不含汉字，配错的话是一页黑方块。"""
     import io
 
     from pypdf import PdfReader
 
-    call_tool(
+    conversation_id = services.conversations.create(title="PDF 导出").id
+    result = call_tool(
         services,
         "export_document",
         {
-            "knowledge_base_id": kb,
             "filename": "随访.pdf",
             "markdown": "## 一、监测频率\n\n每三个月测量一次眼轴长度。\n",
         },
         caller=admin,
+        conversation_id=conversation_id,
     )
 
-    raw = services.kb.ingest.calls[-1]["content"]
+    raw, _ = services.artifacts.read_file(conversation_id, result["artifact_id"])
     text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(raw)).pages)
     assert "每三个月测量一次眼轴长度" in text
 
 
-def test_export_document_still_refuses_a_wrong_extension(
-    services: Services, kb: str, admin: Caller
-) -> None:
+def test_export_document_still_refuses_a_wrong_extension(services: Services, admin: Caller) -> None:
     """格式由扩展名决定，**不猜**：给 .xlsx 走文档那条路就得当场说清。"""
     with pytest.raises(InvalidRequestError, match=r"只做 \.docx / \.pdf / \.md"):
         call_tool(
             services,
             "export_document",
-            {"knowledge_base_id": kb, "filename": "表.xlsx", "markdown": "x"},
+            {"filename": "表.xlsx", "markdown": "x"},
             caller=admin,
         )
     with pytest.raises(InvalidRequestError, match=r"只做 \.xlsx"):
         call_tool(
             services,
             "export_table",
-            {"knowledge_base_id": kb, "filename": "表.csv", "rows": [["a"]]},
+            {"filename": "表.csv", "rows": [["a"]]},
             caller=admin,
         )
     # .md 能交付了，但**不是"什么后缀都收"**：纯文本类也是原样落字节，
@@ -983,13 +764,13 @@ def test_export_document_still_refuses_a_wrong_extension(
         call_tool(
             services,
             "export_document",
-            {"knowledge_base_id": kb, "filename": "木马.exe", "markdown": "x"},
+            {"filename": "木马.exe", "markdown": "x"},
             caller=admin,
         )
 
 
 def test_export_enforces_the_limits_with_the_number_in_the_message(
-    services: Services, kb: str, admin: Caller
+    services: Services, admin: Caller
 ) -> None:
     """超限时报错要**带上实际数量与上限**：模型据此才知道该拆成几份。"""
     from app.services import office
@@ -999,7 +780,6 @@ def test_export_enforces_the_limits_with_the_number_in_the_message(
             services,
             "export_table",
             {
-                "knowledge_base_id": kb,
                 "filename": "大表.xlsx",
                 "rows": [["h"]] * (office.MAX_ROWS + 1),
             },
@@ -1009,7 +789,7 @@ def test_export_enforces_the_limits_with_the_number_in_the_message(
 
     with pytest.raises(InvalidRequestError, match=r"non-empty|非空"):
         call_tool(
-            services, "export_deck", {"knowledge_base_id": kb, "filename": "空.pptx", "slides": []},
+            services, "export_deck", {"filename": "空.pptx", "slides": []},
             caller=admin,
         )
 
@@ -1259,21 +1039,14 @@ def test_web_fetch_refuses_internal_addresses_before_any_request(
         )
 
 
-# ------------------------------------------- 产物的落点与显式入库（v0.26）
+# ------------------------------------------- 产物的落点（v0.26）
 
 
-def test_export_in_a_conversation_files_nothing(
-    services: Services, kb: str, admin: Caller
-) -> None:
-    """**这条是这次改动的核心**：对话里导出，知识库一份文档都不多。
-
-    改之前 `knowledge_base_id` 是必填的，模型只能替用户挑一个库——
-    实测它把 docx 塞进了「笔记」，并解释"你这边没有专门的工作区，我就选了最顺手的那个"。
-    """
+def test_export_in_a_conversation_files_nothing(services: Services, admin: Caller) -> None:
+    """**对话里导出只落产物区**：文件挂在会话上，对方在对话里就能下载。"""
     from app.services.tools import ARTIFACT_KEY
 
     conversation_id = services.conversations.create(title="导出短诗").id
-    before = len(services.kb.ingest.calls)
 
     result = call_tool(
         services,
@@ -1285,28 +1058,25 @@ def test_export_in_a_conversation_files_nothing(
 
     assert result["artifact_id"].startswith("art_")
     assert result["saved_to"] == "本会话"
-    assert "没有进知识库" in result["note"]
-    assert len(services.kb.ingest.calls) == before
     # 界面那份（卡片）与给模型那份在同一个 dict 里，见 _save_export 的说明
     assert result[ARTIFACT_KEY]["artifact_id"] == result["artifact_id"]
 
 
 def test_export_ignores_a_knowledge_base_id_from_the_model(
-    services: Services, kb: str, admin: Caller
+    services: Services, admin: Caller
 ) -> None:
-    """即使模型自己填了 ``knowledge_base_id``，对话这条门也不入库。
+    """即使模型自己填了 ``knowledge_base_id``，这条门也不理会它。
 
-    参数在对话的 schema 里已经不列了，但**光不列不够**：模型会凭上下文猜出这个字段名
-    （它在别处见过）。所以这条断言的是"猜出来也没用"——落点由服务端决定。
+    参数在 schema 里已经不列了，但**光不列不够**：模型会凭上下文猜出这个字段名
+    （它在别处见过）。落点由服务端决定——产物落在这条会话的产物区。
     """
     conversation_id = services.conversations.create(title="再导出一次").id
-    before = len(services.kb.ingest.calls)
 
-    call_tool(
+    result = call_tool(
         services,
         "export_document",
         {
-            "knowledge_base_id": kb,
+            "knowledge_base_id": "kb_猜出来的",
             "filename": "短诗.docx",
             "markdown": "把一天过完了。",
         },
@@ -1314,12 +1084,10 @@ def test_export_ignores_a_knowledge_base_id_from_the_model(
         conversation_id=conversation_id,
     )
 
-    assert len(services.kb.ingest.calls) == before
+    assert services.artifacts.get(result["artifact_id"]).conversation_id == conversation_id
 
 
-def test_export_document_delivers_a_markdown_file(
-    services: Services, kb: str, admin: Caller
-) -> None:
+def test_export_document_delivers_a_markdown_file(services: Services, admin: Caller) -> None:
     """**用户报的第 3 条**：要一份 .md 时得交得出去（v0.41）。
 
     改之前导出只认 .docx 与 .pdf，模型的实测答复是"导出文件只有那四种格式，没有 .md；
@@ -1329,7 +1097,6 @@ def test_export_document_delivers_a_markdown_file(
     from app.services.tools import ARTIFACT_KEY
 
     conversation_id = services.conversations.create(title="交付 .md").id
-    before = len(services.kb.ingest.calls)
     body = "# 随访方案\n\n每三个月测一次。\n"
 
     result = call_tool(
@@ -1353,8 +1120,6 @@ def test_export_document_delivers_a_markdown_file(
     # 尾部的换行不在里面——那是 `_require` 对所有工具参数统一做的首尾去空白，
     # 不是这条链路改的内容（测试想把这一点也钉住，所以比的是 strip 之后的那份）
     assert services.artifacts.content(record).decode("utf-8") == body.strip()
-    # 与 .docx 那条同一口径：交付**不进知识库**，那是另一个显式动作
-    assert len(services.kb.ingest.calls) == before
 
 
 def test_export_document_delivers_every_plain_text_kind(
@@ -1381,24 +1146,14 @@ def test_export_document_delivers_every_plain_text_kind(
         assert services.artifacts.get(result["artifact_id"]).format == kind
 
 
-def test_export_without_a_conversation_still_needs_a_library(
-    services: Services, kb: str, admin: Caller
-) -> None:
-    """没有会话上下文的通道（外部 MCP、一次性脚本）保持老契约。
+def test_export_without_a_conversation_is_refused(services: Services, admin: Caller) -> None:
+    """没有会话上下文的通道（外部 MCP、一次性脚本）**没有产物区可落**，如实拒绝。
 
-    那条通道没有产物区，唯一的落点就是知识库；而且"外部客户端点名叫了哪个库"
-    本身就是显式的——这与对话里"模型替用户挑一个"是两回事。
+    改之前那条通道唯一的落点是知识库（``knowledge_base_id`` 必填）——
+    知识库不再由本产品持有，这条通道也就没有落点了。回一句"这条链路没有会话"，
+    而不是悄悄找个地方写。
     """
-    call_tool(
-        services,
-        "export_document",
-        {"knowledge_base_id": kb, "filename": "外部.docx", "markdown": "正文"},
-        caller=admin,
-    )
-
-    assert services.kb.ingest.calls[-1]["knowledge_base_id"] == kb
-
-    with pytest.raises(InvalidRequestError, match="knowledge_base_id"):
+    with pytest.raises(InvalidRequestError, match="会话"):
         call_tool(
             services,
             "export_document",
@@ -1408,10 +1163,10 @@ def test_export_without_a_conversation_still_needs_a_library(
 
 
 def test_dialogue_tool_schema_hides_the_library_parameter() -> None:
-    """对话那条门**不再向模型暴露** ``knowledge_base_id``。
+    """两条门**都不再暴露** ``knowledge_base_id``。
 
-    留在 schema 里它就总有一天会被顺手填上——而那正是事故的成因。
-    外部门（MCP 的 ``tool_definitions``）必须原样保留：那是已发布的契约。
+    知识库那一族工具整体退场之后，导出类工具没有"存到哪个库"这个参数了——
+    对话门与外部 MCP 门读的是同一份 `tool_definitions()`。
     """
     from app.services.agent_tools import tool_specs
     from app.services.tools import tool_definitions
@@ -1419,8 +1174,8 @@ def test_dialogue_tool_schema_hides_the_library_parameter() -> None:
     dialogue = {spec.name: spec.parameters for spec in tool_specs()}
     for name in ("export_document", "export_table", "export_deck"):
         assert "knowledge_base_id" not in dialogue[name]["properties"], name
-        # 必填表里也不能留着它（不然模型会以为"必须给一个库"）
         assert "knowledge_base_id" not in dialogue[name].get("required", []), name
 
     mcp = {item["name"]: item["inputSchema"] for item in tool_definitions()}
-    assert "knowledge_base_id" in mcp["export_document"]["properties"]
+    for name in ("export_document", "export_table", "export_deck"):
+        assert "knowledge_base_id" not in mcp[name]["properties"], name

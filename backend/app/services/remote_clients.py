@@ -1,31 +1,20 @@
-"""两条接缝的**远端实现**（Phase B · P2，2026-09-29）。
+"""模型那条接缝的**远端实现**（Phase B · P2，2026-09-29）。
 
-P1 已经把检索那条接缝抽成协议（`knowledge_client.KnowledgeClient` ✓），
-这一层补上"**打我们自己的后端**"的那两份实现 ✓ —— 边车（P3）只要在装配点换上它们即可 ✓，
-**循环一行都不用改** ✗（这正是 P1 那一刀的目的 ✓）。
-
-**M3 阶段 2 起，检索的那一半已被提供者客户端收编**（`services/knowledge_provider.py`）：
-`RemoteKnowledgeClient` 仍然是**检索那一件的唯一实现** ✓（映射、分档、签名都在这里），
-但**本类不再单独装配** ✗ —— 它由 `KnowledgeProviderClient` 持有，每次调用现取目标
-（这样设置页改了地址下一轮就生效）。装配点（组合根 / 边车）给 `ChatService` 的
-那一件也换成提供者客户端（阶段 3 收编 `core/services.py`）。模型那一半不受影响 ✓。
+这一层放着"**打我们自己的后端**"的那份实现（v0.1 起只服务"客户端不带 key、
+由服务端代发模型"那种部署）✓。
 
 ## 用现有端点，不新造 ✗
 
-- KB：**`POST /api/v1/search`**（`api/v1/search.py:25`，混合检索 ✓）——**已经有了** ✓，
-  返回的 `SearchHitOut` 里带 document_name / heading_path / page / preview / score ✓，
-  正好拼出循环要的 `SourceRef` ✓；
 - 模型：`POST /api/v1/model-proxy/complete|stream|events`（本层同批新增的 router ✓，
   见 `api/v1/model_proxy.py`）—— 服务器用自己的 key 调上游 ✓，**客户端永远看不到 key** ✓。
 
 ## 认证与失败语义
 
 认证是**用户会话令牌** ✓（`Authorization: Bearer …` ✓，与前端/壳同一套 ✓）。
-**"不可用"与"没命中"必须分开** ✗（离线明示那条要用它）：
+**"不可用"与"没内容"必须分开** ✗：
 
 - 网络失败 / 超时 / 5xx → `RemoteUnavailableError`（**抛** ✗，不是空结果 ✓）；
-- 4xx（鉴权过期、参数被拒）→ `RemoteRejectedError`（抛 ✓，带着服务端那句话 ✓）；
-- 2xx 且 hits 为空 → **返回空列表** ✓（那才是"没命中" ✓）。
+- 4xx（鉴权过期、参数被拒）→ `RemoteRejectedError`（抛 ✓，带着服务端那句话 ✓）。
 """
 
 from __future__ import annotations
@@ -37,19 +26,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # 只为类型标注：**模块级不 import httpx**（见下面 `_httpx()` 的说明）
     import httpx
 
-from app.services.chat import SourceRef
 from app.services.llm import ChatMessage, LLMDelta, ToolCallDelta, ToolSpec, _call_deltas
 
 __all__ = [
     "RemoteClientError",
-    "RemoteKnowledgeClient",
     "RemoteModelClient",
     "RemoteRejectedError",
     "RemoteUnavailableError",
 ]
-
-#: 默认超时：检索要等嵌入+向量+回表，给 30s；模型补全另算（见各类构造参数）。
-DEFAULT_KB_TIMEOUT = 30.0
 
 
 def _httpx():  # type: ignore[no-untyped-def]
@@ -89,99 +73,6 @@ class RemoteRejectedError(RemoteClientError):
 def _auth_headers(token: str) -> dict[str, str]:
     """用户会话令牌 → 鉴权头（与前端/壳同一套 ✓，**不放模型 key** ✗）。"""
     return {"Authorization": f"Bearer {token}"} if token else {}
-
-
-class RemoteKnowledgeClient:
-    """`KnowledgeClient` 的远端实现：**POST /api/v1/search** ✓。
-
-    ``transport`` 是给用例注入假传输用的 ✓（`httpx.MockTransport` ✓，测试里绝不打真网络 ✗）。
-    """
-
-    def __init__(
-        self,
-        base_url: str,
-        *,
-        token: str = "",
-        timeout: float = DEFAULT_KB_TIMEOUT,
-        transport: httpx.BaseTransport | None = None,
-    ) -> None:
-        self._base = base_url.rstrip("/")
-        self._token = token
-        self._timeout = timeout
-        self._transport = transport
-
-    def retrieve_sources(
-        self,
-        *,
-        query: str,
-        kb_ids: list[str],
-        top_k: int | None = None,
-        candidate_k: int = 40,
-        reader: object | None = None,
-    ) -> list[SourceRef]:
-        """与进程内实现**同形同义** ✓：返回带编号的 `SourceRef`；失败**抛**而不是回空 ✗。
-
-        ``reader`` 是进程内实现用来跨查询复用块缓存的 ✓；远端没有这个概念 ✗ ——
-        参数保留是为了签名逐字一致 ✓（调用点不必改 ✗）。
-        """
-        body: dict[str, object] = {"query": query, "kb_ids": list(kb_ids)}
-        if top_k is not None:
-            body["top_k"] = top_k
-        if candidate_k:
-            body["candidate_k"] = candidate_k
-        payload = self._post("/search", body)
-        hits = payload.get("hits") or []
-        sources: list[SourceRef] = []
-        for offset, hit in enumerate(hits, start=1):
-            if not isinstance(hit, dict):
-                continue
-            sources.append(
-                SourceRef(
-                    # **编号由我们这一侧定** ✓（与进程内实现同一个口径：1..N 按返回顺序）
-                    index=int(hit.get("index") or offset),
-                    chunk_id=str(hit.get("chunk_id") or ""),
-                    document_id=str(hit.get("document_id") or ""),
-                    document_name=str(hit.get("document_name") or ""),
-                    heading_path=hit.get("heading_path"),
-                    page=hit.get("page"),
-                    score=float(hit.get("score") or 0.0),
-                    preview=str(hit.get("preview") or hit.get("text") or ""),
-                    #: 出处所属的库（`SearchHitOut` 就有这一位 ✓）：不映射的话，
-                    #: 界面上那条引用就只能走 `/documents/:id` 转发一跳（会闪一下空白 ✓）——
-                    #: 而进程内那条路（`chat.py` 的 `SourceRef(...)`）一直是带着它的 ✓。
-                    knowledge_base_id=str(hit.get("knowledge_base_id") or ""),
-                )
-            )
-        return sources
-
-    # ------------------------------------------------------------------ 内部
-
-    def _post(self, path: str, body: dict[str, object]) -> dict:
-        httpx = _httpx()
-        try:
-            with httpx.Client(
-                base_url=self._base,
-                timeout=self._timeout,
-                transport=self._transport,
-                headers=_auth_headers(self._token),
-            ) as client:
-                response = client.post(path, json=body)
-        except httpx.HTTPError as exc:
-            # 连不上/超时/协议错：**这是"不可用"，不是"没命中"** ✗
-            raise RemoteUnavailableError(f"检索服务连不上：{type(exc).__name__}: {exc}") from exc
-        if response.status_code >= 500:
-            raise RemoteUnavailableError(
-                f"检索服务出错了（HTTP {response.status_code}）：{response.text[:200]}"
-            )
-        if response.status_code >= 400:
-            raise RemoteRejectedError(
-                f"检索请求被拒（HTTP {response.status_code}）：{response.text[:200]}"
-            )
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RemoteUnavailableError("检索服务返回的不是 JSON") from exc
-        return payload if isinstance(payload, dict) else {}
 
 
 class RemoteModelClient:

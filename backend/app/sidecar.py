@@ -1,5 +1,5 @@
 r"""**边车入口**（Phase B · P3，2026-09-29）：把循环 + 工具 + 工作区 + 沙箱放进**本地进程**，
-KB 经提供者客户端接出去 ✓、**模型本机直连** ✓ —— 同一份循环代码、两个装配点里的第二个 ✓。
+**模型本机直连** ✓ —— 同一份循环代码、两个装配点里的第二个 ✓。
 
 ## 跑法
 
@@ -10,14 +10,11 @@ python -m app.sidecar --port 8765
 
 ## 装配点（方案 §4）
 
-| 这一侧 | 边车模式 | 服务器模式（今天 ✓） |
+| 这一侧 | 边车模式（今天 ✓） | 服务器模式 |
 | --- | --- | --- |
-| KB | `KnowledgeProviderClient`（M3 起收编检索与入库 ✓） | `ChatService.retrieve_sources` ✓ |
 | 模型 | **本机直连** `OpenAICompatChat` ✓（2026-10-04 拍板，key 在本机 ✓） | `OpenAICompatChat` ✓ |
 | 工具 / 工作区 / 沙箱 | **本地** ✓（`isolation.py` / `sandbox.py` ✓； | 服务器进程内 ✓ |
 | | **没有隔离就拒绝执行** ✗ 这条不绕过 ✓） | |
-
-（KB 那一件的落点是 `services/knowledge_provider.py` ✓ —— 握手 / 检索 / 入库都在它身上。）
 
 **模型这一格从 2026-10-04 起不是"远端"了**（产品负责人拍板：**推理搬回本机**，本机自己持
 key 直连模型服务 ✗ 不再经 NAS 的 `/model-proxy` ✗）。落点是 :class:`_LocalModel`：它每建一次
@@ -58,7 +55,6 @@ key 在本机档由 Windows 凭据管理器持有，见 `services/secrets.py`）
 | 件 | 落点 |
 | --- | --- |
 | 会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置 | **本机**：`<data_dir>/kylab.db` |
-| 知识库（检索、入库）| **NAS** ✗（M3 收成**提供者**：客户端在 `services/knowledge_provider.py` ✓）|
 | 模型 | **本机** ✓（2026-10-04 起：本机持 key 直连模型服务，见上面的装配表）|
 | 技能目录 / 插件目录 / MCP 配置 | **本机** ✓（2026-10-04 起工具面也接真服务，见下）|
 
@@ -72,9 +68,6 @@ key 在本机档由 Windows 凭据管理器持有，见 `services/secrets.py`）
 2. **服务图就是本机档的组合根**（`build_local_services`）：会话 / 产物 / 笔记 / 记忆 /
    设置 / **技能 / 插件 / MCP** 全部走 `get_services()` 那一份（**与本机后端端点是同一个
    对象**——同一张审批登记表、同一个运行期配置、同一批会话、**同一份技能与 MCP 清单**）；
-   知识库那条（检索 + 入库）的换线在**组合根一处**（M3 阶段 3，
-   `core/services.py::build_services`），不在这里 —— 笔记与产物各持一份真
-   `IngestService`，`dataclasses.replace` 换不到它们对象内部的引用（方案 §5.1）；
 3. **写回落本机**（`_record_turn` → `ConversationService.record_turn`）：HTTP 写回那一半
    删掉了 ✗，`TurnOut.recorded` 的语义随之变成"**已落本机**"。
 """
@@ -115,10 +108,6 @@ from app.services.agent import (
     SourcesEvent,
     StepEvent,
     ThinkingEvent,
-)
-from app.services.knowledge_provider import (
-    STATE_READY,
-    KnowledgeProviderClient,
 )
 from app.services.llm import ChatError, ChatMessage, LLMDelta, OpenAICompatChat, ToolSpec
 from app.services.mcp_client import split_qualified
@@ -199,23 +188,16 @@ def pin_local_deployment(
     *,
     server_url: str = "",
     token: str = "",
-    kb_url: str = "",
-    kb_token: str = "",
     device_id: str = "",
 ) -> None:
-    """**入口自己钉死"数据落在哪儿"**——四个环境变量，一个都不能省。
+    """**入口自己钉死"数据落在哪儿"**——三个环境变量，一个都不能省。
 
     - ``KYLAB_DATA_DIR``：本次这一档的落点与远端两头。**从入口的参数来**（壳传的
       `--data-dir` / `--server` / `--token`），不给它的话库会建在 cwd 下的 ``./data``
       （与用户看到的"我的数据"不是一处）；
-    - ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN``：知识库/导入的来源与凭据；
-    - ``KYLAB_KB_URL`` / ``KYLAB_KB_TOKEN``：**知识库提供者**那两头的覆盖（排障与
-      多入口）。**有值才设**——它们是"覆盖"，而空串会**顶掉**环境或 ``.env`` 里已有的值
-      （"没传"与"显式置空"在引导级不是一回事：后者要清掉得改 ``.env``）。
-      默认档一个字都不用填：提供者客户端按"权威 + 覆盖"解析，
-      ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN`` 就是它的继承源；
+    - ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN``：旧会话导入的来源与凭据；
     - ``KYLAB_DEVICE_ID``：**这台机器的设备身份**，壳生成、壳传（``--device-id``）。
-      与 ``kb_url`` 同一条"**有值才设**"：它是引导级的事实，没传就是没有
+      "**有值才设**"：它是引导级的事实，没传就是没有
       （随后如实拒绝打快照，**绝不自动编一个**）。
 
     顺带清掉两个单例缓存：落点是**进程启动时定一次**的东西（`get_settings` /
@@ -231,10 +213,6 @@ def pin_local_deployment(
         os.environ["KYLAB_SERVER_URL"] = server_url
     if token:
         os.environ["KYLAB_TOKEN"] = token
-    if kb_url:
-        os.environ["KYLAB_KB_URL"] = kb_url
-    if kb_token:
-        os.environ["KYLAB_KB_TOKEN"] = kb_token
     if device_id:
         os.environ["KYLAB_DEVICE_ID"] = device_id
     reset_services()
@@ -309,8 +287,7 @@ class _LocalModel:
     **为什么是"每建一次客户端"而不是构造时建一个**：模型身份（地址 / key / 模型名）
     与采样参数都从 `runtime.llm()` 现取，而那份运行期配置是**设置页可改**的
     （本机档的设置就在本机库 `app_settings` 里）。构造时定一份会让"改完设置要重启边车"
-    变成一条没人记得的隐含前提，与 `provider`（知识库那一头）同一条口径。
-    建对象本身廉价，昂贵的是 HTTP 调用。
+    变成一条没人记得的隐含前提。建对象本身廉价，昂贵的是 HTTP 调用。
 
     **key 从哪来**：`model_providers` 那一行的凭据。本机档（Windows）上它由
     `services/secrets.use_keychain` 判定为"钥匙串是凭据的家"——注册表服务读的时候
@@ -461,37 +438,23 @@ def build_local_services(base: Services, *, workspace: Path) -> Services:
 
 #: 这一轮边车**真的能服务**的工具 ✓（其余不摆给模型 ✗ —— 摆上去只会撞一句"内部错误" ✗）。
 #:
-#: - `search` 走**远端 KB** ✓（只有这一轮给了 `kb_ids` 才出现 ✓，与服务器同口径 ✓）；
 #: - 文件三件 + `run_command` 是**本地执行的主体** ✓（沙箱与隔离探测都在本机 ✓）；
 #: - 联网两件在 `tools.py` 里实现 ✓，不依赖仓储 ✓；
 #: - 技能两件**走本机技能目录** ✓（2026-10-04 起：`list_skills` 列真的技能、
 #:   `read_skill` 读得到正文；启停状态读本机 `app_settings` 的 `chat.disabled_skills` ✓）；
 #: - **导出三件**（2026-09-30 起 ✓，**M2 阶段 3 改落本机** ✓）：产出物**本地生成、
 #:   落本机对象存储**（`ArtifactService.save`：挂了工作区就落用户的真实目录）——
-#:   这是"要一份文件"那一类请求在**桌面与本机跑**的链上唯一缺过的一环 ✓。
-#:   阶段 3 之前它上传到服务器的会话文件区；现在**账与文件都在本机** ✓
+#:   这是"要一份文件"那一类请求在**桌面与本机跑**的链上唯一缺过的一环 ✓
 #:   （文件的预览/下载走本机后端的 `/conversations/{id}/files*` ✓）。
-#: - **笔记三件**（`create_note` / `attach_note_to_kb` / `list_notes` 2026-10-01 ✓，
-#:   **阶段 3 改落本机** ✓）：笔记就是本机库里的笔记（`NotesService` ✓）——
-#:   `create_note` / `list_notes` 读写本机；`attach_note_to_kb` 要**知识库**，
-#:   而知识库在 NAS 上：正文从本机库读出来，**经提供者客户端上传**（multipart、
-#:   `start=true`、NAS 回文档 id 再回填到本机笔记上，M3 阶段 3 打通，见方案 §5.2）✓。
-#:   提供者没配/连不上时它**如实失败**（`KnowledgeBaseUnavailable` 那句，含原因与下一步）✗。
+#: - **笔记两件**（`create_note` / `list_notes` 2026-10-01 ✓，**阶段 3 改落本机** ✓）：
+#:   笔记就是本机库里的笔记（`NotesService` ✓）。
 #: - **记忆两件**（`recall` / `remember` 2026-10-01 ✓，**阶段 3 改落本机** ✓）：
 #:   记忆本体本来就在 `data_dir/memory`（本机）✓ —— 现在读写的也是本机那份
 #:   `MemoryService`（`remember` 不看开关；`recall` 受记忆开关门控，默认关，
 #:   关着时它**明确报错**而不是回空 ✓）。v0.57 起存储换成 mem0
 #:   （`<数据目录>/memory/<账号>/mem0/`，模型走我们自己的模型注册表 ✓）。
-#: - **`ingest_file`**（2026-10-01 ✓）：**边车读本机 → 上传进知识库**（走提供者客户端 ✓）——
-#:   "把我这台机器上的某份文件放进库"本来只差一个上传口；字节恰好在这侧 ✓。
-#:   受库开关门控（`_LOCAL_KB_TOOLS`：对话里没选库就不摆 ✓），
-#:   **M3 阶段 2 起还受提供者状态门控**（`state != ready` 时与 `search` 一起摘掉 ✓）。
-#:
-#: 表格读取（`list_tables` / `query_table` 要服务器侧的结构化副本与 SQL 面）→
-#: 仍**留给 P4** ✓。
 SIDECAR_TOOL_NAMES = frozenset(
     {
-        "search",
         "list_files",
         "read_file",
         "search_files",
@@ -504,12 +467,10 @@ SIDECAR_TOOL_NAMES = frozenset(
         "export_table",
         "export_deck",
         "create_note",
-        "attach_note_to_kb",
         "list_notes",
         "recall",
         "remember",
         "forget",
-        "ingest_file",
     }
 )
 
@@ -521,17 +482,6 @@ SIDECAR_TOOL_NAMES = frozenset(
 #: 这一条与 `build_local_services` 里"不再盖掉 `mcp`"是**同一件事的两半**：
 #: 光把 `services.mcp` 换成真服务，`agent_tools._mcp_specs` 产出的工具仍会被上面那张
 #: 白名单筛掉 ✗ —— 表现就是"配置页里那三台 MCP 服务好好的，agent 手里一个 `mcp__*` 都没有"。
-
-#: 提供者**不 ready 时一个都不摆**的工具（方案 §3.2 的"失败降级"那一行，阶段 2 落地）。
-#:
-#: 判据是"它有没有真的用到知识库"：`search`（检索）、`attach_note_to_kb`（笔记入库）、
-#: `ingest_file`（本机文件入库）——三件都要那台 NAS。不 ready 时按"这台机器没有这项能力"
-#: 处理，与 `_KB_TOOLS` 的"关了就不摆"**同一条纪律**：给了又拒只会白花一个来回
-#: （模型先看一眼有哪些库、再检索一次被拒）。
-#:
-#: 三个工具名与 `SIDECAR_TOOL_NAMES` 一起维护：改前者就要回头看这里（那份名单里
-#: 也只有这三个真的碰知识库——`list_notes` / `create_note` 是纯本机写的笔记）。
-KB_PROVIDER_TOOLS = frozenset({"search", "attach_note_to_kb", "ingest_file"})
 
 
 #: 边车这一侧的**最小**系统提示词（**不是**服务器那一份 ✗）。
@@ -551,12 +501,8 @@ KB_PROVIDER_TOOLS = frozenset({"search", "attach_note_to_kb", "ingest_file"})
 #: 试图读一份 docx、最后 `run_command unzip` 撞上执行闸），整轮**没交付** ✗。
 #: 把同一句改成"直接用你已知的知识写、不需要翻文件"就一次到位 ✓ —— 差的正是这半句。
 #:
-#: **"笔记两件"半句（2026-10-01 加）**：与交付口同一课——`create_note` 进了工具表，
-#: 不点名它模型仍然想不到（"记笔记"是一件服务器上的事，它默认自己够不着 ✗）；
-#: `attach_note_to_kb` 是同一句话的第二步（"记下来 → 以后 `search` 搜得到"），
-#: 但它**受库开关门控**（`_KB_TOOLS`：对话里没选知识库时它根本不在表里 ✗）——
-#: 所以那半句带前提（"对话里选了知识库时"）。实测（2026-10-01 L1 验收）：
-#: 无条件点名时，没选库的会话里模型会花半段回答解释"我这里没有这个工具" ✗。
+#: **"笔记一件"半句（2026-10-01 加）**：与交付口同一课——`create_note` 进了工具表，
+#: 不点名它模型仍然想不到（"记笔记"是一件服务器上的事，它默认自己够不着 ✗）。
 #:
 #: **"记忆两件"半句（2026-10-01 加）**：同一课——`recall` / `remember` 进了工具表，
 #: 不点名时模型会把"帮我记住 X"往 `create_note` 上带 ✗（"记住"听起来像记一条东西），
@@ -579,9 +525,8 @@ SIDECAR_SYSTEM_PROMPT = (
     "**对方要一份文件时**（「给我一份」「发我个 .docx / .xlsx」「能下载的」）**用交付口**："
     "export_document（正文类）/ export_table（表格）/ export_deck（幻灯）——"
     "文件会挂到对话里、他点一下就能拿到；**只把内容贴在正文里不算交付** ✗。"
-    "**留档用 `create_note`**（存进对方的笔记列表，服务器上能看到）；"
-    "**对话里选了知识库时，再调 `attach_note_to_kb` 让笔记能被检索到**——"
-    "**这两个都不是交付**：对方要的是文件时仍然走交付口 ✗。"
+    "**留档用 `create_note`**（存进对方的笔记列表）；"
+    "**但它不是交付**：对方要的是文件时仍然走交付口 ✗。"
     "**对方让你「记住」的偏好与约定用 `remember`**（之后每轮对话都会带上）、"
     "**要翻他以前说过什么用 `recall`**——这两件是**长期记忆**，别用 `create_note` 顶 ✗。"
     "**缺素材就按你已知的写**，不要为了找素材去翻文件 / 扫盘 / 跑命令 ✗ ——"
@@ -774,30 +719,18 @@ def _check_workspace(raw: str | None) -> Path:
 
 
 class Clients:
-    """**装配点**：KB 远端 + 模型本机直连 + 本地那一侧（P3）✓
+    """**装配点**：模型本机直连 + 本地那一侧（P3）✓
 
     （服务器模式的装配在 `core/services.py` ✓。）
 
     | 件 | 边车这一侧 | 怎么来 |
     | --- | --- | --- |
-    | KB（检索 + 入库）| **远端** ✓ | `KnowledgeProviderClient` ✓（M3 阶段 3 起整条在组合根上）|
     | 模型 | **本机直连** ✓（2026-10-04 起）| `_LocalModel` → `OpenAICompatChat` ✓（key 在本机 ✓）|
     | 循环 / 工具 / 沙箱 / 审批 | **本地** ✓ | `ToolLoop` + `build_runner` ✓（同一份代码 ✓）|
     | 会话 / 产物 / 笔记 / 记忆 / 设置 | **本地** ✓（阶段 3）| `get_services()` 那一份 ✓ |
     | 技能目录 / 插件 / MCP | **本地** ✓（2026-10-04 起工具面也接上）| `get_services()` 那一份 ✓ |
-    | 入库 | **远端** ✓ | 组合根换线那一处（`core/services.py`，知识库在 NAS）✓ |
 
-    ⚠️ **本类手上那个 provider 就是服务图里跑着的那个**（M3 阶段 5 收成一个实例）：
-    服务图的提供者客户端由**组合根**建（`core/services.py::build_services`，本机档那一段，
-    挂在 `Services.provider` 上），`ChatService` 的检索、笔记与产物的入库、
-    `Services.ingest`、`stores.meta.kb` 的 reader、`/local/provider` 端点与**本类**的
-    `self.provider` / `self.knowledge` 全从**它**取。于是全进程只有一份 30s 握手缓存：
-    工具表门控与状态端点不可能各答一半（"端点说 ready、工具表说不 ready"这类不一致
-    在阶段 2/3 是能发生的——那时是两份缓存）。
-    `provider=` 那个入参仍是**用例的注入接缝**（塞一个假实现进去验三态门控），
-    给了它本类就用手上这一份、**换不动服务图里那一个**——那是用例的形态，不是运行形态。
-
-    `model=` 同理是**用例的注入接缝**（假模型，避免打真网络）：给了就用它，
+    `model=` 是**用例的注入接缝**（假模型，避免打真网络）：给了就用它，
     不给就是 `_LocalModel`（本机直连）。**它不再默认打 NAS 的 `/model-proxy`** ✗
     —— 那一条（`RemoteModelClient`）留在 `services/remote_clients.py` 里，
     服务的是"客户端不带 key、由服务端代发"的那些部署，本机档不用它。
@@ -810,13 +743,11 @@ class Clients:
         *,
         workspace: Path,
         data_dir: Path,
-        knowledge: Any = None,
         model: Any = None,
-        provider: KnowledgeProviderClient | None = None,
         services: Services | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        #: 用户会话令牌：**知识库那一头**要它（模型这一头不要——key 在本机 ✓）。
+        #: 用户会话令牌：旧会话导入那一头要它（模型这一头不要——key 在本机 ✓）。
         self.token = token
         #: 打服务器自己的健康端点（探活很便宜，不占用模型的额度 ✓）
         self.health_url = self.base_url.rsplit("/api/v1", 1)[0] + "/api/v1/health"
@@ -837,25 +768,6 @@ class Clients:
         # 所以放在 `base_services` 之后：那一份运行期配置就是它要读的东西。
         self.model = model if model is not None else _LocalModel(base_services.runtime)
 
-        #: **知识库提供者的客户端**（M3 阶段 2 起有它）。**默认就是服务图上那一个**
-        #: （`Services.provider`，阶段 5 收成一个实例）：地址与钥匙**每次调用现取**
-        #: （`get_setting` 读的就是下面那份运行期配置），所以设置页改了地址不用重启边车；
-        #: 工具表门控（`tool_specs`）问它一次，`/local/provider` 端点问的是同一个对象。
-        #: `provider=` 是给用例塞一个假实现的口子（它同时也换了 `self.knowledge`）
-        #: ——**它换不动服务图里那一个**，那一条只出现在用例里，见类说明。
-        if provider is not None:
-            self.provider = provider
-        elif base_services.provider is not None:
-            self.provider = base_services.provider
-        else:
-            # 兜底：手工构造的 `Services` 上没有那一格（脚本 / 老用例）。自己建一个，
-            # 口径与组合根那一处逐字相同（同一份引导级配置 + 同一个运行期配置）。
-            self.provider = KnowledgeProviderClient(get_setting=base_services.runtime.get)
-        #: KB 那条接缝在本类这一侧的把手 = **提供者客户端**（它满足 `KnowledgeClient`
-        #: 协议的 `retrieve_sources` 签名）。`knowledge=` 这个入参留给"用例塞一个假实现"，
-        #: 给了就用它（与模型那一头同一个写法）。
-        self.knowledge = knowledge if knowledge is not None else self.provider
-
         self.services = build_local_services(base_services, workspace=workspace)
         #: 本地运行期配置：**就是本机库 `app_settings` 那一份** ✓（旧版是个本地 JSON
         #: 临时物 —— 设置页改的值与本机后端读的值必须是同一个，见阶段 3 的收编表）。
@@ -864,16 +776,10 @@ class Clients:
         #: **整套 `ApprovalRegistry` 带过来** ✓（`ask` 档的行为与服务器逐条一致 ✓），
         #: 而且**就是组合根那一张表**（本机后端的 `/chat/approvals` 与这一侧共用一套）。
         self.approvals = self.services.approvals
-        #: 下面这几个给"这一侧有什么"的说明与用例读（真服务可以从 `self.services` 上取）；
-        #: `ingest` / `documents` 这两件**就是服务图上那一对**（M3 阶段 3 起）：本机档是
-        #: 提供者给的两个窄视图（只有 `submit` / `enqueue_ingest` 那一件事），服务器档是
-        #: 真 `IngestService` / `DocumentService`。用例要断言"入库接缝装配成了哪一件"，
-        #: 看这两个引用就够（`is` 比身份，见 `tests/unit/services/test_client_seams.py`）。
+        #: 下面这几个给"这一侧有什么"的说明与用例读（真服务可以从 `self.services` 上取）。
         self.artifacts = self.services.artifacts
         self.notes = self.services.notes
         self.memory = self.services.memory
-        self.ingest = self.services.kb.ingest
-        self.documents = self.services.kb.documents
 
     def model_configured(self) -> bool:
         """**本机**有没有配好对话模型（`/health` 那一格读它，见那里的说明）。
@@ -888,15 +794,8 @@ class Clients:
         """
         return self.services.runtime.llm().is_configured
 
-    def tool_specs(self, *, kb_ids: Sequence[str] = ()) -> list[ToolSpec]:
+    def tool_specs(self) -> list[ToolSpec]:
         """这一轮摆给模型的工具：**只摆本地真能服务的那些** ✓（见 `SIDECAR_TOOL_NAMES`）。
-
-        两处门控叠在一起，判据不同、都要过：
-
-        1. `agent_tools.tool_specs` 的**库开关**（`kb_ids` 为空 = 用户关了知识库那一侧，
-           见 `_KB_TOOLS` / `_LOCAL_KB_TOOLS`）；
-        2. M3 阶段 2 追加的**提供者状态**：``state != ready`` 时那三个真正要知识库的工具
-           一个都不摆（方案 §3.2 的"失败降级"）——给了又拒只会白花一个来回。
 
         **技能与外部 MCP 走的是同一张表、同一个执行器**（2026-10-04）：
         `agent_tools.tool_specs` 已经把技能目录（`services.skills`）与外部服务
@@ -904,29 +803,20 @@ class Clients:
         名单里的名字 + `mcp__<服务>__<工具>` 那族（外部名字写不进名单，
         按形状放行，见 `SIDECAR_TOOL_NAMES` 下面那段说明）。
 
-        ⚠️ 第 2 条**只在 `scope` 非空时才去问提供者**（`kb_ids` 为空时那三个本来就已被
-        第 1 条摘掉）：否则**每一轮对话**都会先探一次握手，而 R1 要的恰恰是
-        "交互路径不被握手拖慢"（没选库的会话根本用不到提供者，不该为它等一次 NAS 往返）。
-
         ⚠️ 本机档**没有归属过滤**（`owner_id=None`）：这台机器只有一个主人，
         "别人登记的 MCP 服务"这个场景不存在（与 `/mcp-servers` 端点那条 `LOCAL_CALLER`
         同一口径）。而 `available_tools` 仍按 `record.enabled` 与 `policy` 收口 ✓。
         """
-        scope = [str(item) for item in kb_ids if str(item).strip()]
-        specs = agent_tools.tool_specs(self.services, owner_id=None, kb_ids=scope or None)
-        specs = [
+        specs = agent_tools.tool_specs(self.services, owner_id=None)
+        return [
             spec
             for spec in specs
             if spec.name in SIDECAR_TOOL_NAMES or split_qualified(spec.name) is not None
         ]
-        if scope and self.provider.status().state != STATE_READY:
-            specs = [spec for spec in specs if spec.name not in KB_PROVIDER_TOOLS]
-        return specs
 
     def tool_loop(
         self,
         *,
-        kb_ids: Sequence[str] = (),
         #: 这一轮归属的会话：**产物要靠它**（`ArtifactService.save` 按会话落点、
         #: `_record_turn` 按它写库 ✓）。没带会话 id 的老调用方落回 `LOCAL_CONVERSATION`
         #: ——那时产物与这一轮都会**如实报**"没有这条会话"（不是静默丢掉 ✓）。
@@ -939,7 +829,7 @@ class Clients:
         #:   `approval_id` ✓）→ 交给循环的 `UNAVAILABLE` 那条路 ✓，回给模型的是"待确认" ✓。
         interactive: bool = True,
     ) -> ToolLoop:
-        """把**两头的接缝 + 本地那一侧**拼成一个 `ToolLoop` ✓（循环本体一行不改 ✗）。
+        """把**两头 + 本地那一侧**拼成一个 `ToolLoop` ✓（循环本体一行不改 ✗）。
 
         三处口径与服务器那条链路逐条对齐：工具表（`tool_specs` ✓）、执行器
         （`build_runner` ✓）、档位（`chat.mode` / `chat.permission` 从**本机**运行期配置读 ✓，
@@ -949,7 +839,6 @@ class Clients:
         客户端：循环每一步都会现要一个，而 `_LocalModel` 每建一次就问一次运行期配置，
         所以用户在设置页换了模型/填了 key，**下一轮就生效**（不必重启边车 ✓）。
         """
-        scope = [str(item) for item in kb_ids if str(item).strip()]
         # `Caller(is_admin=True)`：这是**本机主人**在 `agent_exec` 那道闸上的形状
         # （"能不能在**这台机器**上执行代码"）——边车跑在用户自己的机器上，能起边车的
         # 就是这台机器的主人 ✓。**服务器那道 `require_admin` 没有被绕过** ✗：它管的是
@@ -958,12 +847,11 @@ class Clients:
         runner = agent_tools.build_runner(
             self.services,
             Caller(is_admin=True),
-            kb_ids=scope,
             conversation_id=conversation_id,
         )
         return ToolLoop(
             client_factory=lambda: self.model,
-            tools=self.tool_specs(kb_ids=kb_ids),
+            tools=self.tool_specs(),
             runner=runner,
             # **通道就是这一件事**：登记表非空 → 循环走到"要问"时发事件、停下来等人 ✓；
             # 为空 → 直接按 `UNAVAILABLE` 回"待确认" ✓（**绝不静默当成用户拒绝** ✗）。
@@ -1003,10 +891,6 @@ class TurnIn(BaseModel):
 
     message: str = Field(min_length=1, max_length=32_000)
     workspace: str | None = Field(default=None, description="留空用默认工作区（用户目录下）")
-    kb_ids: list[str] = Field(
-        default_factory=list,
-        description="这一轮允许查的库；**留空 = 知识库关着** ✓（与服务器同口径 ✓）",
-    )
     history: list[HistoryIn] = Field(
         default_factory=list,
         description=(
@@ -1275,8 +1159,6 @@ def create_app(
     workspace: Path,
     *,
     data_dir: Path | None = None,
-    kb_url: str = "",
-    kb_token: str = "",
     device_id: str = "",
 ) -> FastAPI:
     """造边车应用（入口只做参数解析与 `uvicorn.run` ✓，方便用例直接拿 app ✓）。
@@ -1284,26 +1166,19 @@ def create_app(
     ``data_dir`` 是**本地**运行期数据的落点 ✓（本机库、沙箱、记忆都在它下面 ✓）：
     默认取工作区的上一级 `…/data` ✓ —— 与工作区同处一个用户目录，备份时一起拿走 ✓。
 
-    ``kb_url`` / ``kb_token`` 是**知识库提供者那两头**的覆盖（M3 §4.1，排障与多 NAS
-    入口）。**留空 = 继承** ``base_url`` / ``token``（壳里那台 NAS），所以默认档
-    一个字都不用传 ✓ —— 它们只往 ``pin_local_deployment`` 的"有值才设"那条路走。
-
     ``device_id``（M5 阶段 4）是**这台机器的设备身份**：壳在登录那一刻生成一次、
-    之后每次起边车都传下来。它同样是"有值才设"，**留空就是没有** —— 本机档随后
+    之后每次起边车都传下来。它是"有值才设"，**留空就是没有** —— 本机档随后
     如实拒绝打快照（R12：绝不自动编一个 id），而不是悄悄用一台匿名机器备份。
 
     **先把落点钉死**（`pin_local_deployment`）再建任何东西：`Clients` 会走本机的
-    组合根（`get_services()`），而那是按环境变量建单例的——钉晚了就会按服务器档
-    去连 PG（"边车误连服务器库"那条路，不报错、只是写错库）。用例直接调本函数时
-    也只有这一次机会 ✓。
+    组合根（`get_services()`），而那是按环境变量建单例的——钉晚了库就会建在别处。
+    用例直接调本函数时也只有这一次机会 ✓。
     """
     data_dir = data_dir or (workspace.parent / "data")
     pin_local_deployment(
         data_dir,
         server_url=base_url,
         token=token,
-        kb_url=kb_url,
-        kb_token=kb_token,
         device_id=device_id,
     )
     clients = build_clients(base_url, token, workspace=workspace, data_dir=data_dir)
@@ -1371,7 +1246,7 @@ def create_app(
 
     @app.post("/turn", response_model=TurnOut, summary="走一轮（模型本机直连；工具在本机跑）")
     def turn(payload: TurnIn) -> TurnOut:
-        """**同一个 `ToolLoop`** ✓：本机直连模型 + 远端 KB + 本地工具/沙箱/审批 ✓。
+        """**同一个 `ToolLoop`** ✓：本机直连模型 + 本地工具/沙箱/审批 ✓。
 
         顺序与服务器那条链路逐条对齐（见 `api/v1/chat.py` 的同名循环）：
         取正文以收尾那条 `DoneEvent` 为准 ✓、步骤逐条收 ✓、失败**如实报** ✗。
@@ -1384,7 +1259,6 @@ def create_app(
         # "待确认"，**不是**"用户拒绝了" ✗（分档见 `services/approvals.py` 模块头 ✓）。
         # 要真正弹确认条就用 `/turn/stream` ✓（它把询问当成一条 SSE 发出去 ✓）。
         loop = clients.tool_loop(
-            kb_ids=payload.kb_ids,
             conversation_id=payload.conversation_id or LOCAL_CONVERSATION,
             interactive=False,
         )
@@ -1531,7 +1405,6 @@ def create_app(
         def gen() -> Iterator[str]:
             target = _check_workspace(payload.workspace) if payload.workspace else workspace
             loop = clients.tool_loop(
-                kb_ids=payload.kb_ids,
                 conversation_id=payload.conversation_id or LOCAL_CONVERSATION,
             )
             messages = _messages_of(payload)
@@ -1681,19 +1554,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--server",
         default=os.environ.get("KYLAB_SERVER_URL", "http://127.0.0.1:8000/api/v1"),
-        help="服务器 API 基址（**知识库**那一头在它下面；模型不走它）",
+        help="远端 API 基址（旧会话导入的来源；模型不走它）",
     )
     parser.add_argument("--token", default=os.environ.get("KYLAB_TOKEN", ""), help="用户会话令牌")
-    parser.add_argument(
-        "--kb-url",
-        default=os.environ.get("KYLAB_KB_URL", ""),
-        help="知识库提供者的地址覆盖（默认继承 --server，见设置页「知识库连接」）",
-    )
-    parser.add_argument(
-        "--kb-token",
-        default=os.environ.get("KYLAB_KB_TOKEN", ""),
-        help="知识库提供者的凭据覆盖（默认继承 --token；不落库、不进日志）",
-    )
     parser.add_argument(
         "--device-id",
         default=os.environ.get("KYLAB_DEVICE_ID", ""),
@@ -1727,8 +1590,6 @@ def main(argv: list[str] | None = None) -> None:
             args.token,
             workspace,
             data_dir=data_dir,
-            kb_url=args.kb_url,
-            kb_token=args.kb_token,
             device_id=args.device_id,
         ),
         host=args.host,

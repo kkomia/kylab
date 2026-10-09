@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from app.core.config import get_settings
 from app.core.services import reset_services
 from app.core.storage import reset_stores
-from app.services.llm import ChatError, LLMDelta, LLMReply, ToolCall, ToolCallDelta
+from app.services.llm import ChatError, LLMDelta, LLMReply, ToolCallDelta
 from app.services.memory import reset_instances as reset_memory_instances
 from app.services.model_registry import ModelRegistryService
 from app.services.runtime_config import RuntimeConfigService
@@ -331,14 +331,3 @@ def install_fake_chat(
     chat = FakeChatModel(answer, error, script)
     services.chat._chat_factory = lambda config: chat
     return chat
-
-
-def search_tool_call(query: str, call_id: str = "c1") -> LLMReply:
-    """一条"先查资料"的模型回复（工具循环的第一轮）。"""
-    import json
-
-    return LLMReply(
-        tool_calls=(
-            ToolCall(id=call_id, name="search", arguments=json.dumps({"query": query})),
-        )
-    )

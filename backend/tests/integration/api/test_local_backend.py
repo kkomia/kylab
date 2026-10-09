@@ -1,6 +1,6 @@
-"""**断 NAS 时的对话全流程**（M2 §6.1 的验收用例，本机档）。
+"""**本机档的对话全流程**（M2 §6.1 的验收用例）。
 
-这条用例要回答的是 M2 的核心那句话："**断 NAS 的时候，对话还跑得完吗**"，而且
+这条用例要回答的是 M2 的核心那句话："**这一轮不带外网，对话还跑得完吗**"，而且
 **不需要 PostgreSQL**（`local` 这个 marker 的全部意义，见 `conftest.py` 里那段说明）。
 
 ## 假的是什么、真的是什么
@@ -11,16 +11,14 @@
 | 本机后端面 | **真的**（`/api/v1/*` 就挂在同一个 app 上，`local_router` 那张白名单）|
 | 会话 / 消息 / 事件 / 产物 / 笔记 / 设置 | **真的**（本机 SQLite，落在 `tmp_path`）|
 | 模型 | 假的（`conftest.FakeChatModel`，按剧本吐工具调用与正文）|
-| 知识库提供者 | **连不上**：握手抛 `ConnectError`、检索抛 `RemoteUnavailableError` |
-| 出站 HTTP | 一概不许（`_httpx` 被换成会炸的那个）——**"断 NAS"是真的断** ✓ |
+| 出站 HTTP | 一概不许（`_httpx` 被换成会炸的那个）——**"断网"是真的断** ✓ |
 
 ## 流程（照 §6.1 那条链，一步不落）
 
-建会话 → 走一轮带工具的流式对话（SSE）→ 列会话 → 读会话详情（消息 / 步骤 / 思考）→
+建会话 → 走一轮流式对话（SSE）→ 列会话 → 读会话详情（消息 / 步骤 / 思考）→
 改名 → 回退一轮 → 删会话 → 建笔记 / 列笔记 → 改设置。
 
-**每一步都必须成功** ✓，而且检索失败要**如实出现在步骤里** ✗（不许伪装成"没命中"，
-也不许因为 NAS 断了就整轮失败 —— 这一轮照常答话、照常落库 ✓）。
+**每一步都必须成功** ✓。
 """
 
 from __future__ import annotations
@@ -29,7 +27,6 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -37,59 +34,36 @@ from app import sidecar
 from app.core.services import reset_services
 from app.core.storage import reset_stores
 from app.services import remote_clients
-from app.services.knowledge_provider import KnowledgeProviderClient
 from app.services.llm import LLMReply
-from app.services.remote_clients import RemoteKnowledgeClient, RemoteUnavailableError
-from tests.conftest import FakeChatModel, search_tool_call
+from tests.conftest import FakeChatModel
 
-#: 这一轮的模型剧本：先查资料（NAS 断着，这一步会失败），再作答。
-#: 第二步带一段 `reasoning` —— 会话详情里"思考也在"就是靠它验的 ✓。
-SCRIPT = [search_tool_call("本机这条链怎么验"), LLMReply(reasoning="先想一下再说。")]
-ANSWER = "查不到资料（NAS 断着），我按已知的说：这条链要一步一步验。"
+#: 这一轮的模型剧本：直接作答（不调工具）。第二步带一段 `reasoning` ——
+#: 会话详情里"思考也在"就是靠它验的 ✓。
+SCRIPT = [LLMReply(reasoning="先想一下再说。")]
+ANSWER = "这条链要一步一步验。"
 
 
 def _boom_httpx():  # type: ignore[no-untyped-def]
-    """任何一次出站 HTTP 都直接炸 ✗（"断 NAS"必须是**真的断**，不是"假装断"）。"""
-    raise AssertionError("这个用例不该发任何 HTTP 请求（NAS 是断的）")
-
-
-def _dead_provider():  # type: ignore[no-untyped-def]
-    """知识库提供者客户端：**任何请求都连不上**（假传输 ✓，不打真网络 ✓）。
-
-    为什么要显式给一个而不是让它去撞上面那个 `_boom_httpx`：M3 阶段 2 起
-    `Clients.tool_specs` 在"这一轮选了库"时会问一次提供者状态，而"怎么知道 NAS 断了"
-    的唯一途径就是那次探测**真的失败** —— 让它撞 AssertionError 再被探针吞掉，
-    等于把这条断言悄悄关掉（那种"绿着但没在干活"的状态正是 `_boom_httpx` 要防的）。
-    这里模拟的是真实形态：连接被拒。
-    """
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("NAS 断了（这条用例的唯一故障）")
-
-    return KnowledgeProviderClient(transport=httpx.MockTransport(handler))
+    """任何一次出站 HTTP 都直接炸 ✗（"断网"必须是**真的断**，不是"假装断"）。"""
+    raise AssertionError("这个用例不该发任何 HTTP 请求（外网是断的）")
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch) -> Iterator[TestClient]:  # type: ignore[no-untyped-def]
-    """边车（本机档）+ 假模型 + 不可达的知识库提供者。"""
+    """边车（本机档）+ 假模型 + 断网。"""
     model = FakeChatModel(answer=ANSWER, script=SCRIPT)
 
     def _build(base: str, token: str, *, workspace, data_dir):  # type: ignore[no-untyped-def]
-        # 模型换成假的（不联网）；知识库提供者连不上；其余一律走真装配（本机档的组合根 ✓）
+        # 模型换成假的（不联网）；其余一律走真装配（本机档的组合根 ✓）
         return sidecar.Clients(
             base,
             token,
             workspace=workspace,
             data_dir=data_dir,
             model=model,
-            provider=_dead_provider(),
         )
 
-    def _dead_knowledge(self, **kwargs: Any) -> list[Any]:
-        raise RemoteUnavailableError("知识库不可达：NAS 断了（这条用例的唯一故障）")
-
     monkeypatch.setattr(sidecar, "build_clients", _build)
-    monkeypatch.setattr(RemoteKnowledgeClient, "retrieve_sources", _dead_knowledge)
     monkeypatch.setattr(remote_clients, "_httpx", _boom_httpx)
     app = sidecar.create_app("http://nas.test/api/v1", "t", tmp_path / "ws")
     with TestClient(app) as client:
@@ -110,34 +84,25 @@ def _sse_events(text: str) -> list[dict[str, Any]]:
     return out
 
 
-def test_the_whole_flow_works_with_the_nas_down(client: TestClient) -> None:
-    """§6.1 的主判据：**每一步都成功**，且检索失败如实进步骤 ✓。"""
+def test_the_whole_flow_works_with_the_network_down(client: TestClient) -> None:
+    """§6.1 的主判据：**每一步都成功** ✓。"""
     # ① 建会话（本机后端，不带任何凭据 —— 本机档短路成"本机主人" ✓）
-    created = client.post("/api/v1/conversations", json={"kb_ids": ["kb_1"]})
+    created = client.post("/api/v1/conversations", json={})
     assert created.status_code == 201, created.text
     conversation_id = created.json()["id"]
 
-    # ② 走一轮带工具的**流式**对话（同一个 ToolLoop，工具在本机跑）
+    # ② 走一轮**流式**对话（同一个 ToolLoop，工具在本机跑）
     stream = client.post(
         "/turn/stream",
         json={
             "message": "这条链怎么验？",
             "conversation_id": conversation_id,
-            "kb_ids": ["kb_1"],
         },
     )
     assert stream.status_code == 200, stream.text
     events = _sse_events(stream.text)
     kinds = [event["type"] for event in events]
     assert "delta" in kinds and "done" in kinds, kinds
-    # 检索那一步**如实失败**（不是"没命中"，也没有把整轮打崩）✓
-    search_steps = [
-        event for event in events if event["type"] == "step" and event.get("tool") == "search"
-    ]
-    assert search_steps, events
-    failed = [event for event in search_steps if event.get("outcome") == "failed"]
-    assert failed, search_steps
-    assert "不可达" in failed[-1]["detail"], failed[-1]
     # 这一轮照常答完
     done = [event for event in events if event["type"] == "done"]
     assert done[-1]["answer"] == ANSWER
@@ -156,8 +121,7 @@ def test_the_whole_flow_works_with_the_nas_down(client: TestClient) -> None:
     assert [item["role"] for item in messages] == ["user", "assistant"]
     assert messages[0]["content"] == "这条链怎么验？"
     assert messages[1]["content"] == ANSWER
-    # 失败的那一步留在快照里（回看时看得见"当时 NAS 是断的"）
-    assert any(step.get("tool") == "search" for step in messages[1]["steps"]), messages[1]
+    assert isinstance(messages[1]["steps"], list), messages[1]
     assert "先想一下" in messages[1]["thinking"], messages[1]
 
     # ⑤ 事件日志（本机档薄重声明的那一条）读得到

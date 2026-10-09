@@ -181,7 +181,7 @@ class ServiceUnavailableError(KylabError):
       预览，人直接被弹到登录页）。
     - 也不是 500：500 会把"缺一件事、补上/重试就好"这条出路藏起来。
 
-    与 ``KnowledgeBaseUnavailable`` / ``SecretStoreUnavailable`` 是同一档、不同起因，
+    与 ``SecretStoreUnavailable`` 是同一档、不同起因，
     所以 code 用更笼统的 ``service_unavailable``：调用方按 503 这一档处理（提示 + 重试），
     具体缺什么写在 message 里。
     """
@@ -263,34 +263,6 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=exc.http_status,
             content={"code": exc.code, "message": exc.detail},
             headers=getattr(exc, "headers", None),
-        )
-
-    # 知识库不可用 → 503（M2 §2.2「知识库不可用的如实报错」）。
-    #
-    # **提供者不可用时也走它**（M3 阶段 3）：本机档的入库整条走提供者客户端，而
-    # "没配 / 连不上 / 被拒"在那边一律折成 `KnowledgeBaseUnavailable`（见
-    # `services/knowledge_provider.py` 的两条口径）——两个面（HTTP 端点与工具循环）
-    # 共用这一个 503 信封，不另开一套错误语义。
-    #
-    # **惰性 import，不在模块级**：`app.storage.sqlite_impl.meta_store` 反过来 import 本模块
-    # 拿 `ConflictError`（"storage → core"这个方向本来就存在），模块级 import 回去会把
-    # 两边的依赖拉成双向的，而双向依赖的下一次改动就是循环 import。
-    #
-    # **503 而不是 500**：本机档没有知识库数据源（在 NAS 上），
-    # 这是"这个部署现在没有这个能力"，不是"我们出错了"——500 会把"去设置里看「知识库连接」/
-    # 去服务器上做"这条出路藏起来。**也不是空结果**：`Unavailable*Store` 抛异常正是为了不假装查过。
-    from app.storage.split_impl import KnowledgeBaseUnavailable
-
-    @app.exception_handler(KnowledgeBaseUnavailable)
-    async def _handle_knowledge_base_unavailable(
-        _: Request, exc: KnowledgeBaseUnavailable
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={
-                "code": "knowledge_base_unavailable",
-                "message": str(exc) or "知识库当前不可用",
-            },
         )
 
     @app.exception_handler(RequestValidationError)

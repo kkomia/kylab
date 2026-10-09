@@ -6,31 +6,14 @@ schema，再按名字分派到这里的 ``call_tool``）；原先那个 MCP 服�
 
 | 工具 | 作用 |
 |------|------|
-| `search` | 检索（产品的主打能力，走知识库提供者） |
-| `upload_document` | 传文档（内容用 base64 传，走知识库提供者） |
-| `create_note` + | 把成果存成笔记 |
-| `attach_note_to_kb` + | 把笔记加进知识库（"沉淀成果"的收口动作） |
-| `list_notes` + | 列笔记，并标明哪些还没进知识库 |
+| `create_note` | 把成果存成笔记 |
+| `list_notes` | 列笔记 |
 | `recall` / `remember` / `forget` | 长期记忆的查证与写入 |
 | `export_document` / `export_table` / `export_deck` / `export_file` | 交付口（产物落在会话里） |
 | `web_search` / `web_fetch` | 联网取资料 |
 
-**知识库的"管理面"工具不在这里了**（建库 / 列库 / 列文档 / 查进度 / 删文档 / 挂数据源 /
-表格副本的 SQL 查询）：它们实现依赖的是进程内的知识库服务，而那些服务随知识库产品
-剥离到独立仓库一起搬走了。本机是知识库的**客户端**——能做的只有"检索"与"把东西放进去"
-（`search` / `upload_document` / `attach_note_to_kb`），
-库与文档的日常查看在界面或 kybase 那一侧。
-
-**`search` 的执行不在这个模块**（工具定义与执行表里都查不到它）：它由
-`agent_tools.py` 那条链直接跑 ``ChatService.retrieve_sources``——那条路给模型的是
-"命中块所在的整段小节"加上文档摘要，比块级返回读得懂。定义留在这里是因为工具表
-（名字与 JSON Schema）只有这一份，两处各写一份必然漂。
-
-**为什么补那两个笔记工具**：知识库此前只有"上传文件"这一个入口，
-于是 agent 干完活之后无处安放——它没法把"刚整理出的结论"变成库里可检索的内容。
-`create_note` + `attach_note_to_kb` 就是这条路的两个半步，与界面上手动
-「存为笔记 → 加入知识库」走的是**同一条服务层链路**（不另开一条写文档的通道，
-否则库里会出现两种来源、两种格式）。
+**知识库那一族工具整体退场**（`search` / `upload_document` / `attach_note_to_kb`）：
+知识库不再由本产品持有，检索与入库没有落点。工具定义与执行体都从这里删掉了。
 
 **交付与留档是两件事**（v0.41 写清楚）：`export_document` / `export_table` /
 `export_deck` 是**交付口**——文件落在会话的产物区，对话里挂一张可下载的卡片；
@@ -53,14 +36,11 @@ schema，再按名字分派到这里的 ``call_tool``）；原先那个 MCP 服�
 
 **每个工具都必须带上调用者**（v0.12 起的收口）：``call_tool`` 的 ``caller``
 是**必填关键字参数、没有默认值**——默认值一旦存在，"忘了传"就等于匿名放行，
-而这类洞不会报错。作用域判定一律走 ``ApiKeyService.check_access``，
-不在这里另写一套：两套判定必然相漂。
+而这类洞不会报错。
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
 import logging
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -70,7 +50,7 @@ from typing import Any
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.core.services import Services
 from app.services import deck, office, web
-from app.services.api_key import WRITE, Caller
+from app.services.api_key import Caller
 from app.services.memory import DEFAULT_RECALL, MAX_RECALL, SECTIONS
 from app.storage.base import ARTIFACT_IN_WORKSPACE
 
@@ -78,18 +58,12 @@ __all__ = ["TOOL_NAMES", "call_tool", "tool_definitions"]
 
 logger = logging.getLogger(__name__)
 
-#: 上传大小的上限。MCP 走的是进程间消息，塞一个 200MB 的 base64
-#: 会把客户端与服务端一起拖住——所以这里比 HTTP 上传更保守。
+#: 登记一份文件时的字节上限：更大的文件会把进程与模型上下文一起拖住。
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 
-#: 检索条数上限：工具是给 Agent 用的，它通常只要"够回答"的几条。
-MAX_TOP_K = 20
-
 #: 列表类工具的每页条数上限。给模型一个上限而不是"它说要多少就给多少"：
-#: 上下文预算是有限的，而 50 条已经够它判断"库里有没有我要的东西"。
+#: 上下文预算是有限的，而 50 条已经够它判断"有没有我要的东西"。
 MAX_NOTE_PAGE = 50
-MAX_DOC_PAGE = 100
-DEFAULT_DOC_PAGE = 30
 #: 拼文本用的换行。**写成 chr(10) 而不是字面转义**：
 #: 这个文件里的多行字符串被 heredoc 吃掉过好几层转义（反斜杠 n 变成真换行、
 #: 字符串直接断行），而它只是「一个换行」，不值得每次都赌一遍引号与反斜杠。
@@ -100,10 +74,7 @@ _NL = chr(10)
 NOTE_EXCERPT_CHARS = 200
 
 TOOL_NAMES = (
-    "upload_document",
-    "search",
     "create_note",
-    "attach_note_to_kb",
     "list_notes",
     "recall",
     "remember",
@@ -125,83 +96,12 @@ def tool_definitions() -> list[dict[str, Any]]:
     """
     return [
         {
-            "name": "upload_document",
-            "description": (
-                "把一份文档加进知识库。内容用 base64 编码。"
-                "入库是异步的：拿到 document_id 后可用 get_document_status 查进度。"
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "knowledge_base_id": {"type": "string"},
-                    "filename": {"type": "string", "description": "文件名，扩展名决定用哪个解析器"},
-                    "content_base64": {"type": "string", "description": "文件内容的 base64"},
-                },
-                "required": ["knowledge_base_id", "filename", "content_base64"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "search",
-            "description": (
-                "在知识库里检索原文片段。**这是本服务的主打能力**："
-                "返回的是原文出处（含文档名与页码），不是生成的回答。"
-                "需要一段连贯的话时用 REST 的 chat 接口，这个工具给的是依据。\n\n"
-                "**返回里带一份 `distribution`（这一批命中的分布）**，用它决定「要多少」：\n"
-                "- `fit`：`strong` 很对得上 / `weak` 只对上一部分 / `none` 这份资料答不了"
-                "（`none` 时**如实说资料里没有**，不要拿这几条噪声编答案）/ "
-                "`unknown` 这个库的嵌入模型没标定过、**判不了契合度**（这时按你要的条数返回，"
-                "不自动收敛）；\n"
-                "- `count` / `above_baseline`：兜底阈值之上有多少条、其中多少条真的过了基线；\n"
-                "- `scores`：max / p90 / p75 / median / p25 / min 与 `band`（带宽小 = "
-                "这一批都差不多，换阈值切出来的还是同一批内容）；\n"
-                "- `documents` / `per_document`：落在几篇文档上、每篇几条——**冗余在这里**。\n\n"
-                "程序会给一组建议（`distribution.suggested`），你可以用自己的判断覆盖它："
-                "这一轮只要最相关的两三段就传 `keep=3`；要更严就传 `min_score`（绝对余弦）；"
-                "同一个问题被好几本书各答一遍时用 `per_doc`（每篇最多留几条）收敛。"
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "检索词，用自然语言即可"},
-                    "knowledge_base_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "在哪些库里查；留空则查全部",
-                    },
-                    "top_k": {"type": "integer", "minimum": 1, "maximum": MAX_TOP_K},
-                    "keep": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_TOP_K,
-                        "description": "这一轮最多要几段（留空 = 用分布给出的建议）",
-                    },
-                    "min_score": {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 1,
-                        "description": "相似度下限（绝对余弦，留空 = 用建议）",
-                    },
-                    "per_doc": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "description": "每篇文档最多留几段（留空 = 用建议）",
-                    },
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-        },
-        {
             "name": "create_note",
             "description": (
                 "把一段成果保存成**笔记**（Markdown）——**笔记是给自己长期留档用的**："
                 "它只进笔记列表，**不是交付**（对方在对话里看不到卡片、也下载不了）。"
                 "**对方要的是一份文件时不要用这个**（「给我一份」「发我个 .md / .docx」"
                 "「能下载的」「发给我同事」），那种要求用 export_document 交付。"
-                "**这是「把对话结论沉淀下来」的第一步**："
-                "但笔记此时还不在知识库里、检索不到；要能被检索，再调 attach_note_to_kb。"
                 "适合保存：整理出的结论、待办与决定、可复用的流程。"
             ),
             "inputSchema": {
@@ -229,28 +129,8 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "attach_note_to_kb",
-            "description": (
-                "把一条笔记作为 Markdown 文档加进知识库，之后就能被 search 检索到。"
-                "内容相同的重复入库不会产生副本（按内容哈希去重）。"
-                "**这是「把对话成果放进知识库」的收口动作。**"
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "note_id": {"type": "string"},
-                    "knowledge_base_id": {"type": "string"},
-                },
-                "required": ["note_id", "knowledge_base_id"],
-                "additionalProperties": False,
-            },
-        },
-        {
             "name": "list_notes",
-            "description": (
-                "列出笔记（可按关键词搜标题与正文）。"
-                "每条会标明**是否已经进过知识库**：没进的检索不到，需要先 attach。"
-            ),
+            "description": "列出笔记（可按关键词搜标题与正文）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -409,19 +289,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "对话里既看不到、也下载不了。"
                 ".md / .txt / .csv / .html 这四种是**原样落正文**（不做转换）；"
                 "要能被 Excel 排序求和的那张表用 export_table（.xlsx）。"
-                "**它不会进知识库**——导出只是把文件落到他手上。"
+                "**导出只是把文件落到他手上**。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {
-                        "type": "string",
-                        "description": (
-                            "存到哪个库。**只在没有会话上下文的那条通道上要求**"
-                            "（外部 MCP 客户端、一次性脚本）；对话里不要传，"
-                            "产物会自己落到该落的地方"
-                        ),
-                    },
                     "filename": {
                         "type": "string",
                         "description": (
@@ -451,15 +323,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "**要带图表就在这里给 `charts`**（图与数在同一份文件里、引用同一批单元格）："
                 "对方说「画个图」「带趋势图」「柱状图看占比」时都用它，"
                 "**不要去沙箱里自己画一张再想办法塞进来**（那条路做出来的图与表是两份东西）。"
-                "文件落在这条会话的产物区，**不进知识库**。"
+                "文件落在这条会话的产物区。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {
-                        "type": "string",
-                        "description": "同 export_document：只有没有会话上下文的通道才需要",
-                    },
                     "filename": {"type": "string", "description": "文件名，扩展名用 .xlsx"},
                     "rows": {
                         "type": "array",
@@ -523,15 +391,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                 + _NL
                 + "`title` 是这份 deck 的标题（也写进文件的文档属性）："
                 "**给了它而第一页又不是 cover 时，会在最前面补一页封面**。"
-                "文件落在这条会话的产物区，**不进知识库**。"
+                "文件落在这条会话的产物区。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {
-                        "type": "string",
-                        "description": "同 export_document：只有没有会话上下文的通道才需要",
-                    },
                     "filename": {"type": "string", "description": "文件名，扩展名用 .pptx"},
                     "title": {
                         "type": "string",
@@ -759,9 +623,8 @@ def call_tool(
     ``conversation_id`` 只有对话这条链路给得出（一次性脚本没有会话）——
     它决定产物落在哪儿，见 :func:`_save_export`。
 
-    **目录里的名字不全在这里执行**：``search`` 由 `agent_tools.py` 那条链直接跑
-    ``ChatService.retrieve_sources``（给模型的是整段小节），``ingest_file`` 与文件 /
-    执行 / 表格那几条也在那一侧。所以查不到执行体时那句话要说清是"不在这一层执行"
+    **目录里的名字不全在这里执行**：``ingest_file`` 与文件 / 执行 / 表格那几条
+    在 `agent_tools.py` 那条链上。所以查不到执行体时那句话要说清是"不在这一层执行"
     还是"根本没有这个工具"——两种情况下调用方该做的事不一样。
     """
     args = arguments or {}
@@ -818,48 +681,7 @@ def _float_or_none(value: Any) -> float | None:
 
 
 
-def _upload_document(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    kb_id = _require(args, "knowledge_base_id")
-    filename = _require(args, "filename")
-    raw = _require(args, "content_base64")
 
-    # 写入必须先判作用域：越界时**指出是哪个库**，
-    # 模型据此能告诉用户"这把 Key 没有那个库的写权限"，而不是笼统地失败
-    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
-
-    try:
-        content = base64.b64decode(raw, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        # 说清是"base64 不合法"而不是笼统的"参数错误"——
-        # 模型据此能自己改对（重新编码）而不是放弃这个工具
-        raise InvalidRequestError(f"content_base64 不是合法的 base64：{exc}") from exc
-
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise InvalidRequestError(
-            f"文件超过 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限。"
-            "MCP 走进程间消息，更大的文件请用 REST 上传"
-        )
-
-    outcome = services.kb.ingest.submit(
-        knowledge_base_id=kb_id,
-        filename=filename,
-        content=content,
-        # 记上"是谁传的"：多用户下这是文档列表里的上传者列，缺了就显示"未记录"
-        uploaded_by=caller.user.id if caller.user is not None else None,
-    )
-    if not outcome.is_duplicate:
-        services.kb.documents.enqueue_ingest(outcome.document.id)
-
-    return {
-        "document_id": outcome.document.id,
-        "name": outcome.document.name,
-        "is_duplicate": outcome.is_duplicate,
-        "note": (
-            "内容与库中已有文档相同，未重复入库"
-            if outcome.is_duplicate
-            else "已入队处理，可用 get_document_status 查进度"
-        ),
-    }
 
 
 
@@ -903,28 +725,6 @@ def _create_note(services: Services, args: dict[str, Any], *, caller: Caller) ->
             "笔记已保存。**它是笔记，不是交付**——只出现在对方的笔记列表里，"
             "对话里不会有可下载的卡片；**对方要的如果是「一份文件」，"
             "请改用 export_document 交付**。"
-            "另外**此时还检索不到它**——"
-            "要让知识库能检索，再调 attach_note_to_kb 把它加进某个库"
-        ),
-    }
-
-
-def _attach_note_to_kb(
-    services: Services, args: dict[str, Any], *, caller: Caller
-) -> dict[str, Any]:
-    note_id = _require(args, "note_id")
-    kb_id = _require(args, "knowledge_base_id")
-    # 入库是写操作，而且是"往库里加内容"，所以判的是目标库的写权限
-    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
-    # attach_to_kb 内部按归属取笔记：不是自己的会 404（不泄露存在性）
-    note = services.notes.attach_to_kb(note_id, user_id=_owner_of(caller), kb_id=kb_id)
-    return {
-        "note_id": note.id,
-        "document_id": note.doc_id,
-        "knowledge_base_id": note.kb_id,
-        "note": (
-            "已作为 Markdown 文档入库，处理是异步的："
-            "用 get_document_status 查进度，索引完成后即可被 search 检索到"
         ),
     }
 
@@ -942,13 +742,11 @@ def _list_notes(services: Services, args: dict[str, Any], *, caller: Caller) -> 
                 # 正文只给前 200 字：笔记可能很长，全量塞进上下文会把预算吃光
                 "excerpt": item.content_md[:NOTE_EXCERPT_CHARS],
                 "tags": list(item.tags),
-                "in_knowledge_base": item.doc_id is not None,
                 "source_kind": item.source_kind,
                 "updated_at": item.updated_at.isoformat() if item.updated_at else None,
             }
             for item in items
         ],
-        "note": "「in_knowledge_base」为 false 表示这条只是笔记，还没进知识库、检索不到",
     }
 
 
@@ -1560,80 +1358,40 @@ def _save_export(
 ) -> dict[str, Any]:
     """把产出**落成一个文件**（v0.26）。
 
-    改之前这里是"直接当一次入库提交"：文件唯一的身份是"某个知识库里的一份文档"，
+    改动之前这里是"直接当一次入库提交"：文件唯一的身份是"某个知识库里的一份文档"，
     而 `knowledge_base_id` 是必填的。于是没挂工作区的会话要导出 docx 时，模型
     只能**替用户挑一个语义上最顺手的库**——实测它挑中了「笔记」，并在回答里说明
     "你这边没有专门的工作区，我就选了最顺手的那个"。这不是模型的错：它没有别的落点。
 
-    现在两件事分开：
-
-    - **落盘**：挂在工作的会话落进工作区目录（用户打开项目就看得见），
-      没挂的落进对象存储里按会话分的临时前缀；
-    - **入库**：只有外部通道（没有会话上下文那条）还会直奔知识库。
-
-    没有会话上下文时（外部 MCP 客户端、一次性脚本）仍然要求 ``knowledge_base_id``：
-    那条通道没有产物区，而且"外部客户端点名叫了哪个库"本身就是显式的。
+    现在**只有一个落点**：产物区（挂在工作的会话落进工作区目录，没挂的落进对象存储里
+    按会话分的临时前缀）。**没有会话上下文时**（外部 MCP 客户端、一次性脚本）没有产物区
+    可落，如实拒绝——回一句"这条链路没有会话上下文"，而不是悄悄找个地方写。
     """
     filename = _require(args, "filename")
-    if conversation_id:
-        record = services.artifacts.save(
-            conversation_id=conversation_id,
-            filename=filename,
-            content=content,
-            kind=kind,
-            owner_id=caller.owner_id,
+    if not conversation_id:
+        raise InvalidRequestError(
+            "导出需要会话上下文：产物要落在会话的产物区，这条链路没有会话。"
         )
-        label = services.artifacts.label_for(record)
-        saved: dict[str, Any] = {
-            "artifact_id": record.id,
-            "name": record.name,
-            "size_bytes": record.size_bytes,
-            "format": kind,
-            "saved_to": label,
-            "note": (
-                f"文件已经生成，落在{label}，对方在对话里就能下载。"
-                "**它没有进知识库**——导出只把文件落在他手上"
-            ),
-        }
-        if record.storage == ARTIFACT_IN_WORKSPACE:
-            # 只有工作区那份的路径对模型有用：它下一步可能要去改这个文件
-            saved["path"] = record.location
-        return {**saved, ARTIFACT_KEY: services.artifacts.describe(record)}
-
-    kb_id = _require(args, "knowledge_base_id")
-    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
-    outcome = services.kb.ingest.submit(
-        knowledge_base_id=kb_id,
+    record = services.artifacts.save(
+        conversation_id=conversation_id,
         filename=filename,
         content=content,
-        uploaded_by=caller.user.id if caller.user is not None else None,
+        kind=kind,
+        owner_id=caller.owner_id,
     )
-    if not outcome.is_duplicate:
-        services.kb.documents.enqueue_ingest(outcome.document.id)
-    return {
-        "document_id": outcome.document.id,
-        "name": outcome.document.name,
-        "size_bytes": len(content),
+    label = services.artifacts.label_for(record)
+    saved: dict[str, Any] = {
+        "artifact_id": record.id,
+        "name": record.name,
+        "size_bytes": record.size_bytes,
         "format": kind,
-        "note": (
-            "内容与库里已有的一份文件完全相同，没有重复入库"
-            if outcome.is_duplicate
-            else "已加入知识库并开始处理。对方可以在文档列表里下载或看它"
-        ),
-        # 界面用的那一份：`ToolOutcome.artifacts` 会把它原样带到前端，在那里挂成
-        # 一张可点的文件卡片。**与给模型看的字段放在同一个 dict 里**是有意的：
-        # 它们本来就是同一件事，分成两份迟早会一处改了另一处没改。
-        ARTIFACT_KEY: {
-            "artifact_id": outcome.document.id,
-            "name": outcome.document.name,
-            "size_bytes": len(content),
-            "format": kind,
-            "storage": "document",
-            "where": "知识库",
-            "knowledge_base_id": kb_id,
-            "document_id": outcome.document.id,
-        },
+        "saved_to": label,
+        "note": f"文件已经生成，落在{label}，对方在对话里就能下载。",
     }
+    if record.storage == ARTIFACT_IN_WORKSPACE:
+        # 只有工作区那份的路径对模型有用：它下一步可能要去改这个文件
+        saved["path"] = record.location
+    return {**saved, ARTIFACT_KEY: services.artifacts.describe(record)}
 
 
 # ------------------------------------------------------------------ 交付沙箱里的文件
@@ -1757,9 +1515,7 @@ def _suffix_of(filename: str) -> str:
 
 
 _HANDLERS = {
-    "upload_document": _upload_document,
     "create_note": _create_note,
-    "attach_note_to_kb": _attach_note_to_kb,
     "list_notes": _list_notes,
     "recall": _recall,
     "remember": _remember,

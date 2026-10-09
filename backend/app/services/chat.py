@@ -27,7 +27,6 @@ from app.services.prompt import PromptContext, build_system_prompt
 from app.services.runtime_config import RuntimeConfigService
 from app.services.thinking import normalize_effort
 from app.services.tool_loop import ToolLoop
-from app.storage.base import KnowledgeBaseUnavailable
 
 __all__ = [
     "PRUNE_KEEP_TOOL_RESULTS",
@@ -204,8 +203,8 @@ AGENT_SYSTEM_PROMPT = (
     "1. **先判断这件事的信息从哪来，再动手**："
     "问的是**外面正在发生的事**（今天、最近、最新、现在、某个网址）→ 联网"
     "（web_search / web_fetch），**不要用你脑子里的旧知识回答**；"
-    "问的是**对方自己的东西**（文档、知识库、笔记、长期记忆）→ 查这边"
-    "（search / recall）；"
+    "问的是**对方自己的东西**（笔记、长期记忆）→ 查这边"
+    "（recall）；"
     "常识、算数、写作、代码 → 直接答，不要绕工具。"
     "**不要明明能查却说「我无法访问」**，也不要凭印象编。"
     "要写、要改、要记，就调对应的工具。\n"
@@ -242,32 +241,6 @@ AGENT_SYSTEM_PROMPT = (
 )
 
 
-NO_KB_NOTE = (
-    "【这一轮没有知识库】与知识库、文档有关的工具这一轮不在工具表里（对方关了它）："
-    "别去调 `search`，也别绕着别的工具去够他的文档。"
-    "**但不要主动提这件事**——他没问文档里的东西时，就当知识库不存在："
-    "不要用「知识库这一轮是关着的」开场，也不要把你能做的事列一遍。"
-    "他确实要查自己资料时，说一句「知识库这一轮是关着的」就够了，别多解释。"
-    "（记忆与笔记不属于知识库那一侧，`recall` / `remember` 照旧可用。）"
-)
-"""这一轮没有可查的知识库时追加的一句（v0.27，v0.52 改了语气）。
-
-**必须说，不能只说"工具不在表里"**：上面第 1 条写着"问对方自己的东西 →
-查 search / recall"，工具表里却没有 `search`——不说清楚的话，模型会去试一个
-不存在的工具（或者反过来，把"工具没了"理解成"这一轮什么都查不了"，
-连记忆也不用了）。这也是用户报的那个现象的另一半：
-关掉开关之前，它每轮都先去列库、再检索一次被拒。
-
-**但不能要求它"如实说明"**（v0.52 实测）：原话是"要查他资料里的东西时**如实说明**
-这一轮没开知识库"，结果模型在**一句"你好"**上就主动报了一遍"这一轮知识库是关着的
-——你要问自己文档里的东西，我得先等你把它打开"，接着又把联网/笔记/记忆列了一遍。
-用户的原话是「**我没有开启知识库的情况下，需要削弱知识库的存在感**」。
-所以现在是"**内部约束 + 被问才说**"：那句约束是给模型自己看的（别调不存在的工具），
-而不是给它复述给用户的素材。这一条与 §5.7 那轮"去 AI 味"的结论同向：
-**解释机制的话只有被问到才说**。
-"""
-
-
 def build_agent_messages(
     *,
     query: str,
@@ -279,7 +252,6 @@ def build_agent_messages(
     memory_guidance: str = "",
     bootstrap: str = "",
     skills: str = "",
-    kb_prompt: str = "",
 ) -> list[ChatMessage]:
     """工具循环那条链路的提示词（P0/P1）——**今天唯一的拼装入口**。
 
@@ -304,7 +276,6 @@ def build_agent_messages(
                     memory_block=memory_block,
                     memory_guidance=memory_guidance,
                     bootstrap=bootstrap,
-                    kb_prompt=kb_prompt,
                     skills=skills,
                     # 摘要同样是"数据"，打散定界符（它源自更早的用户输入与文档）
                     summary=neutralize(summary),
@@ -347,10 +318,6 @@ class SourceRef:
     page: int | None = None
     score: float = 0.0
     preview: str = ""
-    #: 出处所属的知识库。界面拿它把引用**直连到库页的文档抽屉**；
-    #: 没有它就只能走 `/documents/:id` 那条转发一跳（会闪一下空白）。
-    #: 默认空串是为了兼容历史会话里存下的旧快照（那时还没有这个字段）。
-    knowledge_base_id: str = ""
     #: 这篇文档的摘要（v25）。它的作用是省 token：模型知道"这几段来自一篇讲什么的
     #: 文档"，就不必把每段都补成整个小节。空串 = 这篇还没生成摘要。
     #:
@@ -492,18 +459,13 @@ class ChatService:
         self,
         runtime: RuntimeConfigService,
         *,
-        stores=None,  # type: ignore[no-untyped-def]
         chat_factory=None,  # type: ignore[no-untyped-def]
         usage_recorder=None,  # type: ignore[no-untyped-def]
         conversations=None,  # type: ignore[no-untyped-def]
         memory=None,
         skills=None,  # type: ignore[no-untyped-def]
-        knowledge=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._runtime = runtime
-        #: 存储（v17）：用于把命中块补成整段小节。可选——不给就退回"只给命中的那一块"，
-        #: 这样单测与脚本可以在没有存储的情况下构造它
-        self._stores = stores
         # 工厂可注入：测试里换成假模型，避免真打网络
         self._chat_factory = chat_factory or (lambda config: OpenAICompatChat(config))
         # 用量回调（G7）。可选：缺席时完全不记，功能照常
@@ -514,48 +476,6 @@ class ChatService:
         self._memory = memory
         #: 技能注册表（v0.15）。可选：不给就不注入技能目录
         self._skills = skills
-        #: KB 检索接口（M2 §2.2）：**给了就整段委托给它**（见 ``retrieve_sources``）。
-        #: 本机档（桌面边车）给的是 `RemoteKnowledgeClient`——检索在 NAS 上；
-        #: 服务器档**不传**（进程内检索，一位行为都不变）。协议见 `knowledge_client.py`。
-        self._knowledge = knowledge
-
-    def kb_prompt(self, kb_ids: list[str] | None) -> str:
-        """把这一轮用到的库的**库级提示词**拼成一段（v0.19）。
-
-        来源是知识库自己的 `system_prompt`（在知识库设置里配，也可以让模型按
-        库里的文档摘要生成）——它随资料走，不随界面走，所以这里按 `kb_ids` 现取。
-
-        两个口径：
-
-        - **只有一个库配了提示词时原样用它**，不加任何包装。那是绝大多数情况，
-          也是"我这段话会被完整读到"最朴素的理解。
-        - **多个库都配了才按库名分段**（`【库名 的回答要求】`）。不标名字的话，
-          两套要求会在模型面前糊成一段，而它们各自只对**自己那份资料**负责
-          ——"眼轴按 mm 记"这条要求不该被当成对另一个库的要求。
-
-        读不出来**不让问答失败**：库级提示词是增强，不是依赖（与技能、记忆同一口径）。
-        没有任何库配过时返回空串——拼装那边（`build_system_prompt`）把它当一条**追加**的
-        贡献，一个字的库提示词都没有时系统提示词里就什么也不多。
-        """
-        if not kb_ids or self._stores is None:
-            return ""
-        found: list[tuple[str, str]] = []
-        for kb_id in kb_ids:
-            try:
-                record = self._stores.meta.get_knowledge_base(kb_id)
-            except Exception:
-                logger.warning("读库级提示词失败：%s", kb_id, exc_info=True)
-                continue
-            prompt = (record.system_prompt or "").strip() if record is not None else ""
-            if prompt:
-                found.append((record.name if record else kb_id, prompt))
-        if not found:
-            return ""
-        if len(found) == 1:
-            return found[0][1]
-        return _SKILL_SEPARATOR.join(
-            f"【{name} 的回答要求】{_SKILL_SEPARATOR}{text}" for name, text in found
-        )
 
     def _skill_block(self, loaded: str = "") -> str:
         """要注入 system prompt 的技能块：**目录** + 本轮已展开的**正文**。
@@ -606,50 +526,6 @@ class ChatService:
         return self._memory.guidance()
 
     # ------------------------------------------------------------------ 对外
-
-    def retrieve_sources(
-        self,
-        *,
-        query: str,
-        kb_ids: list[str],
-        top_k: int | None = None,
-        candidate_k: int = 40,
-        reader: object | None = None,
-    ) -> list[SourceRef]:
-        """先检索，拿到带编号的出处。流式回答时**先把这个发给前端**，
-        用户能立刻看到"依据是哪几段"，不用等模型写完。
-
-        ``top_k`` 留空时由实现自己按设置取（本机这条路的默认在上游那一侧）。
-
-        ``reader`` 交给实现：它决定怎么把命中的块补成"所在小节"（本机不关心）。
-
-        **整段委托给知识库提供者**（M2 §2.2 的 KB 检索接缝）：检索（向量 / 全文 /
-        切块）都不在本机，本机只是它的客户端。返回的是同一形状的 `SourceRef`，
-        失败**抛**而不是回空——"没命中"与"没查到"必须分得开
-        （见 `remote_clients.py` 模块头）。
-
-        **没接提供者时如实抛 `KnowledgeBaseUnavailable`**（HTTP 面映射成 503）：
-        这个进程没有可查的知识库。回一个空列表等于告诉调用方"查过了，没有"，
-        而它其实**没查过**——而"资料中没有找到"这句会被模型当成结论用出去。
-        """
-        # 一个库都没给（v0.18 的「不使用知识库」开关）= 这一轮不查库。
-        # **在这里直接返回空**，而不是让 `kb_ids=[]` 一路传下去——
-        # 那样要么拼出 `IN ()`（语法错），要么被各实现各自解释一遍。
-        # 也放在委托之前：空范围不该变成一次网络往返（协议两侧本就同义，
-        # 见 `knowledge_client.py` 的 ``kb_ids`` 那一行）。
-        if not kb_ids:
-            return []
-        if self._knowledge is None:
-            raise KnowledgeBaseUnavailable(
-                "这个进程没有接知识库提供者：检索在别处，本机不持有那些数据"
-            )
-        return self._knowledge.retrieve_sources(
-            query=query,
-            kb_ids=kb_ids,
-            top_k=top_k,
-            candidate_k=candidate_k,
-            reader=reader,
-        )
 
     def _record_usage(self, chat, started: float, *, items: int, config: LLMConfig) -> None:
         """把这一次调用的用量交给回调（G7）。
@@ -815,7 +691,7 @@ class ChatService:
 
         ===============  ==========================================================
         ``messages``     会话里这一轮要带的历史（摘要 + 摘要之后的消息）
-        ``system_prompt`` 基础提示词 + 当前模式那一段 + 库级提示词（没有库时的说明）
+        ``system_prompt`` 基础提示词 + 当前模式那一段
         ``skills``       技能目录（P0-3 的渐进披露那一份；**正文不在里面**）
         ``tools``        工具表（名字 + 描述 + 参数 schema），由调用方传进来
         ``memory``       人设四份文件（含 ``MEMORY.md``）
@@ -827,14 +703,9 @@ class ChatService:
         而不是拿它当账单。真实的用量只有端点返回的 ``usage`` 才知道（那条路记在观测表里，
         见 ``services/usage.py``）。
 
-        ``tools`` 由协议层给（工具表要调用者身份与这一轮允许的库才能拼出来，
-        见 ``_agent_loop``）；不给就按 0 算，而不是编一个数字——
+        ``tools`` 由协议层给；不给就按 0 算，而不是编一个数字——
         仪表里"工具 0"与"没统计工具"是两件事，前者会让人以为没给工具。
         """
-        conversation = (
-            self._conversations.get(conversation_id) if self._conversations is not None else None
-        )
-        kb_ids = [str(item) for item in (conversation.kb_ids if conversation else ()) if item]
         summary, upto = ("", None)
         pending: list = []
         if self._conversations is not None:
@@ -846,11 +717,9 @@ class ChatService:
 
         base = AGENT_SYSTEM_PROMPT
         base = f"{base}\n\n{self.mode_block()}"
-        if not kb_ids:
-            base = f"{base}\n\n{NO_KB_NOTE}"
 
         messages_text = [summary, *[item.content for item in pending]]
-        system_text = [base, self.kb_prompt(kb_ids)]
+        system_text = [base]
         skill_text = [self._skill_block()]
         tool_text = [_tool_spec_text(item) for item in tools]
         memory_text = [text for _, text in self._persona_texts(owner_id)]
@@ -899,7 +768,6 @@ class ChatService:
         history: list[ChatMessage] | None = None,
         summary: str = "",
         system_prompt: str = "",
-        kb_ids: list[str] | None = None,
         skill_names: list[str] | None = None,
         model_pk: str | None = None,
         owner_id: str | None = None,
@@ -907,19 +775,11 @@ class ChatService:
         """工具循环那条链路的输入消息。
 
         这个 agent 知道的东西全在这里：记忆（人设 + 档案 + 记忆指导）、技能目录、
-        库级提示词——**没有资料块**：资料改成模型自己取的工具结果。
-
-        这一轮**没有可查的库**时（用户关掉了知识库开关）追加一句说明（``NO_KB_NOTE``）：
-        工具表里那一侧的工具已经整个收起来了（见 ``agent_tools._KB_TOOLS``），
-        而系统提示词第 1 条还写着"问对方的资料就查 search"——不说清楚，它会去试
-        一个不存在的工具。
+        工具结果——**没有资料块**：资料改成模型自己取的工具结果。
         """
-        scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
         base = system_prompt or AGENT_SYSTEM_PROMPT
         # 当前档与它的语义（P1-1 遗留 #7，v0.44）：**先说清楚**，别等它撞上来
         base = f"{base}\n\n{self.mode_block()}"
-        if not scope:
-            base = f"{base}\n\n{NO_KB_NOTE}"
         return build_agent_messages(
             query=query,
             history=history,
@@ -936,7 +796,6 @@ class ChatService:
             memory_guidance=self._memory_guidance(),
             bootstrap=self._bootstrap_note(owner_id),
             skills=self._skill_block(self._pinned_bodies(skill_names)),
-            kb_prompt=self.kb_prompt(scope),
         )
 
     def current_mode(self) -> str:

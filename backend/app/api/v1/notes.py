@@ -1,6 +1,6 @@
 """笔记端点（v20）。
 
-**为什么单独一组 `/notes`**：笔记是"写"的一侧，与知识库的"读"、对话的"问"并列，
+**为什么单独一组 `/notes`**：笔记是"写"的一侧，与对话的"问"并列，
 混进任何一边都会让那一边的状态机变复杂。前端的信息架构也照此收敛——
 侧栏一个入口、页面一个视图（列表 → 编辑），相关操作全收在页内。
 
@@ -17,7 +17,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 
 from app.api.auth import (
-    check_kb_scope,
     require_read,
     require_write,
     signing_secret_or_raise,
@@ -25,7 +24,6 @@ from app.api.auth import (
 from app.api.v1.schemas import (
     NoteAiIn,
     NoteAiOut,
-    NoteAttachIn,
     NoteCreateIn,
     NoteFolderCreateIn,
     NoteFolderListOut,
@@ -41,7 +39,7 @@ from app.api.v1.schemas import (
     NoteTagOut,
     NoteUpdateIn,
 )
-from app.core.caller import WRITE, Caller
+from app.core.caller import Caller
 from app.core.config import Settings, get_settings
 from app.core.exceptions import UnauthorizedError
 from app.core.services import Services, get_services
@@ -98,9 +96,8 @@ def _folder_payload(
 ) -> NoteFolderOut:
     """写操作的响应：**条数是真的**。
 
-    多花一次聚合是刻意的（与知识库目录写操作后回填 ``document_count`` 同一口径）：
-    返回 0 会让"这个字段说的是真话"这条约定悄悄失效——某一个调用方信了它，
-    就长出一个只在某些条件下错的界面。
+    多花一次聚合是刻意的：返回 0 会让"这个字段说的是真话"这条约定悄悄失效——
+    某一个调用方信了它，就长出一个只在某些条件下错的界面。
     """
     counts = services.notes.folder_overview(user_id=user_id).counts
     return _folder_item(record, counts)
@@ -336,25 +333,6 @@ def delete_note(
     caller: Annotated[Caller, Depends(require_write)],
 ) -> None:
     services.notes.delete(note_id, user_id=_owner(caller))
-
-
-@router.post("/{note_id}/attach", response_model=NoteOut, summary="把笔记加入知识库")
-def attach_note(
-    note_id: str,
-    payload: NoteAttachIn,
-    services: Annotated[Services, Depends(get_services)],
-    caller: Annotated[Caller, Depends(require_write)],
-) -> NoteOut:
-    """笔记作为一份 Markdown 文档走现有摄入流水线（切块/嵌入/检索全部复用）。
-
-    入库会写到知识库，所以要按 **WRITE** 校验库范围——只读分享不能借这条路径往库里塞东西。
-    """
-    check_kb_scope(services.kb, caller, [payload.kb_id], need=WRITE)
-    record = services.notes.attach_to_kb(note_id, user_id=_owner(caller), kb_id=payload.kb_id)
-    return NoteOut.model_validate(record)
-
-
-# --------------------------------------------------------------------- AI 处理（v20.2）
 
 
 @router.post("/{note_id}/ai", response_model=NoteAiOut, summary="用对话模型排版 / 润色笔记")

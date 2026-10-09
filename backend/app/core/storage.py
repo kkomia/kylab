@@ -8,8 +8,9 @@
 
 - **元数据**：``<data_dir>/kylab.db``（SQLite，``sqlite_impl/``）。本机域（会话 / 消息 /
   事件 / 产物 / 笔记 / 设置 / 工作区 / 定时任务 / MCP / 模型注册 / 用量）走它；
-  知识库那半的元数据读转给 ``split_impl/remote_meta.py`` 的 ``RemoteMetaStore``
-  （知识库在别处，本机是它的客户端），reader 由服务层装配那一步后挂。
+  知识库那半的元数据读仍转给 ``split_impl/remote_meta.py`` 的 ``RemoteMetaStore``——
+  **这一处是留给第②批（存储层）的接缝**：知识库整体退场之后，那个 KB 域分流
+  （以及 ``StoreBundle.kb_cache``）会一起拆掉；本批只保证装配能跑。
 - **向量 / 全文 / 表格**：三个"不可用"实现（``split_impl``）——本机不持有那三份数据，
   调用它们会如实抛 ``KnowledgeBaseUnavailable``，而不是回一个"查过了，没有"的空结果。
 - **对象存储**：数据目录下的 ``originals/`` / ``markdown/`` / ``images/``

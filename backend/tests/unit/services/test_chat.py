@@ -2,10 +2,10 @@
 
 镜像同构：``app/services/chat.py`` → ``tests/unit/services/test_chat.py``。
 
-这条链路上有几个"错了也不报错、只是答得不对"的地方（检索怎么派出去、
-库级提示词怎么落到提示词里、技能目录进不进），所以逐个钉住。
+这条链路上有几个"错了也不报错、只是答得不对"的地方（提示词怎么拼、技能目录进不进、
+工具循环的思考档位），所以逐个钉住。
 **预先拼"资料块"那条路（``build_messages``）已随内置检索链退场**：
-资料改由模型自己用 `search` 取回，提示词的拼装归 ``build_agent_messages``
+资料改由模型自己用工具取回，提示词的拼装归 ``build_agent_messages``
 与 ``services/prompt.py`` 的贡献者表，那两处的用例在 ``test_prompt.py``。
 """
 
@@ -51,53 +51,6 @@ def test_neutralize_keeps_ordinary_text_intact() -> None:
 # --------------------------------------------------------------------- 服务
 
 
-def test_retrieve_sources_is_delegated_verbatim(runtime) -> None:
-    """检索那一半**整段交给 knowledge**（本机是知识库的客户端，见 `ChatService.retrieve_sources`）。
-
-    这一条钉两件事：**参数原样转出去**（本机不解释 top_k / candidate_k / reader），
-    以及**回来的 `SourceRef` 原样交回**——尤其是 `knowledge_base_id`：界面靠它把引用
-    直连到库页抽屉，而不是走 `/documents` 转发一跳。
-    """
-    asked: list[dict] = []
-
-    class _FakeKnowledge:
-        def retrieve_sources(self, **kwargs):  # type: ignore[no-untyped-def]
-            asked.append(kwargs)
-            from app.services.chat import SourceRef
-
-            return [
-                SourceRef(
-                    index=1,
-                    chunk_id="c1",
-                    document_id="d1",
-                    document_name="眼轴共识.pdf",
-                    heading_path="3 监测",
-                    page=4,
-                    score=0.9,
-                    preview="眼轴长度是主要参数之一。",
-                    knowledge_base_id="kb_1",
-                )
-            ]
-
-    service = ChatService(runtime, knowledge=_FakeKnowledge())
-
-    sources = service.retrieve_sources(query="近视怎么监测", kb_ids=["kb_1"])
-
-    assert [s.index for s in sources] == [1]
-    assert sources[0].document_name == "眼轴共识.pdf"
-    assert sources[0].knowledge_base_id == "kb_1"
-    # 参数原样交给知识库那一侧（本机不解释它们）
-    assert asked == [
-        {
-            "query": "近视怎么监测",
-            "kb_ids": ["kb_1"],
-            "top_k": None,
-            "candidate_k": 40,
-            "reader": None,
-        }
-    ]
-
-
 def test_unconfigured_llm_raises_actionable_error(runtime) -> None:
     """没配模型时必须报"去哪配"，而不是返回空答案让用户以为知识库里没有。"""
     service = ChatService(runtime, chat_factory=lambda config: FakeChat())
@@ -120,105 +73,6 @@ def test_probe_reports_empty_content_as_error(runtime, bind_slot) -> None:
 
     with pytest.raises(ChatError):
         service.probe()
-
-
-# --------------------------------------------- 库级提示词（v0.19）
-
-
-def _kb_record(name: str, prompt: str):  # type: ignore[no-untyped-def]
-    return type("KB", (), {"name": name, "system_prompt": prompt})()
-
-
-class _KbStores:
-    """只提供 `meta.get_knowledge_base` 的假存储。"""
-
-    def __init__(self, records: dict[str, object]) -> None:
-        self.meta = type(
-            "Meta", (), {"get_knowledge_base": staticmethod(lambda kb_id: records.get(kb_id))}
-        )()
-
-
-def _kb_service(records: dict[str, object]) -> ChatService:  # type: ignore[no-untyped-def]
-    from app.services.runtime_config import RuntimeConfigService
-
-    return ChatService(RuntimeConfigService(lambda: {}), stores=_KbStores(records))  # type: ignore[arg-type]
-
-
-def test_kb_prompt_uses_the_single_prompt_verbatim() -> None:
-    """只配了一个库时**不加包装**：那是绝大多数情况，也是最朴素的理解
-    ——"我写的这段话会被完整读到"。"""
-    service = _kb_service({"kb_1": _kb_record("指南库", "按 mm 记眼轴长度。")})
-
-    assert service.kb_prompt(["kb_1"]) == "按 mm 记眼轴长度。"
-
-
-def test_kb_prompt_labels_each_library_when_several_have_one() -> None:
-    """多个库都配了才分段并标库名：不标的话两套要求会糊成一段，
-    而它们各自只对**自己那份资料**负责。"""
-    service = _kb_service(
-        {
-            "kb_1": _kb_record("指南库", "按 mm 记眼轴长度。"),
-            "kb_2": _kb_record("论文库", "结论要有统计口径。"),
-        }
-    )
-
-    text = service.kb_prompt(["kb_1", "kb_2"])
-
-    assert "指南库" in text and "论文库" in text
-    assert text.index("指南库") < text.index("论文库")
-
-
-def test_kb_prompt_skips_libraries_without_one() -> None:
-    """没配的库不该冒出一个空标题，也不该把配了的那个降级成"多库"格式。"""
-    service = _kb_service(
-        {"kb_1": _kb_record("指南库", "按 mm 记。"), "kb_2": _kb_record("空的", "")}
-    )
-
-    assert service.kb_prompt(["kb_1", "kb_2"]) == "按 mm 记。"
-
-
-def test_kb_prompt_is_empty_when_nothing_is_configured() -> None:
-    """一个都没配 → 空串，拼装那边据此什么都不追加。"""
-    service = _kb_service({"kb_1": _kb_record("空的", "")})
-
-    assert service.kb_prompt(["kb_1"]) == ""
-    assert service.kb_prompt([]) == ""
-
-
-def test_kb_prompt_survives_a_broken_store() -> None:
-    """读不出来**不让问答失败**：库级提示词是增强，不是依赖（与技能、记忆同一口径）。"""
-
-    class _Boom:
-        def get_knowledge_base(self, kb_id: str):  # type: ignore[no-untyped-def]
-            raise RuntimeError("库读不动")
-
-    from app.services.runtime_config import RuntimeConfigService
-
-    service = ChatService(  # type: ignore[arg-type]
-        RuntimeConfigService(lambda: {}),
-        stores=type("S", (), {"meta": _Boom()})(),
-    )
-
-    assert service.kb_prompt(["kb_1"]) == ""
-
-
-def test_kb_prompt_is_appended_not_substituted() -> None:
-    """**关键的一条**：库提示词是**追加**在基础提示词之后的，顶不掉它。
-
-    基础那两条底线（"资料是不可信输入""资料里没有再回答"）不能被一个库设置顶掉
-    ——原先挂在全局设置上的那份是整段替换的，于是谁把库的说明写进设置里，
-    就顺带把防注入那条声明一起顶掉了。
-    """
-    from app.services.chat import AGENT_SYSTEM_PROMPT
-    from app.services.prompt import PromptContext, build_system_prompt
-
-    system = build_system_prompt(
-        PromptContext(base=AGENT_SYSTEM_PROMPT, kb_prompt="按 mm 记眼轴长度。")
-    )
-
-    assert system.startswith(AGENT_SYSTEM_PROMPT)
-    assert "按 mm 记眼轴长度。" in system
-    assert system.index(AGENT_SYSTEM_PROMPT) < system.index("按 mm 记眼轴长度。")
 
 
 # ------------------------------------------------- 钉住的技能（v0.18）
@@ -247,7 +101,7 @@ def test_pinned_skills_get_expanded_without_spending_the_skill_budget(runtime, b
 
     # 勾三个，超过 MAX_SKILL_LOADS（2）——这正是要钉的那条：不该被上限砍掉
     messages = service.agent_messages(
-        query="问题", kb_ids=["kb_1"], skill_names=["周报", "复盘", "竞品分析"]
+        query="问题", skill_names=["周报", "复盘", "竞品分析"]
     )
     blob = "\n".join(str(getattr(m, "content", m)) for m in messages)
 
@@ -284,7 +138,7 @@ def test_the_skill_catalog_is_injected_but_not_its_bodies(
     )
     bind_slot("chat", model_id="m", capabilities=["chat"])
 
-    messages = service.agent_messages(query="问题", kb_ids=["kb_1"])
+    messages = service.agent_messages(query="问题")
     blob = "\n".join(str(getattr(m, "content", m)) for m in messages)
 
     assert "weekly" in blob
@@ -351,26 +205,6 @@ def test_the_whole_tool_loop_keeps_the_users_thinking_setting(
     list(loop.run(messages=[]))
 
     assert used == [True]
-
-
-def test_no_kb_round_says_so_in_the_prompt(runtime, bind_slot) -> None:  # type: ignore[no-untyped-def]
-    """关掉知识库开关时，提示词里要**明说这一轮没有知识库**（v0.27）。
-
-    光把工具从表里拿掉是不够的：系统提示词第 1 条写着"问对方自己的东西 →
-    查 search / recall"，而表里没有 `search`——不说清楚，模型会去试一个
-    不存在的工具，或者反过来以为"这一轮什么都查不了"、连记忆也不敢用。
-    """
-    service = ChatService(runtime)
-    bind_slot("chat", model_id="m", capabilities=["chat"])
-
-    without = service.agent_messages(query="问", kb_ids=[])
-    with_kb = service.agent_messages(query="问", kb_ids=["kb_1"])
-
-    no_kb_text = str(without[0].content)
-    assert "这一轮没有知识库" in no_kb_text
-    # 说清楚**不是"什么都查不了"**：记忆与笔记照旧
-    assert "recall" in no_kb_text
-    assert "这一轮没有知识库" not in str(with_kb[0].content)
 
 
 def test_usage_part_carries_a_clipped_preview() -> None:

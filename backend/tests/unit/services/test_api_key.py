@@ -49,9 +49,8 @@ def test_current_caller_returns_it_without_looking_at_headers() -> None:
 
 @pytest.mark.parametrize("need", [READ, WRITE])
 def test_access_check_passes_for_the_local_owner(service: ApiKeyService, need) -> None:  # type: ignore[no-untyped-def]
-    """本机主人放行：两条形状都不抛（`kb_ids` 给了具体库、或表示"不涉及库"）。"""
-    service.check_access(LOCAL_CALLER, need=need, kb_ids=["kb_任意"])
-    service.check_access(LOCAL_CALLER, need=need, kb_ids=None)
+    """本机主人放行：两种权限档都不抛。"""
+    service.check_access(LOCAL_CALLER, need=need)
 
 
 def test_a_non_owner_is_refused(service: ApiKeyService) -> None:
@@ -65,7 +64,7 @@ def test_a_non_owner_is_refused(service: ApiKeyService) -> None:
     stranger = Caller(user=UserRecord(id="u_1", name="别人", username="u1"))
 
     with pytest.raises(ForbiddenError):
-        service.check_access(stranger, need=READ, kb_ids=["kb_1"])
+        service.check_access(stranger, need=READ)
 
 
 def test_the_admin_gate_also_passes() -> None:

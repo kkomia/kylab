@@ -93,14 +93,13 @@ CORE_ALWAYS: frozenset[str] = frozenset(
 #: **外围工具名单**（一处定义，别在别处再抄一份）。
 #:
 #: 判据两条（照用户给的划分口径）：**是不是每轮都可能用到** + **有没有替代物**。
-#: 落到具体工具上就是三类：
+#: 落到具体工具上就是两类：
 #:
 #: 1. **要交东西的**（导出四件 / 建笔记）：多数回合用不到，用到时是"这一步的终点"，
 #:    而它自己会出现在发现结果里——延迟的代价只是一次发现；
-#: 2. **管库的**（建库 / 传文档 / 删文档 / 数据源 / 入库 / 表格查询…）：
-#:    配置性动作，一轮里顶多用一次；
-#: 3. **重或危险的**（``run_command`` / 定时任务）：
-#:    它们"sandbox/权限"成本最高，而"每轮都可能用到"这一条明显不成立。
+#: 2. **重或危险的**（``run_command``）：它的成本最高，而"每轮都可能用到"这一条
+#:    明显不成立。文件列举/搜索（``list_files`` / ``search_files``）也归外围——
+#:    读单个文件才是核心。
 #:
 #: 反过来留在核心的是"看一眼就有用"的那些：读文件/读记忆/读技能/检索/联网/看会话文件。
 #: MCP 工具**不在这个集合里**：它们按前缀自动归外围（见 :func:`is_peripheral`）——
@@ -119,10 +118,6 @@ PERIPHERAL_TOOLS: frozenset[str] = frozenset(
         # 文件列举/搜索（读单个文件是核心：``read_file``）
         "list_files",
         "search_files",
-        # 知识库那几个（本机只做"检索"与"把东西放进去"，管理面在别处）
-        "upload_document",
-        "attach_note_to_kb",
-        "ingest_file",
     }
 )
 
@@ -241,14 +236,8 @@ _READ = ToolMeta(
 #: 取值只看两件事：**它动不动东西**、**动了什么**。改一处之前先问一句
 #: "它能不能和同批的别的调用同时跑"——这正是这张表存在的理由。
 TOOL_META: dict[str, ToolMeta] = {
-    # ---- 知识库（内置那批，见 services/tools.py）----
-    # **管理面那几个已经不在了**（建库 / 列库 / 列文档 / 查进度 / 删文档 / 挂数据源 /
-    # 表格 SQL）：它们实现依赖的是进程内的知识库服务，那些服务随知识库产品剥离搬走了。
-    # 本机只做"检索"与"把东西放进去"，所以这一节只剩这四个。
-    "upload_document": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
-    "search": _READ,
+    # ---- 内置那批（见 services/tools.py）----
     "create_note": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
-    "attach_note_to_kb": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     "list_notes": _READ,
     "recall": _READ,
     # 读用户档案原文（自驾/自查它写进去的是什么）：与 recall / read_file 同一档——
@@ -316,14 +305,6 @@ TOOL_META: dict[str, ToolMeta] = {
     # 列/读文件区是**只读**：它与 read_file 同一档（读一眼，最该和同批里别的读并发）
     "list_conversation_files": _READ,
     "read_conversation_file": _READ,
-    # 把会话里的一份文件加进知识库：写的是**用户的长期资产**，与 upload_document 同一档。
-    # **并且要问一次**（`needs_approval=True`）——
-    # 用户点名的 2026-09-29 走查："在用户没有明确把数据上传到知识库的时候不得往知识库里面塞东西" ✗。
-    # 判据按"宁可多问一次"落：**默认拦**，用户确需时在确认条上点一下就是了；
-    # 免问的口子仍由权限档位那条既有策略决定（`tool_loop._resolve_permission`）。
-    "ingest_file": ToolMeta(
-        side_effect_scope="workspace", risk_level="medium", needs_approval=True
-    ),
 }
 
 #: 未知工具（外部 MCP 服务暴露的）：**fail-closed**——不并发、按动系统算。
@@ -356,7 +337,6 @@ def meta_of(name: str) -> ToolMeta:
 #: 我们的八档里没有那一档，收进 ``write``；真正的那份文件由产物卡片单独承担）。
 _KIND_OVERRIDES: dict[str, str] = {
     # 从"已有的东西里找一段"——与 read（列清单、看状态）不是一回事
-    "search": "search",
     "recall": "search",
     "search_files": "search",
     # 技能是能力层的一档（ZCode 的枚举里也单列）

@@ -4,7 +4,7 @@
 与"问一个问题"是两件事。混在一起的话，前端每次提问都要顺便处理一堆会话状态；
 分开之后 `/chat` 只负责回答，会话列表自己刷新。
 
-**要不要鉴权**：要。这些端点读写的是用户与知识库的历史对话，属于内容本身；
+**要不要鉴权**：要。这些端点读写的是用户的历史对话，属于内容本身；
 用 ``ReadDep`` / ``WriteDep``，外部只读 API Key 也能回看历史（合理），
 但删会话需要读写权限。
 """
@@ -63,7 +63,6 @@ def _summary(services: Services, record, *, preview: str = "") -> ConversationOu
     return ConversationOut(
         id=record.id,
         title=record.title,
-        kb_ids=list(record.kb_ids),
         model_pk=record.model_pk,
         thinking=record.thinking,
         thinking_effort=record.thinking_effort,
@@ -215,22 +214,16 @@ def create_conversation(
     标题允许留空：真正的标题由**第一轮提问**生成（见 ``ConversationService``）。
     这里能传标题是为了"复制一次旧会话"这类将来可能有的用法。
     """
-    kb_ids = list(payload.kb_ids)
     if payload.workspace_id is not None:
-        # 校验可见性（越权 404），并在调用方没指定库时**继承工作区的库**：
-        # 这就是"知识库与 Agent 天生融合"落到行为上的样子——进入项目，
-        # 资料范围就定了（见 docs/设计/Agent-工作区与能力层设计-v0.1.md §5）。
-        # **设备闸也在这里过**（v0.59）：会话不按设备隔离，但"挂进哪个项目"
-        # 是工作区的事——把会话挂进另一台机器的项目，与挂进别人的项目同一类越界
-        workspace = services.workspaces.get(
+        # 校验可见性（越权 404）。**设备闸也在这里过**（v0.59）：会话不按设备隔离，
+        # 但"挂进哪个项目"是工作区的事——把会话挂进另一台机器的项目，与挂进别人的
+        # 项目同一类越界。
+        services.workspaces.get(
             payload.workspace_id,
             user_id=_caller_owner(caller),
             device_id=request_device.id if request_device is not None else None,
         )
-        if not kb_ids:
-            kb_ids = list(workspace.kb_ids)
     record = services.conversations.create(
-        kb_ids=kb_ids,
         title=payload.title,
         owner_id=_caller_owner(caller),
         model_pk=payload.model_pk,
@@ -376,7 +369,7 @@ def branch_conversation(
     与 ``rewind`` 的分工：那个是"删掉尾巴、把那句提问还给界面重发"（**改原会话**），
     这个是"另起一条"（**原会话不动**）。用户不敢乱试的正是后者——一改就回不去了。
 
-    带走消息（含出处 / 步骤 / 思考快照）与它的事件日志，带走知识库范围 / 模型 /
+    带走消息（含出处 / 步骤 / 思考快照）与它的事件日志，带走模型 /
     思考偏好 / 工作区与**归属**；**不带走文件区**（产物记录与对象存储里的字节都不搬），
     所以消息上的附件快照也不抄——那份 key 指向源会话的记账，抄过去点开必然 404。
     这条边界写进《API 接口规范》§1.9。

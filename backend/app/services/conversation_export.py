@@ -179,7 +179,6 @@ def conversation_line(transfer: ConversationTransfer) -> str:
             "data": {
                 "id": item.id,
                 "title": item.title,
-                "kb_ids": list(item.kb_ids),
                 "owner_id": item.owner_id,
                 "model_pk": item.model_pk,
                 # 三态列（None = 跟随全局默认）原样过线：折成 false 就丢了一档
@@ -247,7 +246,6 @@ def artifact_line(conversation_id: str, artifact: ConversationArtifactRecord) ->
                 "location": artifact.location,
                 "workspace_id": artifact.workspace_id,
                 "owner_id": artifact.owner_id,
-                "knowledge_base_id": artifact.knowledge_base_id,
                 "document_id": artifact.document_id,
                 "created_at_ms": _ms(artifact.created_at),
             },
@@ -343,7 +341,6 @@ def conversation_from_data(data: dict[str, Any]) -> ConversationRecord:
     return ConversationRecord(
         id=str(_require(data, "id", kind=CONVERSATION)),
         title=str(data.get("title") or ""),
-        kb_ids=tuple(str(item) for item in data.get("kb_ids") or ()),
         owner_id=data.get("owner_id"),
         model_pk=data.get("model_pk"),
         # 三态列：None 保持 None（"跟随全局默认"是一个真实状态，不折成 False）
@@ -393,7 +390,6 @@ def artifact_from_data(data: dict[str, Any], conversation_id: str) -> Conversati
         location=str(data.get("location") or ""),
         workspace_id=data.get("workspace_id"),
         owner_id=data.get("owner_id"),
-        knowledge_base_id=data.get("knowledge_base_id"),
         document_id=data.get("document_id"),
         created_at=_load_ms(data.get("created_at_ms")),
     )

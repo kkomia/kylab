@@ -30,8 +30,8 @@ from app.services.memory import MemoryService
 from tests.conftest import install_fake_chat  # noqa: F401  （保持与其它用例一致的导入面）
 
 
-def _names(kb_ids: list[str] | None) -> set[str]:
-    return {spec.name for spec in agent_tools.tool_specs(kb_ids=kb_ids)}
+def _names() -> set[str]:
+    return {spec.name for spec in agent_tools.tool_specs()}
 
 
 class _FakeMemory:
@@ -78,28 +78,28 @@ def _memory_service(tmp_path: Path) -> MemoryService:
     )
 
 
-def _names_with_memory(enabled: bool, kb_ids: list[str] | None = None) -> set[str]:
+def _names_with_memory(enabled: bool) -> set[str]:
     """带一个假记忆服务的工具表。
 
     ``services`` 只给 ``memory`` 一项：``_mcp_specs`` 读不到 ``services.mcp`` 会
     自己吞掉（那一处是"外部工具读不出来不该让整轮起不来"）。
     """
     services = SimpleNamespace(memory=_FakeMemory(enabled))
-    return {spec.name for spec in agent_tools.tool_specs(services, kb_ids=kb_ids)}
+    return {spec.name for spec in agent_tools.tool_specs(services)}
 
 
 # ------------------------------------------------------------------ 工具表
 
 
 def test_machine_tools_are_always_there() -> None:
-    """文件与执行**不依赖知识库**：关掉知识库它们照样在。"""
-    names = _names(None)
+    """文件与执行是这台机器上的能力。"""
+    names = _names()
     assert {"list_files", "read_file", "search_files", "run_command"} <= names
 
 
 def test_local_tools_come_before_external_ones() -> None:
     """内置 → 技能 → 这台机器上的能力 → 外部服务（我们对前三段负责，外部排最后）。"""
-    names = [spec.name for spec in agent_tools.tool_specs(kb_ids=["kb_x"])]
+    names = [spec.name for spec in agent_tools.tool_specs()]
     assert names.index("read_skill") < names.index("list_files")
 
 
@@ -159,7 +159,7 @@ def test_the_machine_tools_are_wired_into_the_runner(tmp_path, monkeypatch) -> N
         lambda *a, **k: Roots(workspace=None, sandbox=Path(tmp_path)),
     )
     (tmp_path / "note.txt").write_text("hello", encoding="utf-8")
-    runner = agent_tools.build_runner(_FakeServices(), Caller(is_admin=True), kb_ids=[])
+    runner = agent_tools.build_runner(_FakeServices(), Caller(is_admin=True))
     outcome = runner("read_file", {"path": "note.txt"})
     assert "hello" in outcome.content
 
@@ -171,14 +171,13 @@ def test_memory_tools_follow_the_memory_switch() -> None:
     """记忆关着时**只有 ``recall`` 消失**，其余三件留着。
 
     关着时 ``recall`` 会明确报"未启用长期记忆"（关的正是注入与 recall 这一对），
-    而"给了又拒"正是知识库那一侧已经修过的坑（模型先试一次、再拿一句错误，
-    白花一个来回——见 ``_KB_TOOLS``）。
+    而"给了又拒"只会让模型先试一次、再拿一句错误，白花一个来回。
 
     **``remember`` / ``forget`` / ``read_memory`` 不看那个开关**（它管的是
     注入与 recall，记忆的读写不看它）——"关了也能改自己的东西"这条纪律保留。
     """
-    on = _names_with_memory(True, ["kb_x"])
-    off = _names_with_memory(False, ["kb_x"])
+    on = _names_with_memory(True)
+    off = _names_with_memory(False)
 
     assert "recall" in on
     assert "recall" not in off
@@ -194,9 +193,8 @@ def test_read_memory_description_says_what_it_reads() -> None:
     （渲染过的形状、**不带 id**）当成库里的原文，于是改 / 删时指不准是哪一条。
     """
     specs = {
-        spec.name: spec for spec in agent_tools.tool_specs(
-            SimpleNamespace(memory=_FakeMemory(True)), kb_ids=["kb_x"]
-        )
+        spec.name: spec
+        for spec in agent_tools.tool_specs(SimpleNamespace(memory=_FakeMemory(True)))
     }
     description = specs["read_memory"].description
 
@@ -232,61 +230,14 @@ class _FakeArtifacts:
         return self.blobs[key], key.rsplit("/", 1)[-1]
 
 
-class _FakeIngest:
-    def __init__(self, *, duplicate: bool = False) -> None:
-        self.duplicate = duplicate
-        self.calls: list[dict[str, Any]] = []
-
-    def submit(self, **kwargs: Any) -> Any:
-        self.calls.append(kwargs)
-        return SimpleNamespace(
-            document=SimpleNamespace(id="doc_new", name=kwargs["filename"]),
-            is_duplicate=self.duplicate,
-        )
-
-
-class _FakeDocuments:
-    def __init__(self) -> None:
-        self.enqueued: list[str] = []
-
-    def enqueue_ingest(self, document_id: str) -> None:
-        self.enqueued.append(document_id)
-
-
-class _FakeApiKeys:
-    def __init__(self) -> None:
-        self.checks: list[tuple[Any, list[str]]] = []
-
-    def check_access(self, caller: Any, *, need: Any = None, kb_ids: Any = None) -> None:
-        self.checks.append((need, list(kb_ids or [])))
-
-
-class _FakeKb:
-    """够用的假组合根（`services.kb` 那一格）：入库两条接缝 + 凭据判定。
-
-    真身见 `core/services.py::KbServices`——本机这一档它就只有这三样。
-    """
-
-    def __init__(self, *, duplicate: bool = False) -> None:
-        self.ingest = _FakeIngest(duplicate=duplicate)
-        self.documents = _FakeDocuments()
-        self.api_keys = _FakeApiKeys()
-
-
-def _file_services(artifacts: Any = None, *, duplicate: bool = False) -> _FakeServices:
-    return _FakeServices(artifacts=artifacts, kb=_FakeKb(duplicate=duplicate))
+def _file_services(artifacts: Any = None) -> _FakeServices:
+    return _FakeServices(artifacts=artifacts)
 
 
 def test_conversation_file_tools_are_always_there() -> None:
-    """会话文件区那两个**不依赖知识库**：用户上传的东西与"查不查库"没关系。"""
-    names = _names(None)
+    """会话文件区那两个是这台机器上的能力：读一眼会话里的文件。"""
+    names = _names()
     assert {"list_conversation_files", "read_conversation_file"} <= names
-
-
-def test_ingest_file_follows_the_knowledge_base_switch() -> None:
-    """入库是**写知识库**：关掉开关时它一起消失（与检索那条同一条纪律）。"""
-    assert "ingest_file" in _names(["kb_x"])
-    assert "ingest_file" not in _names(None)
 
 
 def test_list_conversation_files_renders_the_file_area() -> None:
@@ -322,9 +273,8 @@ def test_read_conversation_file_pages_text() -> None:
     assert "共 3 行" in outcome.content
 
 
-def test_read_conversation_file_tells_binary_how_to_ingest() -> None:
-    """二进制读不出来时**给出下一步**（入库 → 检索）——当前链路没有多模态，
-    这是唯一能"看"到图片 / PDF 内容的路。"""
+def test_read_conversation_file_tells_binary_how_to_read_it() -> None:
+    """二进制读不出来时**给出下一步**（先解压再读 / 看元信息）。"""
     services = _file_services(_FakeArtifacts(blobs={"shot.png": b"\x89PNG\x00\x00"}))
 
     outcome = agent_tools._run_conversation_file_tool(
@@ -332,74 +282,7 @@ def test_read_conversation_file_tells_binary_how_to_ingest() -> None:
     )
 
     assert "二进制" in outcome.content
-    assert "ingest_file" in outcome.content
-
-
-def test_ingest_file_reads_from_the_conversation_file_area() -> None:
-    """文件区命中：字节从那儿来，落库那一段与 ``upload_document`` 同一条路。"""
-    services = _file_services(_FakeArtifacts(blobs={"报告.pdf": b"pdf-bytes"}))
-
-    outcome = agent_tools._ingest_file(
-        services,
-        Caller(is_admin=True),
-        "c1",
-        Roots(workspace=None, sandbox=Path(".")),
-        {"knowledge_base_id": "kb_1", "path": "报告.pdf"},
-    )
-
-    assert services.kb.ingest.calls[0]["filename"] == "报告.pdf"
-    assert services.kb.ingest.calls[0]["content"] == b"pdf-bytes"
-    assert services.kb.documents.enqueued == ["doc_new"]
-    assert "doc_new" in outcome.content
-
-
-def test_ingest_file_falls_back_to_the_file_face(tmp_path: Path) -> None:
-    """文件区没有这份（模型自己 ``run_command`` 造出来的东西）就落到工作区/沙箱那一侧。"""
-    (tmp_path / "out.csv").write_bytes(b"a,b\n1,2\n")
-    services = _file_services(_FakeArtifacts())
-
-    outcome = agent_tools._ingest_file(
-        services,
-        Caller(is_admin=True),
-        "c1",
-        Roots(workspace=tmp_path, sandbox=tmp_path),
-        {"knowledge_base_id": "kb_1", "path": "out.csv"},
-    )
-
-    assert services.kb.ingest.calls[0]["content"] == b"a,b\n1,2\n"
-    assert "doc_new" in outcome.content
-
-
-def test_ingest_file_reports_a_duplicate_without_enqueueing() -> None:
-    """库里已有同一份：**不重复入库、也不入队**，并如实说。"""
-    services = _file_services(_FakeArtifacts(blobs={"a.txt": b"x"}), duplicate=True)
-
-    outcome = agent_tools._ingest_file(
-        services,
-        Caller(is_admin=True),
-        "c1",
-        Roots(workspace=None, sandbox=Path(".")),
-        {"knowledge_base_id": "kb_1", "path": "a.txt"},
-    )
-
-    assert services.kb.documents.enqueued == []
-    assert "相同" in outcome.content
-
-
-def test_ingest_file_says_where_to_find_paths_when_missing() -> None:
-    """找不到时要说清"两种路径分别从哪儿拿"——否则模型只能瞎猜。"""
-    services = _file_services(_FakeArtifacts())
-
-    outcome = agent_tools._ingest_file(
-        services,
-        Caller(is_admin=True),
-        "c1",
-        Roots(workspace=None, sandbox=Path(".")),
-        {"knowledge_base_id": "kb_1", "path": "nope.pdf"},
-    )
-
-    assert "list_conversation_files" in outcome.content
-    assert "list_files" in outcome.content
+    assert "run_command" in outcome.content
 
 
 def test_read_memory_lists_every_item_with_its_id(tmp_path: Path) -> None:

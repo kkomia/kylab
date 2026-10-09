@@ -68,10 +68,7 @@ class Settings(BaseSettings):
     server_url: str | None = None
     """那台机器的 API 基址（含 ``/api/v1``），例如 ``http://nas:8000/api/v1``。
 
-    两件事读它：**旧会话导入**的来源（`services/legacy_import.py`），以及
-    知识库提供者地址的默认值（``kb_url`` 不填时继承它）。
-    不设 = 这台机器这次没接别处：检索会走"知识库不可用"那条**如实报错**的路，
-    而不是悄悄回退（本机根本没有那些表）。
+    读它的是**旧会话导入**的来源（`services/legacy_import.py`）。
     """
 
     token: str | None = None
@@ -80,24 +77,6 @@ class Settings(BaseSettings):
     名字就叫 ``token`` 是跟着环境变量 ``KYLAB_TOKEN`` 走的——壳起边车时读的就是它
     （``app/sidecar.py`` 的 ``--token`` 默认值）。**不落库、不进日志**：它是通往别处的
     凭据，本机库里只放会话数据。
-    """
-
-    kb_url: str | None = None
-    """**知识库提供者**的地址覆盖（含 ``/api/v1``），例如 ``http://另一台nas:8000/api/v1``。
-
-    而且**默认空 = 继承 ``server_url``**——绝大多数部署一个字都不用填。它存在的理由
-    是两件事：**排障**（临时指到另一个地址看看）与**多入口**（知识库在另一台机器上）。
-    **凭据不跟着走**：``kb_token`` 不填时仍用 ``token``，要连另一台得先有它的钥匙。
-
-    运行期那一处的覆盖键是 ``provider.knowledge.base_url``（设置页可改、改完即刻生效：
-    提供者客户端每次调用现取目标，见 ``services/knowledge_provider.py``）。
-    """
-
-    kb_token: str | None = None
-    """知识库提供者的凭据覆盖。**默认空 = 继承 ``token``**（壳领的那把）。
-
-    与 ``token`` 同一条纪律：**不落库、不进日志**——它只从引导级（环境变量 / 壳）来，
-    本机库里存不下它，设置面板也只显示"配没配"。
     """
 
     device_id: str = ""

@@ -10,21 +10,15 @@ API 层通过依赖注入拿到服务，自己不 new 任何东西。
 
 ## 一个进程、一个根
 
-这个进程是**桌面壳的本机边车**：会话 / 笔记 / 设置 / 模型凭据都落这一台机器，
-知识库在别处（另一台机器上的提供者），本机是它的客户端。服务器档随知识库产品
-剥离到独立仓库一起拆掉了，所以装配里不再有"按档分流"的分支。
-
-``Services`` 是唯一那个根。**`Services.kb` 这一格仍然在**——它装的是"本机这一侧
-剩下的知识库面"：调用者能碰哪些库的判定，以及两条写进知识库的接缝
-（提交字节 / 入队）。这两样今天还挂在组合根上，而 `scripts/check_domains.py` 的
-KB 访问器判定靠这一格名字识别"经组合根取 KB 域服务"，所以名字不能改。
+这个进程是**桌面壳的本机边车**：会话 / 笔记 / 设置 / 模型凭据都落这一台机器。
+``Services`` 是唯一那个根——它装配本机这一侧的全部服务。
 
 ### 依赖注入
 
-- Agent 侧与共享侧的模块注入 **`Services`**，依赖 `get_services()`；
-- 还经 `Depends(get_kb_services)` 取 KB 面的那几个模块拿到的是 `get_services().kb`
-  ——**进程里只有一份图**，不二次装配（否则会出现两个 `StoreBundle`、
-  两个补传线程、两份运行期配置）。
+- 各模块注入 **`Services`**，依赖 `get_services()`；
+- **准入判定**（``require_read`` / ``require_write``）也从根上取
+  ``services.api_keys``——**进程里只有一份图**，不二次装配（否则会出现两个
+  `StoreBundle`、两个补传线程、两份运行期配置）。
 """
 
 from __future__ import annotations
@@ -54,12 +48,6 @@ from app.services.credentials import CredentialsService
 from app.services.embedding import build_embedder
 from app.services.embedding.base import EmbeddingProvider
 from app.services.embedding.deterministic import DeterministicEmbedder
-from app.services.kb_cache import CachedKnowledgeMetaReader, KbMetaCacheService
-from app.services.knowledge_provider import (
-    EnqueueGateway,
-    IngestGateway,
-    KnowledgeProviderClient,
-)
 from app.services.legacy_import import LegacyImporter
 from app.services.llm import LLMUsage
 from app.services.mcp_client import MCPClientService
@@ -81,41 +69,14 @@ from app.services.workspace import WorkspaceService
 from app.storage.base import StoreBundle
 
 __all__ = [
-    "KbServices",
     "Services",
-    "build_kb_services",
     "build_services",
-    "get_kb_services",
     "get_services",
     "reset_services",
 ]
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True, slots=True)
-class KbServices:
-    """本机这一侧剩下的**知识库面**。
-
-    三样，各有各的理由：
-
-    - ``api_keys``：**这次调用能碰哪些库**的判定。本机的调用主体只有"本机主人"一种
-      （见 `api/auth.py`），`check_access` 在那一档直接放行——但判定本身仍然走它，
-      而不是在协议层改成"不判"，因为"谁是主人"这件事只有一处定义才不会漂；
-    - ``ingest``：**提交一份字节进知识库**的接缝。本机给它的是提供者网关
-      （知识库在别处，本机不落库、不解析）；
-    - ``documents``：**入队**那条接缝。本机同样只有网关那一面——远端收到上传时
-      自己已经排上了，本机没有队列可管。
-
-    **四个知识库服务本体（knowledge_bases / retrieval / tabular / lifecycle …）
-    都不在这里**：它们随知识库产品搬去了 kybase，本仓库一行数据都不持有。
-    """
-
-    api_keys: ApiKeyService
-
-    ingest: IngestGateway
-
-    documents: EnqueueGateway
 
 @dataclass(frozen=True, slots=True)
 class Services:
@@ -190,17 +151,11 @@ class Services:
     chat: ChatService
     """快速检索对话：检索 + 提示词 + LLM，定位是让用户快速验证知识库。"""
 
-    kb: KbServices
-    """**本机这一侧剩下的知识库面**（见 :class:`KbServices`）。
+    api_keys: ApiKeyService
+    """**这次调用能不能碰这些库**的判定（`api/auth.py` 的两道依赖从它取）。
 
-    用途：`api/auth.py` 的存取判定、工具层那两条写进知识库的接缝
-    （`tools.py` 的 `upload_document` / `attach_note_to_kb`
-    与 `agent_tools.py` 的 `ingest_file`）。
-
-    **名字不能改**：`scripts/check_domains.py` 用 `services.kb.<字段>` 这个形状识别
-    "经组合根取 KB 域服务"，改名的后果是那条门禁静默失效。
-
-    **方向是单向的**：`KbServices` 上**没有**这一格（KB 面不依赖 Agent 面）。
+    本机的调用主体只有"本机主人"一种，`check_access` 在那一档直接放行——但判定本身
+    仍然走它，而不是在协议层改成"不判"，因为"谁是主人"这件事只有一处定义才不会漂。
     """
 
     embedder: EmbeddingProvider
@@ -235,21 +190,6 @@ class Services:
     （测试、脚本）不必为它加参数，而"每个 Services 自带一张空表"比"忘了传就崩"稳。
     """
 
-    provider: KnowledgeProviderClient | None = None
-    """**知识库提供者客户端**（M3 阶段 2 建、阶段 5 收成进程级那一个实例）。
-
-    本机档：这一份就是**全进程唯一**的那一个（`ChatService` 的检索、笔记与产物的
-    入库网关、`Services.ingest`/`documents`、`stores.meta.kb` 的 reader、边车
-    `Clients` 的工具表门控、`/local/provider` 端点**全从它取**）——它身上那份 30s
-    握手缓存因此也只有一个，改完地址之后各处看到的必然是同一个结论。
-
-    服务器档：``None``。它的知识库就是它自己（进程内那套一位不变），没有"第二个
-    东西可以问"（R11）。
-
-    为什么带默认值：服务器档与手工构造 ``Services`` 的地方（脚本、测试）都不该被迫
-    传一个不适用的对象；"没有它"本身就是一个合法状态，而不是配置漏项。
-    """
-
     backup_snapshot: BackupSnapshotService | None = None
     """**本机快照打包服务**（M5 阶段 2 建，阶段 4 起接上端点与队列）。
 
@@ -259,8 +199,8 @@ class Services:
     服务器档：``None``。那一档的库就是它自己，没有"把自己打成一份便携的包"这条动作
     （``/local/backup`` 那一族端点也只在 ``local_router`` 上，见 ``api/v1/router.py``）。
 
-    为什么带默认值：与 ``provider`` / ``kb_cache`` 同一条理由——"没有它"是一个合法状态，
-    而不是配置漏项。
+    为什么带默认值：那一档的库就是它自己，没有"把自己打成一份便携的包"这条动作时
+    "没有它"是一个合法状态，而不是配置漏项。
     """
 
     backup_provider: BackupProviderClient | None = None
@@ -309,23 +249,6 @@ class Services:
     那条干净路径：停边车 → 挪 ``kylab.db*`` → 再恢复）。
 
     为什么带默认值：同 ``provider``——"没有它"是合法状态。
-    """
-
-    kb_cache: KbMetaCacheService | None = None
-    """**知识库元数据快照服务**（M4 阶段 3 建；阶段 4 起 ``/local/kb-cache/*`` 用它）。
-
-    本机档：这一份是**全进程唯一**的那一个——reader 面（``ChatService.kb_prompt`` 经
-    ``stores.meta.kb``）与页面面（``/local/kb-cache/*`` 那族端点）读的是同一份快照、
-    同一套排程（单飞 / 15s 最短间隔 / 60s 失败退避）。两个入口各建一个就会各排各的，
-    而 R3 的"再验证风暴"正是那么来的。
-
-    它身上没有第二份事实：真话永远在 NAS 上，删了只丢速度（快照严格可弃，v0.3 §5.3）。
-
-    服务器档：``None``。那一档没有"抄一份 NAS 快照"这条动作——它的知识库就是它自己，
-    页面读到的已经是权威数据，再留一份只会多出一份会说谎的副本。
-
-    为什么带默认值：与 ``provider`` 同一条理由——"没有它"是一个合法状态，
-    而不是配置漏项。
     """
 
     secrets: SecretStore | None = None
@@ -484,8 +407,8 @@ class _RuntimeReranker(RerankProvider):
 
 def _build_graph(
     settings: Settings | None = None, stores: StoreBundle | None = None
-) -> tuple[KbServices, Services]:
-    """一条链装配出两个根（共享件在两边是同一个实例）。"""
+) -> Services:
+    """装配服务根（唯一一份图）。"""
 
     resolved = settings or get_settings()
     bundle = stores or build_stores(resolved)
@@ -589,47 +512,6 @@ def _build_graph(
         skills=skill_service,
         skill_summaries=_skill_summaries,
     )
-    # 知识库提供者（M3 阶段 3）：本机打知识库的唯一出口（握手 / 检索 / 入库 / 元数据，
-    # 见 `services/knowledge_provider.py`）。
-    #
-    # **恒建，不看地址有没有值**：地址与钥匙是**每次调用现取**的（`provider.target()`
-    # 现读运行期设置），所以"现在没配、设置页填上之后立刻生效"这条要成立，对象就得先在这儿。
-    # 没配时它如实回 `unconfigured`，两个网关的 `submit` 抛 `KnowledgeBaseUnavailable`
-    # （既有 503 映射）——而不是回一个假的空结果，也不是 500。
-    #
-    # **它就是进程级那一个实例**：`/local/provider` 的判定源、边车工具表门控被它
-    # 一起回答，于是不可能出现"端点说 ready、工具表说不 ready"这种两处各答一半的局面。
-    provider = KnowledgeProviderClient(settings=resolved, get_setting=runtime.get)
-    # **知识库元数据快照（M4 阶段 3）**：页面面与 reader 面共用的那一份服务。
-    #
-    # 建在**这里**：① `bundle.kb_cache` 是本机那张缓存表；② 键空间的第一列是
-    # **提供者地址**，而地址是每次现取的能力（`provider.target()` 现读运行期设置），
-    # 那份能力只有服务层有；③ 它得是**全进程唯一的一个**（reader 面与
-    # `/local/kb-cache/*` 共用同一套排程），所以与 `provider` 一样挂在 `Services` 上
-    # 由端点去取。
-    #
-    # 地址**每次现取**：`provider_key` 是个闭包而不是装配那一刻算出来的字符串——
-    # 设置页改完地址，下一次读/写/清立刻落在新的那片键空间上。
-    local_provider = provider
-    kb_cache = KbMetaCacheService(
-        bundle.kb_cache, provider_key=lambda: local_provider.target().base_url
-    )
-    # **KB 侧那一条读线的装配就是这一处**：把 reader 挂到本机档 `stores.meta.kb` 上
-    # （`_Router.kb` 是公开属性，`split_impl/router.py`）。
-    #
-    # 为什么是后挂、不是构造参数：① **层序**——`core/storage.py` 先于本文件跑
-    # （上面那行 `bundle = stores or build_stores(resolved)`），reader 那时还没出生；
-    # ② **运行期配置**——reader 要的是"能随设置改地址"（`provider.target()` 每次现取），
-    # 那份能力只有服务层有。这一处注入**只在装配期发生一次**，也不动
-    # `split_impl` 的"路由表构造时定下"那条纪律。
-    #
-    # **为什么缓存包在 reader 外面**：`stores.meta` 与 `services/` 的调用点因此
-    # 一个字不用改，缓存只在对象图上多一个节点；而"页面面"读的是**同一个服务**的
-    # 另一面，两个读面共一份快照、一套排程。
-    bundle.meta.kb.bind_reader(
-        CachedKnowledgeMetaReader(inner=provider.knowledge_meta(), cache=kb_cache)
-    )  # type: ignore[attr-defined]
-
     # **下载签名密钥**：本机**没有任何初始化流程**（它不挂 `/auth/*`），而它的
     # `kylab.db` 是全新的——不在装配时补这一下，`auth.url_signing_secret` 就永远是
     # 空的，于是"下载签名"这条线上的每个端点都回 503（笔记配图 / 产物下载 / 会话文件）。
@@ -642,12 +524,12 @@ def _build_graph(
 
     # **备份那几件**（M5 阶段 4/5）。
     #
-    # 分工是一条直线（与上面"提供者 + 缓存"同构）：
+    # 分工是一条直线：
     #   BackupSnapshotService（打包：库 + 记忆 + 选择性产物 → 擦洗过的 tar.gz）
     #     → BackupQueueService（排队与补传：退避、上限、那一个 backup-upload 线程）
     #       → BackupProviderClient（上传者：先 blob 后 manifest 两次 PUT）
     # 而 `backup_provider` **同时**是 `/local/backup` 的状态源与恢复点清单源（两个读面、
-    # 一个对象、一份 30s 缓存）。几件都在这一层建的理由与 `provider` / `kb_cache` 一样：
+    # 一个对象、一份 30s 缓存）。几件都在这一层建的理由是：
     # 它们要的是"能随设置改地址/改开关"的运行期能力，而那份能力只有服务层有。
     #
     # 设备身份从引导级来（壳的 `--device-id` → `KYLAB_DEVICE_ID` → Settings）：
@@ -682,8 +564,6 @@ def _build_graph(
 
     chat_service = ChatService(
         runtime,
-        # stores 用于读库级提示词与文档摘要
-        stores=bundle,
         usage_recorder=_record_chat_usage,
         # 会话读写（v20.1）：上下文压缩要读历史、写摘要
         conversations=conversations_service,
@@ -692,22 +572,11 @@ def _build_graph(
         # 技能（v0.15）：把技能目录（名字 + 何时用）注入 system prompt，
         # 正文由 `use_skill` 按需展开——见 services/skills.py 的模块头
         skills=skill_service,
-        # KB 检索（M2 §2.2）：整段委托给提供者客户端（每次调用现取地址与钥匙）。
-        # **它是从进程里查知识库的唯一一条路**（`ChatService.retrieve_sources`）。
-        knowledge=provider,
     )
     # 技能源的中文化（v0.28）：浏览器里那一屏是给中文用户看的，而技能描述基本都是英文。
     # 在这里接上而不是在源服务里 new：源服务只认识一个"翻译函数"，
     # 不该认识 ChatService（测试里注入一个 lambda 就够）。
     skill_source_service.use_translator(SkillBlurbService(chat_service))
-
-    # **入库那两个接缝就是这一处**：笔记服务与 `Services` 上那两格共用同一对网关对象。
-    # "提交一份字节"与"入队"都归提供者客户端——知识库在别处，本机不落库、不解析、
-    # 也没有队列可管。
-    ingest_gateway = provider.ingest_gateway()
-    # 空操作：上传口带 `start=true`，远端那边自己入队了。理由与实现都在
-    # `knowledge_provider._EnqueueGateway` 上，不在这里再抄一份。
-    enqueue_gateway = provider.enqueue_gateway()
 
     artifacts_service = ArtifactService(bundle)
 
@@ -725,11 +594,7 @@ def _build_graph(
         token=resolved.token or "",
     )
 
-    kb = KbServices(
-        api_keys=ApiKeyService(),
-        ingest=ingest_gateway,
-        documents=enqueue_gateway,
-    )
+    api_keys = ApiKeyService()
     load = SystemLoadService(
         bundle,
         concurrency=resolved.worker_concurrency,
@@ -749,7 +614,7 @@ def _build_graph(
         artifacts=artifacts_service,
         conversation_export=export_service,
         legacy_import=legacy_importer,
-        notes=NotesService(bundle, ingest=ingest_gateway, documents=enqueue_gateway),
+        notes=NotesService(bundle),
         note_ai=NoteAiService(chat_service),
         load=load,
         memory=memory_service,
@@ -760,12 +625,8 @@ def _build_graph(
         plugins=plugins_service,
         commands=commands_service,
         mcp=mcp_service,
-        # **进程级那一个提供者实例**：上面建的 `provider` 直接挂在这里。
-        # 挂它的理由与用途见字段说明——一句话是"让全进程只有一份握手缓存"，
-        # 而 `/local/provider`（判定源）与边车的工具表门控都从它取。
-        provider=provider,
-        # **进程级那一个快照服务**：`/local/kb-cache/*` 那族端点从 `Services` 上取它。
-        kb_cache=kb_cache,
+        # **本机唯一的调用主体判定**：`api/auth.py` 的两道依赖从它取。
+        api_keys=api_keys,
         # **备份那几件**：`/local/backup` 那一族从它们取数；补传线程已经起好了。
         backup_snapshot=backup_snapshot,
         backup_provider=backup_provider,
@@ -775,42 +636,24 @@ def _build_graph(
         # 两个服务（runtime / models）已经拿着同一个 `secrets` 对象了。
         secrets=secrets,
         credentials=credentials,
-        kb=kb,
     )
     # 登记它那一个**守护线程**（见 `_BACKUP_QUEUES` 的说明）：`reset_services`
     # 要把"这份服务图被扔掉了"这件事对线程也说到，否则它会继续碰旧的数据目录。
     _BACKUP_QUEUES.append(backup_queue)
-    return kb, services
-
-
-def build_kb_services(
-    settings: Settings | None = None, stores: StoreBundle | None = None
-) -> KbServices:
-    """装配 **KB 面的根**（进程里只有一份图，它就是 `Services.kb`）。"""
-    return _build_graph(settings, stores)[0]
+    return services
 
 
 def build_services(
     settings: Settings | None = None, stores: StoreBundle | None = None
 ) -> Services:
-    """装配 **服务根**（含 `Services.kb` 那一格）。"""
-    return _build_graph(settings, stores)[1]
+    """装配 **服务根**。"""
+    return _build_graph(settings, stores)
 
 
 @lru_cache
 def get_services() -> Services:
     """进程级单例，供 FastAPI 依赖注入使用。"""
     return build_services()
-
-
-def get_kb_services() -> KbServices:
-    """KB 面的根（供 `api/auth.py` 那几处注入）。
-
-    **它就是根上那一格**：进程里只有一份图，不二次装配——否则会出现两个
-    `StoreBundle`、两个补传线程、两份运行期配置。与 `get_services()` 一样是
-    进程级单例（`reset_services()` 会一起清掉）。
-    """
-    return get_services().kb
 
 
 _BACKUP_QUEUES: list[BackupQueueService] = []

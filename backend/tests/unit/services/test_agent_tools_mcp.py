@@ -133,27 +133,21 @@ def test_plain_specs_are_builtin_and_skills_only() -> None:
     """不给 services 时行为与 P0 一致：内置 + 技能，**一个外部工具都没有**。
 
     这条是给单测与纯规格检查留的入口，也保证"没接外部服务"的部署拿到的表不变。
-    **不传 `kb_ids` 就没有知识库那一侧的工具**（见下一条），这里用一个库来
-    看完整的表。
     """
-    names = [spec.name for spec in tool_specs(kb_ids=["kb_1"])]
+    names = [spec.name for spec in tool_specs()]
 
-    assert "search" in names
+    assert "create_note" in names
     assert "list_skills" in names
     assert not [name for name in names if name.startswith("mcp__")]
 
 
-def test_knowledge_tools_disappear_when_the_switch_is_off() -> None:
-    """关掉知识库开关（这一轮没有可查的库）→ **知识库那一侧的工具一个都不给**。
+def test_the_knowledge_tools_are_gone_entirely() -> None:
+    """知识库那一族的工具**整体退场**（不是"被开关藏起来"）：表里一个都没有。
 
-    改之前只是"检索会被拒绝"，工具照给：于是模型每轮都先 `list_knowledge_bases`
-    看一眼、再 `search` 一次拿到"这一轮没有可查的知识库"——两个来回白花
-    （用户报的"没开知识库，但每轮都去知识库检索"）。**给了又拒，不如不给。**
-
-    边界只画在知识库上：记忆（recall / remember）与笔记（create_note / list_notes）
-    不属于这一侧，用户点名说过"这里的知识库不包括 agent 记忆"。
+    改之前关掉开关只是"不摆给这一轮"，工具还在册；现在知识库不再由本产品持有，
+    那几个名字连同它们的服务链一起删掉了。
     """
-    names = {spec.name for spec in tool_specs(kb_ids=[])}
+    names = {spec.name for spec in tool_specs()}
 
     for gone in (
         "search",
@@ -165,18 +159,11 @@ def test_knowledge_tools_disappear_when_the_switch_is_off() -> None:
         "add_data_source",
         "create_knowledge_base",
         "attach_note_to_kb",
+        "ingest_file",
     ):
-        assert gone not in names, f"{gone} 不该在关掉知识库时出现"
+        assert gone not in names, f"{gone} 已经退场，不该再出现"
     # 记忆与笔记照旧；联网与技能也不受影响
     assert {"recall", "remember", "create_note", "list_notes", "web_search", "list_skills"} <= names
-
-
-def test_no_kb_ids_at_all_is_treated_as_no_knowledge_base() -> None:
-    """**不传**（单测、脚本）按"没有知识库"处理——与 ``build_runner`` 同一口径：
-    没有范围就是查不了，那么工具表里也不该有它。"""
-    names = {spec.name for spec in tool_specs()}
-
-    assert "search" not in names
 
 
 def test_external_tools_join_the_table_with_their_schema(monkeypatch) -> None:
@@ -452,9 +439,4 @@ def test_step_summary_never_dumps_raw_json() -> None:
     assert (
         _summary("create_note", {"note_id": "n1", "title": "会议纪要"}) == "已存为笔记「会议纪要」"
     )
-    assert _summary("upload_document", {"name": "报表.xlsx", "is_duplicate": True}) == (
-        "已上传「报表.xlsx」（库里已有同样的内容）"
-    )
     assert _summary("list_notes", {"total": 3, "notes": []}) == "共 3 条笔记"
-    assert _summary("search", {"query": "眼轴", "hits": [{}, {}]}) == "命中 2 段原文"
-    assert _summary("search", {"query": "眼轴", "hits": []}) == "没有命中任何片段"

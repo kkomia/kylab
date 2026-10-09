@@ -367,13 +367,15 @@ def test_branch_keeps_the_file_area_empty(client: TestClient, kb_id: str) -> Non
     assert len(client.get(f"/api/v1/conversations/{source}/files").json()["entries"]) == 1
 
 
-def test_branch_carries_the_knowledge_base_scope(client: TestClient, kb_id: str) -> None:
-    """知识库范围跟着走：分叉出来的会话继续用同一批资料。"""
+def test_branch_carries_the_model_and_workspace(client: TestClient, kb_id: str) -> None:
+    """分叉出来的会话带走模型 / 思考偏好 / 工作区与归属（知识库范围已随产品退场）。"""
     source = _three_turns(client, kb_id)
 
     branch = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 1}).json()
 
-    assert branch["kb_ids"] == [kb_id]
+    assert branch["id"] != source
+    assert branch["title"]
+    assert "kb_ids" not in branch
 
 
 def test_branch_of_a_branch_says_the_new_cut(client: TestClient, kb_id: str) -> None:

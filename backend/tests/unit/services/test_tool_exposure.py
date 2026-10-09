@@ -55,7 +55,6 @@ def _table(skills: int | None = None) -> ToolTable:
     return build_tool_table(
         _FakeServices(_FakeSkills(skills)) if skills is not None else None,
         owner_id=None,
-        kb_ids=["kb_x"],
     )
 
 
@@ -70,7 +69,7 @@ def test_core_tools_are_always_resident() -> None:
         assert name in resident, f"记忆工具必须常驻：{name}"
     for name in ("read_skill", "list_skills"):
         assert name in resident, f"技能工具必须常驻：{name}"
-    for name in ("read_file", "web_search", "web_fetch", "search"):
+    for name in ("read_file", "web_search", "web_fetch"):
         assert name in resident, f"每轮都可能用到的工具必须常驻：{name}"
 
 
@@ -96,7 +95,7 @@ def test_peripheral_tools_are_not_in_the_resident_table() -> None:
     resident = _names(table.resident())
     peripheral = _names(table.peripheral())
 
-    for name in ("export_table", "export_document", "upload_document", "run_command"):
+    for name in ("export_table", "export_document", "run_command"):
         assert name in peripheral, f"{name} 应当是外围工具"
         assert name not in resident, f"{name} 不该常驻——外围工具默认不进注入"
 
@@ -240,7 +239,7 @@ def test_reverse_marking_a_core_tool_peripheral_turns_the_core_case_red(
         return True if name == "web_search" else real(name)
 
     monkeypatch.setattr(agent_tools.tool_meta, "is_peripheral", wrong)
-    resident = _names(build_tool_table(None, owner_id=None, kb_ids=["kb_x"]).resident())
+    resident = _names(build_tool_table(None, owner_id=None).resident())
 
     assert "web_search" not in resident, "标错就该掉出去（这正是核心用例要守住的东西）"
 
@@ -250,7 +249,7 @@ def test_reverse_without_the_gateway_peripherals_are_unreachable(
 ) -> None:
     """反向验证②：**去掉发现通道** → 外围工具永远不可达（死锁的原形）。"""
     monkeypatch.setattr(agent_tools, "_exposure_specs", lambda _text: [])
-    table = build_tool_table(None, owner_id=None, kb_ids=["kb_x"])
+    table = build_tool_table(None, owner_id=None)
     resident = _names(table.resident())
 
     assert "find_tools" not in resident and "use_tool" not in resident
@@ -266,7 +265,7 @@ def test_reverse_hardcoding_the_counts_turns_the_follow_case_red(
     """反向验证③：把技能数**写死**成常量 → "跟着变"那条用例会红。"""
     monkeypatch.setattr(agent_tools, "_skill_counts", lambda _services: (60, 60))
     text_small = next(
-        s.description for s in build_tool_table(None, owner_id=None, kb_ids=["kb_x"]).resident()
+        s.description for s in build_tool_table(None, owner_id=None).resident()
         if s.name == "find_tools"
     )
     assert "**323** 个" not in text_small

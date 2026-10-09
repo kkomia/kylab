@@ -42,11 +42,9 @@ class ApiKeyService:
         caller: Caller,
         *,
         need: ApiKeyPermission = READ,
-        kb_ids: list[str] | None = None,
     ) -> None:
         """判定"这次调用能不能碰这些库"。不通过就抛 403。
 
-        ``kb_ids`` 传 ``None`` 表示"不涉及具体知识库"（例如列全部任务）；
         ``need`` 是 ``READ`` / ``WRITE`` 之一（本机档两者同档，留着是为了调用点不必改）。
 
         **本机只有一种主体**：`LOCAL_CALLER` 是管理员档，直接放行，**一个仓储方法都不碰**

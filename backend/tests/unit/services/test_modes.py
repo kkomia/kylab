@@ -30,8 +30,8 @@ from app.services.runtime_config import SETTING_GROUPS, RuntimeConfigService
 from app.services.tool_meta import TOOL_META, ToolMeta, meta_of
 
 #: 三类工具的代表。**取真实的工具名**：判定读的是它们真实的元数据。
-READ_TOOLS = ("search", "list_notes", "read_file", "web_fetch", "list_skills", "read_skill")
-WRITE_TOOLS = ("create_note", "upload_document", "export_document", "remember")
+READ_TOOLS = ("recall", "list_notes", "read_file", "web_fetch", "list_skills", "read_skill")
+WRITE_TOOLS = ("create_note", "export_document", "remember")
 EXEC_TOOLS = ("run_command",)
 
 
@@ -225,7 +225,7 @@ def test_writes_are_decided_by_metadata_not_by_a_hardcoded_name_list() -> None:
     """
     assert modes.is_write(meta_of("create_note")) is True
     assert modes.is_write(meta_of("run_command")) is True
-    assert modes.is_write(meta_of("search")) is False
+    assert modes.is_write(meta_of("recall")) is False
     assert modes.is_write(meta_of("web_fetch")) is False
     # 未知工具（外部 MCP）：元数据取最保守的那一档，所以算写类
     assert modes.is_write(meta_of("mcp__someone__do_something")) is True

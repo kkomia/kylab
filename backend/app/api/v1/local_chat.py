@@ -88,7 +88,6 @@ def context_usage(
     归属判定与既有的会话端点同一套（成员越主 404，不暴露存在性）。
     """
     _require_visible_conversation(services, conversation_id, caller)
-    conversation = services.conversations.get(conversation_id)
     usage = services.chat.context_usage(
         conversation_id=conversation_id,
         owner_id=caller.owner_id,
@@ -96,9 +95,7 @@ def context_usage(
         # 两处各拼一份的话，仪表会显示一套、模型拿到另一套。
         # v0.57 起交给模型的是**核心常驻那一份**（外围靠发现通道），所以这里也按它算——
         # 否则仪表会把"其实没发出去的外围工具"算进上下文。
-        tools=build_tool_table(
-            services, owner_id=caller.owner_id, kb_ids=list(conversation.kb_ids)
-        ).resident(),
+        tools=build_tool_table(services, owner_id=caller.owner_id).resident(),
     )
     return ContextUsageOut(
         items=[

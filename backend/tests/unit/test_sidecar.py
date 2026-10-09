@@ -18,7 +18,6 @@ import json
 import os
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -26,18 +25,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import sidecar
-from app.services import remote_clients
 from app.services.approvals import ALLOW_ONCE, DENY, UNAVAILABLE, ApprovalRegistry, ApprovalRequest
-from app.services.chat import ChatService
-from app.services.knowledge_client import KnowledgeClient
-from app.services.knowledge_provider import (
-    SETTING_ENABLED,
-    STATE_READY,
-    STATE_UNAVAILABLE,
-    STATE_UNCONFIGURED,
-    KnowledgeProviderClient,
-)
-from app.services.llm import ChatError, ChatMessage, LLMDelta, ToolCallDelta, ToolSpec
+from app.services.llm import ChatMessage, LLMDelta, ToolCallDelta, ToolSpec
 from app.services.remote_clients import RemoteUnavailableError
 from app.services.tool_loop import ToolLoop, ToolOutcome
 
@@ -134,19 +123,15 @@ class _BrokenModel:
 
 
 def _client(  # type: ignore[no-untyped-def]
-    tmp_path, monkeypatch, model, *, health_ok: bool = True, provider_factory=None
+    tmp_path, monkeypatch, model, *, health_ok: bool = True
 ) -> TestClient:
-    # 装配点整体换成"真 Clients + 假模型/假 KB" ✓ —— **必须在 create_app 之前打补丁** ✗：
+    # 装配点整体换成"真 Clients + 假模型" ✓ —— **必须在 create_app 之前打补丁** ✗：
     # `create_app` 内部就调 `build_clients` ✓，晚一步它就把真客户端装进去了 ✓
     # （那会让用例打真网络 ✗ —— 第一次就是这么假红的）。
     #
     # 注意：这里**不再**替换整个装配点 ✗ —— 本地那一侧（本机档的服务图 / runtime /
     # 审批 / 工具表 / `build_runner`）要**真的**建起来 ✓，否则"工具真的执行"与
     # "这一轮落本机库"两条都验不到 ✓。只有模型那一头是假的（不然就打真网络了）。
-    #
-    # `provider_factory` 是给"选了库"的用例备的（M3 阶段 2：工具表按提供者状态门控）✓：
-    # 它**在 `_build` 里现建** —— 那时 `create_app` 已经把档位钉好了，提供者读到的
-    # 引导级配置才是这一档的（在用例体里先建会读到上一条用例的 Settings ✗）。
     def _build(base: str, token: str, *, workspace: Path, data_dir: Path):  # type: ignore[no-untyped-def]
         return sidecar.Clients(
             base,
@@ -154,7 +139,6 @@ def _client(  # type: ignore[no-untyped-def]
             workspace=workspace,
             data_dir=data_dir,
             model=model,
-            provider=provider_factory() if provider_factory is not None else None,
         )
 
     monkeypatch.setattr(sidecar, "build_clients", _build)
@@ -232,111 +216,6 @@ def _no_network(monkeypatch) -> None:  # type: ignore[no-untyped-def]
         raise AssertionError("这个用例不该发任何 HTTP 请求（本机档的账全在本机）")
 
     monkeypatch.setattr(sidecar, "_httpx", _boom)
-
-
-def _handshake_body() -> dict[str, Any]:
-    """一个**过得去**的握手响应（字段照方案 §1.2 的契约，能力集这里不必填满）。
-
-    只给用例用：`Clients.tool_specs` 在"这一轮选了库"时要问一次提供者状态
-    （M3 阶段 2 的门控），而状态只认**真的握手过一遍**。
-    """
-    return {
-        "provider": "knowledge",
-        "protocol_version": 1,
-        "app_version": "0.1.1",
-        "api_version": "v1",
-        "capabilities": {},
-        "caller": {
-            "kind": "api_key",
-            "permission": "readwrite",
-            "is_admin": False,
-            "can_write": True,
-            "knowledge_base_ids": [],
-        },
-        "knowledge_bases": [],
-        "server_time": "2026-10-03T00:00:00Z",
-    }
-
-
-def _ready_provider(handler=None):  # type: ignore[no-untyped-def]
-    """一个**握手成功**的提供者客户端（假传输 —— 用例里不打真网络 ✓）。
-
-    为什么"选了库"的用例必须显式给一个：`Clients.tool_specs` 会在那个分支上问一次
-    提供者状态，`state != ready` 时 `search` / `attach_note_to_kb` / `ingest_file`
-    **一个都不摆**（方案 §3.2 的失败降级）。要验"这三个真的能用"，就得先让它 ready ✓。
-
-    ``handler`` 收下**非握手**的请求（例如上传那份 multipart）；不给就说明这个用例
-    只打算喂握手，别的请求一律报错（静默放过会让"多打了一个请求"看不出来 ✗）。
-
-    ⚠️ 它换的是**工具表门控**问的那一个（`Clients.provider`），**换不动服务图里那一个**
-    （M3 阶段 3 起由组合根建，见 `Clients` 类说明里的那段）：要骗过"检索/入库真的打到
-    NAS"那条路，得换传输（`_fake_nas`），不是换这个客户端。
-    """
-
-    def _dispatch(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/provider/handshake"):
-            return httpx.Response(200, json=_handshake_body())
-        if handler is not None:
-            return handler(request)
-        raise AssertionError(f"这个用例没准备这个请求：{request.method} {request.url}")
-
-    return KnowledgeProviderClient(transport=httpx.MockTransport(_dispatch))
-
-
-def _dead_provider():  # type: ignore[no-untyped-def]
-    """一个**连不上**的提供者（假传输：所有请求都以 `ConnectError` 收场）✓。"""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("NAS 连不上（这个用例要的就是这个）")
-
-    return KnowledgeProviderClient(transport=httpx.MockTransport(handler))
-
-
-def _disabled_provider():  # type: ignore[no-untyped-def]
-    """提供者被**显式关掉**（`provider.knowledge.enabled=0`）→ `unconfigured` ✓。"""
-    return KnowledgeProviderClient(get_setting=lambda key: "0" if key == SETTING_ENABLED else "")
-
-
-def _clients_with(tmp_path, provider_factory=None):  # type: ignore[no-untyped-def]
-    """一条**真的**本机档 `Clients`：先钉档位，再建提供者（与 `build_clients` 同一个顺序 ✓）。
-
-    提供者在**钉档之后**现建很重要：它读的是引导级配置（`get_settings()`），
-    早一步建就会拿到上一条用例留下的那份（`--server` 还没钉上）。
-    """
-    data_dir = tmp_path / "data"
-    sidecar.pin_local_deployment(data_dir, server_url="http://server.test/api/v1", token="t")
-    return sidecar.Clients(
-        "http://server.test/api/v1",
-        "t",
-        workspace=tmp_path / "ws",
-        data_dir=data_dir,
-        provider=provider_factory() if provider_factory is not None else None,
-    )
-
-
-def _fake_nas(monkeypatch, handler) -> None:  # type: ignore[no-untyped-def]
-    """把**提供者客户端的传输**换成一台假 NAS（用例里不打真网络 ✓）。
-
-    M3 阶段 3 起组合根自己建 provider（`ChatService` 的检索、笔记与产物的入库、
-    `Services.ingest` 全从它取），它与 `Clients.provider`（工具表门控那一个）都走
-    `remote_clients._httpx()` 这个接缝（`KnowledgeProviderClient._send`）——
-    所以这里换一次，两边都打假 NAS ✓。
-
-    换的是**接缝**而不是"塞一个假客户端"是有意的：这条路上跑的是真客户端代码，
-    multipart 的形状、`start=true`、鉴权头都是它发出来的 ✓（塞假客户端只能验到
-    "我们记得调它"）。
-    """
-    transport = httpx.MockTransport(handler)
-
-    def _fake_httpx():  # type: ignore[no-untyped-def]
-        def _client(**kwargs: Any) -> httpx.Client:
-            # 真客户端自己会传 `transport=None`，这里把它换成假的
-            kwargs["transport"] = transport
-            return httpx.Client(**kwargs)
-
-        return SimpleNamespace(Client=_client, HTTPError=httpx.HTTPError)
-
-    monkeypatch.setattr(remote_clients, "_httpx", _fake_httpx)
 
 
 def _new_conversation(client: TestClient, **body: Any) -> str:
@@ -567,279 +446,6 @@ def test_workspace_fallbacks_never_land_inside_the_repo(monkeypatch) -> None:  #
     assert "仓库根之下" in str(excinfo.value)
 
 
-def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """装配出来的两头**各是各的实现** ✓（"循环本地、知识库远端、模型本机"落在这一行 ✓）。
-
-    同时钉住本地那一侧的三条口径：默认**无隔离时直接执行**（`require_isolation` 默认 `false` ✓，
-    不装 Docker 也要能跑 ✓），但**用户显式要求严格时必须被尊重** ✓（闸可开、不可被偷偷绕 ✗）、
-    审批注册表**带过来了** ✓、KB 接缝指向的**是远端实现** ✓（不是进程内检索 ✗）。
-
-    M3 阶段 2 起 KB 那一件是**提供者客户端**（`KnowledgeProviderClient`）✓ —— 它同时是
-    `KnowledgeClient` 协议的一份实现（`retrieve_sources` 签名逐字一致 ✓），所以
-    "循环本地"那条链一个字不用改 ✓。
-
-    **模型那一件 2026-10-04 起是本机直连** ✓（`_LocalModel`：每建一次客户端就问一次
-    本机的运行期配置）——它不再是 `RemoteModelClient`（那条路要把模型请求发去 NAS 的
-    `/model-proxy`，与"推理搬回本机"这条裁定相反 ✗）。
-    """
-    clients = sidecar.build_clients(
-        "http://server.test/api/v1", "t", workspace=tmp_path / "ws", data_dir=tmp_path / "data"
-    )
-
-    assert isinstance(clients.knowledge, KnowledgeProviderClient)
-    assert isinstance(clients.knowledge, KnowledgeClient)
-    assert clients.knowledge is clients.provider
-    # **模型：本机直连** ✓ —— 循环那一侧只认那三个方法名，而且**不是**打
-    # `/model-proxy` 的那个远端实现 ✗。
-    assert isinstance(clients.model, sidecar._LocalModel)
-    assert not isinstance(clients.model, remote_clients.RemoteModelClient)
-    # 没配模型时它**明确报"没配"**（不是空回答、也不是 500 ✓）——失败路径的第一档。
-    # ⚠️ 直接在客户端上叫一次（不经过 `/turn`）：`client_factory` 每次现建，
-    # 所以这一下与循环里那一下走的是同一段代码 ✓。
-    with pytest.raises(ChatError) as excinfo:
-        clients.model.complete([ChatMessage(role="user", content="在吗")])
-    assert "尚未配置对话模型" in str(excinfo.value)
-    assert clients.base_url == "http://server.test/api/v1"
-    # 探活打的是后端自己的 health（不花模型额度 ✓）
-    assert clients.health_url == "http://server.test/api/v1/health"
-    # 本地那一侧：严格档没被绕 ✓、审批整套在 ✓
-    # 2026-09-30 用户裁定：默认**无隔离时直接执行**（"不装 Docker 也要能跑命令"）——
-    # 所以默认值钉 `false` ✓；但下面这一步同样必须成立：**用户打开严格档后，值就得是 true** ✓
-    # （闸可以开、也可以关，但**不能被偷偷绕** ✗ —— 那才是这条用例真正守的东西 ✓）
-    assert clients.runtime.get("sandbox.require_isolation") == "false"
-    clients.runtime.set({"sandbox.require_isolation": "true"})
-    assert clients.runtime.get("sandbox.require_isolation") == "true"
-    assert clients.approvals is clients.services.approvals
-
-
-def test_the_kb_seam_is_delegated_when_given(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """**KB 接缝整段委托**（M2 §2.2，落在 `ChatService.retrieve_sources`）✓。
-
-    边车这一侧只有这一条实现：检索在别处（提供者），本机不碰向量仓库
-    ✓（`build_runner` 的 `search` 那一支只认这个方法名 ✓，所以"循环不改"成立 ✓）。
-    """
-    calls: list[dict[str, Any]] = []
-
-    class _FakeKnowledge:
-        def retrieve_sources(self, **kwargs: Any) -> list[str]:
-            calls.append(kwargs)
-            return ["远端命中的一段"]
-
-    # `runtime` 给个占位对象即可：委托那一支**碰都不碰它** ✓
-    # （这正是"整段委托"的意思——本机连向量仓储都没有）。
-    chat = ChatService(object(), knowledge=_FakeKnowledge())  # type: ignore[arg-type]
-
-    found = chat.retrieve_sources(query="问一句", kb_ids=["kb1"], top_k=3)
-
-    assert found == ["远端命中的一段"]
-    # 参数**原样**过去（含默认值），调用点一个字不用改 ✓
-    assert calls == [
-        {"query": "问一句", "kb_ids": ["kb1"], "top_k": 3, "candidate_k": 40, "reader": None}
-    ]
-    # 一个库都没给 = 这一轮不查库：**在委托之前就返回空** ✓（空范围不该变成一次网络往返）
-    assert chat.retrieve_sources(query="问一句", kb_ids=[]) == []
-    assert len(calls) == 1
-
-
-def test_without_a_knowledge_seam_the_retrieval_says_why(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """**没接提供者时如实抛 `KnowledgeBaseUnavailable`**（HTTP 面 503），不是回空列表。
-
-    回空等于告诉调用方"查过了，没有"——而它其实**没查过**，而"资料中没有找到"
-    这句会被模型当成结论用出去。
-    """
-    from app.storage.base import KnowledgeBaseUnavailable
-
-    chat = ChatService(object())  # type: ignore[arg-type]
-
-    with pytest.raises(KnowledgeBaseUnavailable):
-        chat.retrieve_sources(query="问一句", kb_ids=["kb1"])
-
-
-def test_search_in_a_turn_goes_to_the_nas(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**边车的检索真的打 NAS**（`POST /api/v1/search`）✓ —— 接缝整条链的行为证据。
-
-    单看"组合根塞了远端客户端"不够 ✗：模型真要查资料时走的是
-    `build_runner` → `services.chat.retrieve_sources` → **提供者客户端**（M3 阶段 3 起
-    组合根给的就是它）→ 它持有的 `RemoteKnowledgeClient` 这一整条，
-    中间哪一环接错都会表现成"检索总说没有命中"（而那是看不出来的）。
-    这里用假传输接住请求：**URL、鉴权头、请求体**三样都要对 ✓。
-    """
-    seen: dict[str, Any] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/provider/handshake"):
-            return httpx.Response(200, json=_handshake_body())
-        seen["url"] = str(request.url)
-        seen["auth"] = request.headers.get("authorization")
-        seen["body"] = json.loads(request.read().decode())
-        return httpx.Response(
-            200,
-            json={
-                "hits": [
-                    {
-                        "index": 1,
-                        "chunk_id": "chunk_1",
-                        "document_id": "doc_1",
-                        "document_name": "资料.md",
-                        "heading_path": "一、开头",
-                        "page": 2,
-                        "score": 0.9,
-                        "preview": "NAS 上命中的那一段",
-                    }
-                ]
-            },
-        )
-
-    _fake_nas(monkeypatch, handler)
-    model = _ToolCallingModel(
-        "search",
-        json.dumps({"query": "问一句", "knowledge_base_ids": ["kb_1"]}),
-        "资料里说：NAS 上命中的那一段",
-    )
-    # 选了库 → 工具表要问一次提供者状态（假 NAS 的握手答它 ✓），`search` 才摆得出来 ✓。
-    # 检索本身走**组合根那个提供者**（M3 阶段 3 起就是它）→ 它持有的
-    # `RemoteKnowledgeClient` → 上面那台假 NAS ✓。
-    client = _client(tmp_path, monkeypatch, model)
-
-    payload = client.post("/turn", json={"message": "查一下资料", "kb_ids": ["kb_1"]}).json()
-
-    # ① 打的是 NAS 的检索口，带着这把钥匙
-    assert seen["url"] == "http://server.test/api/v1/search", seen
-    assert seen["auth"] == "Bearer t"
-    assert seen["body"]["query"] == "问一句"
-    assert seen["body"]["kb_ids"] == ["kb_1"]
-    # ② 命中原文进了工具结果（模型据此作答 ✓）
-    done = [
-        step
-        for step in payload["steps"]
-        if step.get("tool") == "search" and step.get("status") == "done"
-    ]
-    assert done, payload["steps"]
-    assert "NAS 上命中的那一段" in done[0]["result"], done[0]["result"]
-    assert payload["answer"] == "资料里说：NAS 上命中的那一段"
-    # ③ 出处也在**非流式**这条响应里（M3 阶段 7：与流式那条同一份形状 ✓）
-    assert payload["sources"] and payload["sources"][0]["chunk_id"] == "chunk_1", payload["sources"]
-
-
-def test_turn_stream_publishes_and_records_the_sources(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """检索到的**出处**：流里要发 `sources` 帧、库里要存快照 ✓（M3 阶段 7 真机抓到的缺口）。
-
-    现场（`.shots/m3-phase7/02-turn-sse-before-fix.txt`）：真 NAS 的检索确实命中了 8 段 ✓、
-    工具步里也如实写着「命中 8 段原文」✓ —— 而事件流里**没有 `sources` 那一条** ✗，
-    于是界面那串 `[1][2]` 点不动、出处面板一直空着 ✗（前端 `chat.ts:820` 的
-    `sources` 分支收不到东西 ✓）。根因不是"漏发了一条"：本机这一侧**从来就没接过
-    这一类事件** ✗（M2 时期本机档没有知识库可检索 ✓，`SourcesEvent` 根本不产生 ✓）
-    —— M3 把提供者接上之后它才第一次真的出现 ✓。
-
-    两条一起钉（少一条就只修了一半 ✓）：
-
-    ① **流里**有 `sources` 帧，且形状与服务器那条链同形（逐字段照 `ChatSourceOut` ✓）；
-    ② **库里** assistant 那条消息存下**同一份**快照 —— 否则刷新回看时编号又点不动了 ✗
-       （服务器那条链一直存着，见 `chat.py::_record_turn` ✓）。
-    """
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/provider/handshake"):
-            return httpx.Response(200, json=_handshake_body())
-        return httpx.Response(
-            200,
-            json={
-                "hits": [
-                    {
-                        "index": 1,
-                        "chunk_id": "chunk_1",
-                        "document_id": "doc_1",
-                        "document_name": "资料.md",
-                        "heading_path": "一、开头",
-                        "page": 2,
-                        "score": 0.9,
-                        "preview": "NAS 上命中的那一段",
-                        "knowledge_base_id": "kb_1",
-                        "document_summary": "一篇资料",
-                    }
-                ]
-            },
-        )
-
-    _fake_nas(monkeypatch, handler)
-    model = _ToolCallingModel(
-        "search",
-        json.dumps({"query": "问一句", "knowledge_base_ids": ["kb_1"]}),
-        "资料里说：NAS 上命中的那一段",
-    )
-    client = _client(tmp_path, monkeypatch, model)
-    conversation = client.post("/api/v1/conversations", json={"title": "出处"}).json()
-
-    response = client.post(
-        "/turn/stream",
-        json={
-            "message": "查一下资料",
-            "kb_ids": ["kb_1"],
-            "conversation_id": conversation["id"],
-        },
-    )
-    events = _events(response)
-
-    # ① 流里的 `sources` 帧（形状照服务器那条链：`items` 是 ChatSourceOut 的数组 ✓）
-    frames = [event for event in events if event["type"] == "sources"]
-    assert frames, [event["type"] for event in events]
-    items = frames[-1]["items"]
-    assert items and items[0]["chunk_id"] == "chunk_1", items
-    assert items[0]["document_id"] == "doc_1"
-    assert items[0]["document_name"] == "资料.md"
-    assert items[0]["knowledge_base_id"] == "kb_1"
-    assert items[0]["preview"] == "NAS 上命中的那一段"
-    # 顺序：出处**先于**正文（界面要在模型那串 [1] 落地之前就拿到编号 ✓）
-    kinds = [event["type"] for event in events]
-    assert kinds.index("sources") < kinds.index("delta"), kinds
-
-    # ② 库里那份快照与流出去的是同一份 ✓（刷新回看时编号照样点得动 ✓）
-    detail = client.get(f"/api/v1/conversations/{conversation['id']}").json()
-    assistant = [item for item in detail["messages"] if item["role"] == "assistant"]
-    assert assistant and assistant[-1]["sources"] == items, assistant[-1]["sources"]
-
-
-def test_search_reports_an_unreachable_nas_instead_of_pretending(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """NAS 连不上时**如实失败** ✗（不是"没命中" ✓）—— 而且这一轮照旧跑完 ✓。"""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("nope")
-
-    transport = httpx.MockTransport(handler)
-
-    def _fake_httpx():  # type: ignore[no-untyped-def]
-        def _client(**kwargs: Any) -> httpx.Client:
-            kwargs["transport"] = transport
-            return httpx.Client(**kwargs)
-
-        return SimpleNamespace(Client=_client, HTTPError=httpx.HTTPError)
-
-    monkeypatch.setattr(remote_clients, "_httpx", _fake_httpx)
-    model = _ToolCallingModel(
-        "search",
-        json.dumps({"query": "问一句", "knowledge_base_ids": ["kb_1"]}),
-        "查不到资料，我按已知的说",
-    )
-    # **握手是好的、这一次检索连不上**：单次调用失败**不改状态**（方案 §3.2），
-    # 所以 `search` 照旧在工具表里（模型也照旧会调它）——这一步如实失败即可 ✓。
-    client = _client(tmp_path, monkeypatch, model, provider_factory=_ready_provider)
-
-    payload = client.post("/turn", json={"message": "查一下", "kb_ids": ["kb_1"]}).json()
-
-    # 这一步**失败了**（不是"没有命中"），原因上屏幕（`summary` 那一栏）✓
-    failed = [
-        step
-        for step in payload["steps"]
-        if step.get("tool") == "search" and step.get("status") == "done"
-    ]
-    assert failed, payload["steps"]
-    assert failed[0]["outcome"] == "failed", failed[0]
-    assert "连不上" in failed[0]["detail"], failed[0]["detail"]
-    # 但这一轮**照旧跑完**：模型拿到失败结论，答了话，没有 error
-    assert payload["answer"] == "查不到资料，我按已知的说"
-    assert payload["error"] == ""
-
-
 def test_probe_health_is_false_on_network_error() -> None:
     """探活失败一律当"不可达" ✓（用例里用假传输，不打真网络 ✗）。"""
 
@@ -930,7 +536,6 @@ def _approval_app(tmp_path, monkeypatch, model):  # type: ignore[no-untyped-def]
             token,
             workspace=workspace,
             data_dir=data_dir,
-            knowledge=object(),
             model=model,
         )
         holder["clients"] = clients
@@ -944,7 +549,7 @@ def _approval_app(tmp_path, monkeypatch, model):  # type: ignore[no-untyped-def]
     monkeypatch.setattr(
         sidecar.Clients,
         "tool_specs",
-        lambda self, kb_ids=(): [
+        lambda self: [
             ToolSpec(name=runner.tool, description="在这台机器上跑一条命令", parameters={})
         ],
     )
@@ -1426,11 +1031,15 @@ def test_export_lands_in_the_local_file_area(tmp_path, monkeypatch) -> None:  # 
 
 
 def test_sidecar_exposes_the_export_family_but_not_the_server_only_ones() -> None:
-    """导出三件、笔记两件、记忆三件 **在**表里；服务端专属那几件**不在**（2026-10-01）。"""
+    """导出三件、笔记两件、记忆三件 **在**表里；其余**不在**（2026-10-01）。"""
     assert {"export_document", "export_table", "export_deck"} <= sidecar.SIDECAR_TOOL_NAMES
-    assert {"create_note", "attach_note_to_kb"} <= sidecar.SIDECAR_TOOL_NAMES
+    assert {"create_note", "list_notes"} <= sidecar.SIDECAR_TOOL_NAMES
     assert {"recall", "remember", "forget"} <= sidecar.SIDECAR_TOOL_NAMES
     assert not {"read_memory", "write_memory"} & sidecar.SIDECAR_TOOL_NAMES
+    # 知识库那一族工具整体退场
+    assert not {"search", "upload_document", "attach_note_to_kb", "ingest_file"} & (
+        sidecar.SIDECAR_TOOL_NAMES
+    )
 
 
 def test_note_lands_in_the_local_db(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1463,140 +1072,6 @@ def test_note_lands_in_the_local_db(tmp_path, monkeypatch) -> None:  # type: ign
     assert listed.status_code == 200, listed.text
     titles = [item["title"] for item in listed.json()["items"]]
     assert titles == ["会议纪要"], listed.text
-
-
-def test_attach_note_is_uploaded_to_the_provider(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**`attach_note_to_kb` 在本机档真的能用了**（M3 阶段 3 的正式解，方案 §5.2）。
-
-    这一条以前测的是反面：`NotesService` 手上那份真 `IngestService` 走到本机档的
-    `UnavailableMetaStore`，如实回一句"知识库在 NAS 服务器上……"✗。阶段 3 把组合根那
-    一处接缝换了线（`notes` / `artifacts` 各持一份的真 `IngestService` 换成了提供者
-    网关），于是这条链是**通的** ✓ —— 四件事一起钉住：
-
-    ① 笔记正文从**本机库**读出来，multipart 打到假 NAS 的文档上传口；
-    ② `start=true`（NAS 自己入队）与 `text/markdown`（笔记是 Markdown）都对；
-    ③ 本机没有队列：那一轮**只打了上传这一枪**（`enqueue_ingest` 是空操作 ——
-       下面那个 handler 对没准备的请求直接报错，多打一个就红 ✓）；
-    ④ 假 NAS 回的文档 id **回填到本机笔记**上（`note.doc_id` / `note.kb_id`）。
-    """
-    seen: dict[str, Any] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/provider/handshake"):
-            return httpx.Response(200, json=_handshake_body())
-        if request.url.path.endswith("/knowledge-bases/kb_1/documents"):
-            seen["url"] = str(request.url)
-            seen["auth"] = request.headers.get("authorization")
-            seen["body"] = request.read()
-            return httpx.Response(
-                202,
-                json={
-                    "document": {"id": "doc_42", "name": "会议纪要.md"},
-                    "is_duplicate": False,
-                    "task_id": "task_1",
-                },
-            )
-        raise AssertionError(f"这个用例没准备这个请求：{request.method} {request.url}")
-
-    _fake_nas(monkeypatch, handler)
-    model = _ToolCallingModel("attach_note_to_kb", "{}", "已经放进知识库了")
-    client = _client(tmp_path, monkeypatch, model)
-    created = client.post(
-        "/api/v1/notes", json={"title": "会议纪要", "content_md": "- 决定：周五发版"}
-    )
-    assert created.status_code == 201, created.text
-    note_id = created.json()["id"]
-    # 模型这一步要带的参数在这里补上：`note_id` 得是真的（归属那条先判，看不到的笔记
-    # 是 404），而且此刻模型还没被调用（`_client` 只装配），补参数是安全的 ✓
-    model.arguments = json.dumps({"note_id": note_id, "knowledge_base_id": "kb_1"})
-
-    payload = client.post(
-        "/turn", json={"message": "把那条笔记加进知识库", "kb_ids": ["kb_1"]}
-    ).json()
-
-    # ① 打的是 NAS 的文档上传口（带 `start=true`），用的是这把钥匙
-    expected = "http://server.test/api/v1/knowledge-bases/kb_1/documents?start=true"
-    assert seen["url"] == expected, seen
-    assert seen["auth"] == "Bearer t"
-    # ② multipart 里是**本机那份正文**，文件名是「标题.md」，类型是 Markdown
-    body = seen["body"]
-    assert "- 决定：周五发版".encode() in body, body[:400]
-    assert b"text/markdown" in body, body[:400]
-    assert "会议纪要.md".encode() in body, body[:400]
-    # ③ 工具回执里是 NAS 那个文档 id（模型据此告诉用户"处理是异步的"）
-    done = [
-        step
-        for step in payload["steps"]
-        if step.get("tool") == "attach_note_to_kb" and step.get("status") == "done"
-    ]
-    assert done, payload["steps"]
-    assert done[0]["outcome"] != "failed", done[0]
-    assert "doc_42" in done[0]["result"], done[0]["result"]
-    assert payload["answer"] == "已经放进知识库了"
-    # ④ **回填到本机笔记**：库页里那条笔记从此带上"它在哪个库、哪份文档"
-    listed = client.get("/api/v1/notes")
-    assert listed.status_code == 200, listed.text
-    note = listed.json()["items"][0]
-    assert (note["doc_id"], note["kb_id"]) == ("doc_42", "kb_1"), note
-
-
-def test_attach_note_reports_an_unreachable_provider(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**提供者不可用时如实报**（R10）：两个面都是"现在用不了知识库 + 原因"。
-
-    入库那一半刻意抛 `KnowledgeBaseUnavailable`（见 `services/knowledge_provider.py`
-    的两条口径）就是为了这里：
-
-    - **工具面**（笔记/产物的工具）→ 这一步 `outcome: failed`，原因上屏幕；
-    - **HTTP 面**（`POST /notes/{id}/attach`，本机档白名单里就有它）→ **503**，
-      信封是既有的 `knowledge_base_unavailable`（不是 500"服务端出错了"）。
-
-    为什么不是"未配"那条路：未配时提供者状态不是 `ready`，工具表**根本不摆**
-    `attach_note_to_kb`（那是另一条用例 `test_kb_tools_are_gated_by_the_provider_state`
-    的地盘）。这里演的是更常见的那一种：握手还通得过（工具已经摆出来给模型了）、
-    真去上传那一刻 NAS 掉了 —— 那时**必须**失败得清清楚楚。
-    """
-    calls: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/provider/handshake"):
-            return httpx.Response(200, json=_handshake_body())
-        calls.append(str(request.url))
-        raise httpx.ConnectError("NAS 掉了（这条用例的唯一故障）")
-
-    _fake_nas(monkeypatch, handler)
-    model = _ToolCallingModel("attach_note_to_kb", "{}", "这一步没能做成")
-    client = _client(tmp_path, monkeypatch, model)
-    created = client.post(
-        "/api/v1/notes", json={"title": "会议纪要", "content_md": "- 决定：周五发版"}
-    )
-    assert created.status_code == 201, created.text
-    note_id = created.json()["id"]
-    model.arguments = json.dumps({"note_id": note_id, "knowledge_base_id": "kb_1"})
-
-    payload = client.post(
-        "/turn", json={"message": "把那条笔记加进知识库", "kb_ids": ["kb_1"]}
-    ).json()
-
-    # ① 工具面：这一步失败，原因里说清是提供者（而不是"没命中"或"内部错误"）
-    step = [
-        item
-        for item in payload["steps"]
-        if item.get("tool") == "attach_note_to_kb" and item.get("status") == "done"
-    ]
-    assert step, payload["steps"]
-    assert step[0]["outcome"] == "failed", step[0]
-    assert "知识库提供者" in step[0]["detail"], step[0]
-    # 内容真的发出去了（失败发生在传输层，不是"没提交"）
-    assert calls and calls[0].endswith("/knowledge-bases/kb_1/documents?start=true"), calls
-    # ② 笔记没有被写上半个字（失败就是失败，不留"看起来入库了"的痕）
-    assert client.get("/api/v1/notes").json()["items"][0]["doc_id"] is None
-
-    # ③ HTTP 面：同一条接缝，503 + 既有信封（不是 500）
-    response = client.post(f"/api/v1/notes/{note_id}/attach", json={"kb_id": "kb_1"})
-    assert response.status_code == 503, response.text
-    body = response.json()
-    assert body["code"] == "knowledge_base_unavailable", body
-    assert "知识库提供者" in body["message"], body
 
 
 def test_remember_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1724,186 +1199,7 @@ def test_list_notes_reads_the_local_db(tmp_path, monkeypatch) -> None:  # type: 
     result = done[0]["result"]
     assert "会议纪要" in result, result
     assert "决定：周五发版" in result, result
-    assert "in_knowledge_base" in result, result
     assert payload["answer"] == "你有 1 条会议笔记"
-
-
-def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**本机文件入库**：`ingest_file` 在边车侧 = 读本机 → multipart 上传 ✓。
-
-    M3 阶段 2 起这条路走的是**提供者客户端**（`KnowledgeProviderClient.submit`，
-    收编了 M2 那份 `sidecar._LocalIngest`）；**阶段 3 起那个客户端由组合根建**
-    （`core/services.py`），所以这一条现在验的是"整条装配真的通到 NAS"——上传走的是
-    组合根那一个提供者，不是 `Clients.provider`。
-
-    验证四件事：① 工具只在**选了库**（kb_ids 非空）**且提供者 ready** 时摆出来；
-    ② 字节从**本机工作区**读出来（不是从服务器文件区）；③ 上传打到
-    `POST /knowledge-bases/{kb_id}/documents`，multipart 字段按服务器那份契约；
-    ④ `start=true` 与 `X-Kylab-Operator` 归都是提供者客户端带的（NAS 自己入队）。
-    """
-    seen: dict[str, Any] = {}
-    workspace = tmp_path / "ws"
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "notes.txt").write_text("hello from local", encoding="utf-8")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/provider/handshake"):
-            return httpx.Response(200, json=_handshake_body())
-        if request.url.path.endswith("/knowledge-bases/kb_1/documents"):
-            seen["url"] = str(request.url)
-            seen["body"] = request.read()  # multipart 原始字节
-            seen["operator"] = request.headers.get("x-kylab-operator")
-            return httpx.Response(
-                202,
-                json={
-                    "document": {"id": "doc_9", "name": "notes.txt"},
-                    "is_duplicate": False,
-                    "task_id": "task_1",
-                },
-            )
-        # 其余请求一律报错：多打一个请求不该被静默放过（写回服务器那一半早就删了）
-        raise AssertionError(f"这个用例没准备这个请求：{request.method} {request.url}")
-
-    # ① 提供者 ready（握手与上传都走这台假 NAS ✓ —— 真假的那一个是**组合根**建的）
-    _fake_nas(monkeypatch, handler)
-    model = _ToolCallingModel(
-        "ingest_file",
-        json.dumps({"knowledge_base_id": "kb_1", "path": "notes.txt"}),
-        "已经放进知识库了",
-    )
-    client = _client(tmp_path, monkeypatch, model)
-
-    # ② 带上选中的库跑一轮（`ingest_file` 受 `_LOCAL_KB_TOOLS` 门控：kb_ids 非空才摆）
-    payload = client.post(
-        "/turn", json={"message": "把 notes.txt 放进知识库", "kb_ids": ["kb_1"]}
-    ).json()
-
-    # ③ 上传真的打到了文档上传口，multipart 里是**本机那份的字节**
-    url = seen.get("url", "")
-    assert "/api/v1/knowledge-bases/kb_1/documents" in url, seen
-    # **`start=true` 由提供者客户端带**：NAS 那一侧据此自己入队（本机没有队列）
-    assert "start=true" in url, seen
-    assert b"hello from local" in seen["body"], seen["body"][:400]
-    assert b'filename="notes.txt"' in seen["body"], seen["body"][:400]
-    # ④ 工具结果按 `_ingest_file` 的口径（文档 id + 入队说明）
-    done = [
-        step
-        for step in payload["steps"]
-        if step.get("tool") == "ingest_file" and step.get("status") == "done"
-    ]
-    assert done, payload["steps"]
-    assert "doc_9" in done[0]["result"], done[0]["result"]
-    assert "已入队处理" in done[0]["result"], done[0]["result"]
-    assert payload["answer"] == "已经放进知识库了"
-
-
-# ------------------------------------------- 提供者状态门控工具表（M3 阶段 2）
-
-
-def test_kb_tools_are_gated_by_the_provider_state(tmp_path) -> None:
-    """**非 ready 就不摆那三个要知识库的工具**（方案 §3.2 的失败降级）。
-
-    三态各验一遍（`ready` / `unavailable` / `unconfigured`）——判据是它们在**工具表**
-    里在不在（`search` / `attach_note_to_kb` / `ingest_file`），而不是"调起来会报错"：
-    给了又拒只会白花一个来回（与 `_KB_TOOLS` 的"关了就不摆"同一条纪律）。
-    别的工具（本机那批）**一件都不该受影响** —— 知识库断了不是这台机器断了。
-    """
-    kb_tools = {"search", "attach_note_to_kb", "ingest_file"}
-
-    ready = _clients_with(tmp_path, _ready_provider)
-    assert ready.provider.status().state == STATE_READY
-    assert kb_tools <= {spec.name for spec in ready.tool_specs(kb_ids=["kb_1"])}
-    # 服务图上那两槽就是本类手上这一对（组合根换线的结果，不是另一份）；
-    # 2026-10-08 拆组合根之后那两槽在 **KB 根**上（`Services.kb`，见 core/services.py）
-    assert ready.services.kb.ingest is ready.ingest
-    assert ready.services.kb.documents is ready.documents
-    # ⚠️ 这条用例**注入了假 provider**（门控要能按三态摆工具表，只能从这一格进去）：
-    # 注入时本类用的就是注入的那一份，服务图里那一个不动（那是用例的形态）。
-    # "运行形态下全进程只有一个实例"由下面那条 `test_the_provider_is_one_instance_
-    # for_the_whole_process` 守（M3 阶段 5 的收编）。
-
-    dead = _clients_with(tmp_path, _dead_provider)
-    assert dead.provider.status().state == STATE_UNAVAILABLE
-    names = {spec.name for spec in dead.tool_specs(kb_ids=["kb_1"])}
-    assert not (kb_tools & names), names
-    assert "read_file" in names and "create_note" in names
-
-    off = _clients_with(tmp_path, _disabled_provider)
-    assert off.provider.status().state == STATE_UNCONFIGURED
-    assert not (kb_tools & {spec.name for spec in off.tool_specs(kb_ids=["kb_1"])})
-
-
-def test_the_provider_is_one_instance_for_the_whole_process(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**全进程只有一个提供者实例**（M3 阶段 5 的收编；方案 §3.2 的缓存口径）。
-
-    阶段 2/3 时边车 `Clients` 与组合根各建一份，各有一份 30s 握手缓存——工具表门控与
-    状态端点因此可以各答一半（探过一次失败之后两份缓存的结论就会分叉，而"端点说
-    ready、工具表说不 ready"是最难查的一类不一致）。
-
-    收成一个之后判据有两条，**两条都要过**：
-
-    ① **身份**：本类这个、``Services.provider``、``ChatService`` 的检索那一个、
-       ``stores.meta.kb`` 的 reader，全指同一个对象（``is`` 比身份；M4 阶段 3 起
-       reader 外面多包了一层快照缓存，所以那一条要往下走两层，见下面那两行）；
-    ② **行为**：两个消费者各问一次状态，**只发了一次握手**——身份相同但缓存各一份的话，
-       这条会红（那正是"收成实例"要解决的问题本身）。
-    """
-    probed: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        probed.append(str(request.url))
-        return httpx.Response(200, json=_handshake_body())
-
-    clients = _clients_with(tmp_path)  # 不注入：走的就是运行形态
-    provider = clients.provider
-
-    assert provider is clients.services.provider
-    assert clients.knowledge is provider
-    assert clients.services.chat._knowledge is provider
-    # reader 那条链（阶段 4 后挂的那个对象）也指着它：`_Router.kb` 在 `stores.meta` 上。
-    # M4 阶段 3 起中间多了**缓存包装器**一层，所以这条链现在是
-    # `_reader`（CachedKnowledgeMetaReader）→ `_inner`（提供者的 reader）→ `_client`
-    stores = clients.services.chat._stores
-    assert stores is not None, "ChatService 没拿到 bundle：这条用例的前提不成立"
-    reader = stores.meta.kb._reader
-    assert reader._inner._client is provider
-    assert reader._cache is clients.services.kb_cache, "两个读面共用的那一份快照服务"
-
-    monkeypatch.setattr(provider, "_transport", httpx.MockTransport(handler))
-
-    names = {spec.name for spec in clients.tool_specs(kb_ids=["kb_1"])}  # ① 工具表门控问一次
-    status = clients.services.provider.status()  # ② 状态端点问的是同一个对象
-
-    assert {"search", "attach_note_to_kb", "ingest_file"} <= names, names
-    assert status.state == STATE_READY
-    assert probed == ["http://server.test/api/v1/provider/handshake"], (
-        "两次询问应当只探一次（同一份 30s 缓存）；探了两次说明又出现了第二个实例"
-    )
-
-
-def test_no_knowledge_base_selected_means_no_handshake_at_all(tmp_path) -> None:
-    """**没选库 = 一次都不探**（R1：交互路径不被握手拖慢）。
-
-    那三个工具在没有 `kb_ids` 时本来就已经被库开关摘掉了（`_KB_TOOLS` /
-    `_LOCAL_KB_TOOLS`），所以这一层不该再为一次用不到的结论去等一趟 NAS 往返 ——
-    判据是"探过几次"（记录假传输的调用），而不是"没报错"。
-    """
-    probed: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        probed.append(str(request.url))
-        return httpx.Response(200, json=_handshake_body())
-
-    clients = _clients_with(
-        tmp_path,
-        lambda: KnowledgeProviderClient(transport=httpx.MockTransport(handler)),
-    )
-
-    names = {spec.name for spec in clients.tool_specs()}
-
-    assert probed == []
-    assert not {"search", "attach_note_to_kb", "ingest_file"} & names
-    assert "read_file" in names
 
 
 # ------------------------------------------------------------------ M5 阶段 4：设备身份

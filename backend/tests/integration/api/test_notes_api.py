@@ -114,15 +114,9 @@ def test_list_search_and_tags(client: TestClient) -> None:
 # ------------------------------------------------- 摘掉的三条（2026-10-05）
 #
 # 1. ``test_attach_note_to_knowledge_base``（原判据：`POST /notes/{id}/attach` 走现有摄入
-#    流水线生成一份 Markdown 文档、回填 ``doc_id``，并能在
-#    `GET /knowledge-bases/{kb}/documents` 里看到它）——**本机档无法验证**：知识库那一整族
-#    不在本机档（那几张表都不在本机库里，读它们整体抛 `KnowledgeBaseUnavailable`），
-#    attach 那一半要经提供者客户端打 NAS。本机档里没有可用的 NAS，所以这条判据在
-#    "本机档"里没有观察点；覆盖由 `tests/unit/services/test_notes.py`（笔记 → 摄入那条
-#    服务链）与 `tests/integration/api/test_local_kb_cache_api.py`（本机 → 提供者那条链）承接。
-# 2. ``test_attach_unknown_kb_is_404``：同一条（不存在的库在本机档由"KB 域不可用"先拦下，
-#    拿不到 404 这个观察点）。"库不存在 → 404"的判据由服务器档那条 KB 端点自己覆盖
-#    （`tests/integration/api/test_rest_api.py::test_upload_to_unknown_kb_fails`）。
+#    流水线生成一份 Markdown 文档、回填 ``doc_id``）——**随知识库整体退场**：那条端点与
+#    它背后的服务链（`NotesService.attach_to_kb`）已经删掉，本产品不再有"把笔记加入知识库"。
+# 2. ``test_attach_unknown_kb_is_404``：同一条（端点没了）。
 # 3. ``test_notes_require_credentials``（原判据：没有令牌访问笔记应当 401）——**只对
 #    有账号体系的那一档成立**：本机档不挂 `/auth/*`，`users` / `sessions` / `api_keys`
 #    三张表都不在本机库里，主体恒为"本机主人"，没有"没有令牌"这个状态。而笔记只在本机档

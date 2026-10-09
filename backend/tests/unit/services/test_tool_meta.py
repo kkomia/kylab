@@ -88,13 +88,12 @@ def test_reading_tools_are_the_ones_that_parallelize() -> None:
     而"导出文档 + 写笔记 + 上传"并发就是在赌它们之间没有共享状态。
     """
     parallel = {name for name, meta in TOOL_META.items() if meta.parallel}
-    assert "search" in parallel
+    assert "recall" in parallel
     assert "web_search" in parallel
     assert "read_file" in parallel
     for name in (
         "create_note",
-        "delete_document",
-        "upload_document",
+        "export_document",
         "run_command",
         "remember",
         "forget",
@@ -170,10 +169,10 @@ def test_two_tools_of_the_same_kind_are_the_same_kind() -> None:
     assert {kind_of(name) for name in ("read_file", "list_notes", "list_conversation_files")} == {
         "read"
     }
-    # 写笔记 / 上传文档：都是"往里写"
-    assert {kind_of(name) for name in ("create_note", "upload_document")} == {"write"}
-    # 检索知识库 / 联网搜索 / 抓网页：都是"找东西"
-    assert {kind_of(name) for name in ("search", "web_search", "web_fetch")} == {"search"}
+    # 写笔记 / 导出文档：都是"往里写"
+    assert {kind_of(name) for name in ("create_note", "export_document")} == {"write"}
+    # 长期记忆检索 / 联网搜索 / 抓网页：都是"找东西"
+    assert {kind_of(name) for name in ("recall", "web_search", "web_fetch")} == {"search"}
 
 
 def test_the_kind_is_derived_from_the_policy_fields() -> None:
@@ -185,8 +184,8 @@ def test_the_kind_is_derived_from_the_policy_fields() -> None:
     assert meta_of("run_command").side_effect_scope == "system"
     assert kind_of("forget") == "delete"
     assert meta_of("forget").destructive is True
-    assert kind_of("upload_document") == "write"
-    assert meta_of("upload_document").read_only is False
+    assert kind_of("create_note") == "write"
+    assert meta_of("create_note").read_only is False
     assert kind_of("read_file") == "read"
     assert meta_of("read_file").read_only is True
     assert kind_of("forget") == "delete"

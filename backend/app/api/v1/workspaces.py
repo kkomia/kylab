@@ -1,9 +1,8 @@
 """工作区端点（v0.15，设计见 ``docs/设计/Agent-工作区与能力层设计-v0.1.md``）。
 
-工作区是 **Agent 的项目**：一个用户指定的根目录 + 一组知识库。
-它把"这个 Agent 在哪儿干活、能查哪些资料"这两件事绑在一起。
+工作区是 **Agent 的项目**：一个用户指定的根目录。它把"这个 Agent 在哪儿干活"写下来。
 
-**归属口径与知识库 / 会话完全一致**（``api/auth.py`` 的 ``check_kb_scope`` 同一套）：
+**归属口径与对话完全一致**（``api/v1/conversations.py::_caller_owner`` 同一套）：
 普通成员只看得到自己的工作区，越权与不存在都回 **404**——403 会暴露"这个 id 存在"。
 
 **v0.59 起还有第二维：设备**（见下面 :func:`device_from_headers`）。桌面壳注入
@@ -115,7 +114,6 @@ def _out(record, conversation_count: int) -> WorkspaceOut:  # type: ignore[no-un
         name=record.name,
         root_path=record.root_path,
         description=record.description,
-        kb_ids=list(record.kb_ids),
         conversation_count=conversation_count,
         created_at=record.created_at,
         updated_at=record.updated_at,
@@ -289,7 +287,6 @@ def create_workspace(
         name=payload.name,
         root_path=payload.root_path,
         description=payload.description,
-        kb_ids=payload.kb_ids,
         user_id=_owner(caller),
         device_id=_device_id(request_device),
         device_name=request_device.name if request_device is not None else "",
@@ -319,7 +316,7 @@ def update_workspace(
     caller: Annotated[Caller, Depends(require_write)],
     request_device: Annotated[Device | None, Depends(device_from_headers)],
 ) -> WorkspaceOut:
-    """名字 / 根目录 / 描述 / 知识库 / 归档都可选，只改传了的那些。
+    """名字 / 根目录 / 描述 / 归档都可选，只改传了的那些。
 
     **归属不可改**：把一个工作区转给别人，连带的是"里头会话的 Agent 行为"，
     那是另一个功能，不该顺手做掉。**设备同样不可改**：它是这条记录的"在哪儿"，
@@ -331,7 +328,6 @@ def update_workspace(
         name=payload.name,
         root_path=payload.root_path,
         description=payload.description,
-        kb_ids=payload.kb_ids,
         archived=payload.archived,
         device_id=_device_id(request_device),
     )

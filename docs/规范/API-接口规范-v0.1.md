@@ -328,7 +328,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **120** 条端点。
+共 **109** 条端点。
 
 ### `conversations`
 
@@ -371,16 +371,6 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/local/import` | 导入 NAS 上的旧会话（后台跑，返回批次 id 供轮询） |
 | `GET` | `/api/v1/local/import/{batch_id}` | 导入进度（轮询） |
 | `POST` | `/api/v1/local/import/{batch_id}/rollback` | 回滚一个导入批次（删新建的 / 用快照恢复被替换的 / 本机改过的保留） |
-| `DELETE` | `/api/v1/local/kb-cache` | 清掉本机留的快照（全清 / 按地址 / 按库） |
-| `GET` | `/api/v1/local/kb-cache/documents/{document_id}` | 快照：文档条目 |
-| `GET` | `/api/v1/local/kb-cache/knowledge-bases` | 快照：库列表（页面先画一帧用） |
-| `GET` | `/api/v1/local/kb-cache/knowledge-bases/{kb_id}` | 快照：库详情 |
-| `GET` | `/api/v1/local/kb-cache/knowledge-bases/{kb_id}/documents` | 快照：文档列表（只认规范视图） |
-| `GET` | `/api/v1/local/kb-cache/knowledge-bases/{kb_id}/folders` | 快照：库内目录 |
-| `POST` | `/api/v1/local/kb-cache/revalidate` | 再确认一份快照（焦点回来 / 「立即刷新」） |
-| `GET` | `/api/v1/local/kb-cache/stats` | 本机留的那一份有多大 / 最近更新（设置面板读它） |
-| `GET` | `/api/v1/local/provider` | 知识库提供者状态（三态 + 原因 + 能力集 + 库清单） |
-| `PATCH` | `/api/v1/local/provider` | 改知识库提供者的地址 / 开关（白名单两键，写完立刻重探） |
 | `GET` | `/api/v1/local/secrets` | 钥匙串：可用性与还有几处明文（只报数，不回显任何秘密） |
 | `POST` | `/api/v1/local/secrets/migrate` | 把库里的旧明文凭据收进系统钥匙串（逐项、幂等、可重跑） |
 | `GET` | `/api/v1/local/status` | 本机档状态（库在哪、接的是谁） |
@@ -446,7 +436,6 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/notes/{note_id}` | 笔记详情 |
 | `PATCH` | `/api/v1/notes/{note_id}` | 更新笔记 |
 | `POST` | `/api/v1/notes/{note_id}/ai` | 用对话模型排版 / 润色笔记 |
-| `POST` | `/api/v1/notes/{note_id}/attach` | 把笔记加入知识库 |
 | `PATCH` | `/api/v1/notes/{note_id}/folder` | 把笔记移进文件夹 / 移回未归档 |
 | `POST` | `/api/v1/notes/{note_id}/images` | 上传笔记配图 |
 | `GET` | `/api/v1/notes/{note_id}/images/{name}` | 读取笔记配图 |

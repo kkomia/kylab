@@ -1,13 +1,10 @@
 """笔记（v20，对标腾讯 ima「笔记」的最小可用版）。
 
-定位：**轻编辑器 + AI 写作 + 知识库联动**三件事，不是一个独立的笔记软件。
-kylab 已有知识库、对话（SSE 流式）、摄入流水线三大底座，这里补上缺的那一小块：
+定位：**轻编辑器 + AI 写作**两件事，不是一个独立的笔记软件。
 
 1. **笔记 CRUD**：Markdown 是唯一事实源（``content_md``），编辑器只负责渲染与编辑；
-2. **加入知识库**：把笔记当成一份 ``text/markdown`` 文档走**现有摄入流水线**——
-   切块、嵌入、检索全部复用，入库后回填 ``kb_id``/``doc_id``，检索命中可跳回笔记；
-3. **问答存为笔记**：前端把一轮问答写成 ``source_kind='chat'`` 的笔记，本层不特殊处理；
-4. **文件夹（v14）**：左栏的层级文件夹 + 笔记归属，见下面"文件夹"那一节。
+2. **问答存为笔记**：前端把一轮问答写成 ``source_kind='chat'`` 的笔记，本层不特殊处理；
+3. **文件夹（v14）**：左栏的层级文件夹 + 笔记归属，见下面"文件夹"那一节。
 
 **刻意不做**（与本产品"单机零依赖"的定位冲突，调研报告 §1 已明确）：
 协作编辑（CRDT/Yjs）、云端多端同步、模板市场、语音听记。
@@ -101,12 +98,8 @@ def derive_title(content_md: str) -> str:
 class NotesService:
     """笔记的读写与入库。"""
 
-    def __init__(self, stores: StoreBundle, *, ingest=None, documents=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, stores: StoreBundle) -> None:
         self._stores = stores
-        # 入库是可选能力：不接摄入流水线时笔记功能照常（列表、编辑、删除）。
-        # 这样单测与不配模型的部署也能用。
-        self._ingest = ingest
-        self._documents = documents
 
     # ------------------------------------------------------------------ 写
 
@@ -158,12 +151,7 @@ class NotesService:
             # 正文被清空后标题不必跟着清掉；但原标题为空时要重新推导
             clean_title = derive_title(body)
 
-        # 正文真的变了、而且这条笔记已经进过知识库 → 库里那一份要跟着变（v0.12）。
-        # **放在写笔记之前**：同步失败（比如那份文档正在处理中）时整次更新都不做，
-        # 用户看到明确报错，而不会留下"笔记改了、库里还是旧的"这种没人发现的不一致。
-        if content_md is not None and content_md != record.content_md:
-            self._sync_kb_copy(record, body=body, title=clean_title)
-
+        # 正文改了就把整条更新写回（标题跟着重推）。
         self._stores.meta.update_note(
             note_id,
             title=clean_title,
@@ -173,36 +161,6 @@ class NotesService:
             tags=None if tags is None else normalize_tags(tags),
         )
         return self.get(note_id)
-
-    def _sync_kb_copy(self, record: NoteRecord, *, body: str, title: str) -> None:
-        """把知识库里那一份同步成当前正文。
-
-        **为什么必须做**：此前 ``update`` 只写笔记表，于是"笔记改了、库里还是旧的"。
-        用户在界面上看不到任何异常，直到某天检索出一段自己已经改掉的话——
-        这不是缺个功能，是静默的不一致，而静默的不一致比报错难查得多。
-
-        两处刻意的选择：
-
-        - **原地替换而不是"删了重加"**：文档 id 是引用的锚点（对话出处、笔记关联），
-          换 id 会打断引用，旧版还会白占一次回收站；
-        - **正文被清空时不同步**：库里保留最后那版内容，而不是变成一份空文档——
-          空文档检索不到，会让"这篇还在库里"这件事凭空消失，那比留个旧版更糟。
-        """
-        if self._ingest is None or self._documents is None or not record.doc_id:
-            return
-        stripped = body.strip()
-        if not stripped:
-            return
-        self._ingest.replace(
-            record.doc_id,
-            filename=f"{title or '未命名笔记'}.md",
-            content=stripped.encode("utf-8"),
-            mime_type="text/markdown",
-        )
-        # 不带 force：replace 已经把阶段推回 uploaded，这一趟要**从头**走
-        # （解析 → 切块 → 向量化）。用 force 会把它直接推到 CHUNKING，
-        # 于是拿着上一次的解析产物切块——切出来还是旧内容
-        self._documents.enqueue_ingest(record.doc_id)
 
     def delete(self, note_id: str, *, user_id: str | None) -> None:
         self.get_for_owner(note_id, user_id)
@@ -349,34 +307,6 @@ class NotesService:
         if folder_id is None:
             return None
         return self.get_folder_for_owner(folder_id, user_id).id
-
-    def attach_to_kb(self, note_id: str, *, user_id: str | None, kb_id: str) -> NoteRecord:
-        """把笔记作为一份 Markdown 文档加入知识库（走现有摄入流水线）。
-
-        **内容哈希去重会生效**：同一份内容重复入库时 ``submit`` 返回已有文档，
-        这里仍把 ``doc_id`` 回填到笔记上——用户要的是"这条笔记能在库里被检索到"，
-        而不是"库里再多一份副本"。
-        """
-        if self._ingest is None or self._documents is None:
-            raise InvalidRequestError("当前部署未接入摄入流水线，无法把笔记加入知识库")
-        record = self.get_for_owner(note_id, user_id)
-        body = record.content_md.strip()
-        if not body:
-            raise InvalidRequestError("笔记内容为空，无法加入知识库")
-        filename = f"{record.title or '未命名笔记'}.md"
-        outcome = self._ingest.submit(
-            knowledge_base_id=kb_id,
-            filename=filename,
-            content=body.encode("utf-8"),
-            mime_type="text/markdown",
-            uploaded_by=user_id,
-        )
-        if not outcome.is_duplicate:
-            self._documents.enqueue_ingest(outcome.document.id)
-        self._stores.meta.attach_note_document(
-            note_id, kb_id=kb_id, doc_id=outcome.document.id
-        )
-        return self.get(note_id)
 
     # ------------------------------------------------------------------ 配图
 
