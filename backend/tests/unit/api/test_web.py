@@ -25,7 +25,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from app.core.http import shared_client
+from app.core import http as http_module
 
 PAGE = "https://news.example.com/a"
 PAGE_ENDPOINT = "/api/v1/web/page"
@@ -322,7 +322,13 @@ def test_embed_check_never_reads_the_body(local_client: TestClient, monkeypatch)
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"X-Frame-Options": "SAMEORIGIN"}, stream=_Boom())
 
-    monkeypatch.setattr(shared_client(), "_transport", httpx.MockTransport(handler))
+    # **别去换单例的 ``_transport``**：httpx 0.28 起 ``Client.__init__`` 就把 http/https
+    # 两条默认挂载塞进 ``_mounts``，而 ``_transport_for_url`` 一命中挂载就返回挂载里的那条
+    # ——只换 ``_transport`` 的旧写法已经不生效，请求会真的打到网上，于是这里拿到的是
+    # "探不到对方"那条分支（x_frame_options 空串），用例红得莫名其妙。
+    # 换法：造一个**装好假传输**的客户端，在用例期间顶替进程级单例。
+    fake_client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(http_module, "_client", fake_client)
 
     body = _get(local_client, EMBED_ENDPOINT, PAGE).json()
 

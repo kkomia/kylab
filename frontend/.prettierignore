@@ -5,3 +5,9 @@ pnpm-lock.yaml
 
 # 生成物：由 scripts/gen_api_types.py 从后端 OpenAPI 生成
 src/api/schema.d.ts
+
+# 生成物的**逐字节镜像**：后端 app/services/skill_categories.json 由
+# `python -m app.services.skill_categories --write` 生成，这一份必须与它一字不差
+# （backend/tests/unit/services/test_skill_categories.py::test_the_frontend_mirror_is_byte_identical
+# 钉着这条）。prettier 一格式化就把镜像改坏了——所以这里排除，改判据时用 --write 重生成再复制。
+src/features/misc/capabilities/skillCategories.json

@@ -13,15 +13,30 @@ step() {
     label=$1
     shift
     echo "==> $label"
+    started=$(date +%s)
     if ! "$@"; then
-        echo "!! $label 失败"
+        echo "!! $label 失败（$(( $(date +%s) - started ))s）"
         fail=$((fail + 1))
+    else
+        echo "    OK（$(( $(date +%s) - started ))s）"
     fi
 }
 
+# uv 常常装了但不在 PATH 上（Desktop 安装器放在 ~/.local/bin）——门禁不该因为这个变红
+if ! command -v uv >/dev/null 2>&1; then
+    for uvdir in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+        if [ -x "$uvdir/uv" ]; then
+            PATH="$uvdir:$PATH"
+            export PATH
+            break
+        fi
+    done
+fi
+
 step "规范检查" sh "$ROOT/scripts/lint.sh"
 
-step "后端测试" sh -c "cd '$ROOT/backend' && uv run pytest tests/ -m 'not bench and not cloud' --cov=app --cov-report=term-missing"
+# -n 8：16 核机器上的实测档位（全量 262s → ~110s）
+step "后端测试" sh -c "cd '$ROOT/backend' && uv run pytest tests/ -m 'not bench and not cloud' --cov=app --cov-report=term-missing -n 8"
 
 if [ -f "$ROOT/frontend/package.json" ]; then
     step "前端测试" pnpm --dir "$ROOT/frontend" test

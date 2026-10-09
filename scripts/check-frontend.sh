@@ -29,9 +29,12 @@ step() {
     label=$1
     shift
     echo "==> $label"
+    started=$(date +%s)
     if ! "$@"; then
-        echo "!! $label 失败"
+        echo "!! $label 失败（$(( $(date +%s) - started ))s）"
         fail=$((fail + 1))
+    else
+        echo "    OK（$(( $(date +%s) - started ))s）"
     fi
 }
 
@@ -39,10 +42,11 @@ step "eslint + prettier" pnpm --dir "$ROOT/frontend" lint
 step "类型检查（tsc）" pnpm --dir "$ROOT/frontend" typecheck
 step "前端单测（vitest）" pnpm --dir "$ROOT/frontend" test
 step "生产构建" pnpm --dir "$ROOT/frontend" build
-step "emoji 扫描（前端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/frontend/src"
+# emoji 与分层走 scripts/baselines/*.txt 基线：存量不算红，**新增才算**
+step "emoji 扫描（前端，基线）" "$PY" "$ROOT/scripts/scan_emoji.py" --baseline "$ROOT/scripts/baselines/emoji.txt" "$ROOT/frontend/src"
 # 结构性规范里有一条是**前端规则**（U1：界面文案），所以这个门禁也要跑它——
 # 只改前端时跳过它，那条规则就等于没有
-step "结构性规范（分层 / 测试位置 / 界面文案）" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
+step "结构性规范（分层 / 测试位置 / 界面文案，基线）" "$PY" "$ROOT/scripts/check_layering.py" --baseline "$ROOT/scripts/baselines/layering.txt" "$ROOT"
 
 if [ "$fail" -ne 0 ]; then
     echo "前端门禁未通过（$fail 项）"

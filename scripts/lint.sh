@@ -30,15 +30,33 @@ step() {
     label=$1
     shift
     echo "==> $label"
+    started=$(date +%s)
     if ! "$@"; then
-        echo "!! $label 失败"
+        echo "!! $label 失败（$(( $(date +%s) - started ))s）"
         fail=$((fail + 1))
+    else
+        echo "    OK（$(( $(date +%s) - started ))s）"
     fi
 }
 
+# uv 常常装了但不在 PATH 上（Desktop 安装器放在 ~/.local/bin）——门禁不该因为这个变红
+if ! command -v uv >/dev/null 2>&1; then
+    for uvdir in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+        if [ -x "$uvdir/uv" ]; then
+            PATH="$uvdir:$PATH"
+            export PATH
+            break
+        fi
+    done
+fi
+
+# emoji 与分层走 scripts/baselines/*.txt 基线：存量不算红，**新增才算**
+EMOJI_BASELINE="$ROOT/scripts/baselines/emoji.txt"
+LAYERING_BASELINE="$ROOT/scripts/baselines/layering.txt"
+
 step "ruff" sh -c "cd '$ROOT/backend' && uv run ruff check app/ tests/"
-step "emoji 扫描（后端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/backend/app"
-step "结构性规范（分层 / 测试位置 / 界面文案 / 版本号）" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
+step "emoji 扫描（后端，基线）" "$PY" "$ROOT/scripts/scan_emoji.py" --baseline "$EMOJI_BASELINE" "$ROOT/backend/app"
+step "结构性规范（分层 / 测试位置 / 界面文案 / 版本号，基线）" "$PY" "$ROOT/scripts/check_layering.py" --baseline "$LAYERING_BASELINE" "$ROOT"
 # 同步《API 接口规范》的端点清单：它是从真实 OpenAPI 生成的，
 # 跑这一步之后文档里的清单必然与代码一致（T4.9）
 # 这一步要 import app（进而 import duckdb），所以**必须用 venv 的解释器**：
@@ -60,7 +78,7 @@ fi
 if [ -f "$ROOT/frontend/package.json" ]; then
     step "eslint + prettier" pnpm --dir "$ROOT/frontend" lint
     step "类型检查（tsc）" pnpm --dir "$ROOT/frontend" typecheck
-    step "emoji 扫描（前端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/frontend/src"
+    step "emoji 扫描（前端，基线）" "$PY" "$ROOT/scripts/scan_emoji.py" --baseline "$EMOJI_BASELINE" "$ROOT/frontend/src"
 fi
 
 # Shell 脚本语法自检（与 CI 的「门禁脚本自检」job 同一件事）：

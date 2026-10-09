@@ -1,0 +1,4 @@
+# 结构性规范基线（ratchet）：只准收紧，新增条目必须在提交信息里写理由。
+# 格式：<相对仓库根的路径>\t<规则码>\t<处数>；不传 --baseline 时这份文件不生效。
+frontend/src/api/sidecar.ts	U2	2
+frontend/src/features/chat/ui/flow.css	C1	102

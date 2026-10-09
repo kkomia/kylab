@@ -11,14 +11,16 @@ $script:failures = 0
 function Invoke-Step {
     param([string]$Label, [string]$Command, [string[]]$Arguments)
     Write-Host "==> $Label" -ForegroundColor Cyan
+    $sw = [Diagnostics.Stopwatch]::StartNew()
     & $Command @Arguments
     $code = $LASTEXITCODE
+    $sw.Stop()
     if ($code -ne 0) {
-        Write-Host "!! $Label 失败（exit $code）" -ForegroundColor Red
+        Write-Host ("!! {0} 失败（exit {1}，{2:N0}s）" -f $Label, $code, $sw.Elapsed.TotalSeconds) -ForegroundColor Red
         $script:failures++
     }
     else {
-        Write-Host '    OK' -ForegroundColor DarkGray
+        Write-Host ("    OK（{0:N0}s）" -f $sw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
     }
 }
 
@@ -26,9 +28,10 @@ Invoke-Step 'eslint + prettier' 'pnpm' @('--dir', "$root/frontend", 'lint')
 Invoke-Step '类型检查（tsc）' 'pnpm' @('--dir', "$root/frontend", 'typecheck')
 Invoke-Step '前端单测（vitest）' 'pnpm' @('--dir', "$root/frontend", 'test')
 Invoke-Step '生产构建' 'pnpm' @('--dir', "$root/frontend", 'build')
-Invoke-Step 'emoji 扫描（前端）' 'python' @("$root/scripts/scan_emoji.py", "$root/frontend/src")
+# emoji 与分层走 scripts/baselines/*.txt 基线：存量不算红，**新增才算**
+Invoke-Step 'emoji 扫描（前端）' 'python' @("$root/scripts/scan_emoji.py", '--baseline', "$root/scripts/baselines/emoji.txt", "$root/frontend/src")
 # 结构性规范里有一条是**前端规则**（U1：界面文案），所以这个门禁也要跑它
-Invoke-Step '结构性规范（分层 / 测试位置 / 界面文案）' 'python' @("$root/scripts/check_layering.py", $root)
+Invoke-Step '结构性规范（分层 / 测试位置 / 界面文案）' 'python' @("$root/scripts/check_layering.py", '--baseline', "$root/scripts/baselines/layering.txt", $root)
 
 if ($script:failures -gt 0) {
     Write-Host "前端门禁未通过（$script:failures 项）" -ForegroundColor Red

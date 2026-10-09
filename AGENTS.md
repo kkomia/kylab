@@ -26,16 +26,28 @@
 ## 2. 审核清单（签字前逐条过）
 
 1. **读 diff**：核对该改的改了、不该动的一行没动；接口、命名、分层没走样。
-2. **跑门禁**（改动范围决定跑哪个，见规范 §8）：
-   - 只改后端 → `sh scripts/check-backend.sh`（ruff + 分层 + emoji + API 文档同步 + pytest）
-   - 只改前端 → `sh scripts/check-frontend.sh`（eslint + prettier + tsc + vitest + 构建 + emoji）
-   - 跨端 / 收尾 → `sh scripts/ci.sh`
-   - Windows 用同名 `.ps1`。分层纪律 `scripts/check_layering.py`（`L1/L2/L3/T1`）必须过。
-3. **回归范围按规范 §5.2.1**：改一处用 `python scripts/affected_tests.py --run`
-   （前端没有镜像关系，靠它建的反向依赖图兜底）；**一个大版块收尾才跑真全量**，
-   且报告里给的是全量自己的数字，不许拿定向结果冒充。
+2. **改一处看行为 → 跑内环一条命令**：
+   `powershell -ExecutionPolicy Bypass -File scripts\test-changed.ps1`
+   （macOS/Linux：`sh scripts/test-changed.sh`）。几十秒量级，日常每改一处就过它。
+   内部 = emoji + 分层基线扫描 + 后端 ruff +（本轮有前端改动时）eslint / prettier / tsc +
+   受影响用例（`scripts/affected_tests.py --run`，前后端一起）。
+3. **收尾才跑真全量**（改动范围决定跑哪个，见规范 §8；节奏见规范 §5.2.1）：
+   - 只改后端 → `scripts\check-backend.ps1`（ruff + 分层 + emoji + API 文档同步 + 全量 pytest）
+   - 只改前端 → `scripts\check-frontend.ps1`（eslint + prettier + tsc + vitest + 构建 + emoji）
+   - 跨端 / 交付前 → `scripts\ci.ps1`
+   - macOS/Linux 用同名 `.sh`。全量 pytest 默认并行（`-n 8`）；分层纪律
+     `scripts/check_layering.py`（`L1/L2/L3/T1`）必须过。
+   - **收尾那一次必须是真的全量，报告里给的是它自己的数字**，不许拿定向结果冒充
+     （回归范围的口径仍按规范 §5.2.1）；前端没有镜像关系，靠 `scripts/affected_tests.py`
+     建的反向依赖图兜底。
 4. **通过才提交**，提交信息 `<类型>: <简述>`，类型限 `feat/fix/docs/test/refactor/chore`；
    **未经用户明确要求不 push**。不通过 → resume 同一个子代理修，不重开新实例。
+
+**门禁的红绿灯怎么读**：emoji 与分层两步走存量基线 `scripts/baselines/emoji.txt` /
+`scripts/baselines/layering.txt`——基线内的存量放行（脚本会打印「基线内存量 N 处」），
+**基线之外的新增违规照样红**（退出码 1）。修掉存量后跑 `--write-baseline` 把基线收紧；
+**基线只准收紧**，往基线里加新条目必须在提交信息里写理由。CI（`scripts/ci.*`）仍跑全量，
+裁判地位不受这两档影响。
 
 审核结论里要能回答三件事：改了什么、凭什么说它对（哪条命令、哪个用例）、还有什么没验。
 
@@ -71,4 +83,5 @@
 
 | 日期 | 变更 |
 | --- | --- |
+| 2026-10-09 | 开发期测试流程分两档：内环 test-changed（秒级），收尾 check-* 全量并行（pytest -n 8）；emoji/分层引入基线，门禁只对新增违规报红 |
 | 2026-10-04 | 建立：主代理只做规划/分派/审核，实现全部下放子代理，按模块隔离上下文（用户口径） |

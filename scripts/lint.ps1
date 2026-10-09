@@ -18,22 +18,37 @@ function Invoke-Step {
     param([string]$Label, [string]$Command, [string[]]$Arguments)
 
     Write-Host "==> $Label" -ForegroundColor Cyan
-
+    $sw = [Diagnostics.Stopwatch]::StartNew()
     & $Command @Arguments
     $code = $LASTEXITCODE
-
+    $sw.Stop()
     if ($code -ne 0) {
-        Write-Host "!! $Label 失败（exit $code）" -ForegroundColor Red
+        Write-Host ("!! {0} 失败（exit {1}，{2:N0}s）" -f $Label, $code, $sw.Elapsed.TotalSeconds) -ForegroundColor Red
         $script:failures++
     }
     else {
-        Write-Host '    OK' -ForegroundColor DarkGray
+        Write-Host ("    OK（{0:N0}s）" -f $sw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
     }
 }
 
-Invoke-Step 'ruff' 'uv' @('run', '--directory', "$root/backend", 'ruff', 'check', 'app/', 'tests/')
-Invoke-Step 'emoji 扫描（后端）' 'python' @("$root/scripts/scan_emoji.py", "$root/backend/app")
-Invoke-Step '结构性规范（分层 / 测试位置 / 界面文案 / 版本号）' 'python' @("$root/scripts/check_layering.py", $root)
+# uv 常常装了但不在 PATH 上（Desktop 安装器放在 ~/.local/bin）——门禁不该因为这个变红。
+$uvExe = 'uv'
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    foreach ($candidate in @(
+            (Join-Path $env:USERPROFILE '.local\bin\uv.exe'),
+            (Join-Path $env:USERPROFILE '.cargo\bin\uv.exe')
+        )) {
+        if (Test-Path $candidate) { $uvExe = $candidate; break }
+    }
+}
+
+# emoji 与分层走 scripts/baselines/*.txt 基线：存量不算红，**新增才算**
+$emojiBaseline = "$root/scripts/baselines/emoji.txt"
+$layeringBaseline = "$root/scripts/baselines/layering.txt"
+
+Invoke-Step 'ruff' $uvExe @('run', '--directory', "$root/backend", 'ruff', 'check', 'app/', 'tests/')
+Invoke-Step 'emoji 扫描（后端）' 'python' @("$root/scripts/scan_emoji.py", '--baseline', $emojiBaseline, "$root/backend/app")
+Invoke-Step '结构性规范（分层 / 测试位置 / 界面文案 / 版本号）' 'python' @("$root/scripts/check_layering.py", '--baseline', $layeringBaseline, $root)
 # 同步《API 接口规范》的端点清单（T4.9）：同上，让文档不可能旧
 # 同 lint.sh：这一步要 import app（含 duckdb），必须用 venv 解释器
 $venvPy = "$root/backend/.venv/Scripts/python.exe"
@@ -52,7 +67,7 @@ if (Test-Path "$root/frontend/package.json") {
     }
     Invoke-Step 'eslint + prettier' 'pnpm' @('--dir', "$root/frontend", 'lint')
     Invoke-Step '类型检查（tsc）' 'pnpm' @('--dir', "$root/frontend", 'typecheck')
-    Invoke-Step 'emoji 扫描（前端）' 'python' @("$root/scripts/scan_emoji.py", "$root/frontend/src")
+    Invoke-Step 'emoji 扫描（前端）' 'python' @("$root/scripts/scan_emoji.py", '--baseline', $emojiBaseline, "$root/frontend/src")
 }
 
 if ($script:failures -gt 0) {

@@ -12,16 +12,16 @@ function Invoke-Step {
     param([string]$Label, [string]$Command, [string[]]$Arguments)
 
     Write-Host "==> $Label" -ForegroundColor Cyan
-
+    $sw = [Diagnostics.Stopwatch]::StartNew()
     & $Command @Arguments
     $code = $LASTEXITCODE
-
+    $sw.Stop()
     if ($code -ne 0) {
-        Write-Host "!! $Label 失败（exit $code）" -ForegroundColor Red
+        Write-Host ("!! {0} 失败（exit {1}，{2:N0}s）" -f $Label, $code, $sw.Elapsed.TotalSeconds) -ForegroundColor Red
         $script:failures++
     }
     else {
-        Write-Host '    OK' -ForegroundColor DarkGray
+        Write-Host ("    OK（{0:N0}s）" -f $sw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
     }
 }
 
@@ -36,10 +36,22 @@ Invoke-Step '规范检查（scripts/lint.ps1）' $hostExe @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'lint.ps1')
 )
 
+# uv 常常装了但不在 PATH 上（Desktop 安装器放在 ~/.local/bin）——门禁不该因为这个变红。
+$uvExe = 'uv'
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    foreach ($candidate in @(
+            (Join-Path $env:USERPROFILE '.local\bin\uv.exe'),
+            (Join-Path $env:USERPROFILE '.cargo\bin\uv.exe')
+        )) {
+        if (Test-Path $candidate) { $uvExe = $candidate; break }
+    }
+}
+
 # 存储只有本机一套（SQLite + 数据目录），用例自带临时目录，不需要任何外部服务
-Invoke-Step '后端测试' 'uv' @(
+# -n 8：16 核机器上的实测档位（全量 262s → ~110s）
+Invoke-Step '后端测试' $uvExe @(
     'run', '--directory', "$root/backend", 'pytest', 'tests',
-    '-m', 'not bench and not cloud', '--cov=app', '--cov-report=term-missing'
+    '-m', 'not bench and not cloud', '--cov=app', '--cov-report=term-missing', '-n', '8'
 )
 
 if (Test-Path "$root/frontend/package.json") {

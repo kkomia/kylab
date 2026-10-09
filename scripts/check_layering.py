@@ -11,7 +11,24 @@
 ``U2`` 界面文案里的实现细节、``V1`` 手写版本号不一致、``PARSE`` 语法错误。
 
 用法：python scripts/check_layering.py [仓库根目录，默认当前目录]
-退出码：0 = 通过；1 = 发现违规。
+      python scripts/check_layering.py --baseline scripts/baselines/layering.txt [根目录]
+      python scripts/check_layering.py --write-baseline scripts/baselines/layering.txt [根目录]
+退出码：0 = 通过（或只剩基线内的存量）；1 = 发现**基线之外**的违规；2 = 用法错误。
+
+## 基线（ratchet）——为什么要它
+
+仓库里有一批 2026-10 之前就存在的违规（当前 104 处：102 处 ``C1`` 在前端
+``flow.css`` 的层外规则上，2 处 ``U2`` 在 ``api/sidecar.ts``）。它们与本次改动无关，
+却让这条检查**永远红**——门禁一旦永远红，就没有人再拿它当信号。所以存量走基线，
+门禁只对**新增**报红：
+
+- ``--baseline <文件>``：基线内的存量放行（打印"基线内存量 N 处"），只对增量报红；
+- ``--write-baseline <文件>``：把当前全部违规写成基线（修掉存量后用它收紧）；
+- 两个参数都不给 = 老行为（任何一处违规都红），CI 想严跑时仍可这么用。
+
+基线按 ``<相对仓库根的路径>\t<规则码>\t<处数>`` 记——**记处数，不记行号**：
+改写一行既有违规不会误报，新增才会让处数变大。
+基线**只准收紧**：新增条目必须在提交信息里写理由。
 """
 
 from __future__ import annotations
@@ -19,6 +36,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 # ---------------------------------------------------------------- 规则定义
@@ -1447,8 +1465,143 @@ def check_version_consistency(root: Path) -> list[Violation]:
     ]
 
 
+BASELINE_HEADER = (
+    "# 结构性规范基线（ratchet）：只准收紧，新增条目必须在提交信息里写理由。\n"
+    "# 格式：<相对仓库根的路径>\\t<规则码>\\t<处数>；不传 --baseline 时这份文件不生效。\n"
+)
+
+
+def parse_args(argv: list[str]) -> tuple[Path, Path | None, Path | None] | None:
+    """拆出仓库根目录与 ``--baseline`` / ``--write-baseline``；用法错误时返回 None。"""
+    positionals: list[str] = []
+    baseline: Path | None = None
+    write: Path | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("--baseline", "--write-baseline"):
+            if i + 1 >= len(argv):
+                print(f"{arg} 需要一个文件路径", file=sys.stderr)
+                return None
+            if arg == "--baseline":
+                baseline = Path(argv[i + 1])
+            else:
+                write = Path(argv[i + 1])
+            i += 2
+            continue
+        positionals.append(arg)
+        i += 1
+    return Path(positionals[0] if positionals else ".").resolve(), baseline, write
+
+
+def relative_to_root(path: Path, root: Path) -> str:
+    """基线里的键一律相对仓库根：门禁从哪儿跑、路径怎么写都得到同一个键。"""
+    for candidate in (path, Path(path).resolve() if not path.is_absolute() else path):
+        try:
+            return Path(candidate).resolve().relative_to(root).as_posix()
+        except ValueError:
+            continue
+    return Path(path).as_posix()
+
+
+def load_baseline(path: Path) -> dict[tuple[str, str], int] | None:
+    """读基线；文件不存在返回 None——调用方据此报错，**绝不静默放行**。"""
+    if not path.is_file():
+        return None
+    loaded: dict[tuple[str, str], int] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[2].isdigit():
+            continue
+        loaded[(parts[0], parts[1])] = int(parts[2])
+    return loaded
+
+
+def write_baseline(path: Path, violations: list[Violation], root: Path) -> int:
+    """把当前违规写成基线（路径 + 规则码 + 处数）；返回写下的违规总数。"""
+    counts = Counter((relative_to_root(v.path, root), v.rule) for v in violations)
+    lines = [BASELINE_HEADER.rstrip("\n")]
+    lines += [f"{rel}\t{rule}\t{counts[(rel, rule)]}" for rel, rule in sorted(counts)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # newline="\n"：Windows 上 Python 的文本模式默认会把 \n 翻成 \r\n，基线文件不该因此带上 CR
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return len(violations)
+
+
+def report(
+    violations: list[Violation],
+    root: Path,
+    baseline_path: Path | None,
+    write_path: Path | None,
+) -> int:
+    """按基线口径决定退出码：无基线 = 老行为；有基线 = 只对增量报红。"""
+    tail = (
+        "违反《项目工程规范》§3.3 / §5.1、"
+        "脚本编码约定、界面文案条款（解释性小字 / 实现细节 / 解释性长句）、"
+        "CSS 分层纪律或 CHANGELOG「附：版本号约定」。"
+    )
+
+    if write_path is not None:
+        total = write_baseline(write_path, violations, root)
+        print(f"已写入基线 {write_path}：{total} 处存量。")
+        return 0
+
+    if baseline_path is None:
+        for violation in violations:
+            print(violation)
+        if violations:
+            print(f"\n共发现 {len(violations)} 处违规，{tail}")
+            return 1
+        print("分层纪律、测试位置、脚本编码、界面文案（解释性小字 / 实现细节 / 解释性长句）、"
+              "CSS 分层与版本号检查通过。")
+        return 0
+
+    base = load_baseline(baseline_path)
+    if base is None:
+        print(f"找不到基线文件：{baseline_path}（先跑 --write-baseline 生成）", file=sys.stderr)
+        return 2
+
+    counts = Counter((relative_to_root(v.path, root), v.rule) for v in violations)
+    by_key: dict[tuple[str, str], list[Violation]] = {}
+    for violation in violations:
+        by_key.setdefault((relative_to_root(violation.path, root), violation.rule), []).append(
+            violation
+        )
+
+    fresh = 0
+    for rel, rule in sorted(counts):
+        allowed = base.get((rel, rule), 0)
+        actual = counts[(rel, rule)]
+        if actual <= allowed:
+            continue
+        excess = actual - allowed
+        fresh += excess
+        print(f"!! {rel}  [{rule}]  基线 {allowed} → 实得 {actual}（新增 {excess}）：")
+        # 前 allowed 处算存量，多出来的按文件内顺序报出来（近似"新增的那几条"）
+        for violation in by_key[(rel, rule)][allowed:]:
+            print(f"     {violation}")
+
+    kept = len(violations) - fresh
+    if fresh:
+        print(f"\n共发现 {fresh} 处**基线之外**的新增违规（基线内存量 {kept} 处），{tail}")
+        print("若这是改写既有违规行造成的误报，跑 --write-baseline 收紧基线。")
+        return 1
+
+    print(f"未发现新增违规（基线内存量 {kept} 处）。")
+    tightened = sum(1 for key, count in base.items() if counts.get(key, 0) < count)
+    if tightened:
+        print(f"其中 {tightened} 项已低于基线——修掉了就顺手跑 --write-baseline 收紧。")
+    return 0
+
+
 def main() -> int:
-    root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
+    parsed = parse_args(sys.argv[1:])
+    if parsed is None:
+        return 2
+    root, baseline_path, write_path = parsed
     backend_app = root / "backend" / "app"
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -1484,19 +1637,7 @@ def main() -> int:
     violations.extend(check_app_root_modules(root))
     violations.extend(check_css_layers(root))
 
-    for violation in violations:
-        print(violation)
-
-    if violations:
-        print(
-            f"\n共发现 {len(violations)} 处违规，违反《项目工程规范》§3.3 / §5.1、"
-            f"脚本编码约定、界面文案条款（解释性小字 / 实现细节 / 解释性长句）、"
-            f"CSS 分层纪律或 CHANGELOG「附：版本号约定」。"
-        )
-        return 1
-    print("分层纪律、测试位置、脚本编码、界面文案（解释性小字 / 实现细节 / 解释性长句）、"
-          "CSS 分层与版本号检查通过。")
-    return 0
+    return report(violations, root, baseline_path, write_path)
 
 
 if __name__ == "__main__":
