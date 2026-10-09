@@ -401,14 +401,12 @@ def _memory_on(services: Any) -> bool:
 #:
 #: 边界**只画在知识库上**：记忆（`recall` / `remember`）与笔记（`create_note` /
 #: `list_notes`）不属于这一侧——用户点名说过"这里的知识库不包括 agent 记忆"。
-#: 而"把笔记加入知识库"（`attach_note_to_kb`）与"把产物存进知识库"
-#: （`ingest_artifact`）**算**这一侧：它们动的是知识库。
+#: 而"把笔记加入知识库"（`attach_note_to_kb`）**算**这一侧：它动的是知识库。
 _KB_TOOLS = frozenset(
     {
         "search",
         "upload_document",
         "attach_note_to_kb",
-        "ingest_artifact",
     }
 )
 
@@ -1378,7 +1376,7 @@ def _run_conversation_file_tool(
     不是应该能用来交互吗"——查下来发现存储那一半早就对了（没挂工作区的会话，
     上传确实落进对象存储），**缺的是"让 agent 用得上它"**：``list_files`` / ``read_file``
     只看工作区与沙箱两个根，而对象存储里的那份文件哪个根都不是，模型既列不到、
-    也拿不到 ``artifact_id``，连 ``ingest_artifact`` 都用不上。
+    也拿不到它的 ``artifact_id``。
 
     两个动作都走 ``services.artifacts``（它自己按会话决定落点：工作区模式给相对路径、
     对象模式给产物 id），所以这里**同一个工具在两种会话下都成立**。
@@ -1790,8 +1788,6 @@ def _summary(name: str, payload: Any) -> str:
         size = payload.get("size_bytes")
         size_text = f"（{int(size) // 1024} KB）" if isinstance(size, int) else ""
         return f"已生成「{payload.get('name') or '文件'}」{size_text}"
-    if name == "ingest_artifact" and isinstance(payload, dict):
-        return f"已存进知识库：{payload.get('name') or ''}".rstrip("：")
     if name == "remember" and isinstance(payload, dict):
         # 那三段 note 是**给模型看的操作说明**，不是给用户看的结论——
         # 原来它整段出现在过程面板里，用户读到的是"一条只记一句可复用的事实"。

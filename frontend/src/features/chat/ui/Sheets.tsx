@@ -1,8 +1,8 @@
 /**
  * 对话页上的两个**抽屉**：引用原文（出处）与产物/文件。
  *
- * 两者原先都是就地弹窗（`ui/Dialogs.tsx` 里的 `SourceDialog` / `FilesDialog`，
- * 用的是居中 Dialog）。旧版是**从右侧滑出的抽屉**——点开它不该把注意力从对话里
+ * 两者原先都是就地弹窗（`SourceDialog` / `FilesDialog`，用的是居中 Dialog）。
+ * 旧版是**从右侧滑出的抽屉**——点开它不该把注意力从对话里
  * 拽走：抽屉贴边、对话还看得见，看完顺手就收回去。现在 `src/ui/sheet` 已就绪，
  * 这两个就换成它（同一个 Radix Dialog 原语，无障碍与焦点陷阱都是现成的）。
  *
@@ -36,9 +36,8 @@
  *   （旧版就是这个口径，`initialEntry` 那段注释写着用户报的那个 bug）。
  *
  * D20 加的那一件事（「项目文件取进本会话」）：项目档每一行多一个**取进本会话**——
- * 用户的原话是"项目文件也没法移到会话"。它与「加入知识库」是两个目的地：这一步只是
- * **复制一份到这条会话**（Agent 这一轮就在文件区里看得见它），项目里那份一个字节不动；
- * 进知识库那条在产物卡片上，走 `ingestArtifact`（见 `api/conversations.ts`）。
+ * 用户的原话是"项目文件也没法移到会话"。它只是**复制一份到这条会话**
+ * （Agent 这一轮就在文件区里看得见它），项目里那份一个字节不动。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'

@@ -14,7 +14,7 @@
  * 4. **svg 不走图片卡**：内联 SVG 与本站**同源**、是脚本执行面（存储型 XSS），
  *    本仓的安全口径排除它（见 `Deliverables.tsx` 里 `IMAGE_FORMATS` 那段）。
  *
- * `useChat` 换成桩（卡片只读会话 id / 开抽屉 / 开「存进知识库」弹窗 / 库名这四样），
+ * `useChat` 换成桩（卡片只读会话 id 与"开抽屉"这两样），
  * `getFileUrl` 换成 mock——真链接要后端的签名。
  */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -22,12 +22,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatArtifact } from '@/api/chat'
 
-/** `useChat` 的桩：`Deliverables` 读的就是这四样。 */
+/** `useChat` 的桩：`Deliverables` 读的就是这两样。 */
 const chatStub = {
   conversationId: 'c1',
   openFiles: vi.fn(),
-  openIngest: vi.fn(),
-  kbName: () => '',
 }
 
 vi.mock('@/features/chat/runtime/ChatProvider', async (importOriginal) => {
@@ -115,12 +113,11 @@ describe('产物卡片的图片档', () => {
     expect(thumbButton.className).toContain('cursor-zoom-in')
     expect(thumbButton.className).toContain('overflow-hidden')
 
-    // 下半那一行还在：名字 / 格式·大小·来源 + 三个动作
+    // 下半那一行还在：名字 / 格式·大小·来源 + 两个动作
     expect(img.closest('li')!.textContent).toContain('月度图表.png')
     expect(img.closest('li')!.textContent).toContain('PNG · 2.0 KB · 本会话')
     expect(screen.getByRole('button', { name: '预览' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下载' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '存进知识库' })).toBeInTheDocument()
     /*
       **下半行没有那一格 36px 图标盒**：缩略图本身就是类型说明，下面再摆一枚小图片图标是重复。
       两条一起钉——`li` 的直接子节点只剩"缩略图按钮 + 下半行"（图标盒是 `li > span`），
@@ -159,7 +156,6 @@ describe('产物卡片的图片档', () => {
     expect(row.textContent).toContain('DOCX · 2.0 KB · 本会话')
     expect(screen.getByRole('button', { name: '预览' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下载' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '存进知识库' })).toBeInTheDocument()
 
     expect(getFileUrl).not.toHaveBeenCalled()
   })
@@ -178,7 +174,6 @@ describe('产物卡片的图片档', () => {
     expect(box!.className).toContain('h-[36px]')
     expect(screen.getByRole('button', { name: '预览' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下载' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '存进知识库' })).toBeInTheDocument()
   })
 
   it('签名链接换不到：也是回退成行式卡片，不留一块空灰在那儿', async () => {

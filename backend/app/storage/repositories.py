@@ -23,14 +23,16 @@ ABC 与实现一对一，于是任何消费者都只能依赖"什么都有的那
 （拆到 `ConversationRepo`）、存储维护混在知识库节里（拆出 `MaintenanceRepo`）、
 阶段事件的读与清理分归两个域（读在文档、清理在维护）。
 
-**20 个协议、175 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
+**20 个协议、174 个方法，与 ``MetaStore`` 的抽象方法数一一对上**（多一个少一个都说明
 某处切漏了）。签名逐字取自 ABC。**注意**：这三个数字是**手工维护**的——原先有一份
 ``tests/unit/storage/test_repositories.py`` 机械核对它们，那份文件已不在仓库里，
 动接口时记得自己再过一遍。
 
 （2026-10-09 定时任务下线时就是按上面那句重数的：删 ``ScheduleRepo`` 前后各量一次，
 ``MetaStore.__abstractmethods__`` 183 → 175、本文件 21 → 20 个协议、``len(LOCAL_METHODS)``
-81 → 73。差的正是那 8 个方法、1 个协议。）
+81 → 73。差的正是那 8 个方法、1 个协议。同日再量一次：产物"显式入库"下线删掉
+``mark_artifact_ingested``，``__abstractmethods__`` 175 → 174、``len(LOCAL_METHODS)``
+73 → 72，协议数不变。）
 """
 
 from __future__ import annotations
@@ -566,18 +568,13 @@ class ConversationRepo(Protocol):
     def count_messages(self, conversation_id: str) -> int: ...
 
     # 产物留在会话域里，而不是另开一个 `ArtifactRepo`：它**只按会话**被读取
-    # （"这条会话产出了什么"），而它回答的另外半个问题——"进没进知识库"——
-    # 只在生成它的那一刻被写一次。拆出去只会让"删会话"要凑两个仓储。
+    # （"这条会话产出了什么"）。拆出去只会让"删会话"要凑两个仓储。
 
     def create_artifact(self, record: ConversationArtifactRecord) -> ConversationArtifactRecord: ...
 
     def get_artifact(self, artifact_id: str) -> ConversationArtifactRecord | None: ...
 
     def list_artifacts(self, conversation_id: str) -> list[ConversationArtifactRecord]: ...
-
-    def mark_artifact_ingested(
-        self, artifact_id: str, *, knowledge_base_id: str, document_id: str
-    ) -> None: ...
 
     def delete_chat_messages(self, message_ids: Sequence[str]) -> int: ...
 

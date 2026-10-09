@@ -36,10 +36,9 @@ from app.api.v1.schemas import (
     FileDownloadUrlOut,
     FileEntryOut,
     FileListingOut,
-    IngestArtifactIn,
 )
 from app.api.v1.workspaces import Device, device_from_headers
-from app.core.caller import WRITE, Caller
+from app.core.caller import Caller
 from app.core.config import Settings, get_settings
 from app.core.downloads import content_disposition, media_type_of
 from app.core.exceptions import NotFoundError, PayloadTooLargeError, UnauthorizedError
@@ -551,8 +550,7 @@ def import_project_file(
 ) -> FileEntryOut:
     """「取进本会话」（D20）：把**这条会话自己的工作区**里的一份文件复制进文件区。
 
-    与「加入知识库」是两个目的地，别混：这一步进的是**这条会话的文件区**
-    （别的会话看不到、删会话一起清），进知识库那条走 ``artifacts/…/ingest``。
+    它进的是**这条会话的文件区**（别的会话看不到、删会话一起清）。
     源路径只走工作区那道闸（绝对路径 / ``..`` / 符号链接出界都拒）；
     返回的是**会话文件区里的那一行**（key 是新的产物 id），界面据此说清"现在它在会话里"。
     """
@@ -651,31 +649,3 @@ def download_file_content(
             "Content-Length": str(len(content)),
         },
     )
-
-
-@router.post(
-    "/{conversation_id}/artifacts/{artifact_id}/ingest",
-    response_model=ConversationArtifactOut,
-    summary="把一份产物存进知识库（显式动作）",
-)
-def ingest_artifact(
-    conversation_id: str,
-    artifact_id: str,
-    payload: IngestArtifactIn,
-    services: Annotated[Services, Depends(get_services)],
-    caller: Annotated[Caller, Depends(require_write)],
-) -> ConversationArtifactOut:
-    """用户点了卡片上那个「存进知识库」时走的路径。
-
-    与模型那把 ``ingest_artifact`` 工具同一个服务方法——**两条入口，一个动作**：
-    分开实现的话，"点按钮入的库"与"跟它说一句入的库"迟早会有两套行为。
-    """
-    record = _get_artifact(services, caller, conversation_id, artifact_id)
-    # 入库要**写**权限，且落在这个库的范围内（与工具那条入口同一句判定）
-    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[payload.knowledge_base_id])
-    services.artifacts.ingest(
-        record,
-        knowledge_base_id=payload.knowledge_base_id,
-        uploaded_by=caller.user.id if caller.user is not None else None,
-    )
-    return ConversationArtifactOut.model_validate(services.artifacts.describe(record))

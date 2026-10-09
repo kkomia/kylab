@@ -1,25 +1,21 @@
-"""会话产物：落在哪、能不能读回来、什么时候进知识库（v0.26）。
+"""会话产物：落在哪、能不能读回来（v0.26）。
 
 这一组用例针对的是一次真实事故：用户让 Agent 导出一份 docx，那条会话没有工作区，
 而导出工具的实现是"直接当一次入库提交"（`knowledge_base_id` 必填）——
 模型只好替用户挑了一个语义上最顺手的库，把文件塞进了「笔记」。
-所以下面每一条都在钉住"落点由服务决定、入库由用户决定"这两件事。
+所以下面每一条都在钉住"落点由服务决定"这件事。
 """
 
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from app.core.exceptions import NotFoundError
 from app.core.services import Services
-from app.services.api_key import Caller
 from app.services.artifacts import (
     ARTIFACT_SCOPE_PROJECT,
-    ArtifactService,
     safe_filename,
     split_filename,
 )
@@ -31,64 +27,6 @@ def services() -> Services:
     from app.core.services import get_services
 
     return get_services()
-
-
-@pytest.fixture
-def admin() -> Caller:
-    return Caller(is_admin=True)
-
-
-KB_ID = "kb_资料库"
-
-
-class _FakeIngestGateway:
-    """假的"提交一份字节进知识库"那条接缝（真身是提供者客户端的网关）。
-
-    本机这一档知识库在别处，所以"库里有没有这份文档"由这一侧记着——入库是**一次
-    远端调用**，本机不落库、也不解析。去重同理：真实现由远端的 content_hash 兜。
-    """
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-        self.documents: dict[str, dict[str, str]] = {}
-        self._by_hash: dict[bytes, str] = {}
-
-    def submit(self, *, knowledge_base_id, filename, content, uploaded_by=None, **rest):  # type: ignore[no-untyped-def]
-        self.calls.append({"knowledge_base_id": knowledge_base_id, "filename": filename})
-        known = self._by_hash.get(content)
-        if known is not None:
-            document = self.documents[known]
-            return SimpleNamespace(document=SimpleNamespace(**document), is_duplicate=True)
-        document_id = f"doc_{uuid.uuid4().hex[:8]}"
-        self._by_hash[content] = document_id
-        self.documents[document_id] = {"id": document_id, "name": filename}
-        return SimpleNamespace(
-            document=SimpleNamespace(id=document_id, name=filename), is_duplicate=False
-        )
-
-
-class _FakeEnqueueGateway:
-    """假的"入队"那条接缝：本机是空操作（远端收到上传时自己已经排上了）。"""
-
-    def __init__(self) -> None:
-        self.enqueued: list[str] = []
-
-    def enqueue_ingest(self, document_id: str) -> None:
-        self.enqueued.append(document_id)
-
-
-@pytest.fixture
-def kb_gateway(services: Services) -> tuple[_FakeIngestGateway, _FakeEnqueueGateway]:
-    """把产物那两条接缝换成假网关，返回它们。
-
-    `ArtifactService` 持有的是构造时注入的那对网关（组合根给的），所以这里换的是
-    那个对象上的两个属性——与真装配同一个形状。
-    """
-    ingest = _FakeIngestGateway()
-    enqueue = _FakeEnqueueGateway()
-    services.artifacts._ingest = ingest  # type: ignore[attr-defined]
-    services.artifacts._documents = enqueue  # type: ignore[attr-defined]
-    return ingest, enqueue
 
 
 @pytest.fixture
@@ -213,71 +151,22 @@ def test_missing_workspace_directory_is_an_error_not_a_silent_redirect(
         )
 
 
-# ------------------------------------------------------------------ 入库是显式动作
+# ------------------------------------------------------------------ 导出就是落盘
 
 
 def test_saving_does_not_put_anything_in_a_knowledge_base(
-    services: Services, conversation: str, kb_gateway
+    services: Services, conversation: str
 ) -> None:
-    """**这是这次改动的核心断言**：导出之后，知识库那边一次调用都没发生。"""
-    ingest, _ = kb_gateway
+    """**这是这次改动的核心断言**：导出只是把文件落下来，不碰知识库。
 
+    这一层已经不持有入库那条接缝（构造时就没有），所以"落盘顺手入一次库"在结构上
+    已经不可能；这里钉的是记录本身：那两个历史字段一律是空的。
+    """
     artifact = services.artifacts.save(
         conversation_id=conversation, filename="短诗.docx", content=b"x", kind="docx"
     )
 
     assert artifact.knowledge_base_id is None and artifact.document_id is None
-    assert ingest.calls == []
-
-
-def test_ingest_is_the_explicit_step_that_files_it(
-    services: Services, conversation: str, kb_gateway, admin: Caller
-) -> None:
-    ingest, _ = kb_gateway
-    artifact = services.artifacts.save(
-        conversation_id=conversation, filename="短诗.docx", content=b"poem", kind="docx"
-    )
-
-    document_id, is_duplicate = services.artifacts.ingest(
-        artifact, knowledge_base_id=KB_ID, uploaded_by=None
-    )
-
-    assert not is_duplicate
-    # 提交**原样**打到远端那条接缝上（本机不解释这些参数）
-    assert ingest.calls == [{"knowledge_base_id": KB_ID, "filename": "短诗.docx"}]
-    # 记录被就地更新，界面据此把卡片换成"已存进知识库"
-    assert artifact.knowledge_base_id == KB_ID and artifact.document_id == document_id
-    stored = services.artifacts.get(artifact.id)
-    assert stored.knowledge_base_id == KB_ID
-
-
-def test_ingest_copies_it_does_not_move(
-    services: Services, workspace_conversation: tuple[str, Path], kb_gateway
-) -> None:
-    """入库是**复制**：产物还在原来那个目录里。
-
-    搬家的话，"我刚导出的文件去哪了"会变成一个没人回答得了的新问题。
-    """
-    conversation_id, root = workspace_conversation
-    artifact = services.artifacts.save(
-        conversation_id=conversation_id, filename="方案.docx", content=b"body", kind="docx"
-    )
-    services.artifacts.ingest(artifact, knowledge_base_id=KB_ID)
-
-    assert (root / "方案.docx").read_bytes() == b"body"
-
-
-def test_ingesting_twice_reuses_the_document(
-    services: Services, conversation: str, kb_gateway
-) -> None:
-    """同一份内容重复入库由内容 hash 去重——不会在库里出现两份。"""
-    artifact = services.artifacts.save(
-        conversation_id=conversation, filename="a.docx", content=b"same", kind="docx"
-    )
-    first, _ = services.artifacts.ingest(artifact, knowledge_base_id=KB_ID)
-    second, is_duplicate = services.artifacts.ingest(artifact, knowledge_base_id=KB_ID)
-
-    assert first == second and is_duplicate
 
 
 # ------------------------------------------------------------------ 清理
@@ -341,8 +230,6 @@ def test_describe_is_the_same_shape_for_sse_and_rest(
     assert described["artifact_id"] == artifact.id
     assert described["where"] == "工作区「我的项目」"
     assert described["path"] == artifact.location
-    # 没入库就不带那两个键：界面据此决定给不给「存进知识库」
-    assert "knowledge_base_id" not in described and "document_id" not in described
 
 
 def test_object_backed_artifact_hides_the_key(
@@ -353,22 +240,6 @@ def test_object_backed_artifact_hides_the_key(
         conversation_id=conversation, filename="a.docx", content=b"a", kind="docx"
     )
     assert "path" not in services.artifacts.describe(artifact)
-
-
-def test_unwired_ingest_says_so_instead_of_silently_doing_nothing(conversation: str) -> None:
-    """没接摄入链路时**明确报错**：静默返回"已入库"会让模型告诉用户一件没发生的事。
-
-    不接摄入链路是合法部署（单测、只管产出的脚本），所以它不是断言失败而是 RuntimeError。
-    """
-    from app.core.storage import get_stores
-    from app.storage.base import ConversationArtifactRecord
-
-    service = ArtifactService(get_stores())  # 刻意不传 ingest / documents
-    record = ConversationArtifactRecord(
-        id="art_x", conversation_id=conversation, name="a.docx", format="docx"
-    )
-    with pytest.raises(RuntimeError, match="摄入链路"):
-        service.ingest(record, knowledge_base_id=f"kb_{uuid.uuid4().hex[:6]}")
 
 
 # ------------------------------------------------------------------ 文件区（v0.26）

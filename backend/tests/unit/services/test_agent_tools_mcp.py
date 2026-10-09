@@ -165,7 +165,6 @@ def test_knowledge_tools_disappear_when_the_switch_is_off() -> None:
         "add_data_source",
         "create_knowledge_base",
         "attach_note_to_kb",
-        "ingest_artifact",
     ):
         assert gone not in names, f"{gone} 不该在关掉知识库时出现"
     # 记忆与笔记照旧；联网与技能也不受影响

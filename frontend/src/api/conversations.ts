@@ -217,17 +217,14 @@ export interface ConversationArtifact {
   where: string
   /** 工作区那份的绝对路径；对象存储那份没有。 */
   path: string | null
-  /** 进了哪个知识库；`null` = 没进，界面据此决定要不要给「存进知识库」。 */
-  knowledge_base_id: string | null
-  document_id: string | null
   created_at: string | null
 }
 
 /**
  * 这条会话产出了哪些文件——**卡片状态的权威来源**。
  *
- * 步骤快照里那份是流式当时的样子（"刚导出"），这份是**现在的样子**（可能已经入库）。
- * 回看历史会话时以这份为准，否则刷新一下，卡片上的"已存进知识库"就退回去了。
+ * 步骤快照里那份是流式当时的样子（"刚导出"），这份是**现在的样子**
+ * （可能已经被重新生成回退掉、也可能换了落点）。回看历史会话时以这份为准。
  */
 export function listArtifacts(conversationId: string): Promise<{ items: ConversationArtifact[] }> {
   return requestLocal(`/conversations/${conversationId}/artifacts`)
@@ -374,9 +371,8 @@ export async function downloadFile(conversationId: string, key: string): Promise
 /**
  * 「取进本会话」（D20）：把**项目档**里的一份文件复制进这条会话的文件区。
  *
- * **与「加入知识库」是两个目的地**（`ingestArtifact`）：这一步进的是**这条会话的
- * 文件区**——Agent 这一轮就能在 `list_conversation_files` 里看到它，别的会话看不到，
- * 删这条会话时一起清；进知识库那条是把它变成长期资料。
+ * 这一步进的是**这条会话的文件区**——Agent 这一轮就能在 `list_conversation_files`
+ * 里看到它，别的会话看不到，删这条会话时一起清。
  *
  * `path` 就是项目档那一行给的 key（工作区里的相对路径）。服务端只按这条会话自己的
  * 工作区解析它（`..` / 绝对路径 / 符号链接出界都拒），落点与名字也由服务端定。
@@ -389,22 +385,5 @@ export function importWorkspaceFile(
   return requestLocal<ConversationFile>(`/conversations/${conversationId}/files/import`, {
     method: 'POST',
     body: JSON.stringify({ path }),
-  })
-}
-
-/**
- * 把一份产物存进知识库——**显式动作**，用户点了那个按钮才会发生。
- *
- * `knowledgeBaseId` 必须由调用方给：服务端不会替他挑一个，
- * 那正是这一版要修掉的行为。
- */
-export function ingestArtifact(
-  conversationId: string,
-  artifactId: string,
-  knowledgeBaseId: string,
-): Promise<ConversationArtifact> {
-  return requestLocal(`/conversations/${conversationId}/artifacts/${artifactId}/ingest`, {
-    method: 'POST',
-    body: JSON.stringify({ knowledge_base_id: knowledgeBaseId }),
   })
 }

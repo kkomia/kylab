@@ -28,7 +28,7 @@ r"""**知识库提供者客户端**（M3 阶段 2）：本机服务层打 NAS �
    ——那是**前端**的节奏，这一侧只负责"缓存 30s + 被问到才探"。
 2. **两种错误类型是有意的**（方案 §5.1）：
    - 入库那一面（:meth:`submit`）抛 ``KnowledgeBaseUnavailable`` —— 它的调用方是
-     **HTTP 端点**（笔记「加入知识库」、产物「存进知识库」），既有映射把它折成
+     **HTTP 端点**（笔记「加入知识库」），既有映射把它折成
      **503 + 那句原因**（``core/exceptions.py``）；抛 ``RuntimeError`` 一族会变成
      500"内部错误"，把"这个部署现在没这个能力"藏起来（R10）；
    - 检索那一面（:meth:`retrieve_sources` / :meth:`document_status`）抛
@@ -53,7 +53,6 @@ r"""**知识库提供者客户端**（M3 阶段 2）：本机服务层打 NAS �
 | --- | --- |
 | ``ChatService(knowledge=…)`` | **本类本身**（检索那一半）|
 | ``NotesService(ingest=…, documents=…)`` | :meth:`ingest_gateway` / :meth:`enqueue_gateway` |
-| ``ArtifactService(ingest=…, documents=…)`` | 同上（**同一对对象**，不另开一条路）|
 | ``Services.ingest`` / ``Services.documents`` | 同上（`ingest_file` 与文件入库那两个端点走它）|
 
 那两个网关的窄视图就是下面两个 Protocol（:class:`IngestGateway` / :class:`EnqueueGateway`）

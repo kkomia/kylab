@@ -256,8 +256,7 @@ export interface paths {
          * 把项目目录里的一份文件取进本会话
          * @description 「取进本会话」（D20）：把**这条会话自己的工作区**里的一份文件复制进文件区。
          *
-         *     与「加入知识库」是两个目的地，别混：这一步进的是**这条会话的文件区**
-         *     （别的会话看不到、删会话一起清），进知识库那条走 ``artifacts/…/ingest``。
+         *     它进的是**这条会话的文件区**（别的会话看不到、删会话一起清）。
          *     源路径只走工作区那道闸（绝对路径 / ``..`` / 符号链接出界都拒）；
          *     返回的是**会话文件区里的那一行**（key 是新的产物 id），界面据此说清"现在它在会话里"。
          */
@@ -305,29 +304,6 @@ export interface paths {
         get: operations["download_file_content_api_v1_conversations__conversation_id__files_content_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/conversations/{conversation_id}/artifacts/{artifact_id}/ingest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 把一份产物存进知识库（显式动作）
-         * @description 用户点了卡片上那个「存进知识库」时走的路径。
-         *
-         *     与模型那把 ``ingest_artifact`` 工具同一个服务方法——**两条入口，一个动作**：
-         *     分开实现的话，"点按钮入的库"与"跟它说一句入的库"迟早会有两套行为。
-         */
-        post: operations["ingest_artifact_api_v1_conversations__conversation_id__artifacts__artifact_id__ingest_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3167,10 +3143,6 @@ export interface components {
             where: string;
             /** Path */
             path?: string | null;
-            /** Knowledge Base Id */
-            knowledge_base_id?: string | null;
-            /** Document Id */
-            document_id?: string | null;
             /** Created At */
             created_at?: string | null;
         };
@@ -3660,14 +3632,6 @@ export interface components {
              * @default false
              */
             dry_run: boolean;
-        };
-        /**
-         * IngestArtifactIn
-         * @description 把一份产物存进知识库。**库必须由调用方点明**——服务端不替他挑。
-         */
-        IngestArtifactIn: {
-            /** Knowledge Base Id */
-            knowledge_base_id: string;
         };
         /**
          * KbCachePurgeOut
@@ -6730,42 +6694,6 @@ export interface operations {
                 };
                 content: {
                     "application/octet-stream": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    ingest_artifact_api_v1_conversations__conversation_id__artifacts__artifact_id__ingest_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                conversation_id: string;
-                artifact_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["IngestArtifactIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConversationArtifactOut"];
                 };
             };
             /** @description Validation Error */

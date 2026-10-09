@@ -1,4 +1,4 @@
-"""会话的文件区：Agent 做出来的文件**落在哪**、怎么浏览、什么时候**进知识库**（v0.26）。
+"""会话的文件区：Agent 做出来的文件**落在哪**、怎么浏览（v0.26）。
 
 "文件区"是这一层唯一的抽象——**每条会话恰好有一个**。浏览、上传、预览、下载四个动作
 都走这一份判断，所以界面上的文件面板（文件抽屉）不需要知道自己在看的是哪一种。
@@ -14,7 +14,6 @@
   它是**这次对话的输入**，不是用户的项目文件；按会话存才分得开。
 - **Agent 产物**（导出的 docx 等）→ 挂了工作区就落**用户的真实目录**，没挂就落对象存储。
   那是"做出来的成果"，落进他的项目他打开就看得见。
-- **显式入库** → 知识库（复制一份，见 :meth:`ArtifactService.ingest`）：用户点名要的才做。
 
 于是"文件区"有**两个视图**（``list_files(scope=…)``）：
 
@@ -242,17 +241,10 @@ class FileListing:
 
 
 class ArtifactService:
-    """产物的落盘、读取、入库与清理。
+    """产物的落盘、读取与清理。"""
 
-    ``ingest`` / ``documents`` 是**可选能力**：不接摄入流水线时，落盘、下载、清理
-    照常工作，只有"存进知识库"那一个动作会明确报错。这与笔记那边同一套口径——
-    单测与不配模型的部署不该因为"某个旁路能力没接"就整个用不了。
-    """
-
-    def __init__(self, stores: StoreBundle, *, ingest=None, documents=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, stores: StoreBundle) -> None:
         self._stores = stores
-        self._ingest = ingest
-        self._documents = documents
 
     # ------------------------------------------------------------------ 落点
 
@@ -278,7 +270,7 @@ class ArtifactService:
             raise InvalidRequestError(
                 f"这个会话挂在工作区「{workspace.name}」上，但它的目录不在了"
                 f"（{workspace.root_path}）。产物没有落盘——请在工作区设置里检查这个路径，"
-                "或者把这次要的东西改成存进知识库"
+                "修好之后再导出"
             )
         return ArtifactSpot(
             conversation_id=conversation_id,
@@ -655,10 +647,6 @@ class ArtifactService:
             # 只有工作区那份的"路径"对用户有意义（他要去那儿拿）。
             # 对象存储的 Key 对他没有用处，露出来只会让人以为那是个能点的地址。
             payload["path"] = record.location
-        if record.knowledge_base_id:
-            payload["knowledge_base_id"] = record.knowledge_base_id
-        if record.document_id:
-            payload["document_id"] = record.document_id
         return payload
 
     def content(self, record: ConversationArtifactRecord) -> bytes:
@@ -673,42 +661,6 @@ class ArtifactService:
                 raise NotFoundError(f"文件不在了：{record.location}（可能已被移动或删除）")
             return path.read_bytes()
         return self._stores.objects.read(record.location)
-
-    # ------------------------------------------------------------------ 入库（显式）
-
-    def ingest(
-        self,
-        record: ConversationArtifactRecord,
-        *,
-        knowledge_base_id: str,
-        uploaded_by: str | None = None,
-    ) -> tuple[str, bool]:
-        """把这份产物**复制一份**进知识库，返回 ``(文档 id, 是不是库里的已有内容)``。
-
-        **复制，不是搬家**：产物还在原处（工作区里那份仍在工作区），知识库里多一份
-        可检索的。用户要的这两件事本来就不冲突，搬家反而会让"我刚导出的文件去哪了"
-        变成一个新问题。
-
-        走的是与界面上传**同一条链路**（``IngestService.submit``）：不另开一条
-        "把产物写进库"的通道，否则库里会出现两种来源、两种格式。
-        """
-        if self._ingest is None or self._documents is None:
-            raise RuntimeError("这条部署没有接上摄入链路，产物无法入库")
-        content = self.content(record)
-        outcome = self._ingest.submit(
-            knowledge_base_id=knowledge_base_id,
-            filename=record.name,
-            content=content,
-            uploaded_by=uploaded_by,
-        )
-        if not outcome.is_duplicate:
-            self._documents.enqueue_ingest(outcome.document.id)
-        self._stores.meta.mark_artifact_ingested(
-            record.id, knowledge_base_id=knowledge_base_id, document_id=outcome.document.id
-        )
-        record.knowledge_base_id = knowledge_base_id
-        record.document_id = outcome.document.id
-        return outcome.document.id, outcome.is_duplicate
 
     # ------------------------------------------------------------------ 清理
 

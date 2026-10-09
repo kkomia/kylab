@@ -735,19 +735,6 @@ class SqliteMetaStore:
             ).fetchall()
         return [self._artifact_from_row(row) for row in rows]
 
-    def mark_artifact_ingested(
-        self, artifact_id: str, *, knowledge_base_id: str, document_id: str
-    ) -> None:
-        """记下"这份产物进了哪个库"。**只写这两个字段**，不动 ``location``：
-        入库是**复制**一份进知识库，产物本身还在原处。
-        """
-        with self._db.session() as conn:
-            conn.execute(
-                "UPDATE conversation_artifacts"
-                " SET knowledge_base_id = ?, document_id = ? WHERE id = ?",
-                (knowledge_base_id, document_id, artifact_id),
-            )
-
     # ------------------------------------------------------------------ 工作区
 
     @staticmethod

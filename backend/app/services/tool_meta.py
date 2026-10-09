@@ -122,7 +122,6 @@ PERIPHERAL_TOOLS: frozenset[str] = frozenset(
         # 知识库那几个（本机只做"检索"与"把东西放进去"，管理面在别处）
         "upload_document",
         "attach_note_to_kb",
-        "ingest_artifact",
         "ingest_file",
     }
 )
@@ -270,8 +269,6 @@ TOOL_META: dict[str, ToolMeta] = {
     # 交付沙箱里那份文件（v0.56）：它读沙箱、写的仍是**这一轮的产物区**——
     # 与上面三个同一档。不改用户的东西，所以既不必并发也不必问
     "export_file": ToolMeta(side_effect_scope="session", risk_level="low"),
-    # 把它自己产出的东西收进库里：动的是长期数据
-    "ingest_artifact": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     # 联网：只读且**最该并发**（一批抓三页是常态）
     "web_search": ToolMeta(
         read_only=True,
@@ -319,8 +316,8 @@ TOOL_META: dict[str, ToolMeta] = {
     # 列/读文件区是**只读**：它与 read_file 同一档（读一眼，最该和同批里别的读并发）
     "list_conversation_files": _READ,
     "read_conversation_file": _READ,
-    # 把会话里的一份文件加进知识库：写的是**用户的长期资产**，与 upload_document /
-    # ingest_artifact 同一档。**并且要问一次**（`needs_approval=True`）——
+    # 把会话里的一份文件加进知识库：写的是**用户的长期资产**，与 upload_document 同一档。
+    # **并且要问一次**（`needs_approval=True`）——
     # 用户点名的 2026-09-29 走查："在用户没有明确把数据上传到知识库的时候不得往知识库里面塞东西" ✗。
     # 判据按"宁可多问一次"落：**默认拦**，用户确需时在确认条上点一下就是了；
     # 免问的口子仍由权限档位那条既有策略决定（`tool_loop._resolve_permission`）。

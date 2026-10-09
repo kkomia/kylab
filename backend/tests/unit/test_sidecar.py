@@ -1430,7 +1430,7 @@ def test_sidecar_exposes_the_export_family_but_not_the_server_only_ones() -> Non
     assert {"export_document", "export_table", "export_deck"} <= sidecar.SIDECAR_TOOL_NAMES
     assert {"create_note", "attach_note_to_kb"} <= sidecar.SIDECAR_TOOL_NAMES
     assert {"recall", "remember", "forget"} <= sidecar.SIDECAR_TOOL_NAMES
-    assert not {"ingest_artifact", "read_memory", "write_memory"} & sidecar.SIDECAR_TOOL_NAMES
+    assert not {"read_memory", "write_memory"} & sidecar.SIDECAR_TOOL_NAMES
 
 
 def test_note_lands_in_the_local_db(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

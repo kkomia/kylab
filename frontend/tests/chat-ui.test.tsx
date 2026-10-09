@@ -80,7 +80,6 @@ vi.mock('@/api/conversations', async (importOriginal) => {
     })),
     createConversation: vi.fn(),
     rewindConversation: vi.fn(async () => undefined),
-    ingestArtifact: vi.fn(),
     getFileUrl: vi.fn(async () => ({ url: '', expires_at: 0, name: '' })),
     downloadFile: vi.fn(async () => undefined),
   }
@@ -1938,65 +1937,8 @@ describe('出处列表与交付物（§6 的两条）', () => {
     expect(drawer).toHaveTextContent('第一章 › 第 1 页')
   })
 
-  it('交付物卡片：点「存进知识库」走显式那一步，入库后卡片改成已存', async () => {
-    const artifact = {
-      artifact_id: 'art1',
-      name: '季度报告.docx',
-      size_bytes: 2048,
-      format: 'docx',
-      storage: 'workspace',
-      where: '工作区「我的项目」',
-      path: '/data/quarter.docx',
-      knowledge_base_id: '',
-      document_id: '',
-    }
-    vi.mocked(getConversation).mockResolvedValue(
-      detail([
-        stored('user', '导出一份'),
-        stored('assistant', '已导出。', {
-          steps: [
-            {
-              phase: 'tool',
-              label: '导出文档',
-              detail: '已导出',
-              status: 'done',
-              tool: 'export_document',
-              kind: 'write',
-              artifacts: [artifact],
-            },
-          ],
-        }),
-      ]),
-    )
-    const { ingestArtifact } = await import('@/api/conversations')
-    vi.mocked(ingestArtifact).mockResolvedValue({
-      ...artifact,
-      knowledge_base_id: 'kb1',
-      document_id: 'doc1',
-    } as never)
-
-    renderPage()
-
-    // 交付物是**这个回合的结果**：摆在正文之后，带名字、体积与落点
-    expect(await screen.findByText('季度报告.docx')).toBeInTheDocument()
-    expect(screen.getByText(/2.0 KB · 工作区/)).toBeInTheDocument()
-
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: '存进知识库' }))
-    const dialog = await screen.findByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: '我的资料' }))
-    await user.click(within(dialog).getByRole('button', { name: '存进这个库' }))
-
-    // **不让服务端替他挑库**：库里那个 id 是用户点出来的那一个
-    await waitFor(() => expect(ingestArtifact).toHaveBeenCalledWith('c1', 'art1', 'kb1'))
-    // 卡片上那句话与刚弹的提示是同一句（所以这里可能有两条）
-    await waitFor(() =>
-      expect(screen.getAllByText('已存进知识库「我的资料」').length).toBeGreaterThan(0),
-    )
-  })
-
   it('产物卡片的「下载」直接换签名链接下载（D18，2026-09-28 走查）', async () => {
-    // 病灶：卡片上原先只有「预览」与「存进知识库」，想留一份到本地得先开文件抽屉再找同一条；
+    // 病灶：卡片上原先只有「预览」，想留一份到本地得先开文件抽屉再找同一条；
     // 而签名链接那套（`getFileUrl` → 临时 `<a>`）早就在 `api/conversations.ts` 里。
     const { downloadFile } = await import('@/api/conversations')
     const artifact = {
@@ -2007,8 +1949,6 @@ describe('出处列表与交付物（§6 的两条）', () => {
       storage: 'object',
       where: '本会话',
       path: '',
-      knowledge_base_id: '',
-      document_id: '',
     }
     vi.mocked(getConversation).mockResolvedValue(
       detail([
@@ -2051,8 +1991,6 @@ describe('出处列表与交付物（§6 的两条）', () => {
       storage: 'object',
       where: '本会话',
       path: '',
-      knowledge_base_id: '',
-      document_id: '',
     }
     vi.mocked(getConversation).mockResolvedValue(
       detail([

@@ -1064,8 +1064,8 @@ describe('一轮产出的文件（v0.26）', () => {
         steps: [
           step('tool', { phase: 'tool', label: '导出幻灯', artifacts: [withArtifact('art_1')] }),
           step('tool', { phase: 'tool', label: '记住', artifacts: [] }),
-          // 同一个文件在"入库"那一步又被提到一次：只该有一张卡片
-          step('tool', { phase: 'tool', label: '存进知识库', artifacts: [withArtifact('art_1')] }),
+          // 同一个文件在"交付"那一步又被提到一次：只该有一张卡片
+          step('tool', { phase: 'tool', label: '交付文件', artifacts: [withArtifact('art_1')] }),
           step('tool', { phase: 'tool', label: '导出表格', artifacts: [withArtifact('art_2')] }),
         ],
       }),

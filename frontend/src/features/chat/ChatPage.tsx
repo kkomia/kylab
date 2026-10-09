@@ -14,8 +14,7 @@
  *   └ Composer   输入卡片（附件/技能/模式/执行策略/知识库/模型/仪表/发送）
  * ```
  *
- * 两个浮层挂在页面这一层：`ui/Sheets.tsx` 的两个抽屉（引用原文、产物与文件）与
- * `ui/Dialogs.tsx` 的「存进知识库」弹窗（后者故意还是弹窗，理由见那份文件）。
+ * 两个浮层挂在页面这一层：`ui/Sheets.tsx` 的两个抽屉（引用原文、产物与文件）。
  *
  * **右端那一列是常驻的面板**（`panel/SidePanel.tsx`：文件树，下一轮接网页）：
  * 它不是浮层，而是与"左列三段"并排的第二列——详细分工见 `panel/panelStore.ts` 的头注。
@@ -34,7 +33,6 @@ import { SidePanel } from './panel/SidePanel'
 import { usePanelStore } from './panel/panelStore'
 import { ChatThread } from './ui/ChatThread'
 import { Composer } from './ui/Composer'
-import { IngestDialog } from './ui/Dialogs'
 import { SourceSheet } from './ui/Sheets'
 
 /**
@@ -144,10 +142,9 @@ export function ChatPage() {
           <PanelSplitter />
           <SidePanel />
         </ChatPageRow>
-        {/* 引用原文是抽屉（贴边滑出，对话还看得见）；「存进知识库」仍是弹窗（要拦一下）。
+        {/* 引用原文是抽屉（贴边滑出，对话还看得见）。
             挂在这儿而不是页内：抽屉是**页面级浮层**，不该跟着输入卡片一起重挂 */}
         <SourceSheet />
-        <IngestDialog />
         {/*
           **这一页不许自己挂 `<Toaster/>`**（D32，2026-09-28 走查）。
 

@@ -143,7 +143,9 @@ def test_store_covers_exactly_the_local_method_set() -> None:
     )
     # 2026-10-09：定时任务模块整块删掉，``LOCAL_METHODS`` 从 81 降到 73
     # ——那 8 个 schedule 方法随 ``ScheduleRepo`` 协议一起删了（表还留着，见 `test_schema`）。
-    assert len(LOCAL_METHODS) == 73
+    # 2026-10-09（同日后一笔）：产物的"显式入库"下线，``mark_artifact_ingested``
+    # 随 ``ArtifactService.ingest`` 一起删，于是又少一个（73 → 72）。
+    assert len(LOCAL_METHODS) == 72
     assert len(LOCAL_LEDGER_METHODS) == 8
     assert len(LOCAL_CACHE_METHODS) == 6
     assert len(LOCAL_SNAPSHOT_METHODS) == 4
@@ -667,13 +669,6 @@ def test_artifact_lifecycle(store: SqliteMetaStore) -> None:
     assert loaded.size_bytes == 2048
     assert [item.id for item in store.list_artifacts("c1")] == ["art1"]
     assert store.get_artifact("不存在") is None
-
-    store.mark_artifact_ingested("art1", knowledge_base_id="kb1", document_id="doc1")
-    ingested = store.get_artifact("art1")
-    assert ingested is not None
-    assert ingested.knowledge_base_id == "kb1" and ingested.document_id == "doc1"
-    # **入库是复制**：产物自己的落点不动
-    assert ingested.location == "C:/项目/报告.docx"
 
 
 # ------------------------------------------------------------------ 笔记 / 文件夹

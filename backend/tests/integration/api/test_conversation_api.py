@@ -511,7 +511,7 @@ def _artifact(services, conversation_id: str, *, name: str = "短诗.docx"):  # 
 
 
 def test_listing_artifacts_says_where_the_file_is(client: TestClient) -> None:
-    """卡片的状态以这条接口为准：流式当时那份快照说不清"它后来进没进库"。"""
+    """卡片的状态以这条接口为准：流式当时那份快照说不清"它现在在哪"。"""
     services = get_services()
     conversation = client.post("/api/v1/conversations", json={"title": "产物"}).json()
     record = _artifact(services, conversation["id"])
@@ -520,8 +520,6 @@ def test_listing_artifacts_says_where_the_file_is(client: TestClient) -> None:
 
     assert [item["artifact_id"] for item in body["items"]] == [record.id]
     assert body["items"][0]["where"] == "本会话"
-    # 没入库就不给 knowledge_base_id——界面据此决定给不给「存进知识库」
-    assert body["items"][0]["knowledge_base_id"] is None
 
 
 def test_artifact_of_another_conversation_is_not_reachable(client: TestClient) -> None:
@@ -569,16 +567,6 @@ def test_tampered_signature_is_rejected(client: TestClient) -> None:
     response = client.get(url.split("&signature=")[0] + "&signature=deadbeef")
 
     assert response.status_code == 401
-
-
-# **摘掉一条**（2026-10-05）：``test_ingest_endpoint_is_the_click_that_files_it``
-# （原判据：`POST /conversations/{id}/artifacts/{aid}/ingest` 把会话产物送进知识库，
-# 库由请求体点明、`services.documents.get(...)` 读得回那份文档）。
-# **本机档无法验证**：它落的是知识库那几张表（文档 / 分块在中，那些表都不在本机库里，
-# `services.documents` 在本机档整体抛 `KnowledgeBaseUnavailable`）。而 KB 那一族只在
-# 服务器档，会话面只在**本机**档——两者的交集是空的，所以这条断言没有一个装机形态
-# 能承接。承接者：`tests/unit/services/test_artifacts.py`（产物那一层）与
-# `tests/integration/api/test_rest_api.py`（KB 入库那条链）。
 
 
 def test_deleting_a_conversation_clears_its_temporary_files(client: TestClient) -> None:

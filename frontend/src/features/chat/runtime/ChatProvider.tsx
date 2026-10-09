@@ -43,7 +43,6 @@ import {
 import {
   createConversation,
   getConversation,
-  ingestArtifact,
   listArtifacts,
   rewindConversation,
   type ConversationArtifact,
@@ -410,15 +409,6 @@ export interface ChatApi {
   openFiles: (seed?: { key: string; name: string; kind: string } | null) => void
   closeFiles: () => void
 
-  ingestTarget: ChatArtifact | null
-  ingestKbId: string
-  setIngestKbId: (value: string) => void
-  openIngest: (file: ChatArtifact) => void
-  closeIngest: () => void
-  confirmIngest: () => void
-  ingesting: boolean
-  kbName: (kbId?: string) => string
-
   // —— 拖拽的两种落法
   dropKind: 'attach' | 'reference' | null
   setDropKind: (value: 'attach' | 'reference' | null) => void
@@ -525,8 +515,6 @@ function fromStored(item: ConversationArtifact): Partial<ChatArtifact> & { artif
     storage: item.storage,
     where: item.where,
     ...(item.path ? { path: item.path } : {}),
-    ...(item.knowledge_base_id ? { knowledge_base_id: item.knowledge_base_id } : {}),
-    ...(item.document_id ? { document_id: item.document_id } : {}),
   }
 }
 
@@ -826,16 +814,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    */
   const [traceOpenIds, setTraceOpenIds] = useState<Record<string, TraceOpen>>({})
 
-  // 出处原文弹窗 / 文件区抽屉 / 存进知识库弹窗 / 拖拽落法
+  // 出处原文弹窗 / 文件区抽屉 / 拖拽落法
   const [sourceOpen, setSourceOpen] = useState(false)
   const [activeSource, setActiveSource] = useState<ChatSource | null>(null)
   const [filesOpen, setFilesOpen] = useState(false)
   const [filesSeed, setFilesSeed] = useState<{ key: string; name: string; kind: string } | null>(
     null,
   )
-  const [ingestTarget, setIngestTarget] = useState<ChatArtifact | null>(null)
-  const [ingestKbId, setIngestKbId] = useState('')
-  const [ingesting, setIngesting] = useState(false)
   const [dropKind, setDropKind] = useState<'attach' | 'reference' | null>(null)
 
   // —— 本机偏好（与旧前端同一批键） ——
@@ -2054,8 +2039,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     writeStored(KB_SWITCH_KEY, on ? '1' : '0')
   }, [])
 
-  const kbsRefetch = kbsQuery.refetch
-
   // —— `@` 提及：候选来自知识库 + 这条会话的文件区 + 技能 + 会话列表
 
   const mentionItems = useMemo<MentionItem[]>(
@@ -2265,53 +2248,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [suggestedQuery])
 
   // ---------------------------------------------------------------- 交付物
-
-  const kbName = useCallback(
-    (kbId?: string) => kbs.find((item) => item.id === kbId)?.name ?? '',
-    [kbs],
-  )
-
-  const openIngest = useCallback(
-    (file: ChatArtifact) => {
-      setIngestTarget(file)
-      // 预选不等于替他决定：弹窗在那儿、库名看得见，他点了确认才算数
-      setIngestKbId(file.knowledge_base_id || effectiveKbIds[0] || kbs[0]?.id || '')
-      void kbsRefetch()
-    },
-    [effectiveKbIds, kbs, kbsRefetch],
-  )
-
-  const confirmIngest = useCallback(async () => {
-    const file = ingestTarget
-    const id = conversationId
-    if (!file || !id || !ingestKbId) return
-    setIngesting(true)
-    try {
-      const updated = await ingestArtifact(id, file.artifact_id, ingestKbId)
-      const patch = fromStored(updated)
-      setMessages((prev) =>
-        prev.map((message) => ({
-          ...message,
-          steps: message.steps.map((step) =>
-            step.artifacts
-              ? {
-                  ...step,
-                  artifacts: step.artifacts.map((item) =>
-                    item.artifact_id === patch.artifact_id ? { ...item, ...patch } : item,
-                  ),
-                }
-              : step,
-          ),
-        })),
-      )
-      setIngestTarget(null)
-      notifySuccess(`已存进知识库「${kbName(updated.knowledge_base_id ?? '')}」`)
-    } catch (cause) {
-      notifyError(cause)
-    } finally {
-      setIngesting(false)
-    }
-  }, [conversationId, ingestKbId, ingestTarget, kbName])
 
   /**
    * `art_*` → 文件名（D19）：**身份要稳**（D32 拆分那一批）。
@@ -2653,14 +2589,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setFilesOpen(true)
     },
     closeFiles: () => setFilesOpen(false),
-    ingestTarget,
-    ingestKbId,
-    setIngestKbId,
-    openIngest,
-    closeIngest: () => setIngestTarget(null),
-    confirmIngest: () => void confirmIngest(),
-    ingesting,
-    kbName,
     dropKind,
     setDropKind,
   }

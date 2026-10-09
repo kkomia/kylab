@@ -13,13 +13,12 @@ schema，再按名字分派到这里的 ``call_tool``）；原先那个 MCP 服�
 | `list_notes` + | 列笔记，并标明哪些还没进知识库 |
 | `recall` / `remember` / `forget` | 长期记忆的查证与写入 |
 | `export_document` / `export_table` / `export_deck` / `export_file` | 交付口（产物落在会话里） |
-| `ingest_artifact` | 把刚导出的那份文件存进知识库 |
 | `web_search` / `web_fetch` | 联网取资料 |
 
 **知识库的"管理面"工具不在这里了**（建库 / 列库 / 列文档 / 查进度 / 删文档 / 挂数据源 /
 表格副本的 SQL 查询）：它们实现依赖的是进程内的知识库服务，而那些服务随知识库产品
 剥离到独立仓库一起搬走了。本机是知识库的**客户端**——能做的只有"检索"与"把东西放进去"
-（`search` / `upload_document` / `attach_note_to_kb` / `ingest_artifact`），
+（`search` / `upload_document` / `attach_note_to_kb`），
 库与文档的日常查看在界面或 kybase 那一侧。
 
 **`search` 的执行不在这个模块**（工具定义与执行表里都查不到它）：它由
@@ -112,7 +111,6 @@ TOOL_NAMES = (
     "export_document",
     "export_table",
     "export_deck",
-    "ingest_artifact",
     "export_file",
     "web_search",
     "web_fetch",
@@ -411,7 +409,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "对话里既看不到、也下载不了。"
                 ".md / .txt / .csv / .html 这四种是**原样落正文**（不做转换）；"
                 "要能被 Excel 排序求和的那张表用 export_table（.xlsx）。"
-                "**它不会进知识库**——那是另一件事，对方明确要求时才调 ingest_artifact。"
+                "**它不会进知识库**——导出只是把文件落到他手上。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -453,7 +451,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "**要带图表就在这里给 `charts`**（图与数在同一份文件里、引用同一批单元格）："
                 "对方说「画个图」「带趋势图」「柱状图看占比」时都用它，"
                 "**不要去沙箱里自己画一张再想办法塞进来**（那条路做出来的图与表是两份东西）。"
-                "文件落在这条会话的产物区，**不进知识库**（要入用 ingest_artifact）。"
+                "文件落在这条会话的产物区，**不进知识库**。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -525,7 +523,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                 + _NL
                 + "`title` 是这份 deck 的标题（也写进文件的文档属性）："
                 "**给了它而第一页又不是 cover 时，会在最前面补一页封面**。"
-                "文件落在这条会话的产物区，**不进知识库**（要入用 ingest_artifact）。"
+                "文件落在这条会话的产物区，**不进知识库**。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -697,32 +695,6 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "ingest_artifact",
-            "description": (
-                "把**刚才导出的那个文件**存进知识库（之后能被检索、出现在文档列表里）。"
-                "**只在对方明确要求时调**——「存进知识库」「放进资料库」「以后能查到」"
-                "这类话。导出的文件默认**不**进库，那是他的选择，不是默认。"
-                "对方没指定哪个库、你也拿不准时，先用 list_knowledge_bases 看有哪些，"
-                "或者直接问他——**不要替他挑一个**。"
-                "artifact_id 就用导出那一步返回的那个。"
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "artifact_id": {
-                        "type": "string",
-                        "description": "导出类工具返回的那个 artifact_id",
-                    },
-                    "knowledge_base_id": {
-                        "type": "string",
-                        "description": "存进哪个库（对方指定或确认过的那个）",
-                    },
-                },
-                "required": ["artifact_id", "knowledge_base_id"],
-                "additionalProperties": False,
-            },
-        },
-        {
             "name": "export_file",
             "description": (
                 "把**沙箱里已经生成好的一个文件**交付给对方（登记成产物，对话里挂一张卡片）。"
@@ -733,7 +705,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "如 `squares.png` 或 `out/chart.png`）；绝对路径与 `..` 会被拒。"
                 "**能用 export_document / export_table / export_deck 描述的内容不要用它**——"
                 "那三个能保证文件结构正确，这一个只是把字节交出去。"
-                "文件落在**这条会话的产物区**，不进知识库（要入用 ingest_artifact）。"
+                "文件落在**这条会话的产物区**，不进知识库。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -1597,7 +1569,7 @@ def _save_export(
 
     - **落盘**：挂在工作的会话落进工作区目录（用户打开项目就看得见），
       没挂的落进对象存储里按会话分的临时前缀；
-    - **入库**：另一个工具 ``ingest_artifact``，只在对方明确要求时才调。
+    - **入库**：只有外部通道（没有会话上下文那条）还会直奔知识库。
 
     没有会话上下文时（外部 MCP 客户端、一次性脚本）仍然要求 ``knowledge_base_id``：
     那条通道没有产物区，而且"外部客户端点名叫了哪个库"本身就是显式的。
@@ -1620,7 +1592,7 @@ def _save_export(
             "saved_to": label,
             "note": (
                 f"文件已经生成，落在{label}，对方在对话里就能下载。"
-                "**它没有进知识库**——那是另一件事，等他明确要求时再调 ingest_artifact"
+                "**它没有进知识库**——导出只把文件落在他手上"
             ),
         }
         if record.storage == ARTIFACT_IN_WORKSPACE:
@@ -1646,7 +1618,7 @@ def _save_export(
         "note": (
             "内容与库里已有的一份文件完全相同，没有重复入库"
             if outcome.is_duplicate
-            else "已存进知识库并开始处理。对方可以在文档列表里下载或看它"
+            else "已加入知识库并开始处理。对方可以在文档列表里下载或看它"
         ),
         # 界面用的那一份：`ToolOutcome.artifacts` 会把它原样带到前端，在那里挂成
         # 一张可点的文件卡片。**与给模型看的字段放在同一个 dict 里**是有意的：
@@ -1661,37 +1633,6 @@ def _save_export(
             "knowledge_base_id": kb_id,
             "document_id": outcome.document.id,
         },
-    }
-
-
-def _ingest_artifact(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    """把**已经导出**的那份文件存进知识库（显式动作，v0.26）。
-
-    与 ``upload_document`` 的分工：那个是"别处来的一份文件，入我的库"，
-    这个是"刚才我给你做的那个文件，也存一份进库"——后者不需要把内容再传一遍，
-    因为文件已经在服务器上了（工作区目录或对象存储里）。
-    """
-    artifact_id = _require(args, "artifact_id")
-    kb_id = _require(args, "knowledge_base_id")
-    services.kb.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
-    record = services.artifacts.get(artifact_id)
-    document_id, is_duplicate = services.artifacts.ingest(
-        record,
-        knowledge_base_id=kb_id,
-        uploaded_by=caller.user.id if caller.user is not None else None,
-    )
-    return {
-        "document_id": document_id,
-        "name": record.name,
-        "knowledge_base_id": kb_id,
-        "note": (
-            "库里已经有一份内容完全相同的文件，没有重复入库"
-            if is_duplicate
-            else "已存进知识库并开始处理。它现在可被检索，也能在文档列表里下载"
-        ),
-        # 同一张卡片换成"已入库"的状态：界面按 artifact_id 合并，
-        # 于是这一步跑完，卡片上立刻多出"已存进知识库「X」"
-        ARTIFACT_KEY: services.artifacts.describe(record),
     }
 
 
@@ -1829,7 +1770,6 @@ _HANDLERS = {
     "export_table": _export_table,
     "export_deck": _export_deck,
     "export_file": _export_file,
-    "ingest_artifact": _ingest_artifact,
 }
 
 

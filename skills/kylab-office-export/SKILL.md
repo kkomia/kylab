@@ -65,12 +65,10 @@ as a deliverable, so it appears as a card in the conversation and can be downloa
 The tool result tells you which of the two happened (`saved_to`). Say that in your
 reply, in the user's terms ("已放进工作区「XX」") — not the raw path.
 
-**Filing it into a knowledge base is a separate thing the user asks for.** Export does
-not do it, and neither should you: their library is something they organise. When they
-say "存进知识库" / "放进资料库" / "以后还能查到", call `ingest_artifact` with the
-`artifact_id` from the export step and the library they named. If they did not name one
-and you cannot tell which, **ask** — or list the libraries with `list_knowledge_bases`
-and ask which. Do not pick one for them, and do not file it "just in case".
+**Filing the exported file into a library is not something you do.** The file stays in
+the conversation's file area; there is no tool that moves it into a knowledge base, so
+do not promise it — if the user asks for that, say plainly that you cannot do it from
+here.
 
 ## Workflow
 
@@ -86,8 +84,6 @@ and ask which. Do not pick one for them, and do not file it "just in case".
 4. **If your own code produced the file, run it first, then `export_file` the path.**
    Do not try to describe a chart or an image as rows and markdown — hand the real file over.
 5. **Say what you produced and where it went.**
-6. **Only if they ask, file it into a library** — with `ingest_artifact`, using the
-   library they named or confirmed.
 
 ## Content conventions
 

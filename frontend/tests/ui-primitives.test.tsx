@@ -154,7 +154,7 @@ describe('ui 原语', () => {
           <TooltipTrigger asChild>
             <Button aria-label="说明">?</Button>
           </TooltipTrigger>
-          <TooltipContent>把这一段存进知识库</TooltipContent>
+          <TooltipContent>这一步做什么</TooltipContent>
         </Tooltip>
       </TooltipProvider>,
     )
@@ -162,6 +162,6 @@ describe('ui 原语', () => {
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
 
     await user.hover(screen.getByRole('button', { name: '说明' }))
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('把这一段存进知识库')
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('这一步做什么')
   })
 })

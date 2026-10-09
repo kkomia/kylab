@@ -1381,35 +1381,6 @@ def test_export_document_delivers_every_plain_text_kind(
         assert services.artifacts.get(result["artifact_id"]).format == kind
 
 
-def test_ingest_artifact_files_an_exported_file(
-    services: Services, kb: str, admin: Caller
-) -> None:
-    """用户说"存进知识库"之后走的那一步：同一个 artifact_id，进库。"""
-    from app.services.tools import ARTIFACT_KEY
-
-    conversation_id = services.conversations.create(title="入库").id
-    exported = call_tool(
-        services,
-        "export_document",
-        {"filename": "随访方案.docx", "markdown": "# 一、监测频率\n"},
-        caller=admin,
-        conversation_id=conversation_id,
-    )
-
-    result = call_tool(
-        services,
-        "ingest_artifact",
-        {"artifact_id": exported["artifact_id"], "knowledge_base_id": kb},
-        caller=admin,
-    )
-
-    assert services.kb.ingest.calls[-1]["filename"] == "随访方案.docx"
-    assert services.kb.ingest.calls[-1]["knowledge_base_id"] == kb
-    # 卡片按 artifact_id 合并，于是这一步跑完界面立刻显示"已存进知识库"
-    assert result[ARTIFACT_KEY]["artifact_id"] == exported["artifact_id"]
-    assert result[ARTIFACT_KEY]["knowledge_base_id"] == kb
-
-
 def test_export_without_a_conversation_still_needs_a_library(
     services: Services, kb: str, admin: Caller
 ) -> None:

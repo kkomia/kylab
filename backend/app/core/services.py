@@ -194,7 +194,7 @@ class Services:
     """**本机这一侧剩下的知识库面**（见 :class:`KbServices`）。
 
     用途：`api/auth.py` 的存取判定、工具层那两条写进知识库的接缝
-    （`tools.py` 的 `upload_document` / `attach_note_to_kb` / `ingest_artifact`
+    （`tools.py` 的 `upload_document` / `attach_note_to_kb`
     与 `agent_tools.py` 的 `ingest_file`）。
 
     **名字不能改**：`scripts/check_domains.py` 用 `services.kb.<字段>` 这个形状识别
@@ -701,17 +701,15 @@ def _build_graph(
     # 不该认识 ChatService（测试里注入一个 lambda 就够）。
     skill_source_service.use_translator(SkillBlurbService(chat_service))
 
-    # **入库那两个接缝就是这一处**：产品件的三个构造点（产物服务、笔记服务、
-    # `Services` 上那两格）共用同一对网关对象。"提交一份字节"与"入队"都归提供者客户端
-    # ——知识库在别处，本机不落库、不解析、也没有队列可管。
+    # **入库那两个接缝就是这一处**：笔记服务与 `Services` 上那两格共用同一对网关对象。
+    # "提交一份字节"与"入队"都归提供者客户端——知识库在别处，本机不落库、不解析、
+    # 也没有队列可管。
     ingest_gateway = provider.ingest_gateway()
     # 空操作：上传口带 `start=true`，远端那边自己入队了。理由与实现都在
     # `knowledge_provider._EnqueueGateway` 上，不在这里再抄一份。
     enqueue_gateway = provider.enqueue_gateway()
 
-    artifacts_service = ArtifactService(
-        bundle, ingest=ingest_gateway, documents=enqueue_gateway
-    )
+    artifacts_service = ArtifactService(bundle)
 
     # 会话导出（M2 阶段 5）：`GET /conversations/export` 背后那一段。
     export_service = ConversationExportService(

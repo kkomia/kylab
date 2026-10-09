@@ -139,7 +139,7 @@ function ArtifactLine({
         预览
       </button>
       {/*
-        **直接下载**（D18，2026-09-28 走查）：卡片上原先只有「预览」与「存进知识库」，
+        **直接下载**（D18，2026-09-28 走查）：卡片上原先只有「预览」，
         想留一份到本地得先开文件抽屉再找同一条。签名链接与"换链接再点一下"那套
         早就在 `api/conversations.ts` 里（文件抽屉走的就是它），这里只是把入口挪到
         用户真正看着那份文件的地方。失败照旧如实报（与文件抽屉同一句处理）。
@@ -151,27 +151,6 @@ function ArtifactLine({
       >
         下载
       </button>
-      {/*
-        「存进知识库」**一定要经过那一步弹窗**，不让服务端替用户挑库：
-        "放进哪个库"是他的事，而弹窗就是他回答这件事的地方。
-      */}
-      {file.knowledge_base_id ? (
-        <span
-          className="shrink-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]"
-          title={chat.kbName(file.knowledge_base_id)}
-        >
-          已存进知识库
-          {chat.kbName(file.knowledge_base_id) ? `「${chat.kbName(file.knowledge_base_id)}」` : ''}
-        </span>
-      ) : (
-        <button
-          type="button"
-          className="shrink-0 cursor-pointer text-[length:var(--text-micro-size)] text-[var(--accent-text)] hover:underline"
-          onClick={() => chat.openIngest(file)}
-        >
-          存进知识库
-        </button>
-      )}
     </>
   )
 }

@@ -573,10 +573,11 @@ const LEGACY_TOOL_KINDS: Record<string, ToolKind> = {
   search_files: 'search',
   list_skills: 'skill',
   read_skill: 'skill',
-  // **这张表不收新工具**（见上面那段），但老快照里**真有**下面这一步：
-  // `spawn_subagent`（派子 Agent）2026-10-09 下线，可它落在旧会话里，
-  // 删掉这一行那些步骤会掉回中性图标。
+  // **这张表不收新工具**（见上面那段），但老快照里**真有**下面这两步：
+  // `spawn_subagent`（派子 Agent）与 `ingest_artifact`（把产物存一份进知识库）
+  // 都在 2026-10-09 下线，可它们落在旧会话里，删掉这两行那些步骤会掉回中性图标。
   spawn_subagent: 'session',
+  ingest_artifact: 'write',
   run_command: 'exec',
   delete_document: 'delete',
   list_knowledge_bases: 'read',
@@ -597,7 +598,6 @@ const LEGACY_TOOL_KINDS: Record<string, ToolKind> = {
   export_document: 'write',
   export_table: 'write',
   export_deck: 'write',
-  ingest_artifact: 'write',
 }
 
 /**
@@ -629,7 +629,6 @@ const LEGACY_LABEL_KINDS: Record<string, ToolKind> = {
   导出文档: 'write',
   导出表格: 'write',
   导出幻灯: 'write',
-  存进知识库: 'write',
   查看文件: 'read',
   读文件: 'read',
   在文件里搜: 'search',
@@ -1040,7 +1039,6 @@ const GROUP_PHRASES: Readonly<Record<string, { verb: string; unit: string }>> = 
   导出表格: { verb: '导出', unit: '份表格' },
   导出幻灯: { verb: '导出', unit: '份幻灯' },
   上传文档: { verb: '上传', unit: '份文档' },
-  存进知识库: { verb: '存进知识库', unit: '份文件' },
   把文件加入知识库: { verb: '加入知识库', unit: '份文件' },
   记住: { verb: '记下', unit: '条记忆' },
   // 这台机器上 / 技能 / 子 Agent

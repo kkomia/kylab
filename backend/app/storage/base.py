@@ -904,8 +904,8 @@ class ConversationArtifactRecord:
     两件事由此分开，这张表是分开的证据：
 
     - ``storage``/``location`` 回答**它现在在哪**（工作区目录 / 对象存储的会话前缀）；
-    - ``document_id`` 回答**它有没有进知识库**，进的是哪个库。``None`` = 没进，
-      这是默认值——入库是一个**显式动作**（用户点了「存进知识库」，或他明确要求）。
+    - ``knowledge_base_id``/``document_id`` 是**历史字段**：早先导出可以直接入一次库，
+      那一步已经下线，新记录一律是 ``None``；旧记录与备份里它们还带着当时的落点。
     """
 
     id: str
@@ -924,9 +924,9 @@ class ConversationArtifactRecord:
     owner_id: str | None = None
     """归属账号，与知识库/会话同一套口径：``None`` = 本机主人（管理员档，共享桶）。"""
     knowledge_base_id: str | None = None
-    """进了哪个知识库（``None`` = 还没入）。"""
+    """历史字段：这份产物当时进了哪个知识库（``None`` = 没进）。"""
     document_id: str | None = None
-    """入库之后那份文档的 id（``None`` = 还没入）。界面据此给"去看这份文档"的入口。"""
+    """历史字段：当时入库的那份文档 id（``None`` = 没进）。"""
     created_at: datetime | None = None
 
 
@@ -2082,13 +2082,6 @@ class MetaStore(ABC):
     @abstractmethod
     def list_artifacts(self, conversation_id: str) -> list[ConversationArtifactRecord]:
         """按产出顺序返回。"""
-        ...
-
-    @abstractmethod
-    def mark_artifact_ingested(
-        self, artifact_id: str, *, knowledge_base_id: str, document_id: str
-    ) -> None:
-        """记下这份产物进了哪个库、成了哪份文档。"""
         ...
 
     # ---- 用量（调研报告 G7）----

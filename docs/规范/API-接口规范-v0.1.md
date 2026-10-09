@@ -328,7 +328,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **121** 条端点。
+共 **120** 条端点。
 
 ### `conversations`
 
@@ -341,7 +341,6 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/conversations/{conversation_id}` | 会话详情 |
 | `PATCH` | `/api/v1/conversations/{conversation_id}` | 修改会话（标题 / 置顶） |
 | `GET` | `/api/v1/conversations/{conversation_id}/artifacts` | 这条会话产出的文件 |
-| `POST` | `/api/v1/conversations/{conversation_id}/artifacts/{artifact_id}/ingest` | 把一份产物存进知识库（显式动作） |
 | `POST` | `/api/v1/conversations/{conversation_id}/branch` | 从第 N 轮分叉出一条新会话（「从这里重开」） |
 | `GET` | `/api/v1/conversations/{conversation_id}/files` | 这条会话的文件区（会话文件 / 项目目录） |
 | `POST` | `/api/v1/conversations/{conversation_id}/files` | 往文件区里放一份文件 |

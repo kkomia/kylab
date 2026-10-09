@@ -375,9 +375,6 @@ class ConversationArtifactOut(BaseModel):
     """给人看的那句话：「工作区「我的项目」」/「本会话」。"""
     path: str | None = None
     """工作区那份的绝对路径；对象存储那份没有。"""
-    knowledge_base_id: str | None = None
-    """进了哪个知识库。``None`` = 没进（默认），界面据此决定要不要给「存进知识库」。"""
-    document_id: str | None = None
     created_at: datetime | None = None
 
 
@@ -435,14 +432,6 @@ class ConversationFileImportIn(BaseModel):
     """
 
     path: str = Field(min_length=1, max_length=1024)
-
-
-class IngestArtifactIn(BaseModel):
-    """把一份产物存进知识库。**库必须由调用方点明**——服务端不替他挑。"""
-
-    knowledge_base_id: str = Field(min_length=1, max_length=64)
-
-
 
 
 # --------------------------------------------------------------------- 模型注册器（G1）

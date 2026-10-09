@@ -69,7 +69,6 @@ vi.mock('@/api/conversations', async (importOriginal) => {
     })),
     createConversation: vi.fn(),
     rewindConversation: vi.fn(async () => undefined),
-    ingestArtifact: vi.fn(),
     getFileUrl: vi.fn(async () => ({ url: '', expires_at: 0, name: '' })),
     downloadFile: vi.fn(async () => undefined),
   }
