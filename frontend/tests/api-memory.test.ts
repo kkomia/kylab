@@ -6,9 +6,10 @@
  * mem0，记忆是**一条一条的条目**（每条有 id），所以这一层有两件事必须钉住：
  *
  * 1. **按 id 改 / 删**：`PATCH` / `DELETE /memory/items/{id}`，id 要按段编码；
- * 2. **档案制那几个端点已经删掉**：`/archive` `/changes` `/remember` `/forget`
- *    `/restore` `/group` `/migrate` `/draft/organize` —— 留一条"确认没有它们"的断言
- *    比写一条正向断言更值（它们不该以任何形态回来）。
+ * 2. **已经删掉的那些入口不许回来**：档案制那一族（`/archive` `/changes` `/remember`
+ *    `/forget` `/restore` `/group` `/migrate` `/draft/organize` `/recall`）以及读一个
+ *    文件的 `GET /memory/files/{path}`（它唯一的消费者——记忆页上那节只读的人设文件
+ *    ——随新记忆页整块下掉）。留一条"确认没有它们"的断言比写一条正向断言更值。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,7 +17,6 @@ import {
   createMemoryItem,
   deleteMemoryItem,
   getMemory,
-  getMemoryFile,
   getMemoryItemHistory,
   getMemoryItems,
   importLegacyMemory,
@@ -45,47 +45,15 @@ afterEach(() => {
 })
 
 describe('memory api', () => {
-  it('文件路径里的斜杠保持原样，交给后端的 :path 参数接住', async () => {
+  it('状态读的是 /memory，并把"还有没有旧档可导"带回来', async () => {
     const calls: string[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
         calls.push(url)
-        return jsonResponse({ path: 'digest/wiki/锂价.md', content: '' })
-      }),
-    )
-
-    await getMemoryFile('digest/wiki/锂价敏感性.md')
-
-    expect(calls[0]).toContain(
-      '/memory/files/digest/wiki/%E9%94%82%E4%BB%B7%E6%95%8F%E6%84%9F%E6%80%A7.md',
-    )
-    // 分隔符不能被编码：编了后端就匹配不到路由
-    expect(calls[0]).not.toContain('%2F')
-  })
-
-  it('文件名里的 # 与空格要编码，否则 URL 会被截断', async () => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        calls.push(url)
-        return jsonResponse({ path: 'digest/a b#c.md', content: '' })
-      }),
-    )
-
-    await getMemoryFile('digest/a b#c.md')
-
-    expect(calls[0]).toContain('/memory/files/digest/a%20b%23c.md')
-  })
-
-  it('状态读的是 /memory', async () => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        calls.push(url)
-        return jsonResponse({ status: { enabled: true, items: 0 } })
+        return jsonResponse({
+          status: { enabled: true, items: 0, legacy_import_available: true },
+        })
       }),
     )
 
@@ -93,6 +61,7 @@ describe('memory api', () => {
 
     expect(calls[0]).toContain('/memory')
     expect(body.status.enabled).toBe(true)
+    expect(body.status.legacy_import_available).toBe(true)
   })
 
   it('列条目不带 query 时是干净的一行 URL', async () => {
@@ -228,7 +197,7 @@ describe('memory api', () => {
     expect(report.imported).toBe(3)
   })
 
-  it('档案制那几个入口不再出现在这一层', async () => {
+  it('删掉的那些入口不再出现在这一层', async () => {
     // 正向断言谁都写得出，但"它不该回来"只能这样钉：包里的导出项一旦多出一个旧名字，
     // 这里就红——否则它会一路走到线上才以 404 的形式露出来。
     const api = await import('@/api/memory')
@@ -242,6 +211,8 @@ describe('memory api', () => {
       'migrateMemory',
       'organizeMemoryDraft',
       'recallMemory',
+      // 读文件那条（人设那块下掉之后零消费者，连后端端点一起删了）
+      'getMemoryFile',
     ]
 
     for (const name of removed) {

@@ -82,7 +82,7 @@ def test_lifespan_lays_down_the_memory_templates(wired_app) -> None:
     **v0.57 起只铺两份**（`SOUL.md` / `AGENTS.md`）：`MEMORY.md` 随"记忆档案"退场，
     而 `PROFILE.md` 也不再是记忆的本体（记忆换成 mem0 的条目库了）——新装的实例
     两者都不铺（见 `services/memory.py::seed_persona`）。旧盘上已有的那两份仍然在、
-    也仍读得到（`GET /memory/files/{path}` 是按路径读文件）。
+    也仍读得到（``MemoryService.persona_texts`` 直接读工作区；界面上不再有读它的入口）。
     """
     app, data_dir = wired_app
     workspace = data_dir / "memory"

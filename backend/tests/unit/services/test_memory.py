@@ -801,18 +801,6 @@ def test_soul_text_reads_the_file(tmp_path: Path) -> None:
     assert service.soul_text() == "# 我是 KYLAB"
 
 
-def test_reads_a_file_verbatim(tmp_path: Path) -> None:
-    """``GET /memory/files/{path}`` 那条路：按原文读，含 frontmatter。"""
-    service = _service(tmp_path)
-    workspace = service.workspace_for(None)
-    _write(workspace, "PROFILE.md", "---\nupdated: 2026-10-03\n---\n\n# 旧档案\n")
-
-    detail = service.file_text(PROFILE_FILE)
-
-    assert detail.content.startswith("---")
-    assert "旧档案" in detail.content
-
-
 def test_changing_the_embedding_dim_reembeds_instead_of_breaking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

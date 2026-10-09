@@ -2,17 +2,16 @@
 
 镜像同构：``app/api/v1/memory.py`` → ``tests/integration/api/test_memory_api.py``。
 
-覆盖五件事：
+覆盖四件事：
 
-1. **状态是纯本地的**：开没开、库在哪、几条、向量是不是兜底；
+1. **状态是纯本地的**：开没开、库在哪、几条、向量是不是兜底、**还有没有旧档案可导**；
 2. **按条目读写**：列表 / 检索 / 加 / 改 / 删 / 看历史——回执从服务层那一处来；
-3. **文件读取走本地目录**，所以 ``memory.enabled=false`` 时也该能用
-   ——记忆关着的时候，用户依然该能打开自己的人设文件看看写了什么；
-4. **路径越界要挡住**：路径由前端传进来，这是读端点唯一的安全边界；
-5. **旧档案制那几个端点确实没了**：``/recall`` / ``/remember`` / ``/forget`` /
-   ``/archive`` / ``/changes`` / ``/restore`` / ``/group`` / ``/migrate`` /
-   ``/draft/organize``——它们不该以任何形态存在（断言 404/405，而不是"返回了错误码"），
-   替代品是 ``/items`` 一族与 ``/import-legacy``。
+3. **迁移**：旧 ``PROFILE.md`` 的四区条目一次性搬进来；搬过之后状态里的
+   ``legacy_import_available`` 翻回 ``false``（界面上那条一次性横幅就此消失）；
+4. **旧端点确实没了**：``/recall`` / ``/remember`` / ``/forget`` / ``/archive`` /
+   ``/changes`` / ``/restore`` / ``/group`` / ``/migrate`` / ``/draft/organize``，
+   以及读一个文件的 ``GET /memory/files/{path}``——它们不该以任何形态存在
+   （断言 404/405，而不是"返回了错误码"），替代品是 ``/items`` 一族与 ``/import-legacy``。
 
 **没有"测试连接"这类端点了**（v0.46 删）：记忆跑在我们自己的进程里，
 没有第二个进程可连。所以这一份里也不再有任何 ``monkeypatch`` 打桩的 HTTP——
@@ -112,7 +111,7 @@ def _add(client: TestClient, content: str, **extra) -> dict:
 
 
 def test_overview_reports_status_only(client: TestClient, workspace) -> None:
-    """``GET /memory`` 只报状态：开没开、库在哪、几条、向量兜底没有。
+    """``GET /memory`` 只报状态：开没开、库在哪、几条、向量兜底没有、旧档还能不能导。
 
     原先它还带一份**文件列表**（每项有个 ``injected`` 标记）：列表只服务记忆页上
     那节只读的「旧记忆」，那一节下掉之后它没有读者，字段与能力一起删。
@@ -130,6 +129,25 @@ def test_overview_reports_status_only(client: TestClient, workspace) -> None:
     # 向量是兜底时要如实说（界面据此提示"检索质量不代表真实效果"）
     assert status["development"] is True
     assert status["embedder"] == "dev/deterministic-hash"
+
+
+def test_status_says_whether_there_is_legacy_to_import(
+    client: TestClient, workspace
+) -> None:
+    """``legacy_import_available``：有旧档 → ``true``，搬过一次 → ``false``。
+
+    界面那条"导入旧档案"的横幅只看这一个布尔值——搬完它就该消失、不留痕迹。
+    """
+    assert client.get("/api/v1/memory").json()["status"]["legacy_import_available"] is True
+
+    client.post("/api/v1/memory/import-legacy")
+
+    assert client.get("/api/v1/memory").json()["status"]["legacy_import_available"] is False
+
+
+def test_status_says_no_legacy_without_an_old_archive(client: TestClient) -> None:
+    """新装的实例没有 ``PROFILE.md``：这不是"待导入"，横幅不该出现。"""
+    assert client.get("/api/v1/memory").json()["status"]["legacy_import_available"] is False
 
 
 def test_overview_counts_items(client: TestClient, workspace) -> None:
@@ -187,48 +205,18 @@ def test_file_level_write_endpoints_are_gone(client: TestClient, workspace) -> N
     assert "我是 KYLAB" in (workspace / "SOUL.md").read_text(encoding="utf-8")
 
 
-# ------------------------------------------------------------------- 读文件
+# ------------------------------------------------------------------- 读文件端点
 
+def test_the_read_file_endpoint_is_gone(client: TestClient, workspace) -> None:
+    """``GET /memory/files/{path}`` 删了（2026-10-09）。
 
-def test_read_file_roundtrip(client: TestClient, workspace) -> None:
-    """读原文（含 frontmatter）——人设文件与旧档案的只读查看靠它。"""
-    body = client.get("/api/v1/memory/files/PROFILE.md").json()
-
-    assert body["content"].startswith("---")
-    assert "用户叫小又" in body["content"]
-    assert body["name"] == "PROFILE.md"
-
-
-def test_reading_works_even_when_memory_is_disabled(client: TestClient, workspace) -> None:
-    """**关着记忆也能读自己的文件**：要求"先打开一个开关才能读自己的文本文件"
-    是没道理的。
-
-    对照：``GET /memory/items?query=`` 关着时 422（见下一条）。
+    它唯一的消费者是记忆页上那节只读的「人设文件」——那一整块按设计从记忆页下掉
+    （人设属于人设层，不是记忆），于是端点零引用。**人设文件本身照旧每轮注入**：
+    注入那条路直接读工作区（``MemoryService.persona_texts``），不经过这个端点。
     """
-    _disable(client)
-
-    assert client.get("/api/v1/memory").json()["status"]["enabled"] is False
-    assert client.get("/api/v1/memory/files/SOUL.md").status_code == 200
-
-
-@pytest.mark.parametrize(
-    "bad",
-    ["../backend.env", "daily/../../x.md", "C:foo.md", "notes.txt", "a.md:stream"],
-)
-def test_path_escape_never_reaches_a_file(client: TestClient, workspace, bad: str) -> None:
-    """越界/非法路径一律拒。**这是读端点唯一的安全边界**：路径由前端给出。
-
-    这里断言的是"**没有 200**"而不是某个具体码，因为两条防线各自生效：
-
-    - ``../backend.env`` 这类会被 HTTP 客户端**先归一化**（httpx 把它折成
-      ``/api/v1/memory/backend.env``），于是根本没匹配上路由 → 404；
-    - 但**裸客户端**（``curl --path-as-is``）能把未归一化的路径送到处理器，
-      那时 ``safe_path`` 必须拦住它——那一条在
-      ``tests/unit/services/test_memory_files.py`` 里逐条钉着。
-    """
-    response = client.get(f"/api/v1/memory/files/{bad}")
-    assert response.status_code != 200, response.text
-    assert response.status_code in (404, 422), response.text
+    assert client.get("/api/v1/memory/files/SOUL.md").status_code == 404
+    # 删的是端点，不是用户的文件
+    assert (workspace / "SOUL.md").read_text(encoding="utf-8") == "# 我是 KYLAB\n"
 
 
 # --------------------------------------------------------------- 条目读写

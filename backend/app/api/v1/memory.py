@@ -1,11 +1,10 @@
 """记忆端点（v0.14 三期；v0.57 起后端是 **mem0**，见 ``services/memory.py``）。
 
-四件事：看状态、按条目读写（列表 / 查 / 加 / 改 / 删 / 看历史）、跑一次旧档案迁移、
-读一个文件的原文。
+三件事：看状态、按条目读写（列表 / 查 / 加 / 改 / 删 / 看历史）、跑一次旧档案迁移。
 
 **记忆与知识库是两个池子**，这里的一切都只碰记忆那一侧：没有任何一个端点会去读文档、
 片段或向量。``GET /memory`` 报的是**这一层的状态**（开没开、库在哪、几条、
-向量是不是兜底），不是知识库文档。
+向量是不是兜底、还有没有旧档案可导），不是知识库文档。
 
 **v0.57 删掉的端点**（档案制那一套的遗物）：``/recall`` / ``/remember`` / ``/forget``
 （能力被下面的 ``/items`` 一族取代——**一个能力一个入口**，留着三套写入口只会让
@@ -14,8 +13,10 @@
 ``/migrate`` / ``/draft/organize``（机械折叠与"整理初稿"：新库只有
 ``POST /memory/import-legacy`` 这一条迁移路，它**零模型调用**）。
 
-**``GET /memory/files/{path}`` 保留**：记忆页上那节只读的「人设与旧档案」要展示磁盘上
-那份 Markdown（``SOUL.md`` / ``AGENTS.md`` / 旧 ``PROFILE.md``）的原文。
+**``GET /memory/files/{path}`` 也删了**（2026-10-09）：它唯一的消费者是记忆页上那节
+只读的「人设与旧档案」——那一整块按设计从记忆页删掉（人设属于人设层，不属于记忆），
+于是这个端点零引用。人设文件照旧每轮注入，注入那条路读文件**不经过这个端点**
+（``MemoryService.persona_texts`` 直接读工作区）。
 
 **鉴权档位与 MCP 那份保持一致**（读用 ``ReadDep``、写用 ``WriteDep``）：
 MCP 上 ``recall`` / ``remember`` / ``forget`` 对 API Key 是开放的（外部 agent 得能用记忆），
@@ -32,8 +33,6 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.auth import require_read, require_write
 from app.api.v1.schemas import (
-    MemoryFileDetailOut,
-    MemoryFileOut,
     MemoryHistoryOut,
     MemoryImportOut,
     MemoryItemCreateIn,
@@ -74,24 +73,9 @@ def _scope(caller: Caller) -> str | None:
     return None
 
 
-def _file_out(record) -> MemoryFileOut:  # type: ignore[no-untyped-def]
-    """记录 → 响应。不 import 存储层类型（工程规范 §3.3 L1），
-    形状由 services 返回的对象保证（与 wiki.py 的 ``_page_out`` 同一套写法）。"""
-    return MemoryFileOut(
-        path=record.path,
-        name=record.name,
-        title=record.title,
-        kind=record.kind,
-        summary=record.summary,
-        tags=list(record.tags),
-        size_bytes=record.size_bytes,
-        modified_at=record.modified_at,
-    )
-
-
 def _status_out(record) -> MemoryStatusOut:  # type: ignore[no-untyped-def]
-    """状态 → 响应。**全是服务层数出来的本地数字**（几条、上次改动、向量兜底没有），
-    界面只该显示数字：这些数的口径只有服务层知道。
+    """状态 → 响应。**全是服务层数出来的本地数字**（几条、上次改动、向量兜底没有、
+    还有没有旧档案可导），界面只该显示数字：这些数的口径只有服务层知道。
     """
     return MemoryStatusOut(
         enabled=record.enabled,
@@ -101,6 +85,7 @@ def _status_out(record) -> MemoryStatusOut:  # type: ignore[no-untyped-def]
         embedder=record.embedder,
         development=record.development,
         detail=record.detail,
+        legacy_import_available=record.legacy_import_available,
     )
 
 
@@ -278,27 +263,4 @@ def import_legacy_memory(
         dropped_sensitive=report.dropped_sensitive,
         skipped=report.skipped,
         changed=report.changed,
-    )
-
-
-@router.get("/files/{path:path}", response_model=MemoryFileDetailOut, summary="读一个记忆文件")
-def read_memory_file(
-    path: str,
-    services: Services = Depends(get_services),
-    caller: Caller = Depends(require_read),
-) -> MemoryFileDetailOut:
-    """读原文（含 frontmatter）——人设文件（``SOUL.md`` / ``AGENTS.md``）与旧档案的只读查看。
-
-    路径里的 ``path:path`` 让 ``digest/wiki/xxx.md`` 这种带斜杠的路径能当**一个**
-    路径参数传进来，前端不必把斜杠编码成 ``%2F``（有些反代会先解开再匹配，反而更脆）。
-    只认 ``.md``（见 ``memory_files.safe_path``）。
-    """
-    scope = _scope(caller)
-    detail = services.memory.file_text(path, scope)
-    base = _file_out(services.memory.describe(detail.path, scope))
-    return MemoryFileDetailOut(
-        **base.model_dump(),
-        content=detail.content,
-        meta=detail.meta,
-        truncated=detail.truncated,
     )

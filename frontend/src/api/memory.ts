@@ -11,8 +11,11 @@
  * `/restore` `/group` `/migrate` `/draft/organize`）已经删除，
  * 别在这里把它们加回来。
  *
- * `content` 是**原文**（人设文件那一侧含 frontmatter）：只读展示要逐字还原，
- * 所以进出的是完整字符串，不解析、不结构化。
+ * **读文件那一条也删了**（2026-10-09）：`getMemoryFile`（`GET /memory/files/{path}`）
+ * 唯一的消费者是记忆页上那节只读的「人设文件」，那一块按设计整块下掉
+ * （人设属于人设层，不是记忆），于是前端零消费者、后端的端点连 schemas 一起删。
+ *
+ * `content` 是**原文**：进出的是完整字符串，不解析、不结构化。
  */
 
 // 记忆本体本来就在本机（`<data_dir>/memory`）→ 全部走 `requestLocal`。
@@ -21,7 +24,6 @@ import type { components } from './schema'
 
 type Schema = components['schemas']
 
-export type MemoryFileDetail = Schema['MemoryFileDetailOut']
 export type MemoryStatus = Schema['MemoryStatusOut']
 export type MemoryOverview = Schema['MemoryOverviewOut']
 export type MemoryItem = Schema['MemoryItemOut']
@@ -31,7 +33,7 @@ export type MemoryHistory = Schema['MemoryHistoryOut']
 export type MemoryItemHistory = Schema['MemoryItemHistoryOut']
 export type MemoryImport = Schema['MemoryImportOut']
 
-/** 这一层的状态（开没开、库在哪、几条、向量是不是兜底）。**只有状态**。 */
+/** 这一层的状态（开没开、库在哪、几条、向量是不是兜底、还有没有旧档案可导）。**只有状态**。 */
 export function getMemory(): Promise<MemoryOverview> {
   return requestLocal<MemoryOverview>('/memory')
 }
@@ -99,23 +101,4 @@ export function getMemoryItemHistory(id: string): Promise<MemoryItemHistory> {
 /** 把旧 `PROFILE.md` 的四区条目搬进新库（**零模型调用**、可重跑、旧文件不动）。 */
 export function importLegacyMemory(): Promise<MemoryImport> {
   return requestLocal<MemoryImport>('/memory/import-legacy', { method: 'POST' })
-}
-
-/**
- * 读一个文件的原文（含 frontmatter）。**只读**——人设文件与旧档案的查看用它。
- *
- * **路径按段编码**（每段单独 `encodeURIComponent`）：`digest/wiki/x.md` 里的
- * 斜杠是路径分隔符、必须原样留着，靠 `:path` 参数接住；而文件名里可能有
- * `#`、`?`、空格这类会截断 URL 的字符，那些要编码。
- */
-export function getMemoryFile(path: string): Promise<MemoryFileDetail> {
-  return requestLocal<MemoryFileDetail>(`/memory/files/${encodePath(path)}`)
-}
-
-function encodePath(path: string): string {
-  return path
-    .split('/')
-    .filter((segment) => segment !== '')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/')
 }

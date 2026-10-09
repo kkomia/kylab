@@ -328,7 +328,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **122** 条端点。
+共 **121** 条端点。
 
 ### `conversations`
 
@@ -405,7 +405,6 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/memory` | 记忆状态 |
-| `GET` | `/api/v1/memory/files/{path}` | 读一个记忆文件 |
 | `POST` | `/api/v1/memory/import-legacy` | 导入旧档案（零模型调用） |
 | `GET` | `/api/v1/memory/items` | 列记忆条目 / 检索 |
 | `POST` | `/api/v1/memory/items` | 记一条（新增或更正） |

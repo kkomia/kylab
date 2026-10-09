@@ -1,11 +1,17 @@
 /**
- * 记忆条目列表（v0.57，设计口径见 D9）。
+ * 记忆条目列表（v0.57，设计口径见 D9；2026-10-09 加行内二次确认、历史改时间线）。
  *
  * 这一块只回答一件事：**记忆里现在有什么**。一条一行，每行给出
  *
- * - 正文（**点一下变输入框**，失焦保存 = 一次 `PATCH`，按 id 走）；
+ * - 正文（**点一下变输入框**，失焦保存 = 一次 `PATCH`，按 id 走；`Esc` 取消）；
  * - 分区标签与来源、时间（事实，不解释它们是怎么产生的）；
- * - 行尾两个动作：**看历史**（只读）与**删除**。
+ * - 行尾两个动作：**看历史**（只读，最旧在前的时间线）与**删除**
+ *   （**行内二次确认**：先变成「删除？确认 / 取消」，点确认才发 `DELETE`）。
+ *
+ * **时间一律按本机时区**（`lib/format` 的 `formatRelativeTime` / `formatDate`）：
+ * 后端给的是 ISO（UTC），上一代直接把那串数字切出来显示，于是"3 分钟前改的"看起来
+ * 比本机的表早 8 小时。行尾小字用相对时间（超过一周自动退回本地日期），
+ * `title` 里放 `formatDate` 的本地绝对时间——确切时刻仍然拿得到。
  *
  * 三条与界面无关、但决定了这里每一行怎么写的口径：
  *
@@ -13,21 +19,20 @@
  *    `deleteMemoryItem`）——所以列表项上带 `data-id`，而正文可以重复；
  * 2. **回执用后端那一句**：每次写入的结果里带 `receipt`，界面直接把它弹出来，
  *    不另编（模型从工具听到的是同一句）；
- * 3. **不做本地过滤与排序**：列表顺序是后端给的（最近改的在前），
- *    而"查"是**一次检索**（搜索框那一条路），不是在这份数组上扫一遍——
- *    两者混起来会让"搜不到"变成"这一页里没搜到"。
+ * 3. **列表顺序是后端给的**（最近改的在前），这里不重排。"查"是上面搜索框那条
+ *    检索路（一次语义检索），分区筛选那条本地过滤由页面做——两者都不改顺序。
  */
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { History, Plus, Trash2 } from 'lucide-react'
+import { History, Trash2 } from 'lucide-react'
 
 import {
-  createMemoryItem,
   deleteMemoryItem,
   getMemoryItemHistory,
   updateMemoryItem,
   type MemoryItem,
 } from '@/api/memory'
+import { formatDate, formatRelativeTime } from '@/lib/format'
 import { Badge } from '@/ui/badge'
 import { Button } from '@/ui/button'
 import { Textarea } from '@/ui/textarea'
@@ -56,7 +61,7 @@ export interface MemoryItemListProps {
   items: MemoryItem[]
   /** 这一轮列表是"搜出来的"还是"全部"——决定空态那句话。 */
   searching: boolean
-  /** 搜索框里那句话（空态里要说清"没有匹配到 X"）。 */
+  /** 搜索框里那句话（空态里要说清"没有提到 X"）。 */
   query: string
 }
 
@@ -64,8 +69,8 @@ export function MemoryItemList({ items, searching, query }: MemoryItemListProps)
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
-  const [adding, setAdding] = useState(false)
-  const [addDraft, setAddDraft] = useState('')
+  /** 哪一个条目正在等"确认删除"（同一时刻只可能有一个）。 */
+  const [confirming, setConfirming] = useState<string | null>(null)
   const [historyOf, setHistoryOf] = useState<MemoryItem | null>(null)
 
   const refresh = async () => {
@@ -87,19 +92,8 @@ export function MemoryItemList({ items, searching, query }: MemoryItemListProps)
   const remove = useMutation({
     mutationFn: (id: string) => deleteMemoryItem(id),
     onSuccess: async (result) => {
+      setConfirming(null)
       await refresh()
-      notifySuccess(result.receipt)
-    },
-    onError: (error: unknown) => notifyError(messageOf(error)),
-  })
-
-  const add = useMutation({
-    mutationFn: (content: string) => createMemoryItem(content),
-    onSuccess: async (result) => {
-      setAdding(false)
-      setAddDraft('')
-      await refresh()
-      // `existing` / `rejected` 也不是错误，回执照旧弹出来（后端说清了为什么）
       notifySuccess(result.receipt)
     },
     onError: (error: unknown) => notifyError(messageOf(error)),
@@ -131,11 +125,11 @@ export function MemoryItemList({ items, searching, query }: MemoryItemListProps)
       {items.length === 0 ? (
         searching ? (
           <EmptyState
-            title="没有匹配的条目"
-            hint={query ? `没有提到「${query}」的条目。` : '换一个说法再搜。'}
+            title="没有搜到"
+            hint={query ? `没有提到「${query}」的记忆，换个说法再搜。` : '换个说法再搜。'}
           />
         ) : (
-          <EmptyState title="记忆还是空的" hint="在下面写一条。" />
+          <EmptyState title="还没有记忆" hint="说一句『记住…』，或点『加一条』。" />
         )
       ) : (
         <ul className="m-entries">
@@ -177,88 +171,62 @@ export function MemoryItemList({ items, searching, query }: MemoryItemListProps)
                       {item.section}
                     </Badge>
                   )}
-                  <span className="m-entry-when">
+                  <span className="m-entry-when" title={formatDate(item.updated_at)}>
                     {SOURCE_LABELS[item.source] ?? ''}
                     {item.updated_at
-                      ? `${item.source ? ' · ' : ''}${shortTime(item.updated_at)}`
+                      ? `${item.source ? ' · ' : ''}${formatRelativeTime(item.updated_at)}`
                       : ''}
                   </span>
                 </div>
               </div>
               <span className="m-entry-actions">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="历史"
-                  data-testid="memory-item-history"
-                  onClick={() => setHistoryOf(item)}
-                >
-                  <History size={14} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="删除"
-                  data-testid="memory-item-delete"
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate(item.id)}
-                >
-                  <Trash2 size={14} />
-                </Button>
+                {confirming === item.id ? (
+                  <>
+                    <span className="m-entry-ask">删除？</span>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      data-testid="memory-item-delete-confirm"
+                      disabled={remove.isPending}
+                      onClick={() => remove.mutate(item.id)}
+                    >
+                      确认
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      data-testid="memory-item-delete-cancel"
+                      onClick={() => setConfirming(null)}
+                    >
+                      取消
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="历史"
+                      data-testid="memory-item-history"
+                      onClick={() => setHistoryOf(item)}
+                    >
+                      <History size={14} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="删除"
+                      data-testid="memory-item-delete"
+                      onClick={() => setConfirming(item.id)}
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </>
+                )}
               </span>
             </li>
           ))}
         </ul>
-      )}
-
-      {adding ? (
-        <div className="m-add-box">
-          <Textarea
-            data-testid="memory-add-input"
-            autoFocus
-            rows={2}
-            placeholder="一句可复用的事实（怎么称呼对方、他的偏好、定下来的约定……）"
-            value={addDraft}
-            onChange={(event) => setAddDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                setAdding(false)
-                setAddDraft('')
-              }
-            }}
-          />
-          <div className="m-add-actions">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                setAdding(false)
-                setAddDraft('')
-              }}
-            >
-              取消
-            </Button>
-            <Button
-              size="sm"
-              data-testid="memory-add-save"
-              disabled={!addDraft.trim() || add.isPending}
-              onClick={() => add.mutate(addDraft.trim())}
-            >
-              记下来
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <Button
-          variant="outline"
-          size="sm"
-          data-testid="memory-add"
-          onClick={() => setAdding(true)}
-        >
-          <Plus size={14} />
-          加一条
-        </Button>
       )}
 
       <Modal
@@ -273,33 +241,37 @@ export function MemoryItemList({ items, searching, query }: MemoryItemListProps)
               {historyOf.text}
             </p>
             {history.data?.items?.length ? (
-              <ul className="m-changes">
+              <ul className="m-timeline" data-testid="memory-history-rows">
                 {history.data.items.map((row) => (
                   <li
-                    className="m-change"
+                    className="m-timeline-item"
                     data-testid="memory-history-row"
+                    data-event={row.event}
                     key={`${row.event}-${row.at}-${row.new}`}
                   >
-                    <div className="m-change-meta">
-                      <span className="m-change-action">
+                    <div className="m-timeline-meta">
+                      <span className="m-timeline-action">
                         {EVENT_LABELS[row.event] ?? row.event}
                       </span>
-                      <span>{shortTime(row.at)}</span>
+                      <span title={formatDate(row.at)}>{formatRelativeTime(row.at)}</span>
                     </div>
-                    <dl className="m-change-values">
+                    <div className="m-timeline-values">
                       {row.old && (
-                        <div className="m-change-line">
-                          <dt>旧</dt>
-                          <dd>{row.old}</dd>
-                        </div>
+                        <span className="m-timeline-old" data-testid="memory-history-old">
+                          {row.old}
+                        </span>
+                      )}
+                      {row.old && row.new && (
+                        <span className="m-timeline-arrow" aria-hidden="true">
+                          →
+                        </span>
                       )}
                       {row.new && (
-                        <div className="m-change-line">
-                          <dt>新</dt>
-                          <dd>{row.new}</dd>
-                        </div>
+                        <span className="m-timeline-new" data-testid="memory-history-new">
+                          {row.new}
+                        </span>
                       )}
-                    </dl>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -313,11 +285,6 @@ export function MemoryItemList({ items, searching, query }: MemoryItemListProps)
       </Modal>
     </section>
   )
-}
-
-function shortTime(value: string): string {
-  // 后端给的是 ISO（UTC）；这里只到分钟——列表上一行里塞秒没有任何用处
-  return value ? value.replace('T', ' ').slice(0, 16) : ''
 }
 
 function messageOf(error: unknown): string {

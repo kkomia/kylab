@@ -1477,28 +1477,6 @@ class PluginListOut(BaseModel):
 # --------------------------------------------------------------------- 记忆（v0.14 三期）
 
 
-class MemoryFileOut(BaseModel):
-    """记忆工作区里的一个文件（不含正文）。"""
-
-    path: str
-    name: str
-    title: str
-    kind: Literal["core", "daily", "digest", "other"]
-    summary: str = ""
-    tags: list[str] = Field(default_factory=list)
-    size_bytes: int = 0
-    modified_at: str = ""
-
-
-class MemoryFileDetailOut(MemoryFileOut):
-    content: str = ""
-    """原文，**含 frontmatter**：只读展示要逐字还原，不能因为我们"顺手格式化"
-    而丢掉用户手写的东西。"""
-
-    meta: dict[str, Any] = Field(default_factory=dict)
-    truncated: bool = False
-
-
 class MemoryStatusOut(BaseModel):
     """记忆层的状态。**全是本地数字**：
 
@@ -1521,6 +1499,11 @@ class MemoryStatusOut(BaseModel):
 
     development: bool = False
     """``true`` = 向量是开发兜底，检索只反映词面重合。"""
+
+    legacy_import_available: bool = False
+    """还有没有没搬过的旧档案条目（界面那条一次性的导入横幅用它）。
+
+    搬过一次（或本来就没有旧文件）之后一直是 ``false`` —— 横幅就此消失。"""
 
 
 class MemoryOverviewOut(BaseModel):

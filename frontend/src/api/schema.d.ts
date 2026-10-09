@@ -1203,30 +1203,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/memory/files/{path}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * 读一个记忆文件
-         * @description 读原文（含 frontmatter）——人设文件（``SOUL.md`` / ``AGENTS.md``）与旧档案的只读查看。
-         *
-         *     路径里的 ``path:path`` 让 ``digest/wiki/xxx.md`` 这种带斜杠的路径能当**一个**
-         *     路径参数传进来，前端不必把斜杠编码成 ``%2F``（有些反代会先解开再匹配，反而更脆）。
-         *     只认 ``.md``（见 ``memory_files.safe_path``）。
-         */
-        get: operations["read_memory_file_api_v1_memory_files__path__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/skills": {
         parameters: {
             query?: never;
@@ -4166,51 +4142,6 @@ export interface components {
              */
             installed: boolean;
         };
-        /** MemoryFileDetailOut */
-        MemoryFileDetailOut: {
-            /** Path */
-            path: string;
-            /** Name */
-            name: string;
-            /** Title */
-            title: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "core" | "daily" | "digest" | "other";
-            /**
-             * Summary
-             * @default
-             */
-            summary: string;
-            /** Tags */
-            tags?: string[];
-            /**
-             * Size Bytes
-             * @default 0
-             */
-            size_bytes: number;
-            /**
-             * Modified At
-             * @default
-             */
-            modified_at: string;
-            /**
-             * Content
-             * @default
-             */
-            content: string;
-            /** Meta */
-            meta?: {
-                [key: string]: unknown;
-            };
-            /**
-             * Truncated
-             * @default false
-             */
-            truncated: boolean;
-        };
         /**
          * MemoryHistoryOut
          * @description 一条记忆历史上的一步（mem0 自己的 ``history.db``）。
@@ -4439,6 +4370,11 @@ export interface components {
              * @default false
              */
             development: boolean;
+            /**
+             * Legacy Import Available
+             * @default false
+             */
+            legacy_import_available: boolean;
         };
         /**
          * MemoryWriteOut
@@ -8565,37 +8501,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemoryImportOut"];
-                };
-            };
-        };
-    };
-    read_memory_file_api_v1_memory_files__path__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                path: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryFileDetailOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

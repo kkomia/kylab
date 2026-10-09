@@ -293,8 +293,8 @@ def test_persona_does_not_depend_on_the_memory_service_switch(tmp_path) -> None:
     而用户的实例上记忆服务是关的——于是人设文件既不播种也不注入，功能整个是死的，
     界面上还写着"没启用"。
 
-    那两份文件是**磁盘上的普通文件**（`memory_files` 的模块头自己就写着
-    "看自己的文本文件不该先要求另一个进程活着"）。那个开关管的是另一半：
+    那两份文件是**磁盘上的普通文件**——人设那份读取不经过任何开关、也不要求别的
+    进程活着（``persona_texts`` 直接读工作区）。那个开关管的是另一半：
     记忆进不进这一轮的上下文（``memory_block``）、``recall`` 能不能用。
     """
     service = MemoryService(_FakeRuntime(False), tmp_path)  # type: ignore[arg-type]
@@ -311,15 +311,16 @@ def test_persona_does_not_depend_on_the_memory_service_switch(tmp_path) -> None:
     assert "【你的人格" in text and "以下是用户档案" not in text
 
 
-def test_seeded_core_files_are_classified_as_core(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """铺下去的那几份人设，在文件层被认成**核心文件**（按文件名判，不猜内容）。
+def test_seeded_persona_files_are_recognized_by_the_whitelist(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """铺下去的那几份人设，名字要落在 ``CORE_FILES`` 那张白名单里。
 
     这条钉的是两处的名字必须认识同一批：``memory.py`` 铺什么（``SOUL.md`` /
     ``PROFILE.md`` / ``AGENTS.md``）与 ``memory_files.py`` 的 ``CORE_FILES`` 认什么。
-    分类错了的现象是"这张卡片读得出来，但那几个名字在文件层里不算数"。
+    认不出来的现象是"那份文件在盘上，但 ``memory.persona_files`` 里写它会被当成
+    不认识的文件名丢掉"——用户看到的是"我改了它，助手好像没读到"。
 
-    显示名**一律用文件名**：``PROFILE.md`` 正文里的 ``## 身份与称呼`` 是章节名，
-    取成标题的话用户找的就不是这份文件了。
+    显示名（标题）那一套随列表一起退场了（``describe`` 已删），所以这里只钉子文件
+    真的在盘上、名字真的在清单里——那才是这两处必须对齐的部分。
     """
     from app.services import memory_files
 
@@ -327,27 +328,26 @@ def test_seeded_core_files_are_classified_as_core(tmp_path) -> None:  # type: ig
     service.seed_persona("u1")
     workspace = service.workspace_for("u1")
     # `PROFILE.md` 不再由我们铺（旧档案不是记忆本体了），但**旧盘上那份还在**：
-    # 人设文件那一节仍要能只读地打开它，所以它照样得被认成核心文件
+    # 它在清单里，所以"哪些算设定"这条分界认得它
     (workspace / PROFILE_FILE).write_bytes("# 用户档案\n".encode())
 
     for name in (SOUL_FILE, PROFILE_FILE, AGENTS_FILE):
-        item = memory_files.describe(workspace, name)
-        assert item.kind == "core", name
-        assert item.title == name
+        assert (workspace / name).is_file(), name
+        assert name in memory_files.CORE_FILES, name
 
 
 def test_the_injected_and_core_file_lists_cannot_drift() -> None:
     """两份清单的关系：**注入的人设必须是核心文件的一部分**。
 
-    `memory.py` 决定"注入哪些与顺序"（``PERSONA_FILES`` 那两张表，档案走它自己的
-    贡献者），`memory_files.py` 决定"哪些算核心文件"（分类与 ``memory.persona_files``
-    白名单）。分成两处是**依赖方向**逼的（memory 依赖 memory_files，反过来会成环），
-    所以用这条用例把它们钉在一起：往人设清单里加一个不在 ``CORE_FILES`` 里的名字
-    就会在这里红。
+    `memory.py` 决定"注入哪些与顺序"（``PERSONA_FILES`` 那两张表），
+    `memory_files.py` 决定"哪些算核心文件"（``CORE_FILES``：人设白名单 +
+    ``memory.persona_files`` 里那份清单的合法取值）。分成两处是**依赖方向**逼的
+    （memory 依赖 memory_files，反过来会成环），所以用这条用例把它们钉在一起：
+    往人设清单里加一个不在 ``CORE_FILES`` 里的名字就会在这里红。
 
     ``MEMORY.md`` 仍在 ``CORE_FILES`` 里但它不在人设清单里：v0.56 起它已退场
     （§7.2，不再注入、也不再被任何界面展示），留着那个名字是为了**别人盘上可能
-    还躺着的那份旧文件**仍被当成核心文件分类。
+    还躺着的那份旧文件**仍算得上一份设定文件。
     """
     from app.services import memory_files
 

@@ -1061,7 +1061,7 @@ def _clip(text: str, limit: int) -> str:
 def _string_tuple(raw: object) -> tuple[str, ...]:
     """frontmatter 里的列表字段：字符串按逗号切，列表逐项转字符串。
 
-    与 ``memory_files._tags_of`` 同一套宽容口径——frontmatter 是手写的，
+    宽容口径**统一到这一处**——frontmatter 是手写的，
     ``allowed-tools: [read, write]`` 与 ``allowed-tools: read, write`` 都要认。
     """
     if isinstance(raw, str):

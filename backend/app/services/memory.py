@@ -577,6 +577,10 @@ class MemoryStatus:
     embedder: str = ""
     development: bool = False
     detail: str = ""
+    legacy_import_available: bool = False
+    """还有没有**没搬过**的旧 ``PROFILE.md`` 条目（见 :meth:`legacy_import_available`）。
+
+    界面拿它决定"那条一次性的导入横幅要不要出现"——搬过之后就没有这个念头了。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1536,6 +1540,28 @@ class MemoryService:
             changed=bool(imported),
         )
 
+    def legacy_import_available(self, user_id: str | None = None) -> bool:
+        """还有没有**没搬过**的旧条目（界面上那条一次性横幅的判据）。
+
+        判据与 :meth:`import_legacy` 的跳过条件是同一条：读 ``PROFILE.md`` 的条目、
+        逐个比水位里记下的指纹，**有一个没搬过就是"有可导的"**。
+        文件不在、或条目都进过水位（搬过一次就都进）→ ``False``：横幅消失、不留痕迹。
+
+        **敏感与否不参与这里的判断**：那些条目搬的时候会被丢掉，但水位照样记下它们，
+        所以"搬过一次之后横幅就没了"不取决于它们最终有没有落库。
+        """
+        entries, _source, _name = memory_migration.read_legacy(self.workspace_for(user_id))
+        if not entries:
+            return False
+        watermark = memory_migration.read_watermark(self.memory_dir(user_id))
+        done = set(watermark.get("entries") or [])
+        if not done:
+            return True
+        return any(
+            memory_migration.entry_key(section, normalize_entry(text)) not in done
+            for section, text in entries
+        )
+
     # ------------------------------------------------------------------ 人设
 
     def soul_text(self, user_id: str | None = None) -> str:
@@ -1564,8 +1590,8 @@ class MemoryService:
                 continue
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                # 按字节写：`write_text` 在 Windows 上会把换行改成 CRLF
-                # （与 memory_files 同一处踩过的坑）
+                # 按字节写：`write_text` 在 Windows 上会把换行改成 CRLF，
+                # 而"逐字节相同"正是 `_upgrade_untouched_template` 的判据
                 path.write_bytes(template.encode("utf-8"))
             except OSError:
                 logger.warning("人设文件写不出来：%s", path, exc_info=True)
@@ -1641,13 +1667,13 @@ class MemoryService:
                 found.append((name, text))
         return found
 
-    # ------------------------------------------------------------------ 状态与文件
+    # ------------------------------------------------------------------ 状态
 
     def status(self, user_id: str | None = None) -> MemoryStatus:
         """当前状态：**数一遍库与工作区，不连任何东西**。
 
-        成本：一次本地检索 + 一次目录遍历。这是"个人长期记忆"的量级，
-        所以不另做缓存——不缓存就没有"缓存过期"这个新问题。
+        成本：两次本地检索（条目 + 旧档案水位）加一次目录遍历。这是
+        "个人长期记忆"的量级，所以不另做缓存——不缓存就没有"缓存过期"这个新问题。
         """
         space = self.workspace_for(user_id)
         items = self.all_items(user_id)
@@ -1663,21 +1689,8 @@ class MemoryService:
             detail=""
             if self.enabled
             else "未启用：记忆不进提示词，recall 也停着（记忆本身照旧可以编辑）",
+            legacy_import_available=self.legacy_import_available(user_id),
         )
-
-    def describe(self, path: str, user_id: str | None = None) -> memory_files.MemoryFile:
-        """单个文件的元信息（不含正文）。见 ``memory_files.describe``。"""
-        return memory_files.describe(self.workspace_for(user_id), path)
-
-    def file_text(
-        self, path: str, user_id: str | None = None
-    ) -> memory_files.MemoryFileDetail:
-        """读一个文件的原文（含 frontmatter）——界面上人设文件与旧档案的只读查看用它。
-
-        只读：这条路**不要求 ``memory.enabled``**——记忆关着的时候，
-        用户依然该能打开自己那份文件看看写了什么。
-        """
-        return memory_files.read_file(self.workspace_for(user_id), path)
 
 
 # --------------------------------------------------------------------- 实例与存储

@@ -538,17 +538,54 @@
   /* ---------------------------------------------------------------- 记忆页 */
 
   /**
-   * 这一页现在是一块：**条目列表**（外加搜索框、迁移入口与人设文件两节辅助区）。
+   * 从上到下就是用户做事的顺序：**页头读数 + 动作**、检索行、分区筛选
+   * （复用上面的 `.m-filters` / `.m-filter`）、条目列表与历史时间线；
+   * 旧档案那条一次性横幅借 `.m-migrate` 那张卡片。
    *
-   * 旧的档案卡 / 变更流 / 文件列表 / 整份文件编辑 / 图谱 / 召回试验那一批样式
-   * 随页面上线一起删掉了——留着空的类名比留着入口更容易让人以为功能还在。
+   * **竖直节奏由 `.m-page-body` 一处给**（`page-shell-body` 只给上边距，
+   * 各块自己没有外边距）——块一多，在每块上各写一份间距迟早会写出两种间距。
+   *
+   * 随界面一起删掉的类名（留着空的类名比留着入口更容易让人以为功能还在）：
+   * 人设文件只读区（`m-persona*`）、原文弹窗（`m-original-*`）、变更流的卡片式列表
+   * （`m-change*`，历史改成时间线），以及预算那一族的读数色（`m-readout-global`
+   * 与两个 tone）。
    */
 
+  .m-page-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  /* 分区筛选自带下外边距（它本来要跟"内容"拉开一档）：在正文这一列里由 gap 统一管。 */
+  .m-page-body > .m-filters {
+    margin-bottom: 0;
+  }
+
+  /* 页头读数：一个小状态点 + `N 条 · 上次更新 …`（兜底提示是同一行的另一段小字）。 */
   .m-status {
     display: flex;
-    align-items: baseline;
-    gap: var(--space-3);
+    align-items: center;
+    gap: var(--space-2);
     flex-wrap: wrap;
+  }
+
+  .m-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-pill);
+    background: var(--text-tertiary);
+  }
+
+  .m-status-dot[data-tone='ok'] {
+    background: var(--status-success);
+  }
+
+  /* 读数：条数与上次更新。次级字色、等宽数字（它会自己变，抖起来很难看）。 */
+  .m-readout {
+    font-size: var(--text-micro-size);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
   }
 
   .m-search {
@@ -566,79 +603,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-  }
-
-  .m-persona {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .m-persona-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .m-persona-item {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
-  }
-
-  .m-persona-open {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--text-primary);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .m-persona-open:hover {
-    color: var(--accent-text);
-  }
-
-  /* 读数：条数 / 字数。接近上限换色（§5.2、§6.1），平时是次级字色。 */
-  .m-readout {
-    font-size: var(--text-micro-size);
-    color: var(--text-secondary);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .m-readout-global {
-    font-size: var(--text-meta-size);
-    color: var(--text-primary);
-  }
-
-  .m-readout[data-tone='warn'] {
-    color: var(--status-warning);
-  }
-
-  .m-readout[data-tone='over'] {
-    color: var(--status-danger);
-  }
-
-  .m-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-panel);
-    background: var(--bg-subtle);
-  }
-
-  .m-section-head {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
   }
 
   .m-section-title {
@@ -681,17 +645,9 @@
   }
 
   /* 条目上那一行"什么时候、从哪来"：**数据**（不是解释），按用途命名。 */
-  .m-entry-when,
-  .m-status-when,
-  .m-persona-name {
+  .m-entry-when {
     color: var(--text-tertiary);
     font-size: var(--text-c2-size);
-  }
-
-  .m-persona-empty {
-    margin: 0;
-    color: var(--text-tertiary);
-    font-size: var(--text-meta-size);
   }
 
   .m-entry-text {
@@ -725,21 +681,11 @@
     padding-top: var(--space-1);
   }
 
-  /* 来源小字：它是数据（这条从哪来、什么时候来的），点一下跳到变更流那一条。 */
-  .m-entry-source {
-    border: none;
-    background: none;
-    color: var(--text-tertiary);
+  /* 行内二次确认：先问一句「删除？」，确认键在它右边（✕ 不直接动手）。 */
+  .m-entry-ask {
+    color: var(--text-secondary);
     font-size: var(--text-c2-size);
-    cursor: pointer;
-  }
-
-  .m-entry-source:hover:not(:disabled) {
-    color: var(--accent-text);
-  }
-
-  .m-entry-source:disabled {
-    cursor: default;
+    white-space: nowrap;
   }
 
   .m-add-box {
@@ -754,7 +700,8 @@
     gap: var(--space-2);
   }
 
-  /* 迁移入口：把旧档案的四区条目一次性搬进来（可重跑、旧文件不动）。 */
+  /* 旧档案的一次性横幅：只在后端说"还有可导的"时出现（搬完/不再需要就没了）。
+     它借这张卡片的形状——"一段说明 + 右侧动作"，与曾经的常驻入口同形不同命。 */
   .m-migrate {
     display: flex;
     align-items: center;
@@ -794,31 +741,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .m-original-path {
-    margin: 0 0 var(--space-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-c2-size);
-    color: var(--text-tertiary);
-    overflow-wrap: anywhere;
-  }
-
-  /* 原文/草稿/旧记忆的只读正文：与编辑态同形（只有内容是变量，框不跳） */
-  .m-original-body {
-    max-height: 420px;
-    margin: 0;
-    padding: var(--space-4);
-    overflow: auto;
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-panel);
-    background: var(--bg-surface);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: var(--text-meta-size);
-    line-height: var(--line-prose);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-
   /* ------------------------------------------------------------ 一条记忆的历史 */
 
   .m-history {
@@ -840,38 +762,50 @@
     font-size: var(--text-meta-size);
   }
 
-  .m-changes {
+  /**
+   * 历史是一条**时间线**（最旧在前，顺序由后端给）：一条竖线，每个事件一个点。
+   *
+   * 竖线画在每一项自己的左边框上，不是画在外面那个容器上——容器上的话，
+   * 最后一项下面会多出一截没有点收尾的线。
+   */
+  .m-timeline {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
-  .m-change {
+  .m-timeline-item {
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: var(--space-1-5);
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-panel);
-    background: var(--bg-subtle);
+    gap: var(--space-1);
+    padding: 0 0 var(--space-3) var(--space-4);
+    border-left: 1px solid var(--border-hairline);
   }
 
-  .m-change[data-highlight='true'] {
-    border-color: var(--accent);
+  .m-timeline-item:last-child {
+    padding-bottom: 0;
   }
 
-  .m-change-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
-    flex-wrap: wrap;
+  .m-timeline-item::before {
+    content: '';
+    position: absolute;
+    top: 5px;
+    left: -3px;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--border-strong);
   }
 
-  .m-change-meta {
+  /* 记下 = 这条记忆的起点（蓝点）；改成 / 删掉都是"变了"（灰点）。 */
+  .m-timeline-item[data-event='ADD']::before {
+    background: var(--accent);
+  }
+
+  .m-timeline-meta {
     display: flex;
     align-items: baseline;
     gap: var(--space-2);
@@ -880,32 +814,31 @@
     color: var(--text-tertiary);
   }
 
-  .m-change-action {
+  .m-timeline-action {
     color: var(--text-primary);
   }
 
-  .m-change-values {
+  /* 旧 → 新：旧值划掉（它已经不是这条记忆了），新值就是现在这一条。 */
+  .m-timeline-values {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    margin: 0;
-  }
-
-  .m-change-line {
-    display: flex;
+    align-items: baseline;
     gap: var(--space-2);
+    flex-wrap: wrap;
     font-size: var(--text-meta-size);
     line-height: var(--line-prose);
   }
 
-  .m-change-line dt {
-    flex: 0 0 auto;
+  .m-timeline-old {
+    color: var(--text-tertiary);
+    text-decoration: line-through;
+    overflow-wrap: anywhere;
+  }
+
+  .m-timeline-arrow {
     color: var(--text-tertiary);
   }
 
-  .m-change-line dd {
-    margin: 0;
-    min-width: 0;
+  .m-timeline-new {
     overflow-wrap: anywhere;
   }
 
