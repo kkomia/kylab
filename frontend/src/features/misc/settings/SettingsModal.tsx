@@ -6,7 +6,7 @@
  * 改完关掉，回到他原来在看的页面。
  *
  * 内部用左侧分组菜单 + 右侧内容：
- * - 模型注册 / 向量化 / 对话模型 / 服务配置 / 存储配置 / **知识库连接**（本机档专属，M3）/
+ * - 模型注册 / 对话模型 / 服务配置 / 存储配置 / **知识库连接**（本机档专属，M3）/
  *   系统与安全 / 外观 / 快捷键；
  * - **功能**（长期记忆 / 联网 / 沙箱执行…）：这一组**不是手写的菜单**，
  *   而是"后端返回了、但上面几节没有专门渲染"的那些组，自动出现。
@@ -27,7 +27,6 @@ import {
   Archive,
   BookOpen,
   CircleUser,
-  Database,
   Folder,
   KeyRound,
   Keyboard,
@@ -52,7 +51,6 @@ import { Textarea } from '@/ui/textarea'
 import {
   CheckRow,
   ErrorLine,
-  InfoTip,
   Modal,
   OptionSelect,
   SkeletonBlock,
@@ -69,7 +67,6 @@ import { StorageSection } from './StorageSection'
 
 type SectionKey =
   | 'registry'
-  | 'models'
   | 'llm'
   | 'services'
   | 'storage'
@@ -81,8 +78,14 @@ type SectionKey =
   | 'system'
   | `feature:${string}`
 
-/** 已经由上面那些"专门一节"渲染过的设置组；其余自动进「功能」。 */
-const RENDERED_GROUP_KEYS = new Set(['embedding', 'llm', 'chat', 'mineru', 'paddleocr'])
+/**
+ * **由这个弹窗自己处理掉的设置组**，不再自动进「功能」——分两种：
+ * - `llm` / `chat` / `mineru` / `paddleocr`：下面各有专门一节在渲染；
+ * - `embedding`：**刻意不给界面入口**（2026-10-09：嵌入那一节整块下线）。嵌入模型槽位与
+ *   批大小 / 协议仍归后端（记忆系统的嵌入器读它），设置界面不再暴露——留在这一组里就是
+ *   为了别让它被下面的「功能」列表翻出来（那等于把刚下线的菜单又摆回来）。
+ */
+const HANDLED_GROUP_KEYS = new Set(['embedding', 'llm', 'chat', 'mineru', 'paddleocr'])
 
 /**
  * **已经有自己家的**设置组（v0.26）：它们从总设置里搬走了，只在模块页出现。
@@ -111,8 +114,7 @@ const MODULE_GROUP_KEYS = new Set(['memory', 'web', 'sandbox'])
 const SECTIONS: { key: SectionKey; label: string; icon: typeof Server }[] = [
   // **「模型」放在最前**：它是配置模型的主路径（供应商 → 模型 → 用途）
   { key: 'registry', label: '模型注册', icon: Sparkles },
-  // 这两组是回退用的精细字段：没在「模型」里绑定的用途，按这里的字段走
-  { key: 'models', label: '向量化', icon: Database },
+  // 回退用的精细字段：没在「模型注册」里绑定的用途，按这里的字段走
   { key: 'llm', label: '对话模型', icon: Languages },
   { key: 'services', label: '服务配置', icon: Server },
   { key: 'storage', label: '存储配置', icon: Folder },
@@ -236,7 +238,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
    */
   const inlineLabel = (label: string): string => label.replace('（默认）', '').trim() || label
 
-  const embeddingConfigured = slotOf('embedding')?.configured ?? false
   const chatConfigured = slotOf('chat')?.configured ?? false
 
   /**
@@ -248,7 +249,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const featureGroups = useMemo(
     () =>
       (config?.groups ?? []).filter(
-        (item) => !RENDERED_GROUP_KEYS.has(item.key) && !MODULE_GROUP_KEYS.has(item.key),
+        (item) => !HANDLED_GROUP_KEYS.has(item.key) && !MODULE_GROUP_KEYS.has(item.key),
       ),
     [config],
   )
@@ -264,7 +265,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       (item.key !== 'credentials' || backup.gate),
   )
   const navGroups = [
-    { label: '模型', keys: ['registry', 'models', 'llm'] as SectionKey[] },
+    { label: '模型', keys: ['registry', 'llm'] as SectionKey[] },
     {
       label: '服务',
       keys: ['services', 'storage', 'knowledge', 'backup', 'credentials'] as SectionKey[],
@@ -382,115 +383,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           {settings.isLoading && <SkeletonBlock variant="text" rows={4} />}
 
           {section === 'registry' && <ModelRegistryPanel />}
-
-          {section === 'models' && (
-            <>
-              {editing?.key === 'embedding' ? (
-                <>
-                  <h3 className="m-section-title">编辑 {editing.label}</h3>
-                  <div className="m-edit-form">
-                    {editing.fields.map((field) => (
-                      <label key={field.key} className="m-edit-field">
-                        <span className="m-edit-label">{field.label}</span>
-                        <Input
-                          type={field.type === 'int' ? 'number' : 'text'}
-                          value={draft[field.key] ?? ''}
-                          onChange={(event) =>
-                            setDraft((current) => ({ ...current, [field.key]: event.target.value }))
-                          }
-                          aria-label={field.label}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                  <div className="m-edit-actions">
-                    <Button onClick={() => setEditing(null)}>返回</Button>
-                    <Button disabled={save.isPending} onClick={() => save.mutate(editing)}>
-                      {save.isPending ? '保存中…' : '保存'}
-                    </Button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <h3 className="m-section-title">向量化</h3>
-
-                  <div className="m-slot-field">
-                    <div className="m-slot-head">
-                      <span className="m-slot-label">
-                        默认嵌入模型
-                        {/* 「建好即冻结」是**选择前必须知道的代价**（不可逆），保留；
-                            原来那句"未指定时无法新建知识库"与下面那行状态是同一件事，删 */}
-                        <InfoTip text="建好即冻结，之后不能换。" />
-                      </span>
-                      <StatusTag
-                        tone={embeddingConfigured ? 'success' : 'warning'}
-                        label={embeddingConfigured ? '已选定' : '未选定'}
-                      />
-                      <Button
-                        disabled={testing || !embeddingConfigured}
-                        onClick={() => void runTest('embedding')}
-                      >
-                        {testing ? '测试中…' : '测试连接'}
-                      </Button>
-                    </div>
-                    <OptionSelect
-                      value={slotOf('embedding')?.bound_model_pk ?? ''}
-                      onValueChange={(value) => bind.mutate({ slot: 'embedding', value })}
-                      options={slotOptions('embedding')}
-                      disabled={bindingSlot === 'embedding'}
-                      label="默认嵌入模型"
-                    />
-                    {!embeddingConfigured && <p className="m-row-note">未选定前不能新建知识库。</p>}
-                    {testResult && (
-                      <div
-                        className={
-                          testResult.ok ? 'm-test-result m-test-ok' : 'm-test-result m-test-bad'
-                        }
-                      >
-                        <span>{testResult.detail}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="m-slot-field">
-                    <div className="m-slot-head">
-                      <span className="m-slot-label">重排模型</span>
-                      <StatusTag
-                        tone={slotOf('rerank')?.configured ? 'success' : 'neutral'}
-                        label={slotOf('rerank')?.configured ? '已启用' : '未启用'}
-                      />
-                      <Button
-                        disabled={testing || !slotOf('rerank')?.configured}
-                        onClick={() => void runTest('rerank')}
-                      >
-                        {testing ? '测试中…' : '测试连接'}
-                      </Button>
-                    </div>
-                    <OptionSelect
-                      value={slotOf('rerank')?.bound_model_pk ?? ''}
-                      onValueChange={(value) => bind.mutate({ slot: 'rerank', value })}
-                      options={slotOptions('rerank')}
-                      disabled={bindingSlot === 'rerank'}
-                      label="重排模型"
-                    />
-                  </div>
-
-                  <h3 className="m-section-title m-section-gap">高级</h3>
-                  <div className="m-row">
-                    <div className="m-row-main">
-                      <span className="m-row-label">批大小</span>
-                      <span className="m-row-value tabular">
-                        {fieldValue('embedding', 'embedding.batch_size') || '—'}
-                      </span>
-                    </div>
-                    {group('embedding') && (
-                      <Button onClick={() => openEdit(group('embedding')!)}>编辑</Button>
-                    )}
-                  </div>
-                </>
-              )}
-            </>
-          )}
 
           {section === 'llm' && (
             <>
@@ -615,12 +507,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       disabled={bindingSlot === 'chat'}
                       label="默认对话模型"
                     />
-                    {/* **三个用途格都不再跟一行摘要**（v0.53 统一）：那一行拼出来的串与
-                        下拉里选中的那串是同一个模型，等于把选中值说两遍。对话那一格在
-                        2026-09-24 就先删了（「DeepSeek Flash · 深度求索」说两遍）；
-                        嵌入/重排当时以"摘要带维度、是另一份信息"为由留着，用户 2026-09-27
-                        圈着它说"这不就是同一个东西说两遍"——**维度并进了选项标签**，
-                        信息没丢，但只说一遍（见 slotOptions）。 */}
+                    {/* 这一格不再跟一行摘要（v0.53 统一）：那一行拼出来的串与下拉里选中的
+                        那串是同一个模型，等于把选中值说两遍。完整理由见上面 `slotOptions`
+                        那一段。 */}
                     {!chatConfigured && (
                       <p className="m-row-note">未选定时「对话」与标题生成不可用。</p>
                     )}

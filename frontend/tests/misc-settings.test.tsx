@@ -139,6 +139,23 @@ function settingsView(): SettingsView {
         ],
       },
       {
+        // 「服务配置」那一节渲染 MinerU / PaddleOCR 两行，但只有后端真返回了组、
+        // 那一行才挂「编辑」——给 MinerU 一组，好让「测试连接失败态」那条用例
+        // 进得了它的编辑态（嵌入那一屏已随旧检索链下线）。
+        key: 'mineru',
+        label: 'MinerU 云端解析',
+        fields: [
+          {
+            key: 'mineru.token',
+            label: 'API Token',
+            type: 'secret',
+            value: '',
+            configured: false,
+            options: [],
+          },
+        ],
+      },
+      {
         // 后端新加的组：总设置里没有专门一节，必须**自动**出现在「功能」下
         key: 'misc_new',
         label: '实验特性',
@@ -287,6 +304,9 @@ describe('设置弹窗', () => {
     expect(await screen.findByText('实验特性')).toBeInTheDocument()
     // 已经搬走的组（memory / web / sandbox）不该在总设置里出现
     expect(screen.queryByText('长期记忆')).not.toBeInTheDocument()
+    // 「向量化」这一节整块下线：后端那组 embedding 也不许被「功能」翻出来
+    expect(screen.queryByRole('button', { name: /向量化/ })).toBeNull()
+    expect(screen.queryByText('向量化')).toBeNull()
   })
 
   it('内容区有页面级标题（左侧选中项的名字），"供应商是什么"的说明已删干净', async () => {
@@ -313,15 +333,15 @@ describe('设置弹窗', () => {
 
   it('绑定槽位走 bindSlot（不是改设置字段）', async () => {
     renderMisc(<SettingsModal open onClose={() => undefined} />)
-    await userEvent.click(await screen.findByRole('button', { name: /向量化/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /对话模型/ }))
 
     // 下拉已经是 @/ui/select（Radix 的 combobox + 浮层选项），不是原生 select
-    const trigger = await screen.findByLabelText('默认嵌入模型')
+    const trigger = await screen.findByLabelText('默认对话模型')
     expect(trigger).toHaveAttribute('data-slot', 'select-trigger')
     await userEvent.click(trigger)
-    await userEvent.click(await screen.findByRole('option', { name: /嵌入（备选）/ }))
+    await userEvent.click(await screen.findByRole('option', { name: /对话主力/ }))
 
-    await waitFor(() => expect(bindSlotMock).toHaveBeenCalledWith('embedding', 'm3'))
+    await waitFor(() => expect(bindSlotMock).toHaveBeenCalledWith('chat', 'm1'))
     expect(await screen.findByText('默认模型已更新')).toBeInTheDocument()
   })
 
@@ -329,12 +349,13 @@ describe('设置弹窗', () => {
     testConnectionMock.mockResolvedValue({ ok: false, detail: '鉴权失败：401（key 无效）' })
 
     renderMisc(<SettingsModal open onClose={() => undefined} />)
-    await userEvent.click(await screen.findByRole('button', { name: /向量化/ }))
-    // 「测试连接」在向量化这一屏有两颗（嵌入 / 重排），先测嵌入那一颗
-    const [firstTest] = await screen.findAllByRole('button', { name: '测试连接' })
-    await userEvent.click(firstTest)
+    // 服务配置里进 MinerU 的编辑态才有「测试连接」（嵌入那一屏已随旧检索链下线）
+    await userEvent.click(await screen.findByRole('button', { name: '服务配置' }))
+    const [editMineru] = await screen.findAllByRole('button', { name: '编辑' })
+    await userEvent.click(editMineru)
+    await userEvent.click(await screen.findByRole('button', { name: '测试连接' }))
 
-    await waitFor(() => expect(testConnectionMock).toHaveBeenCalledWith('embedding'))
+    await waitFor(() => expect(testConnectionMock).toHaveBeenCalledWith('mineru'))
     expect(await screen.findByText('鉴权失败：401（key 无效）')).toBeInTheDocument()
   })
 

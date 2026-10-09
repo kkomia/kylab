@@ -3,11 +3,12 @@
  * ——与旧前端 `components/settings/ModelRegistryPanel.vue` 逐条对应。
  *
  * **这里只做一件事：把模型登记进来。** 地址、凭据、模型名、维度都在这儿填。
- * "哪个用途用哪个模型"不在这儿绑——向量化的默认模型在「设置 → 向量化」里选，
- * 对话的在「设置 → 对话模型」里选。理由是**注册入口必须唯一**：
+ * "哪个用途用哪个模型"不在这儿绑——对话模型的默认在「设置 → 对话模型」里选；
+ * 嵌入模型槽位当前**没有界面入口**（嵌入那一节随旧检索链下线，槽位留给记忆系统的
+ * 嵌入器）。理由是**注册入口必须唯一**：
  * 同一件事（这家供应商的这把钥匙）能在两个地方写，就必然会漂。
  *
- * 模型行上仍会显示「用于向量化」这类标记，但那是**只读的状态**：
+ * 模型行上仍会显示「用于嵌入」这类标记，但那是**只读的状态**：
  * 让用户删模型之前知道会影响什么。
  *
  * 密钥纪律：只显示掩码。**改名字时不回传掩码**——那会把密钥写成掩码。
@@ -131,9 +132,9 @@ export function ModelRegistryPanel() {
     (registry.data?.models ?? []).filter((item) => item.provider_id === providerId)
 
   /**
-   * 用途键 → 中文名。**只用于模型行上的「用于向量化」标记**：绑定动作在
-   * 「向量化 / 对话模型」面板里做，但"这个模型正被谁用着"要在这里看得见——
-   * 删它之前得知道会影响什么。
+   * 用途键 → 中文名。**只用于模型行上的「用于嵌入」这种标记**：绑定动作在
+   * 「对话模型」面板里做（嵌入槽位现在没有界面入口），但"这个模型正被谁用着"
+   * 要在这里看得见——删它之前得知道会影响什么。
    */
   const slotLabel = (key: string): string => slots.find((item) => item.slot === key)?.label ?? key
 
@@ -568,7 +569,7 @@ export function ModelRegistryPanel() {
                     onChange={(event) =>
                       setModelDraft((current) => ({ ...current, dim: event.target.value }))
                     }
-                    placeholder="仅向量化模型需要"
+                    placeholder="仅嵌入模型需要"
                   />
                 </Field>
                 <div className="m-field-wide field">

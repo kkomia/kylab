@@ -278,24 +278,20 @@ describe('有本机后端：进壳，一个账号请求都不发（本机档免�
     expect(authCalls(net)).toEqual([])
   })
 
-  it(
-    '会话面那几页都在（新建会话 + 笔记 / 记忆 / 能力）',
-    { timeout: 15_000 },
-    async () => {
-      render(<App />)
+  it('会话面那几页都在（新建会话 + 笔记 / 记忆 / 能力）', { timeout: 15_000 }, async () => {
+    render(<App />)
 
-      await expectInsideShell()
-      expect(screen.getByRole('link', { name: /新建会话/ })).toBeInTheDocument()
-      const nav = screen.getByRole('navigation', { name: '主导航' })
-      for (const label of ['笔记', '记忆', '能力']) {
-        expect(within(nav).getByRole('link', { name: label })).toBeInTheDocument()
-      }
-      // 「概览」那一项随页面一起删了（2026-10-09）
-      expect(within(nav).queryByRole('link', { name: '概览' })).toBeNull()
-      // 会话清单照常读（那一档的数据面在本机）
-      await waitFor(() => expect(listConversationsMock).toHaveBeenCalled())
-    },
-  )
+    await expectInsideShell()
+    expect(screen.getByRole('link', { name: /新建会话/ })).toBeInTheDocument()
+    const nav = screen.getByRole('navigation', { name: '主导航' })
+    for (const label of ['笔记', '记忆', '能力']) {
+      expect(within(nav).getByRole('link', { name: label })).toBeInTheDocument()
+    }
+    // 「概览」那一项随页面一起删了（2026-10-09）
+    expect(within(nav).queryByRole('link', { name: '概览' })).toBeNull()
+    // 会话清单照常读（那一档的数据面在本机）
+    await waitFor(() => expect(listConversationsMock).toHaveBeenCalled())
+  })
 })
 
 describe('降级页上的「重试」', () => {
