@@ -3,22 +3,26 @@
  *
  * ## 为什么是一个 zustand 模块级单例
  *
- * 四处要读同一份东西，而且它们**不在同一棵子树上**：`ChatHeader` 上的那颗开关
- * （在会话条里）、面板自己（在页面那一行里）、消息流里的「预览」（`Deliverables` /
- * `MessageView` 点附件 → `ChatProvider.openFiles`）、以及抓页那一步行尾的「在面板里打开」
- * （`ui/SearchHits.tsx` 的 `FetchPages`）。摆进 `ChatProvider` 的值里
- * 是**不行的**：那个 value 每拍都新建（`ChatProvider.tsx` 的 `ChatRowApi` 注里
- * 记着实测数——流式期间每次写入都会让 172 个消息实例重渲染），面板状态挂上去等于
- * 让"开一个标签"也拖着整个对话区重渲染。与 `layout/useSidebar.ts` 同一个形状、
- * 同一个理由。
+ * 四处要读同一份东西，而且它们**不在同一棵子树上**：面板那一列的开关
+ * （页面那一行的右上角，见 `panel/PanelToggle.tsx`）、面板自己（在页面那一行里）、
+ * 消息流里的「预览」（`Deliverables` / `MessageView` 点附件 → `ChatProvider.openFiles`）、
+ * 以及抓页那一步行尾的「在面板里打开」（`ui/SearchHits.tsx` 的 `FetchPages`）。摆进
+ * `ChatProvider` 的值里是**不行的**：那个 value 每拍都新建（`ChatProvider.tsx` 的
+ * `ChatRowApi` 注里记着实测数——流式期间每次写入都会让 172 个消息实例重渲染），
+ * 面板状态挂上去等于让"开一个标签"也拖着整个对话区重渲染。与
+ * `layout/useSidebar.ts` 同一个形状、同一个理由。
  *
  * ## 什么落盘、什么不落
  *
- * **只有显隐**（`kylab-chat-panel-open`，走 `runtime/prefs` 的 `readStored` /
- * `writeStored`）：它是"这台机器怎么摆"，与主题、侧栏折叠同一类。标签、当前目录、
- * 浏览历史、未读**一律不落盘**：下次打开这一页要从一个确定的样子开始（空态），
- * 而不是恢复上次翻了半天的三个标签——那种"我上次看过什么"的记忆在这里没有收益，
- * 只有"它为什么自己开着一堆东西"的困惑。
+ * **显隐**（`kylab-chat-panel-open`）与**宽度**（`kylab-chat-panel-width`，见下）走
+ * `runtime/prefs` 的 `readStored` / `writeStored`：它们是"这台机器怎么摆"，与主题、
+ * 侧栏折叠同一类。标签、当前目录、浏览历史、未读**一律不落盘**：下次打开这一页要从
+ * 一个确定的样子开始（空态），而不是恢复上次翻了半天的三个标签。
+ *
+ * **宽度要落盘**（2026-10-09，用户："宽度记住到 localStorage，刷新保持"）：拖出来的
+ * 宽度是用户量过的"我要多宽"，刷新丢掉它等于每次都要再拖一次。它落的是**数值**，
+ * 读回来一律过 `clampWidth`——改了 localStorage、或者换了台更小的屏，都不该让面板
+ * 宽到把对话列挤没。
  *
  * ## 不含请求
  *
@@ -28,12 +32,33 @@
  */
 import { create } from 'zustand'
 
-import type { FileScope } from '@/api/conversations'
-
 import { readStored, writeStored } from '../runtime/prefs'
 
 /** 面板显隐的存储键（本机偏好；只落这一位，见文件头注）。 */
 export const PANEL_OPEN_KEY = 'kylab-chat-panel-open'
+
+/** 面板宽度的存储键（本机偏好，见文件头注）。 */
+export const PANEL_WIDTH_KEY = 'kylab-chat-panel-width'
+
+/**
+ * 面板宽度的上下限（用户口径：280–720）。
+ *
+ * 下限 280：再窄下去文件树里的名字只剩两三个字，面包屑也排不下；
+ * 上限 720：面板是**右边那一列**，比它还宽，中间那条对话列就落回"比消息列还窄"
+ * 那一档（与 `usePanelLayout` 里 1100 那条线同一个病）。
+ *
+ * 默认值取 `tokens.css` 的 `--panel-width` 那一档——**同一份口径写两处**是刻意的：
+ * 令牌表给的是"没拖过时长什么样"，这里是"拖过之后允许落在哪儿"，两者的读者不同。
+ */
+export const PANEL_WIDTH_MIN = 280
+export const PANEL_WIDTH_MAX = 720
+export const PANEL_WIDTH_DEFAULT = 380
+
+/** 把一个宽度收进上下限（非数字一律回默认值：那说明 localStorage 被改过）。 */
+export function clampWidth(value: number): number {
+  if (!Number.isFinite(value)) return PANEL_WIDTH_DEFAULT
+  return Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, Math.round(value)))
+}
 
 /** 打开文件时带的那一份（`ChatProvider.openFiles(seed)` 原样给过来）。 */
 export interface PanelSeed {
@@ -53,9 +78,13 @@ export type PanelTab =
   | { id: string; kind: 'files' }
   | { id: string; kind: 'web'; url: string; history: string[]; index: number; title: string }
 
-/** 「文件」标签现在在看哪儿（档 + 层）。**不进 `PanelTab`**：那两个位与"开了哪个标签"无关。 */
+/**
+ * 「文件」标签现在在哪一层。**只有一个位**：范围（会话产物 / 项目目录）不再是一个可以
+ * 单独挑的档，它由"这条会话挂没挂项目"推出来（见 `FilesTab`：挂了项目就显示项目目录，
+ * 没挂就显示会话产物目录）。原先那个 `scope` 与两个范围页签一起去掉了（2026-10-09，
+ * 用户："它们本来就是一回事——会话产物就在项目目录里"）。
+ */
 export interface FilesView {
-  scope: FileScope
   path: string
 }
 
@@ -86,6 +115,20 @@ interface PanelState {
    * （看过了就该灭），塞进标签里会让每个"改标签"的动作都要顺手想一下这一位。
    */
   unread: string[]
+  /**
+   * 面板那一列现在的宽度（像素，落盘，见文件头注）。
+   *
+   * 拖缝隙（`panel/PanelSplitter.tsx`）与「全屏/还原」共用它之外的两位：这一位是
+   * **常规态**下的宽度，全屏态不看它（那时面板撑满主区，见 `full`）。
+   */
+  width: number
+  /**
+   * 面板是不是撑满了主区（「全屏」那一档）。
+   *
+   * **不落盘**：它是"现在这一下我要把面板放到最大"，刷新回到常规列子更合理
+   * （与标签、目录同一类"本次会话里的临时看法"，见文件头注）。
+   */
+  full: boolean
 
   setOpen: (next: boolean) => void
   toggle: () => void
@@ -113,6 +156,11 @@ interface PanelState {
   activate: (id: string) => void
   closeTab: (id: string) => void
   setFilesView: (next: Partial<FilesView>) => void
+  /** 调宽度（拖缝隙、以及键盘那两下都走它）：一律过 `clampWidth` 并落盘。 */
+  setWidth: (next: number) => void
+  /** 撑满主区 / 还原。 */
+  toggleFull: () => void
+  setFull: (next: boolean) => void
 }
 
 /**
@@ -125,8 +173,24 @@ function newTabId(kind: PanelTab['kind']): string {
   return `${kind}-${tabSeq}`
 }
 
+/**
+ * 「定位种子」的序号。**模块级自增**，与 `tabSeq` 同一个手法，但理由不同：
+ * 收到种子的那一方（`FilesTab`）要判断"这一份我是不是已经落过了"，而"同一个 seed 对象、
+ * 每次调用都各算一次"是接口上写死的行为（见 `seed`）。自增计数器因此**不能只比同一个
+ * store 值**：store 里的 `seed` 会被清空（换会话、用例之间复位），清掉之后从 1 重新数，
+ * 序号就会重复，而"落过了"的记号是单调的——两次不同的动作会撞成同一个号。
+ * 全局自增保证"新种子永远比落过的最后一个更靠后"。
+ */
+let seedSeq = 0
+
 function readOpen(): boolean {
   return readStored(PANEL_OPEN_KEY) === '1'
+}
+
+/** 读回拖过的宽度（没有、或者被改坏了就给默认值，见 `clampWidth`）。 */
+function readWidth(): number {
+  const raw = readStored(PANEL_WIDTH_KEY)
+  return raw ? clampWidth(Number(raw)) : PANEL_WIDTH_DEFAULT
 }
 
 /**
@@ -146,12 +210,16 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   activeId: '',
   currentConversationId: '',
   seed: null,
-  filesView: { scope: 'conversation', path: '' },
+  filesView: { path: '' },
   unread: [],
+  width: typeof window === 'undefined' ? PANEL_WIDTH_DEFAULT : readWidth(),
+  full: false,
 
   setOpen: (next) => {
     writeOpen(next)
-    set({ open: next })
+    // 收起来就退出全屏：全屏说的是"这一列撑满主区"，面板都不在时它没有意义，
+    // 留着它下次开面板会直接跳成撑满（用户没要求过）
+    set(next ? { open: next } : { open: next, full: false })
   },
   toggle: () => get().setOpen(!get().open),
 
@@ -167,7 +235,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
       tabs: [],
       activeId: '',
       seed: null,
-      filesView: { scope: 'conversation', path: '' },
+      filesView: { path: '' },
       // 未读也跟着标签走：标签都没了，那个小圆点就没有落点了（角标同理）
       unread: [],
     })
@@ -184,7 +252,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
         tabs: existing ? state.tabs : [...state.tabs, tab],
         activeId: tab.id,
         unread: existing ? withoutId(state.unread, tab.id) : state.unread,
-        seed: seed ? { ...seed, seq: (state.seed?.seq ?? 0) + 1 } : state.seed,
+        seed: seed ? { ...seed, seq: (seedSeq += 1) } : state.seed,
       }
     }),
 
@@ -275,6 +343,19 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   },
 
   setFilesView: (next) => set({ filesView: { ...get().filesView, ...next } }),
+
+  setWidth: (next) => {
+    const width = clampWidth(next)
+    if (width === get().width) return
+    writeStored(PANEL_WIDTH_KEY, String(width))
+    set({ width })
+  },
+
+  setFull: (next) => {
+    if (get().full === next) return
+    set({ full: next })
+  },
+  toggleFull: () => get().setFull(!get().full),
 }))
 
 /** 去掉一个 id（未读那一位的每一处修改都长这样，抽出来免得五处各写一遍 `filter`）。 */

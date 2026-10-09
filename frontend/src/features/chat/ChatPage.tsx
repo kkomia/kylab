@@ -28,7 +28,10 @@
 import './ui/chat.css'
 import { ChatProvider, useChat } from './runtime/ChatProvider'
 import { ChatRuntime } from './runtime/ChatRuntime'
+import { PanelSplitter } from './panel/PanelSplitter'
+import { PanelToggle } from './panel/PanelToggle'
 import { SidePanel } from './panel/SidePanel'
+import { usePanelStore } from './panel/panelStore'
 import { ChatThread } from './ui/ChatThread'
 import { Composer } from './ui/Composer'
 import { IngestDialog } from './ui/Dialogs'
@@ -61,6 +64,53 @@ function NewChatScope() {
   )
 }
 
+/**
+ * 对话页那一行：左边对话列、中间那条拖拽把手、右边面板，右上角那颗开关。
+ *
+ * 单独一个组件是为了让**只有它**订阅面板的宽度与开合：这一页里最重的东西是对话列
+ * （消息列表、输入卡片），宽度一变就重渲染整棵树的话，拖缝会抖成一片。这一层订阅，
+ * 重渲染的代价只有"几个布局盒子"（面板自己订阅宽度、改的是它自己的 CSS 变量）。
+ *
+ * 类名是 `ch-panel-host` 而不是 `ch-panel-row`：**后者已经被文件树那一行占了**
+ * （`panel.css` 里 `.ch-panel-row { height: var(--row-height-compact); align-items: center; padding: 0 8px }`
+ * ——那是树里的一行文件）。2026-10-09 这里先写成了 `ch-panel-row`，两条规则一撞，
+ * 这一行就白拿了一份"32px 高、竖向居中、左右各 8px 内边距"：面板里的东西整块被竖着居中
+ * （看着像空态那一屏的居中跑到了别处）、右缘还平白多出 8px。命名撞车的代价一贯如此——
+ * 所以这一族新类名（`ch-panel-host` / `ch-panel-splitter` / `ch-panel-corner` /
+ * `ch-panel-action` / `ch-panel-tablist`）都先 grep 过一遍 `src`，没人用过才落。
+ */
+function ChatPageRow({ children }: { children: React.ReactNode }) {
+  const open = usePanelStore((state) => state.open)
+  const full = usePanelStore((state) => state.full)
+  /** 面板开着、而且**有标签**时才有标签条（空态那一屏没有那一行）。 */
+  const tabCount = usePanelStore((state) => state.tabs.length)
+  /**
+   * 全屏态（`data-panel-full`）：对话列在 `panel.css` 里被 `display: none` 收起来、
+   * 面板撑满这一行。**面板关着时不算全屏**（`open && full`）——收面板那一下会把 `full`
+   * 一起清掉（见 `panelStore.setOpen`），这里再与一下只是不让"关着却把对话列藏了"
+   * 这种状态有机会出现。
+   */
+  const panelFull = open && full
+
+  return (
+    <div
+      className="ch-panel-host relative flex h-full min-h-0 flex-row text-[var(--text-primary)]"
+      data-panel-full={panelFull}
+    >
+      {children}
+      {/* 开关：**页面右上角**，不是对话列里的一格（理由见 `PanelToggle` 头注）。
+          面板开着、标签条也在时，这个位置上站着的是标签条右端那颗收起（同一颗按钮、
+          同一个坐标），所以那时不画它——不然两颗会叠在一起。没有标签条（面板关着，
+          或者开着但一个标签都没有=空态那一屏）时，它就是这一屏唯一的那颗开关。 */}
+      {open && tabCount > 0 ? null : (
+        <div className="ch-panel-corner">
+          <PanelToggle />
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function ChatPage() {
   return (
     <ChatProvider>
@@ -71,20 +121,29 @@ export function ChatPage() {
             对着 DeepSeek / Kimi 补上的（原先完全无页头，长会话里滚动后不知道在哪）。
             会话条本身在 `ChatThread` 里、不随消息滚走。
 
-            **右边那一列是常驻的面板**（`SidePanel`：文件树 / 下一轮的网页），
+            **右边那一列是常驻的面板**（`SidePanel`：文件树 / 网页），
             所以这一行是横向两列：左边是原来那三段（会话条、消息区、输入卡片），
-            右边是面板自己那一列（`shrink-0` + `--panel-width`，见 `panel/panel.css`）。
-            面板要挤的是**这一行**，不是整页——所以它是 `relative` 的：窄屏下面板改
-            覆盖式（`position: absolute`）时锚在这一行上，贴的是对话区的右缘，
-            不会盖到侧栏上。 */}
-        <div className="relative flex h-full min-h-0 flex-row text-[var(--text-primary)]">
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            右边是面板自己那一列。面板要挤的是**这一行**，不是整页——所以它是
+            `relative` 的：窄屏下面板改覆盖式（`position: absolute`）时锚在这一行上，
+            贴的是对话区的右缘，不会盖到侧栏上。
+
+            这一行上还有三样**属于页面而不是某一列**的东西（都由 `.ch-panel-*` 管，
+            见 `panel/panel.css`）：
+            - 两列之间那条**拖拽把手**（`PanelSplitter`，只在面板贴着放时才有：
+              浮层态下这两列不是并排的，没有"它们之间那条缝"）；
+            - **面板开关**（`PanelToggle`，绝对定位在右上角——它和面板标签条右端那颗
+              收起是同一颗，见那个文件的头注）；
+            - 全屏态：`data-panel-full` 把对话列收起来、面板撑满（`.ch-panel-chat`
+              那份规则在 `panel.css` 里）。 */}
+        <ChatPageRow>
+          <div className="ch-panel-chat flex min-h-0 min-w-0 flex-1 flex-col">
             <NewChatScope />
             <ChatThread />
             <Composer />
           </div>
+          <PanelSplitter />
           <SidePanel />
-        </div>
+        </ChatPageRow>
         {/* 引用原文是抽屉（贴边滑出，对话还看得见）；「存进知识库」仍是弹窗（要拦一下）。
             挂在这儿而不是页内：抽屉是**页面级浮层**，不该跟着输入卡片一起重挂 */}
         <SourceSheet />

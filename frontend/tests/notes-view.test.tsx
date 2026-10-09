@@ -34,7 +34,6 @@ const listNoteTags = vi.fn()
 const createNote = vi.fn()
 const updateNote = vi.fn()
 const deleteNote = vi.fn()
-const attachNote = vi.fn()
 const aiTransform = vi.fn()
 const uploadNoteImage = vi.fn()
 const listNoteFolders = vi.fn()
@@ -43,7 +42,6 @@ const renameNoteFolder = vi.fn()
 const moveNoteFolder = vi.fn()
 const deleteNoteFolder = vi.fn()
 const moveNote = vi.fn()
-const listKnowledgeBases = vi.fn()
 
 vi.mock('@/api/notes', () => ({
   listNotes: (...args: unknown[]) => listNotes(...args),
@@ -52,7 +50,6 @@ vi.mock('@/api/notes', () => ({
   createNote: (...args: unknown[]) => createNote(...args),
   updateNote: (...args: unknown[]) => updateNote(...args),
   deleteNote: (...args: unknown[]) => deleteNote(...args),
-  attachNote: (...args: unknown[]) => attachNote(...args),
   aiTransform: (...args: unknown[]) => aiTransform(...args),
   uploadNoteImage: (...args: unknown[]) => uploadNoteImage(...args),
   listNoteFolders: (...args: unknown[]) => listNoteFolders(...args),
@@ -61,10 +58,6 @@ vi.mock('@/api/notes', () => ({
   moveNoteFolder: (...args: unknown[]) => moveNoteFolder(...args),
   deleteNoteFolder: (...args: unknown[]) => deleteNoteFolder(...args),
   moveNote: (...args: unknown[]) => moveNote(...args),
-}))
-
-vi.mock('@/api/knowledgeBases', () => ({
-  listKnowledgeBases: (...args: unknown[]) => listKnowledgeBases(...args),
 }))
 
 const toastError = vi.fn()
@@ -186,7 +179,6 @@ beforeEach(() => {
     createNote,
     updateNote,
     deleteNote,
-    attachNote,
     aiTransform,
     uploadNoteImage,
     listNoteFolders,
@@ -195,7 +187,6 @@ beforeEach(() => {
     moveNoteFolder,
     deleteNoteFolder,
     moveNote,
-    listKnowledgeBases,
   ]) {
     mock.mockReset()
   }
@@ -212,7 +203,6 @@ beforeEach(() => {
   listNoteTags.mockResolvedValue({ items: [] })
   // 默认还没有文件夹：那棵树只摆「全部 / 未归档」两行（文件夹相关的用例各自覆盖）
   listNoteFolders.mockResolvedValue({ items: [], unfiled_count: 2, total_count: 2 })
-  listKnowledgeBases.mockResolvedValue({ items: [] })
   updateNote.mockImplementation((id: string, payload: Record<string, unknown>) =>
     Promise.resolve({ ...note(id), ...payload }),
   )
@@ -510,46 +500,11 @@ describe('笔记页：搜索 / 新建 / 删除 / 移动', () => {
     expect(toastSuccess).toHaveBeenCalledWith('笔记已删除')
   })
 
-  it('加入知识库（移动）：先落盘再入库，成功后标题栏给出"已加入"与文档入口', async () => {
-    listKnowledgeBases.mockResolvedValue({
-      items: [
-        { id: 'kb1', name: '工作库' },
-        { id: 'kb2', name: '资料库' },
-      ],
-    })
-    attachNote.mockResolvedValue(note('n1', { kb_id: 'kb2', doc_id: 'd9' }))
-    renderPage('/notes/n1')
-    const title = await waitForDraft('n1')
-    // 有一处未落盘的改动：入库前必须先把它写进去（入库读的是库里的正文）
-    fireEvent.change(title, { target: { value: '改过的标题' } })
-
-    fireEvent.click(screen.getByLabelText('加入知识库'))
-
-    const dialog = await screen.findByRole('dialog')
-    const select = within(dialog).getByLabelText('目标知识库')
-    fireEvent.change(select, { target: { value: 'kb2' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: '加入' }))
-
-    await waitFor(() => expect(attachNote).toHaveBeenCalledWith('n1', 'kb2'))
-    // 入库读的是库里的正文，所以保存必须发生在入库之前
-    await waitFor(() => {
-      const saveOrder = updateNote.mock.invocationCallOrder[0] ?? Infinity
-      expect(saveOrder).toBeLessThan(attachNote.mock.invocationCallOrder[0])
-    })
-    expect(await screen.findByText('已加入知识库「资料库」')).toBeTruthy()
-    // 文案 2026-09-24 压短（后半句"之后可以在检索里命中这条笔记"是在解释入库之后会怎样）
-    expect(toastSuccess).toHaveBeenCalledWith('已加入知识库')
-  })
-
-  it('没有知识库时给一句指路，不开弹窗', async () => {
-    renderPage('/notes/n1')
-    await waitForDraft('n1')
-
-    fireEvent.click(screen.getByLabelText('加入知识库'))
-
-    expect(toastError).toHaveBeenCalledWith('还没有知识库，先在知识库管理台里新建一个')
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
+  /**
+   * 加入知识库那一条（含"没有知识库时给一句指路"）随知识库剥离整条删掉
+   * （2026-10-09）：按钮、弹窗、`attachNote` 与 `listKnowledgeBases` 都不在了，
+   * 用例留着只会钉住一个不存在的入口。
+   */
 })
 
 describe('笔记页：目录（正文大纲）', () => {

@@ -154,7 +154,7 @@ function renderPanel(tab: PanelTab = webTab(), extra: PanelTab[] = []) {
     activeId: tab.id,
     currentConversationId: 'c1',
     seed: null,
-    filesView: { scope: 'conversation', path: '' },
+    filesView: { path: '' },
     unread: [],
   })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -237,7 +237,7 @@ beforeEach(() => {
     activeId: '',
     currentConversationId: '',
     seed: null,
-    filesView: { scope: 'conversation', path: '' },
+    filesView: { path: '' },
     unread: [],
   })
 })
@@ -516,6 +516,111 @@ describe('⑥ 抓页清单行尾那颗「在面板里打开」', () => {
   })
 })
 
+describe('⑧ 网页那一格只长在正文区（2026-10-09）', () => {
+  it('空态点「网页」→ 地址框取代正文区（不是压在文件视图上的一条带子）', async () => {
+    usePanelStore.setState({
+      open: true,
+      tabs: [
+        { id: 'files-1', kind: 'files' },
+        { id: 'web-1', kind: 'web', url: PAGE_URL, history: [PAGE_URL], index: 0, title: '' },
+      ],
+      activeId: 'files-1',
+      currentConversationId: 'c1',
+      seed: null,
+      filesView: { path: '' },
+      unread: [],
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <SidePanel />
+      </QueryClientProvider>,
+    )
+    const user = userEvent.setup()
+
+    // 文件标签下先有一棵树（替身给的是空清单，空态那句话就是它的证据）
+    expect(
+      await screen.findByText('这里还没有文件。让 Agent 做一份，或者自己上传一个。'),
+    ).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: '打开' }))
+    await user.click(await screen.findByRole('menuitem', { name: '打开网页…' }))
+
+    // 那一格出现，而**文件视图整块退出**：文件标签下一个"文件区"的字样都不该再有
+    expect(screen.getByRole('textbox', { name: '网页地址' })).toBeTruthy()
+    expect(screen.queryByText('这里还没有文件。让 Agent 做一份，或者自己上传一个。')).toBeNull()
+    expect(screen.queryByRole('searchbox', { name: '搜索文件' })).toBeNull()
+
+    // 点「取消」就回到刚在的那一档
+    await user.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('textbox', { name: '网页地址' })).toBeNull()
+    expect(
+      await screen.findByText('这里还没有文件。让 Agent 做一份，或者自己上传一个。'),
+    ).toBeTruthy()
+  })
+
+  it('开着那一格时切标签，它也一起收掉（不是半开着的状态）', async () => {
+    renderPanel(webTab(), [{ id: 'files-1', kind: 'files' }])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '打开' }))
+    await user.click(await screen.findByRole('menuitem', { name: '打开网页…' }))
+    expect(screen.getByRole('textbox', { name: '网页地址' })).toBeTruthy()
+
+    await user.click(screen.getByRole('tab', { name: '文件' }))
+    expect(screen.queryByRole('textbox', { name: '网页地址' })).toBeNull()
+  })
+})
+
+describe('⑨ 打开过文件之后切回「网页」标签', () => {
+  it('切得过去，而且**回到文件标签是文件列表**（种子不会在重新挂载时重放一遍）', async () => {
+    usePanelStore.setState({
+      open: true,
+      tabs: [
+        { id: 'files-1', kind: 'files' },
+        { id: 'web-1', kind: 'web', url: PAGE_URL, history: [PAGE_URL], index: 0, title: '示例页' },
+      ],
+      activeId: 'web-1',
+      currentConversationId: 'c1',
+      seed: null,
+      filesView: { path: '' },
+      unread: [],
+    })
+    vi.mocked(checkWebEmbed).mockResolvedValue(embed())
+    vi.mocked(fetchWebPage).mockResolvedValue(page())
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <SidePanel />
+      </QueryClientProvider>,
+    )
+    const user = userEvent.setup()
+
+    // 「预览」那条路：带种子打开文件（面板会直接落进预览态）
+    await act(async () => {
+      usePanelStore.getState().openFilesTab({ key: 'a.md', name: 'a.md', kind: 'md' })
+    })
+    expect(await screen.findByRole('button', { name: '回到文件列表' })).toBeTruthy()
+
+    // 切回网页：切得过去（这是用户报的那一下）
+    await user.click(screen.getByRole('tab', { name: '示例页' }))
+    expect(await screen.findByText('一级标题')).toBeTruthy()
+
+    // 再切回文件：**文件列表**，不是又被种子顶回预览态（那是"回不去列表"）
+    await user.click(screen.getByRole('tab', { name: '文件' }))
+    expect(await screen.findByRole('searchbox', { name: '搜索文件' })).toBeTruthy()
+    // 这一份清单是空的，所以树那一屏挂着那句话；再空转一拍（让所有微任务落地），
+    // 预览态不该被种子重新顶出来
+    expect(
+      await screen.findByText('这里还没有文件。让 Agent 做一份，或者自己上传一个。'),
+    ).toBeTruthy()
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.queryByRole('button', { name: '回到文件列表' })).toBeNull()
+  })
+})
+
 describe('⑦ 「+」菜单 / 空态里的「网页」：原地一格输入框', () => {
   it('空态点「网页」→ 出输入框 → Enter 建标签（没写协议也认）', async () => {
     usePanelStore.setState({
@@ -524,7 +629,7 @@ describe('⑦ 「+」菜单 / 空态里的「网页」：原地一格输入框',
       activeId: '',
       currentConversationId: 'c1',
       seed: null,
-      filesView: { scope: 'conversation', path: '' },
+      filesView: { path: '' },
       unread: [],
     })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

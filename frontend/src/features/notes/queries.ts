@@ -10,25 +10,21 @@
  * | `create()` | `useCreateNote()`——回填正文缓存 + 让列表与标签失效 |
  * | `save()` | `useSaveNote()`——回填正文缓存 + **就地**改列表项（不整表重取） |
  * | `remove()` | `useDeleteNote()`——删正文缓存 + 就地摘掉那一行 + 标签失效 |
- * | `attach()` | `useAttachNote()`——回填正文缓存 + 就地改列表项 |
  * | `setFilter()` | `useNotesStore().setFilter`（纯 UI 状态），列表键跟着变 |
  * | 文件夹（v14，无旧实现） | `useNoteFolders()` / `useCreateNoteFolder()` / `useRenameNoteFolder()` / `useMoveNoteFolder()` / `useDeleteNoteFolder()` / `useMoveNote()` |
  *
- * 三处刻意的选择：
+ * 两处刻意的选择：
  * 1. **保存不 invalidate 列表**：旧实现也是就地改，一次自动保存只发一个 PATCH；
  *    invalidate 会在每次敲字停 800ms 后再补一次列表请求，白白多一份流量；
- * 2. 知识库名册的键**归在 `notes` 命名空间下**（`['notes','kb-options']`）：
- *    它是给"加入知识库"这个下拉用的，与知识库域自己的列表请求不是一份数据口径，
- *    抢同一个键会让两边的 queryFn 互相覆盖；
- * 3. **移动笔记与增删文件夹整片失效**（不就地改）：它们改的是"这条笔记属于哪个筛选"，
+ * 2. **移动笔记与增删文件夹整片失效**（不就地改）：它们改的是"这条笔记属于哪个筛选"，
  *    而就地改只能改列表里那一行、改不掉"它该不该出现在这个列表里"。
+ *
+ * 旧 store 的 `attach()`（笔记入库）随知识库那一档一起删（2026-10-09，见 `NotesView` 头注）。
  */
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 
-import { listKnowledgeBases, type KnowledgeBase } from '@/api/knowledgeBases'
 import {
   aiTransform,
-  attachNote,
   createNote,
   createNoteFolder,
   deleteNote,
@@ -104,14 +100,6 @@ export function useNoteFolders() {
   })
 }
 
-/** 「加入知识库」下拉的候选：所有知识库（按后端返回顺序）。 */
-export function useKnowledgeBaseOptions() {
-  return useQuery<KnowledgeBase[]>({
-    queryKey: notesQueryKeys.knowledgeBases(),
-    queryFn: async () => (await listKnowledgeBases()).items,
-  })
-}
-
 export function useCreateNote() {
   const client = useQueryClient()
   return useMutation({
@@ -153,22 +141,6 @@ export function useDeleteNote() {
         total: Math.max(0, list.total - 1),
       }))
       void client.invalidateQueries({ queryKey: notesQueryKeys.tags() })
-    },
-  })
-}
-
-export interface AttachNoteInput {
-  noteId: string
-  kbId: string
-}
-
-export function useAttachNote() {
-  const client = useQueryClient()
-  return useMutation({
-    mutationFn: ({ noteId, kbId }: AttachNoteInput) => attachNote(noteId, kbId),
-    onSuccess: (updated) => {
-      rememberBody(client, updated)
-      patchListItem(client, updated)
     },
   })
 }

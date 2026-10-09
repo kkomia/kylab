@@ -296,7 +296,7 @@ beforeEach(() => {
     activeId: '',
     currentConversationId: '',
     seed: null,
-    filesView: { scope: 'conversation', path: '' },
+    filesView: { path: '' },
   })
   vi.mocked(listCommands).mockResolvedValue([])
   vi.mocked(getConversation).mockResolvedValue(detail([]))

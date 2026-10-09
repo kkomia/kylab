@@ -196,19 +196,16 @@ export function dirsToReveal(dir: string, key: string): string[] {
 }
 
 /**
- * 面包屑那几段（旧 `FileDrawer.crumbs` 同一条：每段可点，最后一段是当前层）。
+ * 面包屑那几段（每段可点，最后一段是当前层）。
  *
- * 首段由调用方给（面板里是「本会话」或「Workspaces」，见 `FilesTab` 的 `crumbsOf`），
- * 后面才是路径本身——两档（本会话 / 项目文件）共用这一个函数。
+ * **只有路径本身那几段**（2026-10-09 改）：原先首段由调用方给（面板里是「本会话」或
+ * 「Workspaces」），而用户指出那颗根按钮与文件范围切换重复——范围页签撤掉之后它一起去掉，
+ * 面包屑从**实际路径那一层**开始。根那层因此返回空数组，调用方不必为它摆一段占位。
  */
-export function crumbsOf(
-  path: string,
-  root: { label: string; path?: string },
-): { label: string; path: string }[] {
+export function crumbsOf(path: string): { label: string; path: string }[] {
   const segments = path ? path.split('/') : []
-  const trail = [{ label: root.label, path: root.path ?? '' }]
-  segments.forEach((segment, index) => {
-    trail.push({ label: segment, path: segments.slice(0, index + 1).join('/') })
-  })
-  return trail
+  return segments.map((segment, index) => ({
+    label: segment,
+    path: segments.slice(0, index + 1).join('/'),
+  }))
 }

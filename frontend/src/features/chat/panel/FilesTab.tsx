@@ -14,6 +14,27 @@
  * 上传与拖拽**只在抽屉里**（本轮没搬过来）：那是"往文件区放东西"的动作，
  * 而面板是"看"的地方——混在一起会让"点一行"有两个意思。
  *
+ * ## 范围只有一档，而且不必用户挑（2026-10-09 合并）
+ *
+ * 原先这里有两个页签：「本会话」与「项目文件」。用户说它们本来就是一回事
+ * （"会话产物就在项目目录里"），所以那两个页签撤了，改成**一棵树**：
+ *
+ * | 这条会话 | 树根 |
+ * | --- | --- |
+ * | 挂了项目（详情里有 `workspace_id`） | 项目目录（产物落在它们真实路径上） |
+ * | 没挂项目 | 会话产物目录（后端按会话那份文件区给） |
+ *
+ * 这件事只有一条判据（`workspace_id`），所以它**不是**存下来的状态：存下来就会出现
+ * "这条会话没有项目、而面板记着上一档是项目"这种自相矛盾的组合。`scope` 那一份
+ * 状态因此整条去掉（`panelStore.filesView` 现在只剩 `path`）。
+ *
+ * ## 面包屑从**实际路径**开始
+ *
+ * 原先首段是「本会话」/「Workspaces」那一颗根按钮，用户指出它与范围页签重复——
+ * 页签撤了之后这一颗也一起去掉（同一件事不该有两个说法）。所以 `crumbsOf` 现在只给
+ * 路径那几段，根那层**什么都不画**（`ch-panel-bar` 那一行只剩搜索与排序）。
+ * 项目名不至于因此丢掉：会话条（`ChatHeader`）本来就写着它。
+ *
  * ## 三件要照旧的东西
  *
  * 1. **空态 / 错误 / 截断的文案逐字沿用抽屉**（`Sheets.tsx` 的 `.drawer-note` 那一族）：
@@ -24,15 +45,17 @@
  * 3. **定位种子"等列表到了再落"**（`Sheets.tsx:425-443`）：先按 key 把相对的那几层展开，
  *    等那份清单真到了再选中它——名字与种类用服务端的（seed 里那份是调用方给的兜底：
  *    产物在临时区的 key 是 `artifact_id`，一串没有后缀的标识符，光看它猜不出用什么渲染器）。
+ *    那一位"已经落过哪个种子"记在**模块级**（`landedSeed`）而不是组件里：它记的是
+ *    "这个种子已经被执行过了"，而组件会随标签切换重建——记在组件里的话，切走再切回来
+ *    又会把用户按过的「回到文件列表」重新顶掉，看起来就是"回不去列表"（2026-10-09 修）。
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Check, ChevronLeft, ChevronRight, Folder, Search, SlidersHorizontal } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { getFileUrl, type ConversationFile, type FileScope } from '@/api/conversations'
-import { ensureWorkspacesLoaded, useWorkspaceStore } from '@/features/layout/workspaces'
+import { ensureWorkspacesLoaded } from '@/features/layout/workspaces'
 import { FilePreview, resolveRenderer } from '@/features/preview'
-import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs'
 
 import { FileTypeIcon } from '../model/fileIcons'
 import {
@@ -60,6 +83,14 @@ const SORTS: { value: FileSort; label: string }[] = [
 /** 正在预览的那一份（`FilePreview` 要的三个字段）。 */
 type PickedFile = { key: string; name: string; kind: string }
 
+/**
+ * **已经落过的那个种子**（`PanelSeed.seq`）。
+ *
+ * 模块级而不是 `useRef`：见文件头注第 3 条——组件会随标签切换重建，而"这个种子执行过了"
+ * 是一句关于**种子**的话，不该跟着组件一起忘掉。
+ */
+let landedSeed = 0
+
 export function FilesTab() {
   const conversationId = usePanelStore((state) => state.currentConversationId)
   const view = usePanelStore((state) => state.filesView)
@@ -67,16 +98,15 @@ export function FilesTab() {
   const seed = usePanelStore((state) => state.seed)
 
   /**
-   * 项目名与"有没有项目文件这一档"。
+   * 项目名与"这一档是项目目录还是会话产物目录"。
    *
    * `workspace_id` 从**已经取过的会话详情**里读（与 `ChatHeader`、`FilesSheet` 同一个
    * queryKey，命中缓存）；项目名从壳那份工作区清单里查——与 `ChatHeader.tsx` 同一处写法。
+   * 挂项目的判据在这里就地变成 `scope`（见文件头那张表）。
    */
   const detail = useConversationDetail(conversationId)
   const workspaceId = detail.data?.workspace_id ?? null
-  const project = useWorkspaceStore((state) =>
-    workspaceId ? state.items.find((item) => item.id === workspaceId)?.name : undefined,
-  )
+  const scope: FileScope = workspaceId ? 'project' : 'conversation'
   useEffect(() => {
     // 只在真的挂在某个项目下时才去要清单（那一份通常是壳的首屏数据，这里补一次）
     if (workspaceId) void ensureWorkspacesLoaded()
@@ -90,7 +120,6 @@ export function FilesTab() {
   const [byDir, setByDir] = useState<Record<string, ConversationFile[]>>({})
   /** 正在等它那一层清单的那个种子（见文件头注第 3 条）。 */
   const [pending, setPending] = useState<PanelSeed | null>(null)
-  const landed = useRef(0)
 
   const report = useCallback((dir: string, entries: ConversationFile[]): void => {
     setByDir((prev) => (prev[dir] === entries ? prev : { ...prev, [dir]: entries }))
@@ -113,10 +142,12 @@ export function FilesTab() {
   /**
    * 定位种子（第一拍）：把**相对的那几层**展开。种子不在当前这一层下面时先回到最上面那层
    * ——面板里没有"找不到就什么都不做"这一档（用户刚点的那一下「预览」必须看得见）。
+   *
+   * 只在**这个种子还没落过**时跑（`landedSeed` 是模块级的，见文件头注第 3 条）。
    */
   useEffect(() => {
-    if (!seed || seed.seq === landed.current) return
-    landed.current = seed.seq
+    if (!seed || seed.seq === landedSeed) return
+    landedSeed = seed.seq
     const here = isUnder(view.path, seed.key)
     const base = here ? view.path : ''
     if (!here) setFilesView({ path: '' })
@@ -139,16 +170,6 @@ export function FilesTab() {
     setPending(null)
   }, [pending, byDir])
 
-  /** 换档：**清空这一档的路径、展开态与已读清单**（两档的路径不是一回事，见 `FilesSheet.switchScope`）。 */
-  function switchScope(next: FileScope): void {
-    if (next === view.scope) return
-    setFilesView({ scope: next, path: '' })
-    setSelected(null)
-    setTerm('')
-    setExpanded(new Set())
-    setByDir({})
-  }
-
   const root = view.path
   const flat = useMemo(() => flattenLevels(root, byDir, expanded), [root, byDir, expanded])
   const hits = useMemo(() => searchTree(flat, term), [flat, term])
@@ -156,15 +177,8 @@ export function FilesTab() {
   // 预览态会**提前返回**（下面那个 `if`），所以这一位要在那之前算出来
   const selectedKey = selected?.key ?? ''
 
-  const crumbs = useMemo(() => {
-    // 首段回答"这是谁的文件"：会话档是「本会话」，项目档是项目的根（`Workspaces / <项目名>`）
-    const trail = crumbsOf(root, { label: view.scope === 'project' ? 'Workspaces' : '本会话' })
-    if (view.scope === 'project' && project) {
-      // 项目名那一段与首段同一个落点（都回到项目根）——它是名字，不是一个更深的层
-      trail.splice(1, 0, { label: project, path: '' })
-    }
-    return trail
-  }, [root, view.scope, project])
+  /** 面包屑：**从实际路径那一层开始**（根那一段不画，见文件头注）。 */
+  const crumbs = useMemo(() => crumbsOf(root), [root])
 
   /* ---------------------------------------------------------------- 预览态 */
 
@@ -203,27 +217,33 @@ export function FilesTab() {
   return (
     <>
       <div className="ch-panel-bar">
-        <nav className="ch-panel-crumbs" aria-label="路径">
-          {crumbs.map((crumb, index) => (
-            <span key={`${crumb.path}-${index}`} className="ch-panel-crumb-seg">
-              {index > 0 ? (
-                <ChevronRight size={12} aria-hidden className="ch-panel-crumbs-sep" />
-              ) : null}
-              <button
-                type="button"
-                className="ch-panel-crumb"
-                aria-current={index === crumbs.length - 1 ? 'page' : undefined}
-                disabled={index === crumbs.length - 1}
-                onClick={() => {
-                  setFilesView({ path: crumb.path })
-                  setTerm('')
-                }}
-              >
-                {crumb.label}
-              </button>
-            </span>
-          ))}
-        </nav>
+        {/*
+          面包屑：**只有进了子目录才有那一段**（根那层不画，见文件头注）。
+          根那层因此只剩搜索与排序两样——空的一行 `<nav>` 不画（它会白占那一行的 gap）。
+        */}
+        {crumbs.length > 0 ? (
+          <nav className="ch-panel-crumbs" aria-label="路径">
+            {crumbs.map((crumb, index) => (
+              <span key={`${crumb.path}-${index}`} className="ch-panel-crumb-seg">
+                {index > 0 ? (
+                  <ChevronRight size={12} aria-hidden className="ch-panel-crumbs-sep" />
+                ) : null}
+                <button
+                  type="button"
+                  className="ch-panel-crumb"
+                  aria-current={index === crumbs.length - 1 ? 'page' : undefined}
+                  disabled={index === crumbs.length - 1}
+                  onClick={() => {
+                    setFilesView({ path: crumb.path })
+                    setTerm('')
+                  }}
+                >
+                  {crumb.label}
+                </button>
+              </span>
+            ))}
+          </nav>
+        ) : null}
         <div className="ch-panel-tools">
           <label className="ch-panel-search">
             <Search size={14} aria-hidden />
@@ -274,14 +294,6 @@ export function FilesTab() {
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
-          {workspaceId ? (
-            <Tabs value={view.scope} onValueChange={(next) => switchScope(next as FileScope)}>
-              <TabsList aria-label="文件范围">
-                <TabsTrigger value="conversation">本会话</TabsTrigger>
-                <TabsTrigger value="project">项目文件</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          ) : null}
         </div>
       </div>
 
@@ -332,7 +344,7 @@ export function FilesTab() {
         ) : (
           <FileLevel
             conversationId={conversationId}
-            scope={view.scope}
+            scope={scope}
             dir={root}
             depth={0}
             sort={sort}

@@ -27,7 +27,6 @@ const listNoteTags = vi.fn()
 const createNote = vi.fn()
 const updateNote = vi.fn()
 const deleteNote = vi.fn()
-const attachNote = vi.fn()
 const aiTransform = vi.fn()
 const uploadNoteImage = vi.fn()
 const listNoteFolders = vi.fn()
@@ -36,7 +35,6 @@ const renameNoteFolder = vi.fn()
 const moveNoteFolder = vi.fn()
 const deleteNoteFolder = vi.fn()
 const moveNote = vi.fn()
-const listKnowledgeBases = vi.fn()
 
 vi.mock('@/api/notes', () => ({
   listNotes: (...args: unknown[]) => listNotes(...args),
@@ -45,7 +43,6 @@ vi.mock('@/api/notes', () => ({
   createNote: (...args: unknown[]) => createNote(...args),
   updateNote: (...args: unknown[]) => updateNote(...args),
   deleteNote: (...args: unknown[]) => deleteNote(...args),
-  attachNote: (...args: unknown[]) => attachNote(...args),
   aiTransform: (...args: unknown[]) => aiTransform(...args),
   uploadNoteImage: (...args: unknown[]) => uploadNoteImage(...args),
   listNoteFolders: (...args: unknown[]) => listNoteFolders(...args),
@@ -54,10 +51,6 @@ vi.mock('@/api/notes', () => ({
   moveNoteFolder: (...args: unknown[]) => moveNoteFolder(...args),
   deleteNoteFolder: (...args: unknown[]) => deleteNoteFolder(...args),
   moveNote: (...args: unknown[]) => moveNote(...args),
-}))
-
-vi.mock('@/api/knowledgeBases', () => ({
-  listKnowledgeBases: (...args: unknown[]) => listKnowledgeBases(...args),
 }))
 
 const toastError = vi.fn()
@@ -197,7 +190,6 @@ beforeEach(() => {
     createNote,
     updateNote,
     deleteNote,
-    attachNote,
     aiTransform,
     uploadNoteImage,
     listNoteFolders,
@@ -206,7 +198,6 @@ beforeEach(() => {
     moveNoteFolder,
     deleteNoteFolder,
     moveNote,
-    listKnowledgeBases,
   ]) {
     mock.mockReset()
   }
@@ -226,7 +217,6 @@ beforeEach(() => {
     unfiled_count: 3,
     total_count: 6,
   })
-  listKnowledgeBases.mockResolvedValue({ items: [] })
   createNoteFolder.mockResolvedValue(folder('f_new', '新文件夹'))
   renameNoteFolder.mockResolvedValue(folder('f_work', '工作台'))
   moveNoteFolder.mockResolvedValue(folder('f_life', '生活', { parent_id: 'f_work' }))

@@ -23,7 +23,6 @@ vi.mock('@/api/notes', () => ({
   createNote: vi.fn(),
   updateNote: vi.fn(),
   deleteNote: vi.fn(),
-  attachNote: vi.fn(),
   aiTransform: vi.fn(),
   uploadNoteImage: vi.fn(),
 }))

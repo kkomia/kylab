@@ -23,7 +23,12 @@ export interface Note {
   content_md: string
   source_kind: NoteSourceKind
   source_ref: string | null
-  /** 「加入知识库」后指向生成的文档；未入库为 null。 */
+  /**
+   * 入库留下的两位（历史记录）：指向生成的文档与它所在的知识库，未入库为 null。
+   *
+   * 界面入口已随知识库剥离下线（2026-10-09，见 `features/notes/NotesView.tsx` 头注），
+   * 服务端这两个字段照旧。
+   */
   kb_id: string | null
   doc_id: string | null
   /** 所属文件夹；null = 未归档。 */
@@ -162,14 +167,6 @@ export function moveNoteFolder(folderId: string, parentId: string | null): Promi
 /** 删文件夹：里面的子文件夹一起删，笔记回到未归档（后端保证不删笔记）。 */
 export function deleteNoteFolder(folderId: string): Promise<void> {
   return requestLocal<void>(`/notes/folders/${folderId}`, { method: 'DELETE' })
-}
-
-/** 把笔记作为 Markdown 文档加入知识库，返回回填了 `doc_id`/`kb_id` 的笔记。 */
-export function attachNote(noteId: string, kbId: string): Promise<Note> {
-  return requestLocal<Note>(`/notes/${noteId}/attach`, {
-    method: 'POST',
-    body: JSON.stringify({ kb_id: kbId }),
-  })
 }
 
 /** AI 处理的三档动作：只排版 / 只润色 / 两者一起。 */

@@ -66,7 +66,6 @@ export const notesQueryKeys = {
   /** 正文缓存：**键就是 noteId**（旧实现 `Map` 的 key），不带任何过滤条件。 */
   body: (noteId: string) => ['note', noteId] as const,
   bodies: () => ['note'] as const,
-  knowledgeBases: () => ['knowledge-bases'] as const,
 }
 
 /* ------------------------------------------------------- 纯函数（导出给用例） */
@@ -249,6 +248,10 @@ export const useNotesStore = create<NotesUiState>()((set) => ({
  * 那份草稿没有 `source_kind` / `created_at`（编辑器不碰它们），
  * 所以缓存的形状按"编辑器真正读写的那些字段"定，而不是按服务端契约定。
  * 服务端详情（`Note`）天然满足这个形状。
+ *
+ * `kb_id` / `doc_id` 也在这份"不读"的名单里（2026-10-09）：知识库那一档下线之后，
+ * 这一页没有任何地方再读它们——**服务端 `Note` 上仍有这两个字段**（历史记录还在），
+ * 这里只是不再往缓存形状里带。
  */
 export interface NoteBody {
   id: string
@@ -256,8 +259,6 @@ export interface NoteBody {
   content_md: string
   tags: string[]
   pinned: boolean
-  kb_id: string | null
-  doc_id: string | null
   /** 所属文件夹（v14）。**不进保存指纹**：移动走单独那条路径，不是编辑。 */
   folder_id: string | null
   updated_at: string | null

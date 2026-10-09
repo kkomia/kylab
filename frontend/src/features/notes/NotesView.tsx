@@ -9,13 +9,16 @@
  * 同时保留 Ctrl/Cmd+S；切换笔记前先落盘（只发不等，见 `flush`）。
  *
  * 与旧 Vue 版（`frontend/src/views/NotesView.vue`）的逐条对应写在各自函数上；
- * 三处**有意差异**都在 `notes.css` 或下方注释里标明，摘要：
+ * 两处**有意差异**都在 `notes.css` 或下方注释里标明，摘要：
  * 1. 列表折叠用 `useState` + localStorage（旧版是页面级 ref，同一口径）；
  * 2. 保存状态机的"抑制装载"改由**指纹比对**承担（旧版是一个 `hydrating` 布尔 + nextTick，
- *    React 里没有 nextTick，而指纹比对本就是 `saveDraft` 的判据，两层合一）；
- * 3. 两处确认与「加入知识库」弹窗用 `@/ui/dialog` + `@/ui/button`（shadcn 原语），
- *    选库仍是平台的原生 `<select>`——它天生键盘可达，而 Radix Select 在 jsdom 里
- *    要额外补指针捕获 API（`tests/setup.ts` 没有），为两个选项不值当。
+ *    React 里没有 nextTick，而指纹比对本就是 `saveDraft` 的判据，两层合一）。
+ *
+ * **知识库那一档整条下线**（2026-10-09，用户："知识库产品已剥离"）：这一页原先还有
+ * 「加入知识库」这颗按钮、入库弹窗、列表行尾那枚 `Library` 标记与标题下那句"已加入「…」"，
+ * 连同 `attachNote` 那条端点与 `useAttachNote` / `useKnowledgeBaseOptions` 一并删掉。
+ * 库里仍存着历史笔记的 `kb_id` / `doc_id`（那是服务端记录本身），但这一页不再显示、
+ * 也不再提供入口——**对话内的选库与引用是另一条线，不受影响**。
  */
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -24,7 +27,6 @@ import {
   ChevronLeft,
   ChevronRight,
   FolderInput,
-  Library,
   ListTree,
   Pin,
   Plus,
@@ -55,12 +57,10 @@ import { NoteFolderTree } from './FolderTree'
 import { descendantIds, folderOptions, folderPath, subtreeStats } from './folders'
 import {
   useAiTransform,
-  useAttachNote,
   useCreateNote,
   useCreateNoteFolder,
   useDeleteNote,
   useDeleteNoteFolder,
-  useKnowledgeBaseOptions,
   useMoveNote,
   useMoveNoteFolder,
   useNoteFolders,
@@ -161,12 +161,10 @@ export function NotesView() {
   const listQuery = useNotesList({ q: query, tag: activeTag, folder: activeFolder })
   const tagsQuery = useNoteTags()
   const foldersQuery = useNoteFolders()
-  const kbQuery = useKnowledgeBaseOptions()
 
   const createMutation = useCreateNote()
   const saveMutation = useSaveNote()
   const deleteMutation = useDeleteNote()
-  const attachMutation = useAttachNote()
   const aiMutation = useAiTransform()
   const moveNoteMutation = useMoveNote()
   const createFolderMutation = useCreateNoteFolder()
@@ -179,10 +177,6 @@ export function NotesView() {
   const items = useMemo(() => listQuery.data?.items ?? [], [listQuery.data])
   const tags = useMemo(() => tagsQuery.data ?? [], [tagsQuery.data])
   const folders = useMemo(() => foldersQuery.data?.items ?? [], [foldersQuery.data])
-  const kbOptions = useMemo(
-    () => (kbQuery.data ?? []).map((kb) => ({ value: kb.id, label: kb.name })),
-    [kbQuery.data],
-  )
 
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
@@ -190,8 +184,6 @@ export function NotesView() {
   const [searchInput, setSearchInput] = useState(() => useNotesStore.getState().query)
   const [tagDraft, setTagDraft] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
-  const [attachOpen, setAttachOpen] = useState(false)
-  const [attachKb, setAttachKb] = useState('')
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
   /** 文件夹的建/改名对话框（两种模式共用一个表单，与知识库目录那边同款）。 */
@@ -252,8 +244,6 @@ export function NotesView() {
       content_md: note.content_md,
       tags: [...note.tags],
       pinned: note.pinned,
-      kb_id: note.kb_id,
-      doc_id: note.doc_id,
       folder_id: note.folder_id ?? null,
       updated_at: note.updated_at,
     }
@@ -310,14 +300,7 @@ export function NotesView() {
       // 只有它还是当前笔记时才碰界面状态；离开的笔记的响应不许改新笔记的标签
       if (draftRef.current?.id === item.id) {
         setDraft((prev) =>
-          prev && prev.id === item.id
-            ? {
-                ...prev,
-                kb_id: updated.kb_id,
-                doc_id: updated.doc_id,
-                updated_at: updated.updated_at,
-              }
-            : prev,
+          prev && prev.id === item.id ? { ...prev, updated_at: updated.updated_at } : prev,
         )
         // 指纹只推进到**这次真正发出去的那份**：请求期间用户又敲的字仍算未保存，
         // 会被防抖保存接着写出去，不会被误判成已保存。
@@ -602,35 +585,6 @@ export function NotesView() {
     }
   }
 
-  function openAttach(): void {
-    if (!kbOptions.length) {
-      toast.error('还没有知识库，先在知识库管理台里新建一个')
-      return
-    }
-    setAttachKb(draftRef.current?.kb_id ?? kbOptions[0].value)
-    setAttachOpen(true)
-  }
-
-  async function confirmAttach(): Promise<void> {
-    const item = draftRef.current
-    if (!item || !attachKb) return
-    try {
-      // 先落盘再入库：入库读的是库里的正文，未保存的改动不该被漏掉
-      await saveNow()
-      const updated = await attachMutation.mutateAsync({ noteId: item.id, kbId: attachKb })
-      setDraft((prev) =>
-        prev && prev.id === updated.id
-          ? { ...prev, kb_id: updated.kb_id, doc_id: updated.doc_id }
-          : prev,
-      )
-      setAttachOpen(false)
-      // 只报结果（原来那句"之后可以在检索里命中这条笔记"是在解释入库之后会怎样）
-      toast.success('已加入知识库')
-    } catch (cause) {
-      toast.error(errorText(cause, '加入知识库失败'))
-    }
-  }
-
   async function confirmDelete(): Promise<void> {
     const item = draftRef.current
     if (!item) return
@@ -778,7 +732,6 @@ export function NotesView() {
       (group) => group.items.length > 0,
     )
   }, [tags])
-  const activeKbName = kbOptions.find((option) => option.value === draft?.kb_id)?.label ?? ''
 
   /** 「移动到」菜单的候选：全部文件夹（带完整路径，同名不同层才分得清）。 */
   const noteMoveOptions = useMemo(() => folderOptions(folders), [folders])
@@ -1005,7 +958,6 @@ export function NotesView() {
                                   {item.preview || '（空）'}
                                 </span>
                                 <span className="note-item-tail">
-                                  {item.doc_id && <Library size={12} aria-label="已加入知识库" />}
                                   <span className="tabular">{shortDate(item)}</span>
                                 </span>
                               </span>
@@ -1066,9 +1018,8 @@ export function NotesView() {
                   )}
                   {/*
                     「移动到文件夹」：这一轮的移动入口（不做拖拽）。
-                    放在工具栏而不是列表行上，与置顶 / 加入知识库同类——它们都是
-                    "对当前这条笔记做什么"，而列表行上再加一排悬停才出现的按钮，
-                    会把本来就窄的左栏挤得更紧。
+                    放在工具栏而不是列表行上，与置顶同类——它们都是"对当前这条笔记做什么"，
+                    而列表行上再加一排悬停才出现的按钮，会把本来就窄的左栏挤得更紧。
                   */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -1118,15 +1069,6 @@ export function NotesView() {
                     }
                   >
                     <Pin size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    className={`icon-action${draft.doc_id ? ' icon-action-on' : ''}`}
-                    title={draft.doc_id ? `已加入「${activeKbName}」` : '加入知识库'}
-                    aria-label="加入知识库"
-                    onClick={openAttach}
-                  >
-                    <Library size={15} />
                   </button>
                   <button
                     type="button"
@@ -1180,15 +1122,6 @@ export function NotesView() {
                       onBlur={commitTag}
                     />
                   </div>
-                  {draft.doc_id && (
-                    <div className="doc-status">
-                      <Check size={13} aria-hidden="true" />
-                      已加入知识库「{activeKbName}」
-                      {/* 「查看文档」那个链接删了（2026-10-08）：它指向 `/documents/{id}`，
-                          而那一页随知识库管理台一起搬去 kybase——本界面里再没有它的去处，
-                          留一颗点了会 404 的链接不如不留。 */}
-                    </div>
-                  )}
                 </>
               }
             />
@@ -1245,7 +1178,7 @@ export function NotesView() {
           <DialogHeader>
             <DialogTitle>删除这条笔记？</DialogTitle>
           </DialogHeader>
-          <p>删除后无法恢复。已加入知识库生成的文档不会跟着删除。</p>
+          <p>删除后无法恢复。</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteOpen(false)}>
               取消
@@ -1256,46 +1189,6 @@ export function NotesView() {
               onClick={() => void confirmDelete()}
             >
               {deleteMutation.isPending ? '处理中…' : '删除'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={attachOpen} onOpenChange={setAttachOpen}>
-        <DialogContent aria-describedby={undefined}>
-          <DialogHeader>
-            <DialogTitle>加入知识库</DialogTitle>
-          </DialogHeader>
-          {/*
-            标题下面原来还有一句"笔记会作为一份 Markdown 文档进入选中的知识库，
-            之后检索与问答都能命中它。"——那是入库这条链路会发生什么，
-            选项框里的库名已经说明了一切，2026-09-24 按用户要求删。
-          */}
-          <label className="field">
-            <span className="field-label">目标知识库</span>
-            <select
-              className="kb-select"
-              value={attachKb}
-              aria-label="目标知识库"
-              onChange={(event) => setAttachKb(event.target.value)}
-            >
-              {kbOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAttachOpen(false)}>
-              取消
-            </Button>
-            <Button
-              variant="default"
-              disabled={attachMutation.isPending}
-              onClick={() => void confirmAttach()}
-            >
-              {attachMutation.isPending ? '处理中…' : '加入'}
             </Button>
           </DialogFooter>
         </DialogContent>

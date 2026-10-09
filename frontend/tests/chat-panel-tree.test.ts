@@ -219,12 +219,13 @@ describe('路径那几件小事', () => {
     expect(parentOf('a.md')).toBe('')
   })
 
-  it('面包屑：首段由调用方给（两档共用），每段的 `path` 就是那一层', () => {
-    expect(crumbsOf('out/2026', { label: '本会话' })).toEqual([
-      { label: '本会话', path: '' },
+  it('面包屑：**只有路径那几段**（根不占一段），每段的 `path` 就是那一层', () => {
+    expect(crumbsOf('out/2026')).toEqual([
       { label: 'out', path: 'out' },
       { label: '2026', path: 'out/2026' },
     ])
+    // 根那层没有任何一段：面板里那一颗根按钮随范围页签一起去掉了（只说路径）
+    expect(crumbsOf('')).toEqual([])
   })
 })
 
